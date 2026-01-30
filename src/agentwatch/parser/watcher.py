@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
@@ -18,8 +19,9 @@ from agentwatch.discovery import AgentProcess
 class LogWatcher:
     """Watches a log file for new entries in real-time."""
     
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, session_id: str | None = None):
         self.path = path
+        self.session_id = session_id
         self._position = 0
         self._log_format: str | None = None
         self._callbacks: list[Callable[[Action], None]] = []
@@ -77,6 +79,11 @@ class LogWatcher:
                     try:
                         entry = json.loads(line_stripped)
                         parsed = self._parse_entry(entry)
+                        if self.session_id:
+                            parsed = [
+                                a for a in parsed
+                                if a.session_id is None or a.session_id == self.session_id
+                            ]
                         actions.extend(parsed)
                         # Only update position if we successfully processed the line
                         self._position = f.tell()
@@ -121,6 +128,7 @@ class MultiLogWatcher:
         self.watchers: dict[Path, LogWatcher] = {}
         self._active_files: set[Path] = set()
         self._process_meta: dict[Path, AgentProcess] = {}  # log_path -> process info
+        self._stopped_at: dict[Path, float] = {}  # log_path -> monotonic time when first stopped
         self._process_mode: bool = False
 
     @classmethod
@@ -154,6 +162,7 @@ class MultiLogWatcher:
         for proc in processes:
             if proc.log_file and proc.log_file.exists():
                 active_log_files.add(proc.log_file)
+
                 if proc.log_file not in self._process_meta:
                     # New agent found
                     self._process_meta[proc.log_file] = proc
@@ -161,11 +170,15 @@ class MultiLogWatcher:
                 else:
                     # Update existing process metadata (CPU, MEM, etc.)
                     self._process_meta[proc.log_file] = proc
+                # Process is alive, clear any stopped timestamp
+                self._stopped_at.pop(proc.log_file, None)
 
         # Mark stopped processes (keep metadata but flag as stopped)
         stopped_paths = set(self._process_meta.keys()) - active_log_files
         for path in stopped_paths:
             old_proc = self._process_meta[path]
+            if old_proc.command != "(stopped)":
+                self._stopped_at[path] = time.monotonic()
             self._process_meta[path] = AgentProcess(
                 pid=old_proc.pid,
                 agent_type=old_proc.agent_type,
@@ -180,6 +193,23 @@ class MultiLogWatcher:
 
         return new_agents
 
+    def reap_stopped(self, timeout: float = 60.0) -> list[Path]:
+        """Remove processes that have been stopped longer than *timeout* seconds.
+
+        Returns the log paths that were removed.
+        """
+        now = time.monotonic()
+        expired: list[Path] = []
+        for path, stopped_time in list(self._stopped_at.items()):
+            if now - stopped_time >= timeout:
+                expired.append(path)
+        for path in expired:
+            self._stopped_at.pop(path, None)
+            self._active_files.discard(path)
+            self.watchers.pop(path, None)
+            # Keep path in _process_meta so refresh_processes won't re-add it
+        return expired
+
     def get_process_meta(self, log_path: Path) -> AgentProcess | None:
         """Get process metadata for a given log file path."""
         return self._process_meta.get(log_path)
@@ -187,7 +217,10 @@ class MultiLogWatcher:
     def _find_all_logs(self) -> list[Path]:
         """Find all .jsonl files in base paths."""
         if self._process_mode:
-            return [p for p in self._process_meta if p.suffix == ".jsonl"]
+            return [
+                p for p, proc in self._process_meta.items()
+                if p.suffix == ".jsonl" and proc.command != "(stopped)"
+            ]
 
         logs = []
         for p in self.base_paths:
@@ -217,7 +250,9 @@ class MultiLogWatcher:
                 for log_meta in current_logs:
                     if log_meta not in self._active_files:
                         self._active_files.add(log_meta)
-                        watcher = LogWatcher(log_meta)
+                        proc = self._process_meta.get(log_meta)
+                        sid = proc.session_id if proc else None
+                        watcher = LogWatcher(log_meta, session_id=sid)
                         self.watchers[log_meta] = watcher
                         tasks[log_meta] = asyncio.create_task(fill_queue(watcher))
                         yield ("agent_added", log_meta)

@@ -104,6 +104,8 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
         tokens_in = entry.get("inputTokens") or entry.get("input_tokens") or 0
         tokens_out = entry.get("outputTokens") or entry.get("output_tokens") or 0
 
+        session_id = entry.get("sessionId")
+
         actions: list[Action] = []
 
         for block in content:
@@ -136,6 +138,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                     command=command,
                     tokens_in=tokens_in,
                     tokens_out=tokens_out,
+                    session_id=session_id,
                     raw=block,
                 ))
 
@@ -156,6 +159,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                         tool_type=ToolType.BASH,  # Best guess; refined below
                         success=False,
                         error_message=error_msg,
+                        session_id=session_id,
                         raw=block,
                     ))
 
@@ -223,6 +227,8 @@ def _parse_claude_code_flat(entry: dict) -> Action | None:
         tokens_in = entry.get("tokens_in") or entry.get("input_tokens") or 0
         tokens_out = entry.get("tokens_out") or entry.get("output_tokens") or 0
 
+        session_id = entry.get("sessionId")
+
         return Action(
             timestamp=timestamp,
             tool_name=tool_name,
@@ -233,6 +239,7 @@ def _parse_claude_code_flat(entry: dict) -> Action | None:
             error_message=error_message,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
+            session_id=session_id,
             raw=entry,
         )
     except Exception:
@@ -299,7 +306,9 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
         error_message = entry.get("error")
         if error_message:
             success = False
-        
+
+        session_id = entry.get("session_id") or entry.get("sessionId")
+
         return Action(
             timestamp=timestamp,
             tool_name=tool_name,
@@ -313,6 +322,7 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
             network_host=network_host,
             network_port=network_port,
             skill_name=skill_name,
+            session_id=session_id,
             raw=entry,
         )
     except Exception:

@@ -334,7 +334,7 @@ class MultiAgentWatchApp(App):
                     from agentwatch.parser.watcher import LogWatcher as _LogWatcher
 
                     self.watcher._active_files.add(proc.log_file)
-                    log_watcher = _LogWatcher(proc.log_file)
+                    log_watcher = _LogWatcher(proc.log_file, session_id=proc.session_id)
                     self.watcher.watchers[proc.log_file] = log_watcher
 
         # Update process info on existing items
@@ -342,6 +342,15 @@ class MultiAgentWatchApp(App):
             proc = self.watcher.get_process_meta(log_path)
             if proc:
                 agent_data["item"].update_process_info(proc)
+
+        # Remove agents that have been stopped for over 60 seconds
+        expired = self.watcher.reap_stopped(timeout=60.0)
+        for log_path in expired:
+            agent_data = self.agents.pop(log_path, None)
+            if agent_data:
+                agent_data["item"].remove()
+            if self.selected_path == log_path:
+                self.selected_path = next(iter(self.agents), None)
 
     def action_toggle_security(self) -> None:
         """Toggle security mode across all agents."""

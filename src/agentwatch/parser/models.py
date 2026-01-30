@@ -45,7 +45,8 @@ class Action:
     network_port: int | None = None
     user_id: str | None = None           # For audit trail
     skill_name: str | None = None        # For supply chain detection
-    
+
+    session_id: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
     
     @property
