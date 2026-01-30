@@ -28,7 +28,8 @@ def print_health_report(report, security_mode: bool = False) -> None:
     # Overall score
     status_color = {
         "healthy": "green",
-        "warning": "yellow",
+        "degraded": "yellow",
+        "warning": "bright_yellow",
         "critical": "red",
     }
     click.echo(
@@ -174,7 +175,7 @@ def check(log: Path | None, security: bool, json_output: bool):
         sys.exit(2)
     elif report.status == "warning":
         sys.exit(1)
-    sys.exit(0)
+    sys.exit(0)  # healthy and degraded
 
 
 @cli.command()

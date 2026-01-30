@@ -12,6 +12,32 @@ if TYPE_CHECKING:
 from agentwatch.detectors.base import Category, Severity
 
 
+# ---------------------------------------------------------------------------
+# Unified status thresholds — shared by health, efficiency, and rot display
+# ---------------------------------------------------------------------------
+
+STATUS_THRESHOLDS = (80, 60, 40)  # healthy / degraded / warning / critical
+STATUS_LABELS = ("healthy", "degraded", "warning", "critical")
+
+_STATUS_EMOJI: dict[str, str] = {
+    "healthy": "✅",
+    "degraded": "⚠️",
+    "warning": "🟠",
+    "critical": "🔴",
+}
+
+
+def _score_to_status(score: int) -> str:
+    """Map a 0-100 score to a unified status label."""
+    if score >= 80:
+        return "healthy"
+    elif score >= 60:
+        return "degraded"
+    elif score >= 40:
+        return "warning"
+    return "critical"
+
+
 @dataclass
 class CategoryScore:
     """Score for a single category."""
@@ -22,48 +48,28 @@ class CategoryScore:
     
     @property
     def status(self) -> str:
-        if self.score >= 80:
-            return "healthy"
-        elif self.score >= 50:
-            return "warning"
-        else:
-            return "critical"
-    
+        return _score_to_status(self.score)
+
     @property
     def emoji(self) -> str:
-        if self.score >= 80:
-            return "✅"
-        elif self.score >= 50:
-            return "⚠️"
-        else:
-            return "🔴"
+        return _STATUS_EMOJI[self.status]
 
 
 @dataclass
 class HealthReport:
     """Complete health report with category breakdown."""
-    
+
     overall_score: int
     category_scores: dict[Category, CategoryScore]
     warnings: list["Warning"]
-    
+
     @property
     def status(self) -> str:
-        if self.overall_score >= 80:
-            return "healthy"
-        elif self.overall_score >= 50:
-            return "warning"
-        else:
-            return "critical"
-    
+        return _score_to_status(self.overall_score)
+
     @property
     def emoji(self) -> str:
-        if self.overall_score >= 80:
-            return "✅"
-        elif self.overall_score >= 50:
-            return "⚠️"
-        else:
-            return "🔴"
+        return _STATUS_EMOJI[self.status]
     
     @property
     def health_warnings(self) -> list["Warning"]:
@@ -118,6 +124,7 @@ def calculate_health(
     include_security: bool = False,
     efficiency_score: int | None = None,
     rot_score: float | None = None,
+    weights: HealthWeights | None = None,
 ) -> HealthReport:
     """
     Calculate health scores from warnings.
@@ -128,6 +135,7 @@ def calculate_health(
         efficiency_score: Optional 0-100 efficiency score to blend into overall
         rot_score: Optional 0.0-1.0 rot score (0 = healthy, 1 = degraded)
             to blend into overall health
+        weights: Optional blend weights for detectors/efficiency/rot
 
     Returns:
         HealthReport with overall and category scores
@@ -177,7 +185,7 @@ def calculate_health(
     detector_score = int(weighted_score / total_weight) if total_weight > 0 else 100
 
     # Blend in efficiency and rot scores when provided.
-    # Weight split: detectors 60%, efficiency 20%, rot 20%.
+    w = weights or HealthWeights()
     has_extras = efficiency_score is not None or rot_score is not None
     if has_extras:
         eff = efficiency_score if efficiency_score is not None else 100
@@ -185,9 +193,9 @@ def calculate_health(
         rot_health = int((1.0 - rot_score) * 100) if rot_score is not None else 100
 
         overall_score = int(
-            detector_score * _DETECTOR_WEIGHT
-            + eff * _EFFICIENCY_WEIGHT
-            + rot_health * _ROT_WEIGHT
+            detector_score * w.detectors
+            + eff * w.efficiency
+            + rot_health * w.rot
         )
         overall_score = max(0, min(100, overall_score))
     else:
@@ -200,10 +208,17 @@ def calculate_health(
     )
 
 
-# Blend weights for overall health (must sum to 1.0)
-_DETECTOR_WEIGHT = 0.60
-_EFFICIENCY_WEIGHT = 0.20
-_ROT_WEIGHT = 0.20
+@dataclass
+class HealthWeights:
+    """Configurable blend weights for overall health score.
+
+    Must sum to 1.0.  Passed to ``calculate_health`` to control how
+    detector warnings, efficiency, and rot contribute to the overall score.
+    """
+
+    detectors: float = 0.40
+    efficiency: float = 0.30
+    rot: float = 0.30
 
 
 @dataclass
@@ -211,7 +226,7 @@ class EfficiencyReport:
     """Session efficiency report based on pure operational resource metrics."""
 
     score: int  # 0-100
-    status: str  # "efficient", "degraded", "wasteful"
+    status: str  # "healthy", "degraded", "warning", "critical"
     recommendation: str
     context_usage_pct: float  # 0-100
     token_burn_rate: float  # tokens/min
@@ -221,6 +236,10 @@ class EfficiencyReport:
     cache_hit_rate: float  # 0.0-1.0
     actions_per_turn: float  # avg tool calls per model response
     duration_minutes: float  # wall clock
+    # Per-category penalty rollups (0.0 = healthy, 1.0 = full penalty)
+    penalty_context: float = 0.0  # max(pressure, burn, io)
+    penalty_cache: float = 0.0    # cache miss penalty
+    penalty_pacing: float = 0.0   # max(duration, actions_turn)
 
     def to_dict(self) -> dict:
         return {
@@ -235,20 +254,29 @@ class EfficiencyReport:
             "cache_hit_rate": self.cache_hit_rate,
             "actions_per_turn": self.actions_per_turn,
             "duration_minutes": self.duration_minutes,
+            "penalty_context": self.penalty_context,
+            "penalty_cache": self.penalty_cache,
+            "penalty_pacing": self.penalty_pacing,
         }
 
 
 # Sub-metric weights for efficiency scoring (sum to 1.0)
-_W_CONTEXT_PRESSURE = 0.25
-_W_BURN_RATE = 0.15
+# Cost is excluded — not reported in logs; displayed as informational only.
+_W_CONTEXT_PRESSURE = 0.30
+_W_BURN_RATE = 0.20
 _W_IO_RATIO = 0.10
-_W_COST_VELOCITY = 0.15
 _W_CACHE_HIT = 0.15
 _W_ACTIONS_TURN = 0.10
-_W_DURATION = 0.10
+_W_DURATION = 0.15
 
-# Context window size estimate (tokens)
+# Context window and session budget estimates (tokens).
+# The window is the model's context limit.  The budget is the total
+# throughput (input+cache+output summed across all turns) at which we
+# consider the session fully pressured — roughly 10× the window to
+# account for cache-heavy workloads where the same ~200k window is
+# refilled on every turn.
 _CONTEXT_WINDOW = 200_000
+_SESSION_BUDGET = 2_000_000
 
 
 def _clamp01(x: float) -> float:
@@ -270,24 +298,36 @@ def calculate_efficiency(
     duration = stats.duration_minutes
     action_count = stats.action_count
 
+    # Full input including cache — used for pressure, burn rate, and I/O ratio.
+    full_input = stats.total_input_tokens + stats.total_cache_creation + stats.total_cache_read
+    full_throughput = full_input + stats.total_output_tokens
+    # Fall back to total_tokens when no cache data is available.
+    if full_throughput == 0:
+        full_throughput = stats.total_tokens
+        full_input = stats.total_tokens
+
     # --- 1. Context pressure (linear 0→1 as usage 0→100%) ---
-    context_usage_pct = min(stats.total_tokens / _CONTEXT_WINDOW * 100, 100.0)
+    # Uses cumulative throughput against a session budget rather than
+    # current window fill.  This is monotonically increasing — it never
+    # drops after auto-compaction or tool restart, because cumulative
+    # totals are replayed from the log.
+    context_usage_pct = min(full_throughput / _SESSION_BUDGET * 100, 100.0)
     pressure_penalty = _clamp01(context_usage_pct / 100.0)
 
     # --- 2. Token burn rate (0 at ≤5k tok/min, 1.0 at ≥30k) ---
-    burn_rate = stats.total_tokens / duration if duration > 0 else 0.0
+    burn_rate = full_throughput / duration if duration > 0 else 0.0
     burn_penalty = _clamp01((burn_rate - 5_000) / (30_000 - 5_000))
 
     # --- 3. I/O ratio (0 at ratio≤8, 1.0 at ratio≥20) ---
     io_ratio = (
-        stats.total_input_tokens / stats.total_output_tokens
+        full_input / stats.total_output_tokens
         if stats.total_output_tokens > 0
         else 0.0
     )
     io_penalty = _clamp01((io_ratio - 8.0) / (20.0 - 8.0))
 
     # --- 4. Cost velocity (0 at ≤$0.05/min, 1.0 at ≥$0.30/min) ---
-    cost_total = stats.total_cost
+    cost_total = stats.estimated_cost
     cost_vel = cost_total / duration if duration > 0 else 0.0
     cost_penalty = _clamp01((cost_vel - 0.05) / (0.30 - 0.05))
 
@@ -312,12 +352,11 @@ def calculate_efficiency(
     # --- 7. Duration (0 at ≤30min, 1.0 at ≥90min) ---
     duration_penalty = _clamp01((duration - 30.0) / (90.0 - 30.0))
 
-    # --- Weighted penalty sum ---
+    # --- Weighted penalty sum (cost excluded — informational only) ---
     total_penalty = (
         pressure_penalty * _W_CONTEXT_PRESSURE
         + burn_penalty * _W_BURN_RATE
         + io_penalty * _W_IO_RATIO
-        + cost_penalty * _W_COST_VELOCITY
         + cache_penalty * _W_CACHE_HIT
         + actions_turn_penalty * _W_ACTIONS_TURN
         + duration_penalty * _W_DURATION
@@ -325,13 +364,7 @@ def calculate_efficiency(
 
     score = max(0, min(100, int(100 * (1.0 - total_penalty))))
 
-    # Status
-    if score >= 70:
-        status = "efficient"
-    elif score >= 40:
-        status = "degraded"
-    else:
-        status = "wasteful"
+    status = _score_to_status(score)
 
     # Recommendation
     if score >= 80:
@@ -355,6 +388,9 @@ def calculate_efficiency(
         cache_hit_rate=round(cache_hit_rate, 3),
         actions_per_turn=round(apt, 2),
         duration_minutes=round(duration, 1),
+        penalty_context=round(max(pressure_penalty, burn_penalty, io_penalty), 4),
+        penalty_cache=round(cache_penalty, 4),
+        penalty_pacing=round(max(duration_penalty, actions_turn_penalty), 4),
     )
 
 

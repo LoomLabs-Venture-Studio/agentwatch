@@ -38,10 +38,10 @@ W_CONSTRAINT = 0.10
 # ---------------------------------------------------------------------------
 
 class RotState(Enum):
-    HEALTHY = "Healthy"
-    WARMING = "Warming"
-    ROTTING = "Rotting"
-    CRITICAL = "Critical"
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    WARNING = "warning"
+    CRITICAL = "critical"
 
 
 @dataclass
@@ -85,9 +85,9 @@ class RotScorer:
         self._smoothed: float | None = None
         self._state = RotState.HEALTHY
         self._consecutive_above: dict[str, int] = {
-            "warming": 0,   # turns >= 0.35
-            "rotting": 0,   # turns >= 0.55
-            "critical": 0,  # turns >= 0.75
+            "degraded": 0,  # turns >= 0.20
+            "warning": 0,   # turns >= 0.40
+            "critical": 0,  # turns >= 0.60
         }
 
         # Constraint config
@@ -171,32 +171,38 @@ class RotScorer:
         constraint_val: float,
         thrash_val: float,
     ) -> None:
-        # Track consecutive turns above thresholds
-        if smoothed >= 0.75:
+        # Track consecutive turns above thresholds.
+        # Thresholds on 0-1 smoothed_score (0=healthy, 1=degraded) are
+        # derived from unified display breakpoints 80/60/40:
+        #   healthy  → display>=80 → smoothed<0.20
+        #   degraded → display>=60 → smoothed<0.40
+        #   warning  → display>=40 → smoothed<0.60
+        #   critical → display<40  → smoothed>=0.60
+        if smoothed >= 0.60:
             self._consecutive_above["critical"] += 1
         else:
             self._consecutive_above["critical"] = 0
 
-        if smoothed >= 0.55:
-            self._consecutive_above["rotting"] += 1
+        if smoothed >= 0.40:
+            self._consecutive_above["warning"] += 1
         else:
-            self._consecutive_above["rotting"] = 0
+            self._consecutive_above["warning"] = 0
 
-        if smoothed >= 0.35:
-            self._consecutive_above["warming"] += 1
+        if smoothed >= 0.20:
+            self._consecutive_above["degraded"] += 1
         else:
-            self._consecutive_above["warming"] = 0
+            self._consecutive_above["degraded"] = 0
 
         # Determine state (highest matching wins)
-        # Critical: >=0.75 for 2 turns OR (constraint >=0.7 AND stall >=0.7)
+        # Critical: >=0.60 for 2 turns OR (constraint >=0.7 AND stall >=0.7)
         if (
             self._consecutive_above["critical"] >= 2
             or (constraint_val >= 0.7 and thrash_val >= 0.7)
         ):
             self._state = RotState.CRITICAL
-        elif self._consecutive_above["rotting"] >= 3:
-            self._state = RotState.ROTTING
-        elif self._consecutive_above["warming"] >= 2:
-            self._state = RotState.WARMING
+        elif self._consecutive_above["warning"] >= 3:
+            self._state = RotState.WARNING
+        elif self._consecutive_above["degraded"] >= 2:
+            self._state = RotState.DEGRADED
         else:
             self._state = RotState.HEALTHY

@@ -11,17 +11,17 @@ if TYPE_CHECKING:
 
 
 _STATE_EMOJI = {
-    "Healthy": "✅",
-    "Warming": "🌡️",
-    "Rotting": "🧠",
-    "Critical": "🚨",
+    "healthy": "✅",
+    "degraded": "⚠️",
+    "warning": "🟠",
+    "critical": "🔴",
 }
 
 _STATE_COLOR = {
-    "Healthy": "green",
-    "Warming": "yellow",
-    "Rotting": "red",
-    "Critical": "bright_red",
+    "healthy": "green",
+    "degraded": "yellow",
+    "warning": "red",
+    "critical": "bright_red",
 }
 
 

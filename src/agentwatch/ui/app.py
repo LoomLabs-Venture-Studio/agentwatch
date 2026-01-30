@@ -10,11 +10,11 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 
-from agentwatch.ui.rot_widget import ContextHealthWidget
+from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
 if TYPE_CHECKING:
     from agentwatch.detectors.base import Warning
-    from agentwatch.health.score import HealthReport
+    from agentwatch.health.score import EfficiencyReport, HealthReport
 
 
 class HealthBar(Static):
@@ -30,7 +30,8 @@ class HealthBar(Static):
         
         status_emoji = {
             "healthy": "✅",
-            "warning": "⚠️",
+            "degraded": "⚠️",
+            "warning": "🟠",
             "critical": "🔴",
         }
         
@@ -65,36 +66,56 @@ class SecurityStatus(Static):
 
 
 class EfficiencyBar(Static):
-    """Widget showing session efficiency as a progress bar."""
+    """Widget showing session efficiency as a progress bar with category breakdown."""
 
     def __init__(self, **kwargs):
         super().__init__("  Efficiency: [████████████████████] 100%  Status: EFFICIENT\n  Session is healthy", **kwargs)
-        self._score = 100
-        self._status = "efficient"
-        self._recommendation = "Session is healthy"
+        self._report: EfficiencyReport | None = None
 
-    def update_efficiency(self, score: int, status: str, recommendation: str) -> None:
-        self._score = score
-        self._status = status
-        self._recommendation = recommendation
+    def update_efficiency(self, report: "EfficiencyReport") -> None:
+        self._report = report
         self.update(self._build_content())
 
     def _build_content(self) -> str:
-        filled = int(self._score / 5)  # 20 chars total
+        r = self._report
+        if r is None:
+            return "  Efficiency: waiting for data…"
+
+        filled = int(r.score / 5)  # 20 chars total
         bar = "█" * filled + "░" * (20 - filled)
 
         status_emoji = {
-            "efficient": "⚡",
+            "healthy": "✅",
             "degraded": "⚠️",
-            "wasteful": "🔴",
+            "warning": "🟠",
+            "critical": "🔴",
         }
 
-        emoji = status_emoji.get(self._status, "❓")
-        return (
-            f"  {emoji} Efficiency: [{bar}] {self._score}%  "
-            f"Status: {self._status.upper()}\n"
-            f"  {self._recommendation}"
+        emoji = status_emoji.get(r.status, "❓")
+        lines: list[str] = []
+        lines.append(
+            f"  {emoji} Efficiency: [{bar}] {r.score}%  "
+            f"Status: {r.status.upper()}"
         )
+        lines.append("")
+
+        # Per-category mini bars with detail
+        burn_k = r.token_burn_rate / 1000
+        categories = [
+            ("Pressure", r.penalty_context, f"{r.context_usage_pct:.0f}% ctx, {burn_k:.1f}k tok/min"),
+            ("Cache", r.penalty_cache, f"{r.cache_hit_rate * 100:.0f}% hit rate"),
+            ("Pacing", r.penalty_pacing, f"{r.duration_minutes:.0f}min, {r.actions_per_turn:.1f} act/turn"),
+        ]
+        for label, penalty, detail in categories:
+            mini = _mini_bar(penalty)
+            lines.append(f"    {label:12s} [{mini}] {penalty:.2f}   {detail}")
+
+        lines.append("")
+        # Cost is informational — not scored (no log-reported cost data yet)
+        lines.append(f"  Est. cost: ${r.cost_total:.2f} (${r.cost_velocity:.2f}/min)")
+        lines.append(f"  {r.recommendation}")
+
+        return "\n".join(lines)
 
 
 class WarningsList(Static):
@@ -393,9 +414,7 @@ class AgentWatchApp(App):
             security_status.alert_count = len(report.security_warnings)
 
         # Update efficiency bar
-        self.query_one("#efficiency-bar", EfficiencyBar).update_efficiency(
-            eff.score, eff.status, eff.recommendation,
-        )
+        self.query_one("#efficiency-bar", EfficiencyBar).update_efficiency(eff)
 
         # Update context health
         if rot_report is not None:

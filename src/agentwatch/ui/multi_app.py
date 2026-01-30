@@ -74,8 +74,10 @@ class AgentItem(ListItem):
             self.styles.color = "grey"
         elif status == "healthy":
             self.styles.color = "green"
-        elif status == "warning":
+        elif status == "degraded":
             self.styles.color = "yellow"
+        elif status == "warning":
+            self.styles.color = "orange"
         else:
             self.styles.color = "red"
 
@@ -263,7 +265,14 @@ class MultiAgentWatchApp(App):
                     # extra calls that cause sporadic update behaviour.
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        """Handle selection of an agent in the sidebar."""
+        """Handle selection of an agent in the sidebar (Enter/click)."""
+        item = event.item
+        if isinstance(item, AgentItem):
+            self.selected_path = item.log_path
+            self.refresh_ui()
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        """Handle highlight change in the sidebar (arrow keys)."""
         item = event.item
         if isinstance(item, AgentItem):
             self.selected_path = item.log_path
@@ -316,9 +325,7 @@ class MultiAgentWatchApp(App):
         self.query_one("#health-bar", HealthBar).status = report.status
 
         # Update efficiency
-        self.query_one("#efficiency-bar", EfficiencyBar).update_efficiency(
-            eff.score, eff.status, eff.recommendation,
-        )
+        self.query_one("#efficiency-bar", EfficiencyBar).update_efficiency(eff)
 
         # Update context health
         if rot_report is not None:

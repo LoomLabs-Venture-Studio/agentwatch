@@ -373,7 +373,7 @@ class TestRotScorer:
         for _ in range(4):
             report = scorer.update(buf)
         # Should be at least Warming
-        assert report.state in (RotState.WARMING, RotState.ROTTING, RotState.CRITICAL)
+        assert report.state in (RotState.DEGRADED, RotState.WARNING, RotState.CRITICAL)
 
     def test_critical_via_constraint_and_thrash(self):
         """High constraint + high thrash should trigger Critical immediately."""

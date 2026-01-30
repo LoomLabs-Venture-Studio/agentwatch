@@ -40,8 +40,11 @@ class TestFreshSession:
         buffer = ActionBuffer(max_size=2000)
         report = calculate_efficiency([], buffer)
         assert report.score == 100
-        assert report.status == "efficient"
+        assert report.status == "healthy"
         assert report.recommendation == "Session is healthy"
+        assert report.penalty_context == 0.0
+        assert report.penalty_cache == 0.0
+        assert report.penalty_pacing == 0.0
 
     def test_few_low_token_actions(self):
         buffer = ActionBuffer(max_size=2000)
@@ -58,7 +61,7 @@ class TestFreshSession:
             ))
         report = calculate_efficiency([], buffer)
         assert report.score >= 90, f"Expected >=90, got {report.score}"
-        assert report.status == "efficient"
+        assert report.status == "healthy"
 
 
 class TestHighBurn:
@@ -86,11 +89,14 @@ class TestContextPressure:
     def test_heavy_context_usage(self):
         buffer = ActionBuffer(max_size=2000)
         now = datetime.now()
-        # Push total tokens to ~160k (80% of 200k window)
+        # Simulate cache-heavy session: each action reads ~40k from cache
+        # 40 actions × (3k in + 40k cache_read + 1k out) = ~1.76M throughput
+        # against 2M budget → ~88% pressure
         for i in range(40):
             buffer.add(_make_action(
                 tokens_in=3000,
                 tokens_out=1000,
+                cache_read_tokens=40000,
                 timestamp=now + timedelta(minutes=i),
             ))
         report = calculate_efficiency([], buffer)
@@ -114,6 +120,7 @@ class TestCacheThrash:
             ))
         report = calculate_efficiency([], buffer)
         assert report.cache_hit_rate == 0.0
+        assert report.penalty_cache == 1.0  # full miss penalty
         # Full cache penalty (15% weight) should reduce score
         assert report.score <= 90, f"Expected <=90, got {report.score}"
 
@@ -175,7 +182,7 @@ class TestCostVelocity:
         report = calculate_efficiency([], buffer)
         assert report.cost_total > 2.0
         assert report.cost_velocity > 0.30
-        assert report.score < 85, f"Expected <85 with high cost, got {report.score}"
+        # Cost is informational only — not part of the penalty score
 
 
 class TestReportFields:
@@ -208,8 +215,12 @@ class TestReportFields:
             "cache_hit_rate",
             "actions_per_turn",
             "duration_minutes",
+            "penalty_context",
+            "penalty_cache",
+            "penalty_pacing",
         }
         assert set(d.keys()) == expected_keys
         assert d["score"] == 72
         assert d["status"] == "degraded"
         assert d["cache_hit_rate"] == 0.65
+        assert d["penalty_context"] == 0.0

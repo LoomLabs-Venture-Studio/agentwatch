@@ -81,6 +81,7 @@ class SessionStats:
     total_output_tokens: int = 0
     total_cache_creation: int = 0
     total_cache_read: int = 0
+    peak_context_tokens: int = 0  # high-water mark of per-action context size
     error_count: int = 0
     files_touched: set[str] = field(default_factory=set)
     
@@ -104,8 +105,18 @@ class SessionStats:
         # Prefer real cost accumulated from log entries
         if self.total_cost > 0:
             return self.total_cost
-        # Rough estimate: $3 per 1M input tokens, $15 per 1M output
-        return (self.total_tokens / 1_000_000) * 5  # Blended rate
+        # Estimate from token breakdown using Sonnet-class pricing:
+        #   Input: $3/MTok, Output: $15/MTok,
+        #   Cache write: $3.75/MTok, Cache read: $0.30/MTok
+        if self.total_cache_creation or self.total_cache_read:
+            return (
+                self.total_input_tokens * 3.0
+                + self.total_output_tokens * 15.0
+                + self.total_cache_creation * 3.75
+                + self.total_cache_read * 0.30
+            ) / 1_000_000
+        # Fallback: blended rate when no breakdown is available
+        return (self.total_tokens / 1_000_000) * 5
 
 
 class ActionBuffer:
@@ -133,6 +144,10 @@ class ActionBuffer:
         self._stats.total_cost += action.cost_usd
         self._stats.total_cache_creation += action.cache_creation_tokens
         self._stats.total_cache_read += action.cache_read_tokens
+        # Track high-water mark of per-action context size (survives compaction)
+        action_context = action.tokens_in + action.cache_creation_tokens + action.cache_read_tokens
+        if action_context > self._stats.peak_context_tokens:
+            self._stats.peak_context_tokens = action_context
         
         if not self._stats.start_time:
             self._stats.start_time = action.timestamp

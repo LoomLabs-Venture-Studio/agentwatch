@@ -114,7 +114,7 @@ def find_running_agents() -> list[AgentProcess]:
             log_file = None
             session_id = None
             if agent_type == "claude-code":
-                log_file, session_id = _resolve_claude_code_log(cwd)
+                log_file, session_id = _resolve_claude_code_log(cwd, pid=pid)
             elif agent_type == "aider":
                 log_file, session_id = _resolve_aider_log(cwd)
 
@@ -171,12 +171,38 @@ def _encode_path_for_claude(path: Path) -> str:
     return str(path).replace("/", "-")
 
 
-def _resolve_claude_code_log(cwd: Path) -> tuple[Path | None, str | None]:
+def _find_open_jsonl(pid: int, project_dir: Path) -> Path | None:
+    """Use lsof to find which .jsonl file a specific PID has open."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-Fn", "+D", str(project_dir)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.strip().splitlines():
+        if line.startswith("n") and line.endswith(".jsonl"):
+            path = Path(line[1:])
+            if path.exists():
+                return path
+    return None
+
+
+def _resolve_claude_code_log(
+    cwd: Path, pid: int | None = None
+) -> tuple[Path | None, str | None]:
     """Resolve the active Claude Code session log for a working directory.
 
-    Converts CWD to ~/.claude/projects/<encoded-path>/ and finds the
-    most recently modified .jsonl file. Also reads sessions-index.json
-    for metadata.
+    When *pid* is provided, uses ``lsof`` to find the exact ``.jsonl``
+    file that process has open — this avoids cross-contamination when
+    multiple agents share the same project directory.  Falls back to
+    most-recently-modified when ``lsof`` can't determine the file.
     """
     encoded = _encode_path_for_claude(cwd)
     project_dir = Path.home() / ".claude" / "projects" / encoded
@@ -184,13 +210,20 @@ def _resolve_claude_code_log(cwd: Path) -> tuple[Path | None, str | None]:
     if not project_dir.is_dir():
         return None, None
 
-    # Find the most recently modified .jsonl file
     jsonl_files = list(project_dir.glob("*.jsonl"))
     if not jsonl_files:
         return None, None
 
-    latest_log = max(jsonl_files, key=lambda f: f.stat().st_mtime)
-    session_id = latest_log.stem
+    # Prefer lsof-based resolution for the specific PID
+    log_file: Path | None = None
+    if pid is not None:
+        log_file = _find_open_jsonl(pid, project_dir)
+
+    # Fallback: most recently modified file
+    if log_file is None:
+        log_file = max(jsonl_files, key=lambda f: f.stat().st_mtime)
+
+    session_id = log_file.stem
 
     # Try to get session metadata from sessions-index.json
     index_file = project_dir / "sessions-index.json"
@@ -206,7 +239,7 @@ def _resolve_claude_code_log(cwd: Path) -> tuple[Path | None, str | None]:
         except (json.JSONDecodeError, OSError):
             pass
 
-    return latest_log, session_id
+    return log_file, session_id
 
 
 def _resolve_aider_log(cwd: Path) -> tuple[Path | None, str | None]:
