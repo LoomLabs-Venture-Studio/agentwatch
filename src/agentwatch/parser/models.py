@@ -37,6 +37,9 @@ class Action:
     tokens_in: int = 0
     tokens_out: int = 0
     duration_ms: int = 0
+    cost_usd: float = 0.0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
     
     # Security-relevant fields
     incoming_message: str | None = None  # For prompt injection detection
@@ -74,6 +77,10 @@ class SessionStats:
     action_count: int = 0
     total_tokens: int = 0
     total_cost: float = 0.0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_creation: int = 0
+    total_cache_read: int = 0
     error_count: int = 0
     files_touched: set[str] = field(default_factory=set)
     
@@ -94,6 +101,9 @@ class SessionStats:
     
     @property
     def estimated_cost(self) -> float:
+        # Prefer real cost accumulated from log entries
+        if self.total_cost > 0:
+            return self.total_cost
         # Rough estimate: $3 per 1M input tokens, $15 per 1M output
         return (self.total_tokens / 1_000_000) * 5  # Blended rate
 
@@ -118,6 +128,11 @@ class ActionBuffer:
         # Update stats
         self._stats.action_count += 1
         self._stats.total_tokens += action.tokens_in + action.tokens_out
+        self._stats.total_input_tokens += action.tokens_in
+        self._stats.total_output_tokens += action.tokens_out
+        self._stats.total_cost += action.cost_usd
+        self._stats.total_cache_creation += action.cache_creation_tokens
+        self._stats.total_cache_read += action.cache_read_tokens
         
         if not self._stats.start_time:
             self._stats.start_time = action.timestamp

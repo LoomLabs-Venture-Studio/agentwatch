@@ -208,104 +208,119 @@ _ROT_WEIGHT = 0.20
 
 @dataclass
 class EfficiencyReport:
-    """Session efficiency report measuring remaining runway."""
+    """Session efficiency report based on pure operational resource metrics."""
 
     score: int  # 0-100
     status: str  # "efficient", "degraded", "wasteful"
-    context_usage_pct: float
-    waste_ratio: float
     recommendation: str
+    context_usage_pct: float  # 0-100
+    token_burn_rate: float  # tokens/min
+    io_ratio: float  # input/output token ratio
+    cost_total: float  # cumulative USD
+    cost_velocity: float  # USD/min
+    cache_hit_rate: float  # 0.0-1.0
+    actions_per_turn: float  # avg tool calls per model response
+    duration_minutes: float  # wall clock
 
     def to_dict(self) -> dict:
         return {
             "score": self.score,
             "status": self.status,
-            "context_usage_pct": self.context_usage_pct,
-            "waste_ratio": self.waste_ratio,
             "recommendation": self.recommendation,
+            "context_usage_pct": self.context_usage_pct,
+            "token_burn_rate": self.token_burn_rate,
+            "io_ratio": self.io_ratio,
+            "cost_total": self.cost_total,
+            "cost_velocity": self.cost_velocity,
+            "cache_hit_rate": self.cache_hit_rate,
+            "actions_per_turn": self.actions_per_turn,
+            "duration_minutes": self.duration_minutes,
         }
 
 
-# Weights for efficiency scoring (must sum to 1.0)
-_CONTEXT_PRESSURE_WEIGHT = 0.45
-_CONTEXT_ROT_WEIGHT = 0.20
-_REDISCOVERY_WEIGHT = 0.10
-_WASTE_RATIO_WEIGHT = 0.25
+# Sub-metric weights for efficiency scoring (sum to 1.0)
+_W_CONTEXT_PRESSURE = 0.25
+_W_BURN_RATE = 0.15
+_W_IO_RATIO = 0.10
+_W_COST_VELOCITY = 0.15
+_W_CACHE_HIT = 0.15
+_W_ACTIONS_TURN = 0.10
+_W_DURATION = 0.10
+
+# Context window size estimate (tokens)
+_CONTEXT_WINDOW = 200_000
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, x))
 
 
 def calculate_efficiency(
     warnings: list["Warning"],
     buffer: "ActionBuffer",
 ) -> EfficiencyReport:
+    """Calculate session efficiency from pure operational resource metrics.
+
+    ``warnings`` is accepted for call-site compatibility but ignored — all
+    signals are derived from the action buffer and its stats.
     """
-    Calculate session efficiency score.
+    from agentwatch.parser.models import turns_from_buffer
 
-    Measures how much useful runway the session has left before a fresh
-    session would be more productive.
-    """
-    # --- Context pressure (biggest factor) ---
-    context_usage_pct = 0.0
-    for w in warnings:
-        if w.category == Category.CONTEXT and w.signal in ("context_pressure", "context_critical"):
-            context_usage_pct = w.details.get("usage_percent", 0) / 100.0
-            break
+    stats = buffer.stats
+    duration = stats.duration_minutes
+    action_count = stats.action_count
 
-    # Map usage ratio to a penalty: 0% usage = 0 penalty, 100% = full penalty
-    pressure_penalty = context_usage_pct  # linear 0-1
+    # --- 1. Context pressure (linear 0→1 as usage 0→100%) ---
+    context_usage_pct = min(stats.total_tokens / _CONTEXT_WINDOW * 100, 100.0)
+    pressure_penalty = _clamp01(context_usage_pct / 100.0)
 
-    # --- Context rot ---
-    rot_count = 0
-    for w in warnings:
-        if w.category == Category.CONTEXT and w.signal == "context_rot":
-            forgotten = w.details.get("forgotten_files", [])
-            rot_count = len(forgotten) if isinstance(forgotten, list) else 0
-            break
+    # --- 2. Token burn rate (0 at ≤5k tok/min, 1.0 at ≥30k) ---
+    burn_rate = stats.total_tokens / duration if duration > 0 else 0.0
+    burn_penalty = _clamp01((burn_rate - 5_000) / (30_000 - 5_000))
 
-    # Cap rot penalty: 5+ forgotten files = full penalty
-    rot_penalty = min(rot_count / 5.0, 1.0)
+    # --- 3. I/O ratio (0 at ratio≤8, 1.0 at ratio≥20) ---
+    io_ratio = (
+        stats.total_input_tokens / stats.total_output_tokens
+        if stats.total_output_tokens > 0
+        else 0.0
+    )
+    io_penalty = _clamp01((io_ratio - 8.0) / (20.0 - 8.0))
 
-    # --- Rediscovery ---
-    rediscovery_count = 0
-    for w in warnings:
-        if w.category == Category.CONTEXT and w.signal == "rediscovery":
-            rediscovery_count = w.details.get("rediscovery_count", 0)
-            break
+    # --- 4. Cost velocity (0 at ≤$0.05/min, 1.0 at ≥$0.30/min) ---
+    cost_total = stats.total_cost
+    cost_vel = cost_total / duration if duration > 0 else 0.0
+    cost_penalty = _clamp01((cost_vel - 0.05) / (0.30 - 0.05))
 
-    # Cap: 4+ rediscoveries = full penalty
-    rediscovery_penalty = min(rediscovery_count / 4.0, 1.0)
+    # --- 5. Cache hit rate (penalty = 1 - hit_rate; 0 if no cache data) ---
+    total_cache = stats.total_cache_creation + stats.total_cache_read
+    cache_hit_rate = (
+        stats.total_cache_read / total_cache if total_cache > 0 else 0.0
+    )
+    cache_penalty = (1.0 - cache_hit_rate) if total_cache > 0 else 0.0
 
-    # --- Action waste ratio ---
-    actions = list(buffer.actions)
-    total_actions = len(actions)
-    waste_ratio = 0.0
+    # --- 6. Actions per turn (ramp below 1.5; skip if <5 actions) ---
+    turns = turns_from_buffer(buffer)
+    if turns:
+        apt = action_count / len(turns)
+    else:
+        apt = 0.0
+    if action_count >= 5:
+        actions_turn_penalty = _clamp01((1.5 - apt) / 1.5)
+    else:
+        actions_turn_penalty = 0.0
 
-    if total_actions > 0:
-        failed_bashes = sum(
-            1 for a in actions if a.is_bash and not a.success
-        )
+    # --- 7. Duration (0 at ≤30min, 1.0 at ≥90min) ---
+    duration_penalty = _clamp01((duration - 30.0) / (90.0 - 30.0))
 
-        # Duplicate reads: reading a file already read in the last 50 actions
-        duplicate_reads = 0
-        for i, action in enumerate(actions):
-            if action.is_file_read and action.file_path:
-                window_start = max(0, i - 50)
-                for j in range(window_start, i):
-                    prev = actions[j]
-                    if prev.is_file_read and prev.file_path == action.file_path:
-                        duplicate_reads += 1
-                        break
-
-        waste_ratio = (failed_bashes + duplicate_reads) / total_actions
-
-    # Cap waste ratio penalty at 1.0
-    waste_penalty = min(waste_ratio / 0.3, 1.0)  # 30%+ waste = full penalty
-
-    # --- Combine into score ---
+    # --- Weighted penalty sum ---
     total_penalty = (
-        pressure_penalty * _CONTEXT_PRESSURE_WEIGHT
-        + rot_penalty * _CONTEXT_ROT_WEIGHT
-        + rediscovery_penalty * _REDISCOVERY_WEIGHT
-        + waste_penalty * _WASTE_RATIO_WEIGHT
+        pressure_penalty * _W_CONTEXT_PRESSURE
+        + burn_penalty * _W_BURN_RATE
+        + io_penalty * _W_IO_RATIO
+        + cost_penalty * _W_COST_VELOCITY
+        + cache_penalty * _W_CACHE_HIT
+        + actions_turn_penalty * _W_ACTIONS_TURN
+        + duration_penalty * _W_DURATION
     )
 
     score = max(0, min(100, int(100 * (1.0 - total_penalty))))
@@ -331,9 +346,15 @@ def calculate_efficiency(
     return EfficiencyReport(
         score=score,
         status=status,
-        context_usage_pct=round(context_usage_pct * 100, 1),
-        waste_ratio=round(waste_ratio, 3),
         recommendation=recommendation,
+        context_usage_pct=round(context_usage_pct, 1),
+        token_burn_rate=round(burn_rate, 1),
+        io_ratio=round(io_ratio, 2),
+        cost_total=round(cost_total, 4),
+        cost_velocity=round(cost_vel, 4),
+        cache_hit_rate=round(cache_hit_rate, 3),
+        actions_per_turn=round(apt, 2),
+        duration_minutes=round(duration, 1),
     )
 
 

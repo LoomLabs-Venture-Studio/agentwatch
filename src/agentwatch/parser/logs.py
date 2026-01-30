@@ -100,9 +100,34 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
         # Parse timestamp
         timestamp = _parse_timestamp(entry)
 
-        # Token counts (usually on assistant entries)
-        tokens_in = entry.get("inputTokens") or entry.get("input_tokens") or 0
-        tokens_out = entry.get("outputTokens") or entry.get("output_tokens") or 0
+        # Token counts — check top-level keys first (older format), then
+        # fall back to message.usage (current Claude Code format).
+        usage = {}
+        if isinstance(msg, dict):
+            usage = msg.get("usage") or {}
+        tokens_in = (
+            entry.get("inputTokens")
+            or entry.get("input_tokens")
+            or usage.get("input_tokens")
+            or 0
+        )
+        tokens_out = (
+            entry.get("outputTokens")
+            or entry.get("output_tokens")
+            or usage.get("output_tokens")
+            or 0
+        )
+        cost_usd = entry.get("costUSD") or 0.0
+        cache_creation_tokens = (
+            entry.get("cacheCreationInputTokens")
+            or usage.get("cache_creation_input_tokens")
+            or 0
+        )
+        cache_read_tokens = (
+            entry.get("cacheReadInputTokens")
+            or usage.get("cache_read_input_tokens")
+            or 0
+        )
 
         session_id = entry.get("sessionId")
 
@@ -151,6 +176,9 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                     command=command,
                     tokens_in=tokens_in,
                     tokens_out=tokens_out,
+                    cost_usd=cost_usd,
+                    cache_creation_tokens=cache_creation_tokens,
+                    cache_read_tokens=cache_read_tokens,
                     outgoing_data=outgoing_data,
                     session_id=session_id,
                     raw=block,
@@ -175,6 +203,9 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                         tool_type=ToolType.BASH,  # Best guess; refined below
                         success=False,
                         error_message=error_msg,
+                        cost_usd=cost_usd,
+                        cache_creation_tokens=cache_creation_tokens,
+                        cache_read_tokens=cache_read_tokens,
                         session_id=session_id,
                         raw=block,
                     ))
@@ -191,6 +222,9 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                 outgoing_data=joined,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
+                cost_usd=cost_usd,
+                cache_creation_tokens=cache_creation_tokens,
+                cache_read_tokens=cache_read_tokens,
                 session_id=session_id,
                 raw={"type": "text", "text": joined[:500]},
             ))
@@ -258,6 +292,9 @@ def _parse_claude_code_flat(entry: dict) -> Action | None:
 
         tokens_in = entry.get("tokens_in") or entry.get("input_tokens") or 0
         tokens_out = entry.get("tokens_out") or entry.get("output_tokens") or 0
+        cost_usd = entry.get("costUSD") or 0.0
+        cache_creation_tokens = entry.get("cacheCreationInputTokens") or 0
+        cache_read_tokens = entry.get("cacheReadInputTokens") or 0
 
         session_id = entry.get("sessionId")
 
@@ -271,6 +308,9 @@ def _parse_claude_code_flat(entry: dict) -> Action | None:
             error_message=error_message,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
+            cost_usd=cost_usd,
+            cache_creation_tokens=cache_creation_tokens,
+            cache_read_tokens=cache_read_tokens,
             session_id=session_id,
             raw=entry,
         )
