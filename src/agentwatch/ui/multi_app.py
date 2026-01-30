@@ -15,7 +15,9 @@ from agentwatch.detectors import create_registry
 from agentwatch.discovery import AgentProcess, find_running_agents
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.health import calculate_efficiency, calculate_health, calculate_security_score
+from agentwatch.health.rot import RotScorer
 from agentwatch.ui.app import EfficiencyBar, HealthBar, SecurityStatus, WarningsList, StatsPanel
+from agentwatch.ui.rot_widget import ContextHealthWidget
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import Action
@@ -119,6 +121,12 @@ class MultiAgentWatchApp(App):
         padding: 1;
     }
 
+    #context-health {
+        height: auto;
+        border-bottom: solid magenta;
+        padding: 1;
+    }
+
     #security-status {
         height: auto;
         border-bottom: solid yellow;
@@ -161,6 +169,7 @@ class MultiAgentWatchApp(App):
         self.watch_paths = watch_paths or []
         self.security_mode = security_mode
         self.agents: dict[Path, dict] = {}  # path -> {buffer, registry, item}
+        self._refreshing = False
         self.selected_path: Path | None = None
         self._process_mode = agent_processes is not None
 
@@ -179,6 +188,7 @@ class MultiAgentWatchApp(App):
         with Vertical(id="detail-area"):
             yield HealthBar(id="health-bar")
             yield EfficiencyBar(id="efficiency-bar")
+            yield ContextHealthWidget(id="context-health")
             yield SecurityStatus(
                 id="security-status",
                 classes="" if self.security_mode else "hidden",
@@ -233,6 +243,7 @@ class MultiAgentWatchApp(App):
                         "buffer": buffer,
                         "registry": registry,
                         "item": item,
+                        "rot_scorer": RotScorer(),
                     }
 
                     # Add to sidebar
@@ -248,9 +259,8 @@ class MultiAgentWatchApp(App):
                 action, path = data
                 if path in self.agents:
                     self.agents[path]["buffer"].add(action)
-                    # Trigger immediate UI update for the active agent
-                    if path == self.selected_path:
-                        self.call_after_refresh(self.refresh_ui)
+                    # The 1s interval timer handles refreshes — don't pile up
+                    # extra calls that cause sporadic update behaviour.
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Handle selection of an agent in the sidebar."""
@@ -263,27 +273,56 @@ class MultiAgentWatchApp(App):
         """Update the main detail area based on selected agent."""
         if self.selected_path is None or self.selected_path not in self.agents:
             return
-            
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            self._do_refresh_ui()
+        finally:
+            self._refreshing = False
+
+    def _do_refresh_ui(self) -> None:
+        """Inner refresh logic, guarded by _refreshing flag."""
+
         agent_data = self.agents[self.selected_path]
         buffer = agent_data["buffer"]
         registry = agent_data["registry"]
-        
+
         # Run detectors
         warnings = registry.check_all(buffer)
-        report = calculate_health(warnings, include_security=self.security_mode)
-        
+
+        # Compute efficiency and rot first so they feed into overall health
+        eff = calculate_efficiency(warnings, buffer)
+
+        rot_report = None
+        rot_value: float | None = None
+        rot_scorer = agent_data.get("rot_scorer")
+        if rot_scorer:
+            rot_report = rot_scorer.update(buffer)
+            rot_value = rot_report.smoothed_score
+
+        report = calculate_health(
+            warnings,
+            include_security=self.security_mode,
+            efficiency_score=eff.score,
+            rot_score=rot_value,
+        )
+
         # Update sidebar item status
         agent_data["item"].update_status(report.overall_score, report.status)
-        
+
         # Update main widgets
         self.query_one("#health-bar", HealthBar).score = report.overall_score
         self.query_one("#health-bar", HealthBar).status = report.status
 
         # Update efficiency
-        eff = calculate_efficiency(warnings, buffer)
         self.query_one("#efficiency-bar", EfficiencyBar).update_efficiency(
             eff.score, eff.status, eff.recommendation,
         )
+
+        # Update context health
+        if rot_report is not None:
+            self.query_one("#context-health", ContextHealthWidget).update_report(rot_report)
 
         if self.security_mode:
             security_status = self.query_one("#security-status", SecurityStatus)
@@ -326,6 +365,7 @@ class MultiAgentWatchApp(App):
                     "buffer": buffer,
                     "registry": registry,
                     "item": item,
+                    "rot_scorer": RotScorer(),
                 }
                 agent_list.append(item)
 

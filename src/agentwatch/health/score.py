@@ -116,14 +116,19 @@ SECURITY_CATEGORY_WEIGHTS = {
 def calculate_health(
     warnings: list["Warning"],
     include_security: bool = False,
+    efficiency_score: int | None = None,
+    rot_score: float | None = None,
 ) -> HealthReport:
     """
     Calculate health scores from warnings.
-    
+
     Args:
         warnings: List of warnings from detectors
         include_security: Whether to include security categories in overall score
-    
+        efficiency_score: Optional 0-100 efficiency score to blend into overall
+        rot_score: Optional 0.0-1.0 rot score (0 = healthy, 1 = degraded)
+            to blend into overall health
+
     Returns:
         HealthReport with overall and category scores
     """
@@ -134,48 +139,71 @@ def calculate_health(
         if cat not in category_warnings:
             category_warnings[cat] = []
         category_warnings[cat].append(warning)
-    
+
     # Calculate per-category scores
     category_scores: dict[Category, CategoryScore] = {}
-    
+
     # Determine which categories to include
     if include_security:
         all_weights = {**HEALTH_CATEGORY_WEIGHTS, **SECURITY_CATEGORY_WEIGHTS}
     else:
         all_weights = HEALTH_CATEGORY_WEIGHTS
-    
+
     for cat in Category:
         cat_warnings = category_warnings.get(cat, [])
-        
+
         # Start at 100, deduct based on severity
         score = 100
         for w in cat_warnings:
             score -= w.severity.score_impact
-        
+
         score = max(0, score)  # Floor at 0
-        
+
         category_scores[cat] = CategoryScore(
             category=cat,
             score=score,
             warnings=cat_warnings,
         )
-    
-    # Calculate weighted overall score
+
+    # Calculate weighted detector-category score
     total_weight = 0
     weighted_score = 0
-    
+
     for cat, weight in all_weights.items():
         if cat in category_scores:
             weighted_score += category_scores[cat].score * weight
             total_weight += weight
-    
-    overall_score = int(weighted_score / total_weight) if total_weight > 0 else 100
-    
+
+    detector_score = int(weighted_score / total_weight) if total_weight > 0 else 100
+
+    # Blend in efficiency and rot scores when provided.
+    # Weight split: detectors 60%, efficiency 20%, rot 20%.
+    has_extras = efficiency_score is not None or rot_score is not None
+    if has_extras:
+        eff = efficiency_score if efficiency_score is not None else 100
+        # rot_score is 0..1 (0=healthy).  Invert to 0-100 health scale.
+        rot_health = int((1.0 - rot_score) * 100) if rot_score is not None else 100
+
+        overall_score = int(
+            detector_score * _DETECTOR_WEIGHT
+            + eff * _EFFICIENCY_WEIGHT
+            + rot_health * _ROT_WEIGHT
+        )
+        overall_score = max(0, min(100, overall_score))
+    else:
+        overall_score = detector_score
+
     return HealthReport(
         overall_score=overall_score,
         category_scores=category_scores,
         warnings=warnings,
     )
+
+
+# Blend weights for overall health (must sum to 1.0)
+_DETECTOR_WEIGHT = 0.60
+_EFFICIENCY_WEIGHT = 0.20
+_ROT_WEIGHT = 0.20
 
 
 @dataclass

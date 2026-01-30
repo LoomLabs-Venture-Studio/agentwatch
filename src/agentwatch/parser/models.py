@@ -172,3 +172,106 @@ class ActionBuffer:
     def network_actions(self) -> list[Action]:
         """Get actions with network activity."""
         return [a for a in self.actions if a.is_network]
+
+
+# ---------------------------------------------------------------------------
+# Turn abstraction – groups actions between model output boundaries
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Turn:
+    """A turn is a group of actions between two model-output boundaries.
+
+    In Claude Code logs, a turn starts with an assistant message containing
+    tool_use blocks and ends just before the next assistant message.  The
+    ``model_output`` field carries any textual content the model produced
+    (e.g. ``outgoing_data``) during the turn.
+    """
+
+    index: int
+    actions: list[Action] = field(default_factory=list)
+    model_output: str = ""
+
+    @property
+    def has_edit(self) -> bool:
+        return any(a.is_file_edit for a in self.actions)
+
+    @property
+    def has_successful_bash(self) -> bool:
+        return any(a.is_bash and a.success for a in self.actions)
+
+    @property
+    def edited_files(self) -> set[str]:
+        return {a.file_path for a in self.actions if a.is_file_edit and a.file_path}
+
+    @property
+    def touched_files(self) -> set[str]:
+        return {a.file_path for a in self.actions if a.file_path}
+
+    @property
+    def failed_actions(self) -> list[Action]:
+        return [a for a in self.actions if not a.success]
+
+
+def turns_from_actions(actions: list[Action]) -> list[Turn]:
+    """Build a list of Turns from a flat action sequence.
+
+    Heuristic: a new turn starts whenever we encounter an action that carries
+    ``outgoing_data`` (model textual output) *or* when the sequence begins.
+    All subsequent tool-call actions belong to the same turn until the next
+    model output.
+    """
+    if not actions:
+        return []
+
+    turns: list[Turn] = []
+    current = Turn(index=0)
+
+    for action in actions:
+        # An action with outgoing_data marks a model-output boundary
+        if action.outgoing_data and current.actions:
+            # Close current turn and start a new one
+            turns.append(current)
+            current = Turn(index=len(turns), model_output=action.outgoing_data)
+        elif action.outgoing_data:
+            current.model_output = action.outgoing_data
+
+        current.actions.append(action)
+
+    # Don't forget the last open turn
+    if current.actions:
+        turns.append(current)
+
+    return turns
+
+
+def turns_from_buffer(buffer: "ActionBuffer", last_n: int | None = None) -> list[Turn]:
+    """Convenience: build turns from the buffer's action sequence."""
+    actions = list(buffer.actions)
+    if last_n is not None:
+        actions = actions[-last_n:]
+    return turns_from_actions(actions)
+
+
+# ---------------------------------------------------------------------------
+# MetricResult – uniform output for every rot-metric module
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MetricResult:
+    """Uniform output produced by each rot-metric module."""
+
+    name: str
+    value: float  # 0.0 .. 1.0  (0 = healthy, 1 = fully degraded)
+    evidence: list[str] = field(default_factory=list)
+    contributors: list["MetricResult"] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "name": self.name,
+            "value": round(self.value, 4),
+            "evidence": self.evidence,
+        }
+        if self.contributors:
+            d["contributors"] = [c.to_dict() for c in self.contributors]
+        return d

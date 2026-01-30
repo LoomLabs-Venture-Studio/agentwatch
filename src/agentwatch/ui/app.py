@@ -10,6 +10,8 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 
+from agentwatch.ui.rot_widget import ContextHealthWidget
+
 if TYPE_CHECKING:
     from agentwatch.detectors.base import Warning
     from agentwatch.health.score import HealthReport
@@ -218,12 +220,24 @@ class AgentWatchApp(App):
         padding: 1;
     }
     
+    #efficiency-panel {
+        column-span: 2;
+        border: solid cyan;
+        padding: 1;
+    }
+
+    #context-health-panel {
+        column-span: 2;
+        border: solid magenta;
+        padding: 1;
+    }
+
     #warnings-panel {
         column-span: 2;
         border: solid red;
         padding: 1;
     }
-    
+
     #stats-panel {
         column-span: 2;
         border: solid blue;
@@ -252,6 +266,8 @@ class AgentWatchApp(App):
         self.security_mode = security_mode
         self._buffer = None
         self._detector_registry = None
+        self._rot_scorer = None
+        self._refreshing = False
     
     def compose(self) -> ComposeResult:
         yield Header()
@@ -266,7 +282,17 @@ class AgentWatchApp(App):
             id="security-panel",
             classes="" if self.security_mode else "hidden",
         )
-        
+
+        yield Container(
+            EfficiencyBar(id="efficiency-bar"),
+            id="efficiency-panel",
+        )
+
+        yield Container(
+            ContextHealthWidget(id="context-health"),
+            id="context-health-panel",
+        )
+
         yield Container(
             WarningsList(id="warnings-list"),
             id="warnings-panel",
@@ -287,11 +313,13 @@ class AgentWatchApp(App):
         
         # Initialize components
         from agentwatch.detectors import create_registry
+        from agentwatch.health.rot import RotScorer
         from agentwatch.parser import ActionBuffer, LogWatcher
-        
+
         self._buffer = ActionBuffer()
         mode = "all" if self.security_mode else "health"
         self._detector_registry = create_registry(mode=mode)
+        self._rot_scorer = RotScorer()
         
         # Set up log watcher
         self.watcher = LogWatcher(self.log_path)
@@ -309,31 +337,70 @@ class AgentWatchApp(App):
         """Callback for new actions from watcher."""
         if self._buffer:
             self._buffer.add(action)
-            # Request refresh on next idle
-            self.call_after_refresh(self.refresh_display)
+            # The 1s interval timer handles refreshes — don't pile up extra
+            # calls via call_after_refresh, which was causing sporadic updates
+            # when compute time exceeded the interval.
     
     def refresh_display(self) -> None:
         """Update all widgets with current data."""
         if not self._buffer or not self._detector_registry:
             return
-        
-        from agentwatch.health import calculate_health, calculate_security_score
-        
+        if self._refreshing:
+            return  # prevent overlapping refreshes
+        self._refreshing = True
+        try:
+            self._do_refresh()
+        finally:
+            self._refreshing = False
+
+    def _do_refresh(self) -> None:
+        """Inner refresh logic, guarded by _refreshing flag."""
+
+        from agentwatch.health import (
+            calculate_efficiency,
+            calculate_health,
+            calculate_security_score,
+        )
+
         # Run detectors
         warnings = self._detector_registry.check_all(self._buffer)
-        report = calculate_health(warnings, include_security=self.security_mode)
-        
+
+        # Compute efficiency and rot first so they feed into overall health
+        eff = calculate_efficiency(warnings, self._buffer)
+
+        rot_report = None
+        rot_value: float | None = None
+        if self._rot_scorer:
+            rot_report = self._rot_scorer.update(self._buffer)
+            rot_value = rot_report.smoothed_score
+
+        report = calculate_health(
+            warnings,
+            include_security=self.security_mode,
+            efficiency_score=eff.score,
+            rot_score=rot_value,
+        )
+
         # Update health bar
         health_bar = self.query_one("#health-bar", HealthBar)
         health_bar.score = report.overall_score
         health_bar.status = report.status
-        
+
         # Update security status if enabled
         if self.security_mode:
             security_status = self.query_one("#security-status", SecurityStatus)
             security_status.score = calculate_security_score(warnings)
             security_status.alert_count = len(report.security_warnings)
-        
+
+        # Update efficiency bar
+        self.query_one("#efficiency-bar", EfficiencyBar).update_efficiency(
+            eff.score, eff.status, eff.recommendation,
+        )
+
+        # Update context health
+        if rot_report is not None:
+            self.query_one("#context-health", ContextHealthWidget).update_report(rot_report)
+
         # Update warnings list
         warnings_list = self.query_one("#warnings-list", WarningsList)
         warnings_list.update_warnings(warnings)

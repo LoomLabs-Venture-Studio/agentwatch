@@ -108,6 +108,19 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
 
         actions: list[Action] = []
 
+        # Collect assistant text blocks as outgoing_data for turn detection
+        # and behavioral/repetition metrics.
+        assistant_text_parts: list[str] = []
+        if entry_type == "assistant":
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text", "")
+                    if text:
+                        assistant_text_parts.append(text)
+                elif isinstance(block, str):
+                    assistant_text_parts.append(block)
+        outgoing_data = "\n".join(assistant_text_parts) if assistant_text_parts else None
+
         for block in content:
             if not isinstance(block, dict):
                 continue
@@ -138,9 +151,12 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                     command=command,
                     tokens_in=tokens_in,
                     tokens_out=tokens_out,
+                    outgoing_data=outgoing_data,
                     session_id=session_id,
                     raw=block,
                 ))
+                # Only attach text to the first tool_use in this entry
+                outgoing_data = None
 
             elif block_type == "tool_result" and entry_type == "user":
                 is_error = block.get("is_error", False)
@@ -162,6 +178,22 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                         session_id=session_id,
                         raw=block,
                     ))
+
+        # If assistant entry had text but no tool_use blocks, emit a
+        # synthetic action so the text is visible to turn/metric logic.
+        if assistant_text_parts and not actions and entry_type == "assistant":
+            joined = "\n".join(assistant_text_parts)
+            actions.append(Action(
+                timestamp=timestamp,
+                tool_name="text_output",
+                tool_type=ToolType.UNKNOWN,
+                success=True,
+                outgoing_data=joined,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                session_id=session_id,
+                raw={"type": "text", "text": joined[:500]},
+            ))
 
         if len(actions) == 1:
             return actions[0]
