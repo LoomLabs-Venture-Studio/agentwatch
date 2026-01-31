@@ -1,5 +1,5 @@
 [project]
-name = "agent-monnitor"
+name = "agentwatch-monitor"
 version = "0.1"
 description = "Real-time health and security monitoring for AI coding agents"
 readme = "README.md"
