@@ -6,6 +6,7 @@ import re
 from typing import TYPE_CHECKING
 
 from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
+from agentwatch.detectors.health._window import scaled_turn_window
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -102,13 +103,17 @@ def _repeated_sentences(outputs: list[str]) -> float:
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_repetition(buffer: ActionBuffer, k: int = 3) -> MetricResult:
+def compute_repetition(buffer: ActionBuffer, k: int | None = None) -> MetricResult:
     """Compute the repetition metric over recent turns."""
 
     turns = turns_from_buffer(buffer)
     outputs = [t.model_output for t in turns if t.model_output]
     if not outputs:
         return MetricResult(name="repetition", value=0.0)
+
+    if k is None:
+        # Scale cross-turn comparison window with session length
+        k = max(3, min(10, len(outputs) // 5))
 
     # Sub-metric: within-output 3-gram repetition (latest output)
     within_rep = _within_output_repetition(outputs[-1])

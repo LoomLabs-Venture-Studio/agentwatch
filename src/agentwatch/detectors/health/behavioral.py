@@ -6,6 +6,7 @@ import re
 from typing import TYPE_CHECKING
 
 from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
+from agentwatch.detectors.health._window import scaled_turn_window
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -99,12 +100,15 @@ def _length_inflation_slope(lengths: list[int]) -> float:
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_behavioral(buffer: ActionBuffer, n_turns: int = 5) -> MetricResult:
+def compute_behavioral(buffer: ActionBuffer, n_turns: int | None = None) -> MetricResult:
     """Compute the behavioral-degradation metric over the last *n_turns* turns."""
 
     turns = turns_from_buffer(buffer)
     if len(turns) < 2:
         return MetricResult(name="behavioral", value=0.0)
+
+    if n_turns is None:
+        n_turns = scaled_turn_window(len(turns), base=5, fraction=0.15, cap=20)
 
     recent = turns[-n_turns:]
 

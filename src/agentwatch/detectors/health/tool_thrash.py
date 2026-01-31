@@ -12,6 +12,7 @@ import re
 from typing import TYPE_CHECKING
 
 from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
+from agentwatch.detectors.health._window import scaled_action_window, scaled_turn_window
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -126,8 +127,9 @@ def _turns_since_progress(buffer: "ActionBuffer") -> tuple[float, list[str]]:
 def compute_tool_thrash(buffer: "ActionBuffer") -> MetricResult:
     """Compute the tool-thrash & stall metric."""
 
-    tool_score, tool_ev = _repeated_tool_calls(buffer)
-    err_score, err_ev = _repeated_errors(buffer)
+    window = scaled_action_window(buffer)
+    tool_score, tool_ev = _repeated_tool_calls(buffer, window=window)
+    err_score, err_ev = _repeated_errors(buffer, window=window)
     stall_score, stall_ev = _turns_since_progress(buffer)
 
     tool_result = MetricResult(name="repeated_tool_calls", value=round(tool_score, 4), evidence=tool_ev)
