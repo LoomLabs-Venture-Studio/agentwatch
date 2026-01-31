@@ -15,11 +15,24 @@ AgentWatch monitors AI agents (Claude Code, Moltbot, Cursor, Aider) for:
 
 Think of it as a fitness tracker for your AI agent, plus a security guard.
 
+### Installation
+
+**As a CLI tool (Recommended):**
+```bash
+pipx install agentwatch-monitor
+```
+
+**As a library:**
+```bash
+pip install agentwatch-monitor
+```
+
+> [!TIP]
+> Use `pipx` for CLI tools to avoid "externally managed environment" errors and keep your system Python clean.
+
 ## Quick Start
 
 ```bash
-pip install agentwatch
-
 # Health check
 agentwatch check
 
