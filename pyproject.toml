@@ -1,12 +1,12 @@
 [project]
-name = "agentwatch"
-version = "0.2.0"
+name = "agent-watch"
+version = "0.1"
 description = "Real-time health and security monitoring for AI coding agents"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [
-    { name = "Zaid" }
+    { name = "LoomLabs" }
 ]
 keywords = ["ai", "llm", "agent", "monitoring", "claude", "security", "moltbot"]
 classifiers = [
