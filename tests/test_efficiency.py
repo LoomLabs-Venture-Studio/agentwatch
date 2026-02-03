@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from agentwatch.health.score import EfficiencyReport, calculate_efficiency
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
+from agentwatch.themes import get_theme
 
 
 def _make_action(
@@ -39,9 +40,10 @@ class TestFreshSession:
     def test_empty_buffer(self):
         buffer = ActionBuffer(max_size=2000)
         report = calculate_efficiency([], buffer)
+        theme = get_theme()
         assert report.score == 100
-        assert report.status == "healthy"
-        assert report.recommendation == "Session is healthy"
+        assert report.status == theme.level_0  # Best status (e.g., "productive")
+        assert report.recommendation == f"Session is {theme.level_0}"
         assert report.penalty_context == 0.0
         assert report.penalty_cache == 0.0
         assert report.penalty_pacing == 0.0
@@ -60,8 +62,9 @@ class TestFreshSession:
                 timestamp=now - timedelta(minutes=4 - i),
             ))
         report = calculate_efficiency([], buffer)
+        theme = get_theme()
         assert report.score >= 90, f"Expected >=90, got {report.score}"
-        assert report.status == "healthy"
+        assert report.status == theme.level_0  # Best status
 
 
 class TestHighBurn:
@@ -189,9 +192,10 @@ class TestReportFields:
     """Verify to_dict() keys match the new EfficiencyReport."""
 
     def test_to_dict_keys(self):
+        theme = get_theme()
         report = EfficiencyReport(
             score=72,
-            status="degraded",
+            status=theme.level_1,  # Degraded equivalent
             recommendation="Session efficiency declining — consider wrapping up soon",
             context_usage_pct=55.0,
             token_burn_rate=12000.0,
@@ -221,6 +225,6 @@ class TestReportFields:
         }
         assert set(d.keys()) == expected_keys
         assert d["score"] == 72
-        assert d["status"] == "degraded"
+        assert d["status"] == theme.level_1  # Degraded equivalent
         assert d["cache_hit_rate"] == 0.65
         assert d["penalty_context"] == 0.0

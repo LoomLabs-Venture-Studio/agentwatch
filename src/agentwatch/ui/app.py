@@ -10,6 +10,7 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 
+from agentwatch.themes import get_theme
 from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
 if TYPE_CHECKING:
@@ -19,24 +20,25 @@ if TYPE_CHECKING:
 
 class HealthBar(Static):
     """Widget showing overall health as a progress bar."""
-    
+
     score = reactive(100)
-    status = reactive("healthy")
-    
+    status = reactive("")
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Initialize status with theme's best status
+        self.status = get_theme().level_0
+
     def render(self) -> str:
         # Create a simple ASCII progress bar
         filled = int(self.score / 5)  # 20 chars total
         bar = "█" * filled + "░" * (20 - filled)
-        
-        status_emoji = {
-            "healthy": "✅",
-            "degraded": "⚠️",
-            "warning": "🟠",
-            "critical": "🔴",
-        }
-        
+
+        theme = get_theme()
+        emoji = theme.emoji_for(self.status)
+
         return f"""
-  {status_emoji.get(self.status, '❓')} Overall Health: [{bar}] {self.score}%
+  {emoji} Overall Health: [{bar}] {self.score}%
   Status: {self.status.upper()}
 """
 
@@ -69,7 +71,8 @@ class EfficiencyBar(Static):
     """Widget showing session efficiency as a progress bar with category breakdown."""
 
     def __init__(self, **kwargs):
-        super().__init__("  Efficiency: [████████████████████] 100%  Status: EFFICIENT\n  Session is healthy", **kwargs)
+        theme = get_theme()
+        super().__init__(f"  Efficiency: [████████████████████] 100%  Status: {theme.level_0.upper()}\n  Session is {theme.level_0}", **kwargs)
         self._report: EfficiencyReport | None = None
 
     def update_efficiency(self, report: "EfficiencyReport") -> None:
@@ -84,14 +87,8 @@ class EfficiencyBar(Static):
         filled = int(r.score / 5)  # 20 chars total
         bar = "█" * filled + "░" * (20 - filled)
 
-        status_emoji = {
-            "healthy": "✅",
-            "degraded": "⚠️",
-            "warning": "🟠",
-            "critical": "🔴",
-        }
-
-        emoji = status_emoji.get(r.status, "❓")
+        theme = get_theme()
+        emoji = theme.emoji_for(r.status)
         lines: list[str] = []
         lines.append(
             f"  {emoji} Efficiency: [{bar}] {r.score}%  "

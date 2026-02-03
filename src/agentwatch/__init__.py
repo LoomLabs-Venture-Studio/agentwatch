@@ -41,6 +41,13 @@ from agentwatch.parser import (
     find_latest_session,
     parse_file,
 )
+from agentwatch.themes import (
+    StatusTheme,
+    get_theme,
+    set_theme,
+    list_themes,
+    THEMES,
+)
 
 __all__ = [
     # Version
@@ -64,4 +71,10 @@ __all__ = [
     "HealthReport",
     "calculate_health",
     "calculate_security_score",
+    # Themes
+    "StatusTheme",
+    "get_theme",
+    "set_theme",
+    "list_themes",
+    "THEMES",
 ]

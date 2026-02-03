@@ -16,6 +16,7 @@ from agentwatch.discovery import AgentProcess, find_running_agents
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.health import calculate_efficiency, calculate_health, calculate_security_score
 from agentwatch.health.rot import RotScorer
+from agentwatch.themes import get_theme
 from agentwatch.ui.app import EfficiencyBar, HealthBar, SecurityStatus, WarningsList, StatsPanel
 from agentwatch.ui.rot_widget import ContextHealthWidget
 
@@ -41,7 +42,7 @@ class AgentItem(ListItem):
         self.project_name = project_name
         self.pid = pid
         self.health_score = 100
-        self.status = "healthy"
+        self.status = get_theme().level_0  # Theme-aware default status
         self.cpu_percent: float = 0.0
         self.memory_mb: float = 0.0
         self.process_status: str = "active"  # "active" or "stopped"
@@ -69,17 +70,13 @@ class AgentItem(ListItem):
             health_text += f"  CPU:{self.cpu_percent:.1f}% MEM:{self.memory_mb:.0f}MB"
         label.update(health_text)
 
-        # Color based on status
+        # Color based on status (theme-aware)
         if self.process_status == "stopped":
             self.styles.color = "grey"
-        elif status == "healthy":
-            self.styles.color = "green"
-        elif status == "degraded":
-            self.styles.color = "yellow"
-        elif status == "warning":
-            self.styles.color = "orange"
         else:
-            self.styles.color = "red"
+            theme = get_theme()
+            color = theme.color_for(status)
+            self.styles.color = color
 
     def update_process_info(self, proc: AgentProcess) -> None:
         """Update live process metrics."""

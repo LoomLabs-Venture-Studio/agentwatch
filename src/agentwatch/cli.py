@@ -12,6 +12,7 @@ from agentwatch.detectors import create_registry
 from agentwatch.discovery import AgentProcess, find_running_agents
 from agentwatch.health import calculate_health, calculate_security_score
 from agentwatch.parser import ActionBuffer, find_latest_session, parse_file, find_log_files
+from agentwatch.themes import get_theme, set_theme, list_themes
 
 
 def print_health_report(report, security_mode: bool = False) -> None:
@@ -24,19 +25,15 @@ def print_health_report(report, security_mode: bool = False) -> None:
         click.echo("  HEALTH REPORT")
     click.echo("═" * 50)
     click.echo()
-    
-    # Overall score
-    status_color = {
-        "healthy": "green",
-        "degraded": "yellow",
-        "warning": "bright_yellow",
-        "critical": "red",
-    }
+
+    # Overall score - use theme-aware colors
+    theme = get_theme()
+    status_color = theme.color_for(report.status)
     click.echo(
         f"  Overall:   {report.emoji} "
         + click.style(
             f"{report.status.upper()} ({report.overall_score}%)",
-            fg=status_color[report.status],
+            fg=status_color,
             bold=True,
         )
     )
@@ -113,9 +110,15 @@ def print_security_alert(warnings) -> None:
 
 @click.group()
 @click.version_option(version="0.2.0")
-def cli():
+@click.option(
+    "--theme", "-t",
+    type=click.Choice(list_themes()),
+    default="agent",
+    help="Status label theme (default: agent)",
+)
+def cli(theme: str):
     """AgentWatch - Health and security monitoring for AI agents."""
-    pass
+    set_theme(theme)
 
 
 @cli.command()
@@ -170,12 +173,15 @@ def check(log: Path | None, security: bool, json_output: bool):
         if security and report.security_warnings:
             print_security_alert(report.security_warnings)
     
-    # Exit code based on status
-    if report.status == "critical":
+    # Exit code based on score thresholds (theme-independent)
+    # < 40 = level_3 (critical/stuck) -> exit 2
+    # < 60 = level_2 (warning/spinning) -> exit 1
+    # >= 60 = level_0/level_1 (healthy/productive or degraded/struggling) -> exit 0
+    if report.overall_score < 40:
         sys.exit(2)
-    elif report.status == "warning":
+    elif report.overall_score < 60:
         sys.exit(1)
-    sys.exit(0)  # healthy and degraded
+    sys.exit(0)
 
 
 @cli.command()
@@ -402,6 +408,26 @@ def security_scan(log: Path | None, json_output: bool):
     elif security_score < 100:
         sys.exit(1)
     sys.exit(0)
+
+
+@cli.command()
+def themes():
+    """List all available status themes."""
+    from agentwatch.themes import THEMES
+
+    click.echo()
+    click.echo("Available Status Themes:")
+    click.echo("=" * 60)
+    click.echo()
+
+    for name, theme in THEMES.items():
+        is_default = " (default)" if name == "agent" else ""
+        click.echo(click.style(f"  {name}{is_default}", bold=True))
+        click.echo(f"    {theme.emoji_0} {theme.level_0} → {theme.emoji_1} {theme.level_1} → {theme.emoji_2} {theme.level_2} → {theme.emoji_3} {theme.level_3}")
+        click.echo()
+
+    click.echo("Use --theme <name> to select a theme.")
+    click.echo()
 
 
 def main():

@@ -10,32 +10,34 @@ if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
 
 from agentwatch.detectors.base import Category, Severity
+from agentwatch.themes import (
+    get_theme,
+    status_from_score as _theme_status_from_score,
+    get_status_emojis,
+    get_status_labels,
+)
 
 
 # ---------------------------------------------------------------------------
 # Unified status thresholds — shared by health, efficiency, and rot display
 # ---------------------------------------------------------------------------
 
-STATUS_THRESHOLDS = (80, 60, 40)  # healthy / degraded / warning / critical
-STATUS_LABELS = ("healthy", "degraded", "warning", "critical")
+STATUS_THRESHOLDS = (80, 60, 40)  # level_0 / level_1 / level_2 / level_3
 
-_STATUS_EMOJI: dict[str, str] = {
-    "healthy": "✅",
-    "degraded": "⚠️",
-    "warning": "🟠",
-    "critical": "🔴",
-}
+
+def STATUS_LABELS() -> tuple[str, str, str, str]:
+    """Get status labels from current theme."""
+    return get_status_labels()
+
+
+def _STATUS_EMOJI() -> dict[str, str]:
+    """Get status emojis from current theme."""
+    return get_status_emojis()
 
 
 def _score_to_status(score: int) -> str:
-    """Map a 0-100 score to a unified status label."""
-    if score >= 80:
-        return "healthy"
-    elif score >= 60:
-        return "degraded"
-    elif score >= 40:
-        return "warning"
-    return "critical"
+    """Map a 0-100 score to a unified status label using current theme."""
+    return _theme_status_from_score(float(score))
 
 
 @dataclass
@@ -52,7 +54,7 @@ class CategoryScore:
 
     @property
     def emoji(self) -> str:
-        return _STATUS_EMOJI[self.status]
+        return _STATUS_EMOJI().get(self.status, "❓")
 
 
 @dataclass
@@ -69,7 +71,7 @@ class HealthReport:
 
     @property
     def emoji(self) -> str:
-        return _STATUS_EMOJI[self.status]
+        return _STATUS_EMOJI().get(self.status, "❓")
     
     @property
     def health_warnings(self) -> list["Warning"]:
@@ -226,7 +228,7 @@ class EfficiencyReport:
     """Session efficiency report based on pure operational resource metrics."""
 
     score: int  # 0-100
-    status: str  # "healthy", "degraded", "warning", "critical"
+    status: str  # theme-dependent status label
     recommendation: str
     context_usage_pct: float  # 0-100
     token_burn_rate: float  # tokens/min
@@ -374,13 +376,14 @@ def calculate_efficiency(
 
     status = _score_to_status(score)
 
-    # Recommendation
+    # Recommendation using theme labels
+    theme = get_theme()
     if score >= 80:
-        recommendation = "Session is healthy"
+        recommendation = f"Session is {theme.level_0}"
     elif score >= 60:
         recommendation = "Session efficiency declining — consider wrapping up soon"
     elif score >= 40:
-        recommendation = "Session is degraded — start planning a fresh session"
+        recommendation = f"Session is {theme.level_1} — start planning a fresh session"
     else:
         recommendation = "Consider starting a fresh session"
 

@@ -17,6 +17,7 @@ from agentwatch.detectors.health.progress import compute_progress
 from agentwatch.detectors.health.repetition import compute_repetition
 from agentwatch.detectors.health.tool_thrash import compute_tool_thrash
 from agentwatch.parser.models import MetricResult
+from agentwatch.themes import get_theme
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -38,10 +39,32 @@ W_CONSTRAINT = 0.10
 # ---------------------------------------------------------------------------
 
 class RotState(Enum):
-    HEALTHY = "healthy"
-    DEGRADED = "degraded"
-    WARNING = "warning"
-    CRITICAL = "critical"
+    """Rot state levels (best to worst).
+
+    The .value is an internal identifier. Use .label for theme-aware display.
+    """
+    LEVEL_0 = "level_0"  # Best (productive/healthy)
+    LEVEL_1 = "level_1"  # Degraded (struggling)
+    LEVEL_2 = "level_2"  # Warning (spinning)
+    LEVEL_3 = "level_3"  # Critical (stuck)
+
+    # Aliases for backward compatibility
+    HEALTHY = "level_0"
+    DEGRADED = "level_1"
+    WARNING = "level_2"
+    CRITICAL = "level_3"
+
+    @property
+    def label(self) -> str:
+        """Get the theme-aware display label for this state."""
+        theme = get_theme()
+        mapping = {
+            "level_0": theme.level_0,
+            "level_1": theme.level_1,
+            "level_2": theme.level_2,
+            "level_3": theme.level_3,
+        }
+        return mapping.get(self.value, self.value)
 
 
 @dataclass
@@ -58,7 +81,7 @@ class RotReport:
         return {
             "raw_score": round(self.raw_score, 4),
             "smoothed_score": round(self.smoothed_score, 4),
-            "state": self.state.value,
+            "state": self.state.label,  # Use theme-aware label
             "modules": {k: v.to_dict() for k, v in self.modules.items()},
             "top_reasons": self.top_reasons,
         }
@@ -83,11 +106,11 @@ class RotScorer:
     ):
         self._alpha = alpha
         self._smoothed: float | None = None
-        self._state = RotState.HEALTHY
+        self._state = RotState.LEVEL_0
         self._consecutive_above: dict[str, int] = {
-            "degraded": 0,  # turns >= 0.20
-            "warning": 0,   # turns >= 0.40
-            "critical": 0,  # turns >= 0.60
+            "level_1": 0,  # turns >= 0.20 (degraded)
+            "level_2": 0,  # turns >= 0.40 (warning)
+            "level_3": 0,  # turns >= 0.60 (critical)
         }
 
         # Constraint config
@@ -172,37 +195,37 @@ class RotScorer:
         thrash_val: float,
     ) -> None:
         # Track consecutive turns above thresholds.
-        # Thresholds on 0-1 smoothed_score (0=healthy, 1=degraded) are
+        # Thresholds on 0-1 smoothed_score (0=level_0, 1=level_3) are
         # derived from unified display breakpoints 80/60/40:
-        #   healthy  → display>=80 → smoothed<0.20
-        #   degraded → display>=60 → smoothed<0.40
-        #   warning  → display>=40 → smoothed<0.60
-        #   critical → display<40  → smoothed>=0.60
+        #   level_0 (productive) → display>=80 → smoothed<0.20
+        #   level_1 (struggling) → display>=60 → smoothed<0.40
+        #   level_2 (spinning)   → display>=40 → smoothed<0.60
+        #   level_3 (stuck)      → display<40  → smoothed>=0.60
         if smoothed >= 0.60:
-            self._consecutive_above["critical"] += 1
+            self._consecutive_above["level_3"] += 1
         else:
-            self._consecutive_above["critical"] = 0
+            self._consecutive_above["level_3"] = 0
 
         if smoothed >= 0.40:
-            self._consecutive_above["warning"] += 1
+            self._consecutive_above["level_2"] += 1
         else:
-            self._consecutive_above["warning"] = 0
+            self._consecutive_above["level_2"] = 0
 
         if smoothed >= 0.20:
-            self._consecutive_above["degraded"] += 1
+            self._consecutive_above["level_1"] += 1
         else:
-            self._consecutive_above["degraded"] = 0
+            self._consecutive_above["level_1"] = 0
 
         # Determine state (highest matching wins)
-        # Critical: >=0.60 for 2 turns OR (constraint >=0.7 AND stall >=0.7)
+        # level_3: >=0.60 for 2 turns OR (constraint >=0.7 AND stall >=0.7)
         if (
-            self._consecutive_above["critical"] >= 2
+            self._consecutive_above["level_3"] >= 2
             or (constraint_val >= 0.7 and thrash_val >= 0.7)
         ):
-            self._state = RotState.CRITICAL
-        elif self._consecutive_above["warning"] >= 3:
-            self._state = RotState.WARNING
-        elif self._consecutive_above["degraded"] >= 2:
-            self._state = RotState.DEGRADED
+            self._state = RotState.LEVEL_3
+        elif self._consecutive_above["level_2"] >= 3:
+            self._state = RotState.LEVEL_2
+        elif self._consecutive_above["level_1"] >= 2:
+            self._state = RotState.LEVEL_1
         else:
-            self._state = RotState.HEALTHY
+            self._state = RotState.LEVEL_0
