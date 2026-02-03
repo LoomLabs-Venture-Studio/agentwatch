@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
-from agentwatch.detectors.health._window import scaled_turn_window
+from agentwatch.detectors.health._window import scaled_turn_window, session_maturity_factor
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -94,6 +94,11 @@ def compute_progress(buffer: "ActionBuffer", n_turns: int | None = None) -> Metr
     churn_result = MetricResult(name="file_churn", value=churn_score, evidence=churn_ev)
 
     combined = 0.55 * diff_score + 0.45 * churn_score
+
+    # Scale by session maturity to avoid penalizing early conversation
+    maturity = session_maturity_factor(turns)
+    combined = combined * maturity
+
     evidence = diff_ev + churn_ev
 
     return MetricResult(

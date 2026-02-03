@@ -432,37 +432,47 @@ def detect_log_format(first_entry: dict) -> str:
     return "unknown"
 
 
-def parse_file(path: Path) -> Iterator[Action]:
-    """Parse a JSONL log file, auto-detecting format."""
+def parse_file(path: Path, session_id: str | None = None) -> Iterator[Action]:
+    """Parse a JSONL log file, auto-detecting format.
+
+    Args:
+        path: Path to the JSONL log file.
+        session_id: Optional session ID to filter by. When provided, only actions
+            from this exact session are yielded (prevents log bleeding between sessions).
+    """
     log_format = None
-    
+
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            
+
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            
+
             # Detect format on first valid entry (skip metadata-only entries)
             if log_format is None or log_format == "skip":
                 log_format = detect_log_format(entry)
                 if log_format == "skip":
                     continue
-            
+
             # Parse based on format
             if log_format == "moltbot":
                 result = parse_moltbot_entry(entry)
             else:
                 result = parse_claude_code_entry(entry)
 
+            # Yield results, optionally filtering by session_id
             if isinstance(result, list):
-                yield from result
+                for action in result:
+                    if session_id is None or action.session_id == session_id:
+                        yield action
             elif result:
-                yield result
+                if session_id is None or result.session_id == session_id:
+                    yield result
 
 
 def find_log_files(base_path: Path | None = None) -> list[Path]:

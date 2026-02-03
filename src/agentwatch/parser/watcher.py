@@ -80,9 +80,11 @@ class LogWatcher:
                         entry = json.loads(line_stripped)
                         parsed = self._parse_entry(entry)
                         if self.session_id:
+                            # Strict filtering: only include actions from THIS session
+                            # Excludes actions with no session_id to prevent log bleeding
                             parsed = [
                                 a for a in parsed
-                                if a.session_id is None or a.session_id == self.session_id
+                                if a.session_id == self.session_id
                             ]
                         actions.extend(parsed)
                         # Only update position if we successfully processed the line

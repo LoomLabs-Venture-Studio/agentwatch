@@ -12,7 +12,7 @@ import re
 from typing import TYPE_CHECKING
 
 from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
-from agentwatch.detectors.health._window import scaled_action_window, scaled_turn_window
+from agentwatch.detectors.health._window import scaled_action_window, scaled_turn_window, session_maturity_factor
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -131,6 +131,12 @@ def compute_tool_thrash(buffer: "ActionBuffer") -> MetricResult:
     tool_score, tool_ev = _repeated_tool_calls(buffer, window=window)
     err_score, err_ev = _repeated_errors(buffer, window=window)
     stall_score, stall_ev = _turns_since_progress(buffer)
+
+    # Scale stall penalty by session maturity to avoid penalizing early conversation.
+    # Tool/error repeats are real problems and stay at full strength.
+    turns = turns_from_buffer(buffer)
+    maturity = session_maturity_factor(turns)
+    stall_score = stall_score * maturity
 
     tool_result = MetricResult(name="repeated_tool_calls", value=round(tool_score, 4), evidence=tool_ev)
     err_result = MetricResult(name="repeated_errors", value=round(err_score, 4), evidence=err_ev)

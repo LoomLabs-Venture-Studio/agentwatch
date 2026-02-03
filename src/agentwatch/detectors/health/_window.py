@@ -37,3 +37,38 @@ def scaled_turn_window(turn_count: int, base: int = 8, fraction: float = 0.20, c
     For a 150+ turn session this returns 30 (the cap).
     """
     return max(base, min(cap, int(turn_count * fraction)))
+
+
+def session_maturity_factor(
+    turns: list,
+    ramp_turns: int = 10,
+    exploration_threshold: int = 3,
+) -> float:
+    """Return a 0.0-1.0 scaling factor for progress-based penalties.
+
+    Immediately returns 1.0 (full penalties) if:
+    - Any turn has a file edit (coding has started)
+    - OR 3+ turns have code exploration (Read/Search) without edits
+      (agent is exploring but not delivering)
+
+    Otherwise returns a gradual ramp from 0.0 to 1.0 over ``ramp_turns``,
+    allowing early conversation without penalizing lack of edits.
+
+    This prevents casual greetings like "sup" from tanking health scores
+    while still catching agents that explore code but never produce edits.
+    """
+    if not turns:
+        return 0.0
+
+    # Coding activity detected → full penalties immediately
+    if any(t.has_edit for t in turns):
+        return 1.0
+
+    # Code exploration (Read/Search) without edits →
+    # after threshold turns, expect coding to start
+    exploration_turns = sum(1 for t in turns if t.has_code_exploration)
+    if exploration_turns >= exploration_threshold:
+        return 1.0
+
+    # Pure conversation → gradual ramp
+    return min(len(turns) / ramp_turns, 1.0)

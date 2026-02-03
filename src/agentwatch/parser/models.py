@@ -231,6 +231,14 @@ class Turn:
         return any(a.is_bash and a.success for a in self.actions)
 
     @property
+    def has_code_exploration(self) -> bool:
+        """True if turn contains Read or Search actions (code exploration)."""
+        return any(
+            a.tool_type in (ToolType.READ, ToolType.SEARCH)
+            for a in self.actions
+        )
+
+    @property
     def edited_files(self) -> set[str]:
         return {a.file_path for a in self.actions if a.is_file_edit and a.file_path}
 

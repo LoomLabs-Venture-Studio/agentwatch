@@ -121,6 +121,25 @@ Deterministic rot detection tracks five metric families:
 
 The rot score uses EMA smoothing and a state machine that requires sustained degradation before escalating status.
 
+#### Session Maturity Scaling
+
+Progress-based metrics (edit deficit, stall detection) use **session maturity scaling** to avoid penalizing early conversation. This prevents casual greetings or questions from immediately tanking the health score.
+
+Maturity reaches 1.0 (full penalties) when:
+- Any file edit occurs (coding has started), OR
+- 3+ turns of code exploration (Read/Search) without edits (agent should be coding by now)
+
+Otherwise, penalties ramp gradually from 0.0 to 1.0 over the first 10 turns.
+
+| Session Pattern | Maturity | Effect |
+|-----------------|----------|--------|
+| Greeting + quick question | 0.2 | Progress penalties reduced 80% |
+| 3+ turns reading code, no edits | 1.0 | Full penalties (stalling) |
+| First edit on turn 1 | 1.0 | Full penalties (coding mode) |
+| 10+ turns of pure chat | 1.0 | Full penalties (ramped up) |
+
+This scaling only affects progress/stall metrics. Behavioral signals (repetition, error loops, thrashing) always apply at full strength since they indicate real context degradation regardless of session phase.
+
 ## Health Detectors
 
 | Detector | What It Catches |

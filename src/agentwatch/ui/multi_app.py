@@ -345,6 +345,25 @@ class MultiAgentWatchApp(App):
             buffer.stats.duration_minutes,
         )
 
+        # Update sidebar status for all OTHER agents (selected one already done above)
+        for path, data in self.agents.items():
+            if path == self.selected_path:
+                continue
+            other_warnings = data["registry"].check_all(data["buffer"])
+            other_eff = calculate_efficiency(other_warnings, data["buffer"])
+            other_rot_value: float | None = None
+            other_rot_scorer = data.get("rot_scorer")
+            if other_rot_scorer:
+                other_rot_report = other_rot_scorer.update(data["buffer"])
+                other_rot_value = other_rot_report.smoothed_score
+            other_report = calculate_health(
+                other_warnings,
+                include_security=self.security_mode,
+                efficiency_score=other_eff.score,
+                rot_score=other_rot_value,
+            )
+            data["item"].update_status(other_report.overall_score, other_report.status)
+
     def _refresh_processes(self) -> None:
         """Periodically re-scan running processes and update agent list."""
         if not self._process_mode:
@@ -375,14 +394,6 @@ class MultiAgentWatchApp(App):
                     "rot_scorer": RotScorer(),
                 }
                 agent_list.append(item)
-
-                # Start watching the new file
-                if proc.log_file not in self.watcher._active_files:
-                    from agentwatch.parser.watcher import LogWatcher as _LogWatcher
-
-                    self.watcher._active_files.add(proc.log_file)
-                    log_watcher = _LogWatcher(proc.log_file, session_id=proc.session_id)
-                    self.watcher.watchers[proc.log_file] = log_watcher
 
         # Update process info on existing items
         for log_path, agent_data in self.agents.items():

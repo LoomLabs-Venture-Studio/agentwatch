@@ -315,16 +315,24 @@ def calculate_efficiency(
     pressure_penalty = _clamp01(context_usage_pct / 100.0)
 
     # --- 2. Token burn rate (0 at ≤5k tok/min, 1.0 at ≥30k) ---
+    # Skip penalty for very short sessions where rate naturally spikes
     burn_rate = full_throughput / duration if duration > 0 else 0.0
-    burn_penalty = _clamp01((burn_rate - 5_000) / (30_000 - 5_000))
+    if duration >= 2.0:
+        burn_penalty = _clamp01((burn_rate - 5_000) / (30_000 - 5_000))
+    else:
+        burn_penalty = 0.0
 
     # --- 3. I/O ratio (0 at ratio≤8, 1.0 at ratio≥20) ---
+    # Skip penalty for very short sessions where ratio hasn't stabilized
     io_ratio = (
         full_input / stats.total_output_tokens
         if stats.total_output_tokens > 0
         else 0.0
     )
-    io_penalty = _clamp01((io_ratio - 8.0) / (20.0 - 8.0))
+    if duration >= 2.0:
+        io_penalty = _clamp01((io_ratio - 8.0) / (20.0 - 8.0))
+    else:
+        io_penalty = 0.0
 
     # --- 4. Cost velocity (0 at ≤$0.05/min, 1.0 at ≥$0.30/min) ---
     cost_total = stats.estimated_cost
