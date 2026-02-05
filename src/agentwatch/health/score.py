@@ -405,6 +405,123 @@ def calculate_efficiency(
     )
 
 
+@dataclass
+class TeamHealthReport:
+    """Aggregate health report for a team of agents."""
+
+    team_id: int
+    team_name: str
+    overall_score: int  # 0-100 weighted average of members
+    member_scores: dict[int, int]  # pid -> score
+    member_count: int
+    subagent_count: int
+    cross_agent_warnings: list["Warning"]  # team-level patterns
+
+    @property
+    def status(self) -> str:
+        return _score_to_status(self.overall_score)
+
+    def to_dict(self) -> dict:
+        return {
+            "team_id": self.team_id,
+            "team_name": self.team_name,
+            "overall_score": self.overall_score,
+            "status": self.status,
+            "member_scores": self.member_scores,
+            "member_count": self.member_count,
+            "subagent_count": self.subagent_count,
+            "cross_agent_warnings": [w.to_dict() for w in self.cross_agent_warnings],
+        }
+
+
+def calculate_team_health(
+    member_reports: dict[int, HealthReport],
+    root_pid: int,
+    team_name: str = "",
+) -> TeamHealthReport:
+    """Calculate aggregate health for a team of agents.
+
+    The root agent's score is weighted more heavily (50%), while
+    sub-agents split the remaining 50% equally.  If multiple sub-agents
+    are struggling, a cross-agent warning is emitted.
+    """
+    from agentwatch.detectors.base import Warning as Warn, Category, Severity
+
+    if not member_reports:
+        return TeamHealthReport(
+            team_id=root_pid,
+            team_name=team_name,
+            overall_score=100,
+            member_scores={},
+            member_count=0,
+            subagent_count=0,
+            cross_agent_warnings=[],
+        )
+
+    member_scores: dict[int, int] = {
+        pid: r.overall_score for pid, r in member_reports.items()
+    }
+    subagent_pids = [pid for pid in member_reports if pid != root_pid]
+
+    # Weighted average: root gets 50%, subagents split 50%
+    root_score = member_scores.get(root_pid, 100)
+    if subagent_pids:
+        sub_avg = sum(member_scores[p] for p in subagent_pids) / len(subagent_pids)
+        overall = int(root_score * 0.5 + sub_avg * 0.5)
+    else:
+        overall = root_score
+
+    overall = max(0, min(100, overall))
+
+    # Cross-agent pattern detection
+    cross_warnings: list[Warn] = []
+
+    # Pattern: majority of sub-agents struggling
+    if len(subagent_pids) >= 2:
+        struggling = sum(1 for p in subagent_pids if member_scores[p] < 60)
+        if struggling >= len(subagent_pids) * 0.5:
+            cross_warnings.append(
+                Warn(
+                    category=Category.PROGRESS,
+                    severity=Severity.HIGH,
+                    signal="team_cascade_failure",
+                    message=f"{struggling}/{len(subagent_pids)} sub-agents are struggling",
+                    suggestion="Root agent may be issuing unclear instructions or an impossible task",
+                    details={"struggling_count": struggling, "total_subagents": len(subagent_pids)},
+                )
+            )
+
+    # Pattern: root healthy but sub-agents failing
+    if root_score >= 80 and subagent_pids:
+        sub_critical = sum(1 for p in subagent_pids if member_scores[p] < 40)
+        if sub_critical > 0:
+            cross_warnings.append(
+                Warn(
+                    category=Category.PROGRESS,
+                    severity=Severity.MEDIUM,
+                    signal="subagent_distress",
+                    message=f"{sub_critical} sub-agent(s) in critical state while root is healthy",
+                    suggestion="Review sub-agent task assignments for feasibility",
+                    details={"critical_subagents": sub_critical},
+                )
+            )
+
+    # Apply cross-agent penalty
+    if cross_warnings:
+        penalty = sum(w.severity.score_impact for w in cross_warnings)
+        overall = max(0, overall - penalty)
+
+    return TeamHealthReport(
+        team_id=root_pid,
+        team_name=team_name,
+        overall_score=overall,
+        member_scores=member_scores,
+        member_count=len(member_reports),
+        subagent_count=len(subagent_pids),
+        cross_agent_warnings=cross_warnings,
+    )
+
+
 def calculate_security_score(warnings: list["Warning"]) -> int:
     """
     Calculate a security-specific score.

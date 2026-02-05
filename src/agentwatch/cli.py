@@ -9,7 +9,7 @@ from pathlib import Path
 import click
 
 from agentwatch.detectors import create_registry
-from agentwatch.discovery import AgentProcess, find_running_agents
+from agentwatch.discovery import AgentProcess, AgentTeam, find_running_agents, build_agent_tree, build_teams
 from agentwatch.health import calculate_health, calculate_security_score
 from agentwatch.parser import ActionBuffer, find_latest_session, parse_file, find_log_files
 from agentwatch.themes import get_theme, set_theme, list_themes
@@ -217,25 +217,70 @@ def watch(log: Path | None, security: bool):
     is_flag=True,
     help="Output as JSON for scripting",
 )
-def ps(json_output: bool):
+@click.option(
+    "--flat",
+    is_flag=True,
+    help="Flat list without tree hierarchy",
+)
+@click.option(
+    "--teams",
+    is_flag=True,
+    help="Group agents by team",
+)
+def ps(json_output: bool, flat: bool, teams: bool):
     """Discover and list running AI agent processes."""
     agents = find_running_agents()
 
     if json_output:
-        output = []
-        for a in agents:
-            output.append({
-                "pid": a.pid,
-                "agent_type": a.agent_type,
-                "project": a.project_name,
-                "working_directory": str(a.working_directory),
-                "log_file": str(a.log_file) if a.log_file else None,
-                "session_id": a.session_id,
-                "cpu_percent": a.cpu_percent,
-                "memory_mb": round(a.memory_mb, 1),
-                "uptime": a.uptime,
-            })
-        click.echo(json.dumps(output, indent=2))
+        if teams:
+            team_list = build_teams(agents)
+            output = []
+            for t in team_list:
+                output.append({
+                    "team_id": t.team_id,
+                    "team_name": t.name,
+                    "member_count": t.member_count,
+                    "subagent_count": t.subagent_count,
+                    "max_depth": t.max_depth,
+                    "members": [
+                        {
+                            "pid": a.pid,
+                            "parent_pid": a.parent_pid,
+                            "parent_agent_pid": a.parent_agent_pid,
+                            "depth": a.depth,
+                            "team_id": a.team_id,
+                            "agent_type": a.agent_type,
+                            "project": a.project_name,
+                            "working_directory": str(a.working_directory),
+                            "log_file": str(a.log_file) if a.log_file else None,
+                            "session_id": a.session_id,
+                            "cpu_percent": a.cpu_percent,
+                            "memory_mb": round(a.memory_mb, 1),
+                            "uptime": a.uptime,
+                        }
+                        for a in t.members
+                    ],
+                })
+            click.echo(json.dumps(output, indent=2))
+        else:
+            output = []
+            for a in agents:
+                output.append({
+                    "pid": a.pid,
+                    "parent_pid": a.parent_pid,
+                    "parent_agent_pid": a.parent_agent_pid,
+                    "depth": a.depth,
+                    "team_id": a.team_id,
+                    "agent_type": a.agent_type,
+                    "project": a.project_name,
+                    "working_directory": str(a.working_directory),
+                    "log_file": str(a.log_file) if a.log_file else None,
+                    "session_id": a.session_id,
+                    "cpu_percent": a.cpu_percent,
+                    "memory_mb": round(a.memory_mb, 1),
+                    "uptime": a.uptime,
+                })
+            click.echo(json.dumps(output, indent=2))
         return
 
     click.echo()
@@ -249,24 +294,102 @@ def ps(json_output: bool):
         click.echo()
         return
 
+    if teams:
+        _print_teams_view(agents)
+    else:
+        _print_agents_view(agents, flat)
+
+
+def _print_agents_view(agents: list[AgentProcess], flat: bool) -> None:
+    """Print agents in tree or flat view."""
+    display_agents = agents if flat else build_agent_tree(agents)
+
     # Table header
     click.echo(
         f"  {'PID':<8}{'TYPE':<14}{'PROJECT':<22}{'CPU':>6}{'MEM':>8}{'STATUS':>10}"
     )
 
-    for a in agents:
+    for a in display_agents:
+        if flat or a.depth == 0:
+            prefix = ""
+        else:
+            prefix = "  " * a.depth + "\\-- "
+
         project = a.project_name
-        if len(project) > 20:
-            project = project[:17] + "..."
+        max_proj_len = max(20 - len(prefix), 6)
+        if len(project) > max_proj_len:
+            project = project[: max_proj_len - 3] + "..."
+
         cpu_str = f"{a.cpu_percent:.1f}%"
         mem_str = f"{a.memory_mb:.0f}MB"
-        status = click.style("active", fg="green")
+
+        if a.depth > 0 and not flat:
+            status = click.style("sub", fg="cyan")
+        else:
+            status = click.style("active", fg="green")
+
+        proj_col = f"{prefix}{project}"
         click.echo(
-            f"  {a.pid:<8}{a.agent_type:<14}{project:<22}{cpu_str:>6}{mem_str:>8}   {status}"
+            f"  {a.pid:<8}{a.agent_type:<14}{proj_col:<22}{cpu_str:>6}{mem_str:>8}   {status}"
         )
 
     click.echo()
-    click.echo(f"  {len(agents)} active agent(s) found.")
+    root_count = sum(1 for a in agents if a.depth == 0)
+    sub_count = sum(1 for a in agents if a.depth > 0)
+    if sub_count > 0:
+        click.echo(f"  {len(agents)} active agent(s) found ({root_count} root, {sub_count} subagent(s)).")
+    else:
+        click.echo(f"  {len(agents)} active agent(s) found.")
+    click.echo()
+
+
+def _print_teams_view(agents: list[AgentProcess]) -> None:
+    """Print agents grouped by team."""
+    team_list = build_teams(agents)
+
+    for team in team_list:
+        # Team header
+        team_label = f"TEAM: {team.name}"
+        if team.subagent_count > 0:
+            team_label += f" ({team.member_count} agents, {team.subagent_count} sub)"
+        click.echo(click.style(f"  {team_label}", fg="yellow", bold=True))
+
+        # Table header
+        click.echo(
+            f"    {'PID':<8}{'TYPE':<14}{'PROJECT':<20}{'CPU':>6}{'MEM':>8}{'ROLE':>8}"
+        )
+
+        for a in team.members:
+            if a.depth == 0:
+                prefix = ""
+                role = click.style("root", fg="green")
+            else:
+                prefix = "  " * a.depth + "├── "
+                role = click.style(f"L{a.depth}", fg="cyan")
+
+            project = a.project_name
+            max_proj_len = max(18 - len(prefix), 6)
+            if len(project) > max_proj_len:
+                project = project[: max_proj_len - 3] + "..."
+
+            cpu_str = f"{a.cpu_percent:.1f}%"
+            mem_str = f"{a.memory_mb:.0f}MB"
+            proj_col = f"{prefix}{project}"
+
+            click.echo(
+                f"    {a.pid:<8}{a.agent_type:<14}{proj_col:<20}{cpu_str:>6}{mem_str:>8}   {role}"
+            )
+
+        click.echo()
+
+    # Summary
+    total_teams = len(team_list)
+    multi_teams = sum(1 for t in team_list if t.subagent_count > 0)
+    click.echo(
+        f"  {len(agents)} agent(s) in {total_teams} team(s)"
+        + (f" ({multi_teams} with sub-agents)" if multi_teams > 0 else "")
+        + "."
+    )
     click.echo()
 
 
@@ -299,7 +422,7 @@ def watch_all(security: bool, all_logs: bool):
         app = MultiAgentWatchApp(watch_paths=watch_paths, security_mode=security)
     else:
         # Process-based discovery
-        agents = find_running_agents()
+        agents = build_agent_tree(find_running_agents())
         if not agents:
             click.echo("No running agent processes found.", err=True)
             click.echo("Use --all-logs to scan all log directories instead.", err=True)

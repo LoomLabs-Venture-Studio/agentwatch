@@ -191,9 +191,20 @@ class MultiLogWatcher:
                 memory_mb=0.0,
                 uptime=old_proc.uptime,
                 command="(stopped)",
+                parent_pid=old_proc.parent_pid,
+                parent_agent_pid=old_proc.parent_agent_pid,
+                depth=old_proc.depth,
+                team_id=old_proc.team_id,
             )
 
         return new_agents
+
+    def get_team_members(self, team_id: int) -> list[AgentProcess]:
+        """Return all process metadata entries belonging to a given team."""
+        return [
+            proc for proc in self._process_meta.values()
+            if proc.team_id == team_id
+        ]
 
     def reap_stopped(self, timeout: float = 60.0) -> list[Path]:
         """Remove processes that have been stopped longer than *timeout* seconds.

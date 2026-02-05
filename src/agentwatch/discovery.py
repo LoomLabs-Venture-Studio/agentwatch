@@ -39,23 +39,60 @@ class AgentProcess:
     memory_mb: float = 0.0
     uptime: str = ""
     command: str = ""
+    parent_pid: int | None = None  # Raw OS PPID from ps
+    parent_agent_pid: int | None = None  # Nearest ancestor that is also a discovered agent
+    depth: int = 0  # Nesting level: 0 = root agent, 1 = subagent, etc.
+    team_id: int | None = None  # PID of the root ancestor (team identifier)
 
     @property
     def project_name(self) -> str:
         """Extract project name from working directory."""
         return self.working_directory.name
 
+    @property
+    def is_root(self) -> bool:
+        return self.depth == 0
+
+    @property
+    def is_subagent(self) -> bool:
+        return self.depth > 0
+
+
+@dataclass
+class AgentTeam:
+    """A group of agents sharing a common root ancestor."""
+
+    team_id: int  # PID of the root agent
+    root: AgentProcess  # The root agent
+    members: list[AgentProcess] = field(default_factory=list)  # All members including root
+
+    @property
+    def name(self) -> str:
+        return f"{self.root.agent_type}:{self.root.project_name}"
+
+    @property
+    def member_count(self) -> int:
+        return len(self.members)
+
+    @property
+    def subagent_count(self) -> int:
+        return sum(1 for m in self.members if m.is_subagent)
+
+    @property
+    def max_depth(self) -> int:
+        return max((m.depth for m in self.members), default=0)
+
 
 def find_running_agents() -> list[AgentProcess]:
     """Discover running AI agent processes on the local machine.
 
-    Uses `ps aux` to find processes matching known agent patterns,
-    then `lsof -a -d cwd -p <PID>` to resolve each process's
-    working directory.
+    Uses ``ps -eo`` to find processes matching known agent patterns
+    (including PPID for subagent detection), then ``lsof`` to resolve
+    each process's working directory.
     """
     try:
         result = subprocess.run(
-            ["ps", "aux"],
+            ["ps", "-eo", "pid,ppid,%cpu,rss,etime,args"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -66,15 +103,29 @@ def find_running_agents() -> list[AgentProcess]:
     if result.returncode != 0:
         return []
 
+    lines = result.stdout.strip().splitlines()[1:]  # skip header
+
+    # First pass: build complete PID -> PPID map for ancestor walking
+    pid_to_ppid: dict[int, int] = {}
+    for line in lines:
+        parts = line.split(None, 5)
+        if len(parts) < 6:
+            continue
+        try:
+            pid_to_ppid[int(parts[0])] = int(parts[1])
+        except ValueError:
+            continue
+
+    # Second pass: find agent processes
     agents: list[AgentProcess] = []
     seen_pids: set[int] = set()
 
-    for line in result.stdout.strip().splitlines()[1:]:  # skip header
-        parts = line.split(None, 10)
-        if len(parts) < 11:
+    for line in lines:
+        parts = line.split(None, 5)
+        if len(parts) < 6:
             continue
 
-        user, pid_str, cpu, mem, vsz, rss, tty, stat, start, time_str, command = parts
+        pid_str, ppid_str, cpu, rss, etime, command = parts
 
         for agent_type, config in AGENT_PATTERNS.items():
             pattern = config["pattern"]
@@ -93,6 +144,11 @@ def find_running_agents() -> list[AgentProcess]:
             if pid in seen_pids:
                 continue
             seen_pids.add(pid)
+
+            try:
+                ppid = int(ppid_str)
+            except ValueError:
+                ppid = None
 
             # Parse memory: RSS is in KB
             try:
@@ -127,12 +183,145 @@ def find_running_agents() -> list[AgentProcess]:
                     session_id=session_id,
                     cpu_percent=cpu_percent,
                     memory_mb=memory_mb,
-                    uptime=time_str,
+                    uptime=etime,
                     command=command,
+                    parent_pid=ppid,
                 )
             )
 
+    # Post-process: resolve parent-child relationships between agents
+    agent_pids = {a.pid for a in agents}
+    for agent in agents:
+        ancestor = _walk_to_ancestor_agent(agent.pid, pid_to_ppid, agent_pids)
+        if ancestor is not None:
+            agent.parent_agent_pid = ancestor
+
+    _compute_depths(agents)
+    _assign_team_ids(agents)
+
     return agents
+
+
+def _walk_to_ancestor_agent(
+    pid: int,
+    pid_to_ppid: dict[int, int],
+    agent_pids: set[int],
+    max_hops: int = 50,
+) -> int | None:
+    """Walk the PPID chain upward from *pid* to find the nearest ancestor agent.
+
+    Traverses through intermediate non-agent processes (shells, node
+    workers, etc.).  Returns the ancestor's PID or ``None`` if no
+    ancestor is a known agent.
+    """
+    current = pid_to_ppid.get(pid)
+    visited: set[int] = {pid}
+    hops = 0
+    while current is not None and current not in visited and hops < max_hops:
+        if current in agent_pids:
+            return current
+        visited.add(current)
+        current = pid_to_ppid.get(current)
+        hops += 1
+    return None
+
+
+def _compute_depths(agents: list[AgentProcess]) -> None:
+    """Set ``depth`` on each agent: 0 for roots, parent.depth + 1 for children."""
+    agent_by_pid: dict[int, AgentProcess] = {a.pid: a for a in agents}
+    resolved: set[int] = set()
+
+    # Mark roots (no parent_agent_pid)
+    for agent in agents:
+        if agent.parent_agent_pid is None:
+            agent.depth = 0
+            resolved.add(agent.pid)
+
+    # Iteratively resolve children
+    changed = True
+    while changed:
+        changed = False
+        for agent in agents:
+            if agent.pid in resolved:
+                continue
+            parent = agent_by_pid.get(agent.parent_agent_pid)  # type: ignore[arg-type]
+            if parent and parent.pid in resolved:
+                agent.depth = parent.depth + 1
+                resolved.add(agent.pid)
+                changed = True
+
+    # Promote any unresolved agents (orphaned subagents) to root
+    for agent in agents:
+        if agent.pid not in resolved:
+            agent.parent_agent_pid = None
+            agent.depth = 0
+
+
+def build_agent_tree(agents: list[AgentProcess]) -> list[AgentProcess]:
+    """Return *agents* sorted in tree-display order.
+
+    Parents appear before their children; siblings are sorted by PID.
+    """
+    by_parent: dict[int | None, list[AgentProcess]] = {}
+    for a in agents:
+        by_parent.setdefault(a.parent_agent_pid, []).append(a)
+
+    for children in by_parent.values():
+        children.sort(key=lambda a: a.pid)
+
+    result: list[AgentProcess] = []
+
+    def _walk(parent_pid: int | None) -> None:
+        for agent in by_parent.get(parent_pid, []):
+            result.append(agent)
+            _walk(agent.pid)
+
+    _walk(None)
+    return result
+
+
+def _assign_team_ids(agents: list[AgentProcess]) -> None:
+    """Set ``team_id`` on each agent to its root ancestor's PID."""
+    agent_by_pid: dict[int, AgentProcess] = {a.pid: a for a in agents}
+
+    for agent in agents:
+        if agent.is_root:
+            agent.team_id = agent.pid
+        else:
+            # Walk up the parent chain to find root
+            current = agent
+            while current.parent_agent_pid is not None:
+                parent = agent_by_pid.get(current.parent_agent_pid)
+                if parent is None:
+                    break
+                current = parent
+            agent.team_id = current.pid
+
+
+def build_teams(agents: list[AgentProcess]) -> list[AgentTeam]:
+    """Group agents into teams by their root ancestor.
+
+    Each tree of agents (root + all descendants) forms one team.
+    Solo agents form single-member teams.
+    """
+    _assign_team_ids(agents)
+
+    teams_by_id: dict[int, AgentTeam] = {}
+    for agent in agents:
+        tid = agent.team_id
+        if tid is None:
+            tid = agent.pid
+        if tid not in teams_by_id:
+            # Find root agent for this team
+            root = next((a for a in agents if a.pid == tid), agent)
+            teams_by_id[tid] = AgentTeam(team_id=tid, root=root, members=[])
+        teams_by_id[tid].members.append(agent)
+
+    # Sort teams by root PID, members within each team by tree order
+    result = sorted(teams_by_id.values(), key=lambda t: t.team_id)
+    for team in result:
+        team.members = build_agent_tree(team.members)
+    return result
 
 
 def _get_process_cwd(pid: int) -> Path | None:

@@ -12,9 +12,14 @@ from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static, ListItem, ListView, Label
 
 from agentwatch.detectors import create_registry
-from agentwatch.discovery import AgentProcess, find_running_agents
+from agentwatch.discovery import AgentProcess, AgentTeam, build_teams, find_running_agents
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
-from agentwatch.health import calculate_efficiency, calculate_health, calculate_security_score
+from agentwatch.health import (
+    calculate_efficiency,
+    calculate_health,
+    calculate_security_score,
+    calculate_team_health,
+)
 from agentwatch.health.rot import RotScorer
 from agentwatch.themes import get_theme
 from agentwatch.ui.app import EfficiencyBar, HealthBar, SecurityStatus, WarningsList, StatsPanel
@@ -23,6 +28,36 @@ from agentwatch.ui.rot_widget import ContextHealthWidget
 if TYPE_CHECKING:
     from agentwatch.parser.models import Action
     from agentwatch.detectors.base import Warning
+
+
+class TeamHeaderItem(ListItem):
+    """A header row in the agent list representing a team of agents."""
+
+    def __init__(self, team: AgentTeam, **kwargs):
+        super().__init__(**kwargs)
+        self.team = team
+        self.team_id = team.team_id
+        self.health_score = 100
+        self.status = get_theme().level_0
+
+    def compose(self) -> ComposeResult:
+        count = self.team.member_count
+        sub = self.team.subagent_count
+        if sub > 0:
+            label_text = f"TEAM {self.team.name} ({count} agents, {sub} sub)"
+        else:
+            label_text = f"TEAM {self.team.name}"
+        yield Label(label_text, id="team-name-label")
+        yield Label(f"Team Health: {self.health_score}%", id="team-health-label")
+
+    def update_status(self, score: int, status: str):
+        self.health_score = score
+        self.status = status
+        label = self.query_one("#team-health-label", Label)
+        label.update(f"Team Health: {score}%")
+        theme = get_theme()
+        self.styles.color = theme.color_for(status)
+        self.styles.text_style = "bold"
 
 
 class AgentItem(ListItem):
@@ -34,6 +69,9 @@ class AgentItem(ListItem):
         agent_type: str | None = None,
         project_name: str | None = None,
         pid: int | None = None,
+        depth: int = 0,
+        parent_agent_pid: int | None = None,
+        team_id: int | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -41,6 +79,9 @@ class AgentItem(ListItem):
         self.agent_type = agent_type
         self.project_name = project_name
         self.pid = pid
+        self.depth = depth
+        self.parent_agent_pid = parent_agent_pid
+        self.team_id = team_id
         self.health_score = 100
         self.status = get_theme().level_0  # Theme-aware default status
         self.cpu_percent: float = 0.0
@@ -49,10 +90,16 @@ class AgentItem(ListItem):
 
     def compose(self) -> ComposeResult:
         if self.agent_type and self.project_name:
+            if self.depth > 0:
+                tree_char = "├── " if self.depth == 1 else "│   " * (self.depth - 1) + "├── "
+                prefix = tree_char
+            else:
+                prefix = ""
             yield Label(
-                f"[{self.agent_type}] {self.project_name}", id="agent-name-label"
+                f"{prefix}[{self.agent_type}] {self.project_name}", id="agent-name-label"
             )
-            pid_text = f"PID {self.pid}" if self.pid else ""
+            indent = "  " * self.depth
+            pid_text = f"{indent}PID {self.pid}" if self.pid else ""
             yield Label(pid_text, id="pid-label")
         else:
             yield Label(f"📄 {self.log_path.name}", id="agent-name-label")
@@ -63,7 +110,8 @@ class AgentItem(ListItem):
         self.health_score = score
         self.status = status
         label = self.query_one("#health-label", Label)
-        health_text = f"Health: {score}%"
+        role = "sub" if self.depth > 0 else "root"
+        health_text = f"Health: {score}% [{role}]"
         if self.process_status == "stopped":
             health_text += " (stopped)"
         if self.cpu_percent > 0 or self.memory_mb > 0:
@@ -73,6 +121,13 @@ class AgentItem(ListItem):
         # Color based on status (theme-aware)
         if self.process_status == "stopped":
             self.styles.color = "grey"
+        elif self.depth > 0:
+            # Sub-agents use cyan tint when healthy, status color when degraded
+            if score >= 80:
+                self.styles.color = "cyan"
+            else:
+                theme = get_theme()
+                self.styles.color = theme.color_for(status)
         else:
             theme = get_theme()
             color = theme.color_for(status)
@@ -167,14 +222,17 @@ class MultiAgentWatchApp(App):
         super().__init__(**kwargs)
         self.watch_paths = watch_paths or []
         self.security_mode = security_mode
-        self.agents: dict[Path, dict] = {}  # path -> {buffer, registry, item}
+        self.agents: dict[Path, dict] = {}  # path -> {buffer, registry, item, pid, team_id}
+        self.teams: dict[int, TeamHeaderItem] = {}  # team_id -> header item
         self._refreshing = False
         self.selected_path: Path | None = None
         self._process_mode = agent_processes is not None
 
         if agent_processes is not None:
+            self._initial_processes = agent_processes
             self.watcher = MultiLogWatcher.from_processes(agent_processes)
         else:
+            self._initial_processes = []
             self.watcher = MultiLogWatcher(self.watch_paths)
     
     def compose(self) -> ComposeResult:
@@ -202,6 +260,16 @@ class MultiAgentWatchApp(App):
         self.title = "AgentWatch - Multi-Agent Dashboard"
         if self.security_mode:
             self.title += " [SECURITY]"
+
+        # Pre-populate team headers if we have initial processes
+        if self._initial_processes:
+            teams = build_teams(self._initial_processes)
+            agent_list = self.query_one("#agent-list", ListView)
+            for team in teams:
+                if team.member_count > 1:
+                    header = TeamHeaderItem(team)
+                    self.teams[team.team_id] = header
+                    agent_list.append(header)
 
         # Start the multi-watcher
         self.run_worker(self._watch_loop())
@@ -232,6 +300,9 @@ class MultiAgentWatchApp(App):
                             agent_type=proc.agent_type,
                             project_name=proc.project_name,
                             pid=proc.pid,
+                            depth=proc.depth,
+                            parent_agent_pid=proc.parent_agent_pid,
+                            team_id=proc.team_id,
                         )
                         item.cpu_percent = proc.cpu_percent
                         item.memory_mb = proc.memory_mb
@@ -243,6 +314,8 @@ class MultiAgentWatchApp(App):
                         "registry": registry,
                         "item": item,
                         "rot_scorer": RotScorer(),
+                        "pid": proc.pid if proc else None,
+                        "team_id": proc.team_id if proc else None,
                     }
 
                     # Add to sidebar
@@ -343,6 +416,11 @@ class MultiAgentWatchApp(App):
         )
 
         # Update sidebar status for all OTHER agents (selected one already done above)
+        # Collect per-agent reports for team scoring
+        all_reports: dict[int, "HealthReport"] = {}
+        if agent_data.get("pid") is not None:
+            all_reports[agent_data["pid"]] = report
+
         for path, data in self.agents.items():
             if path == self.selected_path:
                 continue
@@ -360,6 +438,25 @@ class MultiAgentWatchApp(App):
                 rot_score=other_rot_value,
             )
             data["item"].update_status(other_report.overall_score, other_report.status)
+            if data.get("pid") is not None:
+                all_reports[data["pid"]] = other_report
+
+        # Update team health headers
+        for team_id, header in self.teams.items():
+            team_member_reports = {
+                pid: r for pid, r in all_reports.items()
+                if any(
+                    d.get("team_id") == team_id and d.get("pid") == pid
+                    for d in self.agents.values()
+                )
+            }
+            if team_member_reports:
+                team_report = calculate_team_health(
+                    team_member_reports,
+                    root_pid=team_id,
+                    team_name=header.team.name,
+                )
+                header.update_status(team_report.overall_score, team_report.status)
 
     def _refresh_processes(self) -> None:
         """Periodically re-scan running processes and update agent list."""
@@ -381,6 +478,9 @@ class MultiAgentWatchApp(App):
                     agent_type=proc.agent_type,
                     project_name=proc.project_name,
                     pid=proc.pid,
+                    depth=proc.depth,
+                    parent_agent_pid=proc.parent_agent_pid,
+                    team_id=proc.team_id,
                 )
                 item.cpu_percent = proc.cpu_percent
                 item.memory_mb = proc.memory_mb
@@ -389,6 +489,8 @@ class MultiAgentWatchApp(App):
                     "registry": registry,
                     "item": item,
                     "rot_scorer": RotScorer(),
+                    "pid": proc.pid,
+                    "team_id": proc.team_id,
                 }
                 agent_list.append(item)
 
