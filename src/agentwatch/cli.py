@@ -109,7 +109,7 @@ def print_security_alert(warnings) -> None:
 
 
 @click.group()
-@click.version_option(version="0.2.0")
+@click.version_option(version="0.1.4")
 @click.option(
     "--theme", "-t",
     type=click.Choice(list_themes()),
@@ -533,7 +533,7 @@ def security_main():
     """Entry point for agentguard CLI (security-focused)."""
     # Override defaults to always include security
     @click.group()
-    @click.version_option(version="0.2.0")
+    @click.version_option(version="0.1.4")
     def guard_cli():
         """AgentGuard - Security monitoring for AI agents."""
         pass
