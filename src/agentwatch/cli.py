@@ -217,22 +217,14 @@ def watch(log: Path | None, security: bool):
     is_flag=True,
     help="Output as JSON for scripting",
 )
-@click.option(
-    "--flat",
-    is_flag=True,
-    help="Flat list without tree hierarchy",
-)
-@click.option(
-    "--teams",
-    is_flag=True,
-    help="Group agents by team",
-)
-def ps(json_output: bool, flat: bool, teams: bool):
+def ps(json_output: bool):
     """Discover and list running AI agent processes."""
     agents = find_running_agents()
 
+    has_subagents = any(a.depth > 0 for a in agents)
+
     if json_output:
-        if teams:
+        if has_subagents:
             team_list = build_teams(agents)
             output = []
             for t in team_list:
@@ -268,9 +260,6 @@ def ps(json_output: bool, flat: bool, teams: bool):
                 output.append({
                     "pid": a.pid,
                     "parent_pid": a.parent_pid,
-                    "parent_agent_pid": a.parent_agent_pid,
-                    "depth": a.depth,
-                    "team_id": a.team_id,
                     "agent_type": a.agent_type,
                     "project": a.project_name,
                     "working_directory": str(a.working_directory),
@@ -294,52 +283,34 @@ def ps(json_output: bool, flat: bool, teams: bool):
         click.echo()
         return
 
-    if teams:
+    if has_subagents:
         _print_teams_view(agents)
     else:
-        _print_agents_view(agents, flat)
+        _print_agents_view(agents)
 
 
-def _print_agents_view(agents: list[AgentProcess], flat: bool) -> None:
-    """Print agents in tree or flat view."""
-    display_agents = agents if flat else build_agent_tree(agents)
-
+def _print_agents_view(agents: list[AgentProcess]) -> None:
+    """Print agents as a simple list (no sub-agents present)."""
     # Table header
     click.echo(
         f"  {'PID':<8}{'TYPE':<14}{'PROJECT':<22}{'CPU':>6}{'MEM':>8}{'STATUS':>10}"
     )
 
-    for a in display_agents:
-        if flat or a.depth == 0:
-            prefix = ""
-        else:
-            prefix = "  " * a.depth + "\\-- "
-
+    for a in agents:
         project = a.project_name
-        max_proj_len = max(20 - len(prefix), 6)
-        if len(project) > max_proj_len:
-            project = project[: max_proj_len - 3] + "..."
+        if len(project) > 20:
+            project = project[:17] + "..."
 
         cpu_str = f"{a.cpu_percent:.1f}%"
         mem_str = f"{a.memory_mb:.0f}MB"
+        status = click.style("active", fg="green")
 
-        if a.depth > 0 and not flat:
-            status = click.style("sub", fg="cyan")
-        else:
-            status = click.style("active", fg="green")
-
-        proj_col = f"{prefix}{project}"
         click.echo(
-            f"  {a.pid:<8}{a.agent_type:<14}{proj_col:<22}{cpu_str:>6}{mem_str:>8}   {status}"
+            f"  {a.pid:<8}{a.agent_type:<14}{project:<22}{cpu_str:>6}{mem_str:>8}   {status}"
         )
 
     click.echo()
-    root_count = sum(1 for a in agents if a.depth == 0)
-    sub_count = sum(1 for a in agents if a.depth > 0)
-    if sub_count > 0:
-        click.echo(f"  {len(agents)} active agent(s) found ({root_count} root, {sub_count} subagent(s)).")
-    else:
-        click.echo(f"  {len(agents)} active agent(s) found.")
+    click.echo(f"  {len(agents)} active agent(s) found.")
     click.echo()
 
 

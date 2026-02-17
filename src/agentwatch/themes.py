@@ -34,7 +34,7 @@ class StatusTheme:
 
     color_0: str = "green"
     color_1: str = "yellow"
-    color_2: str = "bright_yellow"
+    color_2: str = "orange"
     color_3: str = "red"
 
     @property
@@ -211,10 +211,10 @@ THEME_TECHNICAL = StatusTheme(
     emoji_1="~",
     emoji_2="!",
     emoji_3="✗",
-    color_0="bright_green",
+    color_0="green",
     color_1="yellow",
-    color_2="bright_yellow",
-    color_3="bright_red",
+    color_2="orange",
+    color_3="red",
 )
 
 
