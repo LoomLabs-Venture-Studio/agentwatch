@@ -41,6 +41,12 @@ from agentwatch.parser import (
     find_latest_session,
     parse_file,
 )
+from agentwatch.cc_stats import (
+    BashCategory,
+    StatsReport,
+    ToolCategory,
+    compute_stats,
+)
 from agentwatch.themes import (
     StatusTheme,
     get_theme,
@@ -71,6 +77,11 @@ __all__ = [
     "HealthReport",
     "calculate_health",
     "calculate_security_score",
+    # Stats
+    "BashCategory",
+    "StatsReport",
+    "ToolCategory",
+    "compute_stats",
     # Themes
     "StatusTheme",
     "get_theme",

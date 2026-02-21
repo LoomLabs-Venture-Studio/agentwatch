@@ -524,6 +524,160 @@ def themes():
     click.echo()
 
 
+@cli.command()
+@click.option(
+    "--all", "all_projects",
+    is_flag=True,
+    help="Show stats across all projects (default: current project only)",
+)
+@click.option(
+    "--session", "session_id",
+    type=str,
+    default=None,
+    help="Analyze a specific session ID",
+)
+@click.option(
+    "--json", "json_output",
+    is_flag=True,
+    help="Output as JSON",
+)
+def stats(all_projects: bool, session_id: str | None, json_output: bool):
+    """Show Claude Code token usage statistics.
+
+    Parses conversation logs from ~/.claude/projects/ and displays a
+    breakdown of token usage by tool type and bash command category.
+    """
+    from agentwatch.cc_stats import compute_stats
+
+    report = compute_stats(all_projects=all_projects, session_id=session_id)
+
+    if report.message_count == 0:
+        if all_projects:
+            click.echo("No Claude Code session logs found.", err=True)
+        else:
+            click.echo(
+                "No Claude Code session logs found for this project.\n"
+                "Run from a project directory or use --all for all projects.",
+                err=True,
+            )
+        sys.exit(1)
+
+    if json_output:
+        click.echo(json.dumps(report.to_dict(), indent=2))
+    else:
+        _print_stats_report(report)
+
+
+def _make_bar(fraction: float, width: int = 40) -> str:
+    """Render a unicode bar chart."""
+    filled = int(fraction * width)
+    return "\u2588" * filled + "\u2591" * (width - filled)
+
+
+def _fmt_tokens(n: int) -> str:
+    """Format a token count with commas."""
+    return f"{n:,}"
+
+
+def _print_stats_report(report) -> None:
+    """Print a formatted token usage report."""
+    from agentwatch.cc_stats import ToolCategory
+
+    click.echo()
+    click.echo("\u2554" + "\u2550" * 50 + "\u2557")
+    click.echo("  TOKEN USAGE STATS")
+    click.echo("\u255a" + "\u2550" * 50 + "\u255d")
+    click.echo()
+
+    # Session info
+    click.echo(f"  Project:  {report.project_name}")
+    click.echo(
+        f"  Sessions: {report.session_count}"
+        f" | Messages: {report.message_count:,}"
+        f" | Tool calls: {report.tool_call_count:,}"
+    )
+    click.echo()
+
+    # Totals
+    est_cost = report.totals.estimated_cost_usd(report.model)
+    click.echo("  TOTALS")
+    click.echo("  " + "\u2500" * 50)
+    click.echo(
+        f"  Input:   {_fmt_tokens(report.totals.input_tokens):>12}"
+        f"    Cache write: {_fmt_tokens(report.totals.cache_write_tokens):>12}"
+    )
+    click.echo(
+        f"  Output:  {_fmt_tokens(report.totals.output_tokens):>12}"
+        f"    Cache read:  {_fmt_tokens(report.totals.cache_read_tokens):>12}"
+    )
+    click.echo(
+        f"  Total:   {_fmt_tokens(report.totals.total_tokens):>12}"
+        f"    Est. cost:   {click.style(f'${est_cost:>10,.2f}', bold=True)}"
+    )
+    click.echo()
+
+    # Breakdown by tool
+    if report.by_tool:
+        click.echo("  BREAKDOWN BY TOOL")
+        click.echo("  " + "\u2500" * 50)
+
+        total = report.totals.total_tokens or 1
+        sorted_tools = sorted(
+            report.by_tool.items(),
+            key=lambda x: x[1].total_tokens,
+            reverse=True,
+        )
+
+        for cat, bucket in sorted_tools:
+            pct = bucket.total_tokens / total * 100
+            cost = bucket.estimated_cost_usd(report.model)
+            count_str = (
+                f"{bucket.call_count:>5}"
+                if cat != ToolCategory.Thinking
+                else "  ---"
+            )
+            click.echo(
+                f"  {cat.value:<14} {count_str}"
+                f" {_fmt_tokens(bucket.total_tokens):>12}"
+                f" {pct:>5.1f}%"
+                f"   ${cost:>6,.2f}"
+            )
+            click.echo(f"    {_make_bar(pct / 100)}")
+
+        click.echo()
+
+    # Bash sub-breakdown
+    if report.by_bash_category:
+        click.echo("  BASH COMMAND BREAKDOWN")
+        click.echo("  " + "\u2500" * 50)
+
+        bash_total = sum(
+            b.total_tokens for b in report.by_bash_category.values()
+        ) or 1
+        sorted_bash = sorted(
+            report.by_bash_category.items(),
+            key=lambda x: x[1].total_tokens,
+            reverse=True,
+        )
+
+        for cat, bucket in sorted_bash:
+            pct = bucket.total_tokens / bash_total * 100
+            click.echo(
+                f"  {cat.value:<14} {bucket.call_count:>5}"
+                f" {_fmt_tokens(bucket.total_tokens):>12}"
+                f" {pct:>5.1f}%"
+            )
+
+        click.echo()
+
+    # Cache efficiency
+    click.echo("  CACHE EFFICIENCY")
+    click.echo("  " + "\u2500" * 50)
+    ratio = report.cache_hit_ratio
+    click.echo(f"  Hit ratio: {ratio * 100:.1f}%  {_make_bar(ratio)}")
+    click.echo()
+
+
 def main():
     """Main entry point for agentwatch CLI."""
     cli()
