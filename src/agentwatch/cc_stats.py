@@ -59,6 +59,17 @@ def _get_pricing(model: str) -> tuple[float, float, float, float]:
 
 
 @dataclass
+class TrivialCall:
+    """A single trivial tool call with context."""
+
+    command: str
+    total_tokens: int
+    estimated_cost_usd: float
+    session_id: str = ""
+    user_prompt: str = ""
+
+
+@dataclass
 class TokenBucket:
     """Accumulated token counts for a category."""
 
@@ -106,6 +117,10 @@ class StatsReport:
     tool_call_count: int = 0
     project_name: str = ""
     model: str = "sonnet"
+    trivial: TokenBucket = field(default_factory=TokenBucket)
+    substantive: TokenBucket = field(default_factory=TokenBucket)
+    top_trivial_commands: dict[str, int] = field(default_factory=dict)
+    trivial_calls: list[TrivialCall] = field(default_factory=list)
 
     def merge(self, other: StatsReport) -> None:
         for cat, bucket in other.by_tool.items():
@@ -120,6 +135,13 @@ class StatsReport:
         self.session_count += other.session_count
         self.message_count += other.message_count
         self.tool_call_count += other.tool_call_count
+        self.trivial.merge(other.trivial)
+        self.substantive.merge(other.substantive)
+        for cmd, count in other.top_trivial_commands.items():
+            self.top_trivial_commands[cmd] = (
+                self.top_trivial_commands.get(cmd, 0) + count
+            )
+        self.trivial_calls.extend(other.trivial_calls)
         # Prefer a concrete model name over the default
         if self.model == "sonnet" and other.model != "sonnet":
             self.model = other.model
@@ -174,6 +196,31 @@ class StatsReport:
                     reverse=True,
                 )
             },
+            "efficiency": {
+                "trivial_calls": self.trivial.call_count,
+                "trivial_tokens": self.trivial.total_tokens,
+                "trivial_cost_usd": round(
+                    self.trivial.estimated_cost_usd(self.model), 2
+                ),
+                "substantive_calls": self.substantive.call_count,
+                "substantive_tokens": self.substantive.total_tokens,
+                "substantive_cost_usd": round(
+                    self.substantive.estimated_cost_usd(self.model), 2
+                ),
+                "trivial_pct": round(
+                    self.trivial.total_tokens
+                    / max(self.totals.total_tokens, 1)
+                    * 100,
+                    1,
+                ),
+                "top_trivial_commands": dict(
+                    sorted(
+                        self.top_trivial_commands.items(),
+                        key=lambda x: x[1],
+                        reverse=True,
+                    )[:10]
+                ),
+            },
         }
 
 
@@ -197,6 +244,90 @@ _TOOL_MAP: dict[str, ToolCategory] = {
     "exitplanmode": ToolCategory.Planning,
     "notebookedit": ToolCategory.Edit,
 }
+
+# ---------------------------------------------------------------------------
+# Trivial command detection
+# ---------------------------------------------------------------------------
+
+# Programs that any developer types regularly — no AI reasoning needed
+_TRIVIAL_PROGRAMS = frozenset({
+    # Git / GitHub
+    "git", "gh",
+    # Directory / file listing
+    "ls", "pwd", "tree", "which", "type", "file",
+    # File operations
+    "mkdir", "cp", "mv", "rm", "touch", "chmod", "chown", "ln",
+    "tar", "zip", "unzip", "rsync",
+    # Viewing / output
+    "echo", "printf", "cat", "head", "tail", "less", "more",
+    "wc", "sort", "uniq", "tee", "diff",
+    # Process management
+    "ps", "kill", "pkill", "lsof", "top", "htop", "pgrep",
+    "nohup", "screen", "tmux",
+    # Package management
+    "pip", "pip3", "npm", "yarn", "pnpm", "bun", "brew",
+    "apt", "apt-get", "conda", "poetry", "pipx",
+    # Server / dev
+    "node", "uvicorn", "gunicorn", "flask", "next", "vite", "webpack",
+    # Testing invocation
+    "pytest", "jest", "vitest", "mocha", "phpunit",
+    # Build
+    "make", "cargo", "go", "tsc", "esbuild",
+    # Misc
+    "cd", "whoami", "date", "env", "export", "source", "open",
+    "curl", "wget", "grep", "rg", "find", "xargs",
+})
+
+
+def is_trivial_bash(cmd: str) -> bool:
+    """Check if a bash command is trivial (user could type it themselves).
+
+    Trivial = a well-known CLI command that doesn't require AI reasoning
+    to formulate.  Non-trivial = inline code, complex text processing, or
+    unknown programs where the AI likely constructed the invocation.
+    """
+    cmd = cmd.strip()
+    if not cmd:
+        return True
+
+    # Check each command in a pipeline/chain — ALL must be trivial
+    # Split on pipes first
+    segments = cmd.split("|")
+    for segment in segments:
+        # Split on && and ;
+        for sep in ("&&", ";"):
+            segment = segment.split(sep)[0]
+        segment = segment.strip()
+        if not segment:
+            continue
+
+        parts = segment.split()
+        idx = 0
+        while idx < len(parts) and "=" in parts[idx] and not parts[idx].startswith("-"):
+            idx += 1
+        if idx >= len(parts):
+            continue
+
+        program = parts[idx].rsplit("/", 1)[-1].lower()
+        rest_parts = parts[idx + 1:]
+        rest = " ".join(rest_parts).lower()
+
+        # Inline code is substantive — the AI wrote the script
+        if program in ("python", "python3", "node", "ruby", "perl"):
+            if any(flag in rest_parts for flag in ("-c", "-e")):
+                return False
+            # Running a script file is trivial
+            continue
+
+        # Complex text processing — AI likely crafted the pattern
+        if program in ("awk", "sed"):
+            return False
+
+        if program not in _TRIVIAL_PROGRAMS:
+            return False
+
+    return True
+
 
 _GIT_PROGRAMS = frozenset({"git", "gh"})
 _TEST_PROGRAMS = frozenset({"pytest", "jest", "vitest", "mocha", "phpunit"})
@@ -347,6 +478,24 @@ def project_dir_to_name(project_dir: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_user_prompt(
+    msg_id: str,
+    parent_map: dict[str, str],
+    user_messages: dict[str, str],
+    max_depth: int = 10,
+) -> str:
+    """Walk the parentUuid chain to find the nearest user message."""
+    current = parent_map.get(msg_id, "")
+    for _ in range(max_depth):
+        if not current:
+            break
+        if current in user_messages:
+            return user_messages[current]
+        # The parent might be another assistant chunk — walk further
+        current = parent_map.get(current, "")
+    return ""
+
+
 def parse_session_stats(jsonl_path: Path) -> StatsReport:
     """Parse a single JSONL session file and compute token stats.
 
@@ -356,9 +505,12 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
     streaming progresses).
     """
     report = StatsReport(session_count=1)
+    session_id = jsonl_path.stem
 
-    # Pass 1: Group lines by message.id
+    # Pass 1: Group lines by message.id, index user messages
     messages: dict[str, dict] = {}
+    user_messages: dict[str, str] = {}  # uuid -> content snippet
+    parent_map: dict[str, str] = {}  # assistant first_uuid -> parentUuid
 
     with open(jsonl_path) as f:
         for line in f:
@@ -370,7 +522,26 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
 
-            if obj.get("type") != "assistant":
+            line_type = obj.get("type")
+
+            # Index user messages for prompt lookups
+            if line_type == "user":
+                uuid = obj.get("uuid", "")
+                msg = obj.get("message", {})
+                content = msg.get("content", "") if isinstance(msg, dict) else ""
+                if isinstance(content, str) and uuid:
+                    user_messages[uuid] = content[:200]
+                elif isinstance(content, list) and uuid:
+                    # Content can be a list of blocks
+                    texts = [
+                        b.get("text", "")
+                        for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    ]
+                    user_messages[uuid] = " ".join(texts)[:200]
+                continue
+
+            if line_type != "assistant":
                 continue
 
             msg = obj.get("message")
@@ -394,6 +565,10 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
                     "tool_blocks": {},  # block_id -> (tool_name, tool_input)
                     "has_thinking": False,
                 }
+                # Track parentUuid from the first chunk of this message
+                p_uuid = obj.get("parentUuid", "")
+                if p_uuid:
+                    parent_map[msg_id] = p_uuid
 
             md = messages[msg_id]
 
@@ -433,7 +608,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
 
     model_counts: Counter[str] = Counter()
 
-    for md in messages.values():
+    for msg_id, md in messages.items():
         report.message_count += 1
 
         if md["model"]:
@@ -490,6 +665,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             bucket.call_count += 1
 
         # Bash sub-categories
+        bash_cmds_by_idx = dict(bash_commands)
         for cat_idx, cmd in bash_commands:
             bash_cat = classify_bash_command(cmd)
             sub = report.by_bash_category.setdefault(bash_cat, TokenBucket())
@@ -498,6 +674,50 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             sub.cache_write_tokens += per_cw
             sub.cache_read_tokens += per_cr
             sub.call_count += 1
+
+        # Trivial vs substantive classification
+        # Resolve user prompt for this message (walk parentUuid)
+        _user_prompt: str | None = None
+
+        for i, cat in enumerate(categories):
+            trivial = False
+            if cat == ToolCategory.Bash and i in bash_cmds_by_idx:
+                cmd = bash_cmds_by_idx[i]
+                if is_trivial_bash(cmd):
+                    trivial = True
+                    # Track command label for top-N display
+                    label = cmd.split()[0].rsplit("/", 1)[-1] if cmd.strip() else "empty"
+                    report.top_trivial_commands[label] = (
+                        report.top_trivial_commands.get(label, 0) + 1
+                    )
+
+                    # Build detailed TrivialCall
+                    call_tokens = per_input + per_output + per_cw + per_cr
+                    tc = TrivialCall(
+                        command=cmd,
+                        total_tokens=call_tokens,
+                        estimated_cost_usd=TokenBucket(
+                            input_tokens=per_input,
+                            output_tokens=per_output,
+                            cache_write_tokens=per_cw,
+                            cache_read_tokens=per_cr,
+                        ).estimated_cost_usd(md.get("model", "sonnet")),
+                        session_id=session_id,
+                    )
+                    # Lazily resolve user prompt once per message
+                    if _user_prompt is None:
+                        _user_prompt = _resolve_user_prompt(
+                            msg_id, parent_map, user_messages
+                        )
+                    tc.user_prompt = _user_prompt
+                    report.trivial_calls.append(tc)
+
+            target = report.trivial if trivial else report.substantive
+            target.input_tokens += per_input
+            target.output_tokens += per_output
+            target.cache_write_tokens += per_cw
+            target.cache_read_tokens += per_cr
+            target.call_count += 1
 
         # Totals (full amount, not split)
         report.totals.input_tokens += md["input_tokens"]

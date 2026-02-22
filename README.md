@@ -44,6 +44,13 @@ agentwatch watch --security
 
 # Monitor all running agents
 agentwatch watch-all
+
+# List running agent processes
+agentwatch ps
+
+# Token usage stats
+agentwatch stats
+agentwatch stats --burn
 ```
 
 ## Scoring System
@@ -227,6 +234,36 @@ agentwatch watch --security
 
 # All running agents
 agentwatch watch-all
+```
+
+### Process Discovery
+
+```bash
+# List running agent processes with PIDs and session IDs
+agentwatch ps
+
+# JSON output for scripting
+agentwatch ps --json
+```
+
+### Token Usage Stats
+
+```bash
+# Stats for current project
+agentwatch stats
+
+# Stats across all projects
+agentwatch stats --all
+
+# Analyze a specific session
+agentwatch stats --session <SESSION_ID>
+
+# Efficiency analysis — see how many tokens went to trivial
+# commands (git, ls, npm run dev) vs substantive AI work
+agentwatch stats --burn
+
+# JSON output
+agentwatch stats --json
 ```
 
 ### AgentGuard (Security-Focused CLI)

@@ -13,10 +13,12 @@ from agentwatch.cc_stats import (
     StatsReport,
     TokenBucket,
     ToolCategory,
+    TrivialCall,
     classify_bash_command,
     classify_tool_name,
     compute_stats,
     cwd_to_project_dir,
+    is_trivial_bash,
     parse_session_stats,
     project_dir_to_name,
 )
@@ -133,6 +135,84 @@ class TestClassifyBashCommand:
 
 # ---------------------------------------------------------------------------
 # TokenBucket
+# ---------------------------------------------------------------------------
+
+
+class TestIsTrivialBash:
+    """Tests for trivial command detection."""
+
+    def test_simple_git_is_trivial(self):
+        assert is_trivial_bash("git status") is True
+        assert is_trivial_bash("git add .") is True
+        assert is_trivial_bash("git commit -m 'msg'") is True
+        assert is_trivial_bash("git push origin main") is True
+        assert is_trivial_bash("git log --oneline -5") is True
+        assert is_trivial_bash("gh pr create") is True
+
+    def test_simple_cli_is_trivial(self):
+        assert is_trivial_bash("ls -la") is True
+        assert is_trivial_bash("pwd") is True
+        assert is_trivial_bash("mkdir -p foo/bar") is True
+        assert is_trivial_bash("rm -rf dist/") is True
+        assert is_trivial_bash("cp src/a.py dst/") is True
+
+    def test_testing_invocation_is_trivial(self):
+        assert is_trivial_bash("pytest tests/ -v") is True
+        assert is_trivial_bash("jest --coverage") is True
+        assert is_trivial_bash("npm test") is True
+
+    def test_server_dev_is_trivial(self):
+        assert is_trivial_bash("npm run dev") is True
+        assert is_trivial_bash("npm start") is True
+        assert is_trivial_bash("node server.js") is True
+
+    def test_package_mgmt_is_trivial(self):
+        assert is_trivial_bash("pip install requests") is True
+        assert is_trivial_bash("npm install lodash") is True
+        assert is_trivial_bash("brew install jq") is True
+
+    def test_process_mgmt_is_trivial(self):
+        assert is_trivial_bash("ps aux") is True
+        assert is_trivial_bash("kill -9 1234") is True
+        assert is_trivial_bash("lsof -i :8080") is True
+
+    def test_inline_python_is_substantive(self):
+        assert is_trivial_bash('python3 -c "import json; print(json.dumps({}))"') is False
+        assert is_trivial_bash("python -c 'print(1+1)'") is False
+
+    def test_inline_node_is_substantive(self):
+        assert is_trivial_bash('node -e "console.log(1)"') is False
+
+    def test_awk_sed_is_substantive(self):
+        assert is_trivial_bash("awk '{print $1}' file.txt") is False
+        assert is_trivial_bash("sed -i 's/foo/bar/g' file.txt") is False
+
+    def test_unknown_program_is_substantive(self):
+        assert is_trivial_bash("custom_build_tool --flag") is False
+        assert is_trivial_bash("my_script.sh") is False
+
+    def test_running_python_script_is_trivial(self):
+        assert is_trivial_bash("python3 app.py") is True
+        assert is_trivial_bash("python manage.py runserver") is True
+
+    def test_pipeline_of_trivial_is_trivial(self):
+        assert is_trivial_bash("git log | head -5") is True
+        assert is_trivial_bash("ps aux | grep node") is True
+
+    def test_chain_of_trivial_is_trivial(self):
+        assert is_trivial_bash("git add . && git commit -m 'msg'") is True
+
+    def test_env_prefix_is_trivial(self):
+        assert is_trivial_bash("NODE_ENV=test npm test") is True
+
+    def test_empty_is_trivial(self):
+        assert is_trivial_bash("") is True
+        assert is_trivial_bash("   ") is True
+
+    def test_full_path_trivial(self):
+        assert is_trivial_bash("/usr/bin/git status") is True
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -524,6 +604,146 @@ class TestParseSessionStats:
 
         report = parse_session_stats(jsonl)
         assert "opus" in report.model
+
+    def test_trivial_tracking(self, tmp_path):
+        """Trivial bash commands are tracked separately."""
+        lines = [
+            _make_user_line(),
+            # Trivial: git status
+            _make_assistant_line("msg-1", [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": "git status"}},
+            ], input_tokens=100),
+            # Trivial: ls
+            _make_assistant_line("msg-2", [
+                {"type": "tool_use", "id": "t2", "name": "Bash",
+                 "input": {"command": "ls -la"}},
+            ], input_tokens=100),
+            # Substantive: inline python
+            _make_assistant_line("msg-3", [
+                {"type": "tool_use", "id": "t3", "name": "Bash",
+                 "input": {"command": "python3 -c 'import json; print(1)'"}},
+            ], input_tokens=100),
+            # Substantive: Edit tool
+            _make_assistant_line("msg-4", [
+                {"type": "tool_use", "id": "t4", "name": "Edit",
+                 "input": {"file_path": "/f.py", "old_string": "a", "new_string": "b"}},
+            ], input_tokens=100),
+        ]
+        jsonl = tmp_path / "session.jsonl"
+        jsonl.write_text("\n".join(lines))
+
+        report = parse_session_stats(jsonl)
+        assert report.trivial.call_count == 2  # git, ls
+        assert report.substantive.call_count == 2  # python -c, Edit
+        assert "git" in report.top_trivial_commands
+        assert "ls" in report.top_trivial_commands
+
+    def test_trivial_vs_substantive_tokens(self, tmp_path):
+        """Trivial/substantive token sums match total."""
+        lines = [
+            _make_user_line(),
+            _make_assistant_line("msg-1", [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": "git status"}},
+            ], input_tokens=200, output_tokens=50, cache_write=0, cache_read=1000),
+            _make_assistant_line("msg-2", [
+                {"type": "tool_use", "id": "t2", "name": "Edit",
+                 "input": {"file_path": "/f.py"}},
+            ], input_tokens=300, output_tokens=80, cache_write=0, cache_read=2000),
+        ]
+        jsonl = tmp_path / "session.jsonl"
+        jsonl.write_text("\n".join(lines))
+
+        report = parse_session_stats(jsonl)
+        combined = report.trivial.total_tokens + report.substantive.total_tokens
+        assert combined == report.totals.total_tokens
+
+    def test_trivial_calls_list(self, tmp_path):
+        """Trivial calls are collected with command and token details."""
+        lines = [
+            _make_user_line(),
+            _make_assistant_line("msg-1", [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": "git status"}},
+            ], input_tokens=100, output_tokens=20),
+            _make_assistant_line("msg-2", [
+                {"type": "tool_use", "id": "t2", "name": "Bash",
+                 "input": {"command": "ls -la"}},
+            ], input_tokens=100, output_tokens=20),
+            # Non-trivial — should NOT appear
+            _make_assistant_line("msg-3", [
+                {"type": "tool_use", "id": "t3", "name": "Bash",
+                 "input": {"command": "python3 -c 'print(1)'"}},
+            ], input_tokens=100, output_tokens=20),
+        ]
+        jsonl = tmp_path / "session.jsonl"
+        jsonl.write_text("\n".join(lines))
+
+        report = parse_session_stats(jsonl)
+        assert len(report.trivial_calls) == 2
+        cmds = [tc.command for tc in report.trivial_calls]
+        assert "git status" in cmds
+        assert "ls -la" in cmds
+        assert all(tc.total_tokens > 0 for tc in report.trivial_calls)
+        assert all(tc.estimated_cost_usd > 0 for tc in report.trivial_calls)
+
+    def test_trivial_calls_with_prompt(self, tmp_path):
+        """Trivial calls resolve the user prompt that triggered them."""
+        lines = [
+            # User message with known uuid
+            json.dumps({
+                "type": "user",
+                "uuid": "user-abc",
+                "message": {"role": "user", "content": "commit everything and push"},
+            }),
+            # Assistant message whose parentUuid points to user
+            json.dumps({
+                "type": "assistant",
+                "uuid": "ast-1",
+                "parentUuid": "user-abc",
+                "message": {
+                    "id": "msg-1",
+                    "model": "claude-sonnet-4-5-20250929",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "Bash",
+                         "input": {"command": "git add ."}},
+                    ],
+                    "stop_reason": None,
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 500,
+                    },
+                },
+            }),
+        ]
+        jsonl = tmp_path / "session.jsonl"
+        jsonl.write_text("\n".join(lines))
+
+        report = parse_session_stats(jsonl)
+        assert len(report.trivial_calls) == 1
+        tc = report.trivial_calls[0]
+        assert tc.command == "git add ."
+        assert tc.user_prompt == "commit everything and push"
+
+    def test_trivial_calls_session_id(self, tmp_path):
+        """Trivial calls include the session ID from the filename."""
+        lines = [
+            _make_user_line(),
+            _make_assistant_line("msg-1", [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": "git status"}},
+            ]),
+        ]
+        jsonl = tmp_path / "abc-123-def.jsonl"
+        jsonl.write_text("\n".join(lines))
+
+        report = parse_session_stats(jsonl)
+        assert len(report.trivial_calls) == 1
+        assert report.trivial_calls[0].session_id == "abc-123-def"
 
 
 # ---------------------------------------------------------------------------

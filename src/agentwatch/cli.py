@@ -293,20 +293,21 @@ def _print_agents_view(agents: list[AgentProcess]) -> None:
     """Print agents as a simple list (no sub-agents present)."""
     # Table header
     click.echo(
-        f"  {'PID':<8}{'TYPE':<14}{'PROJECT':<22}{'CPU':>6}{'MEM':>8}{'STATUS':>10}"
+        f"  {'PID':<8}{'TYPE':<14}{'PROJECT':<18}{'SESSION':<10}{'CPU':>6}{'MEM':>8}{'STATUS':>10}"
     )
 
     for a in agents:
         project = a.project_name
-        if len(project) > 20:
-            project = project[:17] + "..."
+        if len(project) > 16:
+            project = project[:13] + "..."
 
+        session = a.session_id[:8] if a.session_id else "---"
         cpu_str = f"{a.cpu_percent:.1f}%"
         mem_str = f"{a.memory_mb:.0f}MB"
         status = click.style("active", fg="green")
 
         click.echo(
-            f"  {a.pid:<8}{a.agent_type:<14}{project:<22}{cpu_str:>6}{mem_str:>8}   {status}"
+            f"  {a.pid:<8}{a.agent_type:<14}{project:<18}{session:<10}{cpu_str:>6}{mem_str:>8}   {status}"
         )
 
     click.echo()
@@ -327,7 +328,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
 
         # Table header
         click.echo(
-            f"    {'PID':<8}{'TYPE':<14}{'PROJECT':<20}{'CPU':>6}{'MEM':>8}{'ROLE':>8}"
+            f"    {'PID':<8}{'TYPE':<14}{'PROJECT':<16}{'SESSION':<10}{'CPU':>6}{'MEM':>8}{'ROLE':>8}"
         )
 
         for a in team.members:
@@ -339,16 +340,17 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
                 role = click.style(f"L{a.depth}", fg="cyan")
 
             project = a.project_name
-            max_proj_len = max(18 - len(prefix), 6)
+            max_proj_len = max(14 - len(prefix), 6)
             if len(project) > max_proj_len:
                 project = project[: max_proj_len - 3] + "..."
 
+            session = a.session_id[:8] if a.session_id else "---"
             cpu_str = f"{a.cpu_percent:.1f}%"
             mem_str = f"{a.memory_mb:.0f}MB"
             proj_col = f"{prefix}{project}"
 
             click.echo(
-                f"    {a.pid:<8}{a.agent_type:<14}{proj_col:<20}{cpu_str:>6}{mem_str:>8}   {role}"
+                f"    {a.pid:<8}{a.agent_type:<14}{proj_col:<16}{session:<10}{cpu_str:>6}{mem_str:>8}   {role}"
             )
 
         click.echo()
@@ -541,13 +543,47 @@ def themes():
     is_flag=True,
     help="Output as JSON",
 )
-def stats(all_projects: bool, session_id: str | None, json_output: bool):
+@click.option(
+    "--burn",
+    is_flag=True,
+    help="Show where tokens burn — trivial vs substantive breakdown",
+)
+@click.option(
+    "--list", "list_trivial",
+    is_flag=True,
+    help="List every trivial command (use with --burn)",
+)
+@click.option(
+    "--prompts",
+    is_flag=True,
+    help="Include the user prompt that triggered each trivial call (use with --burn --list)",
+)
+def stats(
+    all_projects: bool,
+    session_id: str | None,
+    json_output: bool,
+    burn: bool,
+    list_trivial: bool,
+    prompts: bool,
+):
     """Show Claude Code token usage statistics.
 
     Parses conversation logs from ~/.claude/projects/ and displays a
     breakdown of token usage by tool type and bash command category.
+
+    \b
+    Use --burn to see how many tokens went to trivial commands
+    (git, ls, npm run dev, etc.) that you could have run yourself.
+    Use --burn --list to see every trivial command.
+    Use --burn --list --prompts to also show what you said that triggered them.
     """
     from agentwatch.cc_stats import compute_stats
+
+    # --list / --prompts imply --burn
+    if list_trivial or prompts:
+        burn = True
+    if prompts:
+        list_trivial = True
 
     report = compute_stats(all_projects=all_projects, session_id=session_id)
 
@@ -564,6 +600,10 @@ def stats(all_projects: bool, session_id: str | None, json_output: bool):
 
     if json_output:
         click.echo(json.dumps(report.to_dict(), indent=2))
+    elif burn:
+        _print_burn_report(report)
+        if list_trivial:
+            _print_trivial_list(report, show_prompts=prompts)
     else:
         _print_stats_report(report)
 
@@ -675,6 +715,157 @@ def _print_stats_report(report) -> None:
     click.echo("  " + "\u2500" * 50)
     ratio = report.cache_hit_ratio
     click.echo(f"  Hit ratio: {ratio * 100:.1f}%  {_make_bar(ratio)}")
+    click.echo()
+
+
+def _print_burn_report(report) -> None:
+    """Print trivial vs substantive token burn analysis."""
+    click.echo()
+    click.echo("\u2554" + "\u2550" * 50 + "\u2557")
+    click.echo("  TOKEN BURN ANALYSIS")
+    click.echo("\u255a" + "\u2550" * 50 + "\u255d")
+    click.echo()
+
+    click.echo(f"  Project:  {report.project_name}")
+    click.echo(
+        f"  Sessions: {report.session_count}"
+        f" | Messages: {report.message_count:,}"
+        f" | Tool calls: {report.tool_call_count:,}"
+    )
+    click.echo()
+
+    total = report.totals.total_tokens or 1
+    triv = report.trivial
+    sub = report.substantive
+
+    triv_pct = triv.total_tokens / total * 100
+    sub_pct = sub.total_tokens / total * 100
+    triv_cost = triv.estimated_cost_usd(report.model)
+    sub_cost = sub.estimated_cost_usd(report.model)
+
+    # Trivial
+    click.echo(
+        "  "
+        + click.style("TRIVIAL", fg="yellow", bold=True)
+        + "  (commands you could run yourself)"
+    )
+    click.echo("  " + "\u2500" * 50)
+    click.echo(
+        f"  Calls: {triv.call_count:>6,}"
+        f"    Tokens: {_fmt_tokens(triv.total_tokens):>12}"
+        f"    {triv_pct:>5.1f}%"
+    )
+    click.echo(
+        f"  Est. cost: {click.style(f'${triv_cost:,.2f}', fg='yellow', bold=True)}"
+    )
+    click.echo(f"    {_make_bar(triv_pct / 100)}")
+    click.echo()
+
+    # Top trivial commands
+    if report.top_trivial_commands:
+        sorted_cmds = sorted(
+            report.top_trivial_commands.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )[:10]
+        click.echo("  Top trivial commands:")
+        for cmd, count in sorted_cmds:
+            click.echo(f"    {cmd:<20} {click.style(f'\u00d7{count}', dim=True)}")
+        click.echo()
+
+    # Substantive
+    click.echo(
+        "  "
+        + click.style("SUBSTANTIVE", fg="green", bold=True)
+        + "  (AI reasoning, code generation, search)"
+    )
+    click.echo("  " + "\u2500" * 50)
+    click.echo(
+        f"  Calls: {sub.call_count:>6,}"
+        f"    Tokens: {_fmt_tokens(sub.total_tokens):>12}"
+        f"    {sub_pct:>5.1f}%"
+    )
+    click.echo(
+        f"  Est. cost: {click.style(f'${sub_cost:,.2f}', fg='green', bold=True)}"
+    )
+    click.echo(f"    {_make_bar(sub_pct / 100)}")
+    click.echo()
+
+    # Verdict
+    click.echo("  VERDICT")
+    click.echo("  " + "\u2500" * 50)
+    if triv_pct > 30:
+        click.echo(
+            "  "
+            + click.style(
+                f"{triv_pct:.0f}% of tokens went to trivial ops.",
+                fg="red",
+                bold=True,
+            )
+        )
+        click.echo(
+            f"  You could save ~${triv_cost:,.2f} by running simple commands yourself."
+        )
+    elif triv_pct > 15:
+        click.echo(
+            "  "
+            + click.style(
+                f"{triv_pct:.0f}% of tokens on trivial ops — room to improve.",
+                fg="yellow",
+            )
+        )
+    else:
+        click.echo(
+            "  "
+            + click.style(
+                f"Only {triv_pct:.0f}% trivial — good token efficiency.",
+                fg="green",
+            )
+        )
+    click.echo()
+
+
+def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
+    """Print detailed list of trivial calls."""
+    calls = sorted(
+        report.trivial_calls,
+        key=lambda c: c.total_tokens,
+        reverse=True,
+    )
+
+    if not calls:
+        click.echo("  No trivial calls found.")
+        click.echo()
+        return
+
+    click.echo()
+    click.echo(
+        f"  TRIVIAL CALLS ({len(calls)})"
+    )
+    click.echo("  " + "\u2500" * 50)
+
+    for tc in calls:
+        cmd_display = tc.command if len(tc.command) <= 60 else tc.command[:57] + "..."
+        click.echo(
+            f"  $ {click.style(cmd_display, bold=True)}"
+            f"   {_fmt_tokens(tc.total_tokens):>10} tok"
+            f"   ${tc.estimated_cost_usd:,.2f}"
+        )
+        if show_prompts and tc.user_prompt:
+            prompt = tc.user_prompt.strip().replace("\n", " ")
+            if len(prompt) > 80:
+                prompt = prompt[:77] + "..."
+            click.echo(
+                click.style(f"    prompt: \"{prompt}\"", dim=True)
+            )
+
+    click.echo()
+    total_cost = sum(tc.estimated_cost_usd for tc in calls)
+    click.echo(
+        f"  {len(calls)} trivial calls"
+        f" | {_fmt_tokens(sum(tc.total_tokens for tc in calls))} tokens"
+        f" | ${total_cost:,.2f} est. cost"
+    )
     click.echo()
 
 
