@@ -1,0 +1,43 @@
+<section class="aw-hero">
+  <div class="aw-hero__inner">
+    <div class="aw-hero__content">
+      <h1 class="aw-hero__title">AgentWatch</h1>
+      <p class="aw-hero__tagline">
+        Real-time health &amp; security monitoring for AI coding agents.
+        <br>Detect loops, stuck states, and security threats before they burn your tokens.
+      </p>
+      <div class="aw-hero__cta">
+        <a href="#quick-start" class="md-button md-button--primary">
+          Get Started
+        </a>
+        <a href="{{ config.repo_url }}" class="md-button">
+          GitHub
+        </a>
+      </div>
+    </div>
+    <div class="aw-hero__terminal">
+      <div class="aw-terminal">
+        <div class="aw-terminal__bar">
+          <span class="aw-terminal__dot aw-terminal__dot--red"></span>
+          <span class="aw-terminal__dot aw-terminal__dot--yellow"></span>
+          <span class="aw-terminal__dot aw-terminal__dot--green"></span>
+          <span class="aw-terminal__title">agentwatch check</span>
+        </div>
+        <div class="aw-terminal__body">
+<pre><code><span class="t-dim">$</span> agentwatch check
+
+<span class="t-header">Agent Health Report</span>  <span class="t-dim">PID 48291 · claude-code · 12m</span>
+
+  <span class="t-label">Health Score</span>     <span class="t-green">████████░░</span>  <span class="t-green">82/100</span>
+  <span class="t-label">Security Score</span>   <span class="t-green">██████████</span>  <span class="t-green">100/100</span>
+  <span class="t-label">Efficiency</span>       <span class="t-yellow">██████░░░░</span>  <span class="t-yellow">64/100</span>
+
+  <span class="t-warn">⚠ context_pressure</span>  <span class="t-dim">Context 72% full (129K/180K tokens)</span>
+  <span class="t-warn">⚠ high_error_rate</span>   <span class="t-dim">4 consecutive failures detected</span>
+
+  <span class="t-dim">Exit code: 0 (healthy)</span></code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

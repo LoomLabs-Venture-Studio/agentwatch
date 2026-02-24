@@ -12,3 +12,4 @@ venv/
 .pytest_cache/
 .claude/
 *.jsonl
+site/

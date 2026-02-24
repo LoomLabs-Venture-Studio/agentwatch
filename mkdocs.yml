@@ -1,0 +1,53 @@
+site_name: AgentWatch
+site_url: https://loomlabs-venture-studio.github.io/agentwatch/
+site_description: Real-time health and security monitoring for AI coding agents
+site_author: LoomLabs
+
+repo_url: https://github.com/loomlabs-venture-studio/agentwatch
+repo_name: agentwatch
+
+theme:
+  name: material
+  custom_dir: overrides
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - content.code.copy
+    - content.tabs.link
+
+plugins: []
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - tables
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+nav:
+  - Home: index.md
