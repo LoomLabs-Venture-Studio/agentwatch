@@ -226,6 +226,7 @@ class MultiAgentWatchApp(App):
         self.teams: dict[int, TeamHeaderItem] = {}  # team_id -> header item
         self._refreshing = False
         self.selected_path: Path | None = None
+        self._alerted_signals: set[str] = set()
         self._process_mode = agent_processes is not None
 
         if agent_processes is not None:
@@ -405,7 +406,9 @@ class MultiAgentWatchApp(App):
             security_status = self.query_one("#security-status", SecurityStatus)
             security_status.score = calculate_security_score(warnings)
             security_status.alert_count = len(report.security_warnings)
-            
+            agent_label = self._agent_label(agent_data)
+            self._fire_secret_alerts(warnings, agent_label)
+
         self.query_one("#warnings-list", WarningsList).update_warnings(warnings)
         
         stats = self.query_one("#stats-display", StatsPanel)
@@ -438,6 +441,8 @@ class MultiAgentWatchApp(App):
                 rot_score=other_rot_value,
             )
             data["item"].update_status(other_report.overall_score, other_report.status)
+            if self.security_mode:
+                self._fire_secret_alerts(other_warnings, self._agent_label(data))
             if data.get("pid") is not None:
                 all_reports[data["pid"]] = other_report
 
@@ -457,6 +462,35 @@ class MultiAgentWatchApp(App):
                     team_name=header.team.name,
                 )
                 header.update_status(team_report.overall_score, team_report.status)
+
+    @staticmethod
+    def _agent_label(agent_data: dict) -> str:
+        """Derive a short label for an agent from its sidebar item."""
+        item = agent_data.get("item")
+        if item and getattr(item, "project_name", None):
+            pid = getattr(item, "pid", None)
+            return f"{item.project_name} (PID {pid})" if pid else item.project_name
+        return str(agent_data.get("pid", "unknown"))
+
+    def _fire_secret_alerts(self, warnings: list["Warning"], agent_label: str = "") -> None:
+        """Fire toast notifications for new secret leak warnings."""
+        for w in warnings:
+            if w.signal != "secret_leak":
+                continue
+            d = w.details
+            key = f"secret_leak:{d.get('secret_type', '')}:{d.get('channel', '')}:{d.get('file_path', '')}:{agent_label}"
+            if key in self._alerted_signals:
+                continue
+            self._alerted_signals.add(key)
+            prefix = f"[{agent_label}] " if agent_label else ""
+            msg = f"{prefix}{d.get('secret_type', 'secret')} in {d.get('channel', 'unknown')}"
+            if d.get("file_path"):
+                msg += f"\n{d['file_path']}"
+            if d.get("remediation"):
+                msg += f"\n{d['remediation']}"
+            self.notify(msg, title="SECURITY ALERT", severity="error", timeout=15)
+            if w.severity.value == "critical":
+                self.bell()
 
     def _refresh_processes(self) -> None:
         """Periodically re-scan running processes and update agent list."""

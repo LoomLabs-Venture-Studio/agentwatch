@@ -164,6 +164,19 @@ class WarningsList(Static):
         if not d:
             return ""
 
+        # Secret leak — show type, channel, file, and safe prefix
+        if w.signal == "secret_leak":
+            parts = []
+            if "secret_type" in d:
+                parts.append(f"Type: {d['secret_type']}")
+            if "channel" in d:
+                parts.append(f"Channel: {d['channel']}")
+            if d.get("file_path"):
+                parts.append(f"File: {d['file_path']}")
+            if "matched_prefix" in d:
+                parts.append(f"Match: {d['matched_prefix']}")
+            return " | ".join(parts)
+
         # Show the actual error/command that's causing problems
         if "last_error" in d and d["last_error"]:
             return f"Error: {d['last_error'][:100]}"
@@ -286,6 +299,7 @@ class AgentWatchApp(App):
         self._detector_registry = None
         self._rot_scorer = None
         self._refreshing = False
+        self._alerted_signals: set[str] = set()
     
     def compose(self) -> ComposeResult:
         yield Header()
@@ -409,6 +423,7 @@ class AgentWatchApp(App):
             security_status = self.query_one("#security-status", SecurityStatus)
             security_status.score = calculate_security_score(warnings)
             security_status.alert_count = len(report.security_warnings)
+            self._fire_secret_alerts(warnings)
 
         # Update efficiency bar
         self.query_one("#efficiency-bar", EfficiencyBar).update_efficiency(eff)
@@ -429,6 +444,25 @@ class AgentWatchApp(App):
             self._buffer.stats.duration_minutes,
         )
     
+    def _fire_secret_alerts(self, warnings: list["Warning"]) -> None:
+        """Fire toast notifications for new secret leak warnings."""
+        for w in warnings:
+            if w.signal != "secret_leak":
+                continue
+            d = w.details
+            key = f"secret_leak:{d.get('secret_type', '')}:{d.get('channel', '')}:{d.get('file_path', '')}"
+            if key in self._alerted_signals:
+                continue
+            self._alerted_signals.add(key)
+            msg = f"{d.get('secret_type', 'secret')} in {d.get('channel', 'unknown')}"
+            if d.get("file_path"):
+                msg += f"\n{d['file_path']}"
+            if d.get("remediation"):
+                msg += f"\n{d['remediation']}"
+            self.notify(msg, title="SECURITY ALERT", severity="error", timeout=15)
+            if w.severity.value == "critical":
+                self.bell()
+
     def action_refresh(self) -> None:
         """Manual refresh action."""
         self.refresh_display()
