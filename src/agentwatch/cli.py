@@ -891,7 +891,17 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
     is_flag=True,
     help="Replace detected secrets with [REDACTED] in the log files",
 )
-def audit(all_projects: bool, session_id: str | None, json_output: bool, redact: bool):
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Run scan and impact assessment, print report, but don't modify any files",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Allow redacting active session logs (default: skip them)",
+)
+def audit(all_projects: bool, session_id: str | None, json_output: bool, redact: bool, dry_run: bool, force: bool):
     """Scan log history for leaked secrets and credentials.
 
     Performs a passive forensic audit of existing JSONL session logs,
@@ -907,7 +917,12 @@ def audit(all_projects: bool, session_id: str | None, json_output: bool, redact:
         find_all_project_dirs,
         project_dir_to_name,
     )
-    from agentwatch.detectors.security.secret_scanner import AuditFinding, audit_log_file, redact_log_file
+    from agentwatch.detectors.security.secret_scanner import (
+        AuditFinding,
+        audit_log_file,
+        assess_impact,
+        redact_log_file,
+    )
 
     if all_projects:
         dirs = find_all_project_dirs()
@@ -955,47 +970,76 @@ def audit(all_projects: bool, session_id: str | None, json_output: bool, redact:
             )
         sys.exit(1)
 
+    # Always run impact assessment
+    assess_impact(all_findings)
+
+    # Determine which log files belong to active sessions
+    active_log_files: set[str] = set()
+    for f in all_findings:
+        if f.impact and f.impact.is_active_session:
+            active_log_files.add(f.log_file)
+
     # --redact: replace secrets in affected log files
     redact_count = 0
-    if redact and all_findings:
+    skipped_active: list[str] = []
+    if redact and all_findings and not dry_run:
         affected_files: dict[str, Path] = {}
         for pdir in dirs:
             for f in all_findings:
                 fp = pdir / f.log_file
                 if fp.is_file():
                     affected_files[str(fp)] = fp
-        for fp in affected_files.values():
+        for fp_str, fp in affected_files.items():
+            # Skip active session logs unless --force
+            if not force and fp.name in active_log_files:
+                skipped_active.append(fp.name)
+                continue
             try:
                 redact_count += redact_log_file(fp)
             except OSError:
                 continue
 
     if json_output:
-        output = {
+        finding_dicts = []
+        for f in all_findings:
+            d: dict = {
+                "secret_type": f.secret_type,
+                "channel": f.channel,
+                "severity": f.severity,
+                "file_path": f.file_path,
+                "matched_prefix": f.matched_prefix,
+                "log_file": f.log_file,
+                "session_id": f.session_id,
+                "project_name": f.project_name,
+                "remediation": f.remediation,
+                "timestamp": f.timestamp,
+            }
+            if f.impact:
+                d["is_active_session"] = f.impact.is_active_session
+                d["active_pid"] = f.impact.active_pid
+                d["still_in_source"] = f.impact.still_in_source
+                d["source_line"] = f.impact.source_line
+                d["env_var_matches"] = f.impact.env_var_matches
+            finding_dicts.append(d)
+
+        output: dict = {
             "projects": project_names,
             "sessions_scanned": sessions_scanned,
             "total_findings": len(all_findings),
-            "redacted": redact_count if redact else None,
-            "findings": [
-                {
-                    "secret_type": f.secret_type,
-                    "channel": f.channel,
-                    "severity": f.severity,
-                    "file_path": f.file_path,
-                    "matched_prefix": f.matched_prefix,
-                    "log_file": f.log_file,
-                    "session_id": f.session_id,
-                    "project_name": f.project_name,
-                    "remediation": f.remediation,
-                    "timestamp": f.timestamp,
-                }
-                for f in all_findings
-            ],
+            "redacted": redact_count if redact and not dry_run else None,
+            "skipped_active": sorted(set(skipped_active)) if skipped_active else [],
+            "findings": finding_dicts,
         }
         click.echo(json.dumps(output, indent=2))
     else:
         _print_audit_report(all_findings, sessions_scanned, project_names)
-        if redact and redact_count > 0:
+
+        if dry_run:
+            click.echo(
+                click.style("  --dry-run: no files modified.", dim=True)
+            )
+            click.echo()
+        elif redact and redact_count > 0:
             click.echo(
                 click.style(
                     f"  Redacted {redact_count} secret(s) from log files.",
@@ -1003,6 +1047,16 @@ def audit(all_projects: bool, session_id: str | None, json_output: bool, redact:
                     bold=True,
                 )
             )
+            click.echo()
+
+        if skipped_active:
+            for log_name in sorted(set(skipped_active)):
+                click.echo(
+                    click.style(
+                        f"  Skipped {log_name} (active session). Use --force to redact.",
+                        fg="yellow",
+                    )
+                )
             click.echo()
 
     # Exit code: 2 if critical, 1 if high, 0 if clean
@@ -1067,10 +1121,37 @@ def _print_audit_report(
                 parts.append(f"File: {f.file_path}")
             parts.append(f"Match: {f.matched_prefix}")
             click.echo(f"        {' | '.join(parts)}")
-            click.echo(
-                f"        Log: {f.log_file}"
-                + (f" | Session: {f.session_id[:8]}" if f.session_id else "")
-            )
+
+            # Log line with active session annotation
+            log_line = f"        Log: {f.log_file}"
+            if f.session_id:
+                log_line += f" | Session: {f.session_id[:8]}"
+            if f.impact and f.impact.is_active_session:
+                log_line += click.style(
+                    f" (ACTIVE SESSION pid={f.impact.active_pid})",
+                    fg="red",
+                    bold=True,
+                )
+            click.echo(log_line)
+
+            # Impact: still in source
+            if f.impact and f.impact.still_in_source:
+                click.echo(
+                    click.style(
+                        f"        Still in source: {f.file_path}:{f.impact.source_line}",
+                        fg="yellow",
+                    )
+                )
+
+            # Impact: env var matches
+            if f.impact and f.impact.env_var_matches:
+                click.echo(
+                    click.style(
+                        f"        In env: {', '.join(f.impact.env_var_matches)}",
+                        fg="yellow",
+                    )
+                )
+
             click.echo(
                 click.style(f"        \U0001f4a1 {f.remediation}", dim=True)
             )
@@ -1133,10 +1214,12 @@ def security_main():
     @click.option("--session", "session_id", type=str, default=None)
     @click.option("--json", "json_output", is_flag=True)
     @click.option("--redact", is_flag=True, help="Replace secrets with [REDACTED]")
-    def guard_audit(all_projects, session_id, json_output, redact):
+    @click.option("--dry-run", is_flag=True, help="Print report without modifying files")
+    @click.option("--force", is_flag=True, help="Redact active session logs too")
+    def guard_audit(all_projects, session_id, json_output, redact, dry_run, force):
         """Audit log history for leaked secrets."""
         ctx = click.Context(audit)
-        ctx.invoke(audit, all_projects=all_projects, session_id=session_id, json_output=json_output, redact=redact)
+        ctx.invoke(audit, all_projects=all_projects, session_id=session_id, json_output=json_output, redact=redact, dry_run=dry_run, force=force)
 
     guard_cli()
 

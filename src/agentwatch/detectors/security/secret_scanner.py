@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -442,6 +443,17 @@ _SEVERITY_LABEL: dict[Severity, str] = {
 
 
 @dataclass
+class ImpactAssessment:
+    """Impact context for a secret finding — populated by assess_impact()."""
+
+    is_active_session: bool = False
+    active_pid: int | None = None
+    still_in_source: bool = False
+    source_line: int | None = None
+    env_var_matches: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AuditFinding:
     """A single secret leak found during a passive log audit."""
 
@@ -455,6 +467,7 @@ class AuditFinding:
     severity: str
     remediation: str
     timestamp: str | None
+    impact: ImpactAssessment | None = None
 
 
 def audit_log_file(
@@ -539,3 +552,98 @@ def redact_log_file(log_path: Path) -> int:
         log_path.write_text("".join(new_lines), encoding="utf-8")
 
     return total_replacements
+
+
+# ---------------------------------------------------------------------------
+# Impact assessment helpers
+# ---------------------------------------------------------------------------
+
+
+def _pattern_for_secret_type(secret_type: str) -> re.Pattern | None:
+    """Look up compiled regex by label from _SECRET_PATTERNS."""
+    for pattern, label in _SECRET_PATTERNS:
+        if label == secret_type:
+            return pattern
+    return None
+
+
+def _build_active_session_map() -> dict[str, int]:
+    """Return {log_filename: pid} for currently running agents."""
+    from agentwatch.discovery import find_running_agents
+
+    mapping: dict[str, int] = {}
+    for agent in find_running_agents():
+        if agent.log_file is not None:
+            mapping[agent.log_file.name] = agent.pid
+    return mapping
+
+
+def _check_source_file(
+    file_path: str, secret_type: str
+) -> tuple[bool, int | None]:
+    """Check if the secret pattern still matches in the source file.
+
+    Returns (found, line_number) — line_number is 1-indexed if found.
+    """
+    pattern = _pattern_for_secret_type(secret_type)
+    if pattern is None:
+        return False, None
+
+    try:
+        source = Path(file_path)
+        if not source.is_file():
+            return False, None
+        text = source.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False, None
+
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if pattern.search(line):
+            return True, lineno
+    return False, None
+
+
+def _check_env_vars(secret_type: str) -> list[str]:
+    """Return names of env vars whose values match the secret pattern."""
+    pattern = _pattern_for_secret_type(secret_type)
+    if pattern is None:
+        return []
+
+    matches: list[str] = []
+    for var_name, var_value in os.environ.items():
+        if pattern.search(var_value):
+            matches.append(var_name)
+    return matches
+
+
+def assess_impact(
+    findings: list[AuditFinding],
+    *,
+    active_session_map: dict[str, int] | None = None,
+) -> None:
+    """Populate finding.impact in-place for all findings.
+
+    Pass active_session_map to avoid calling find_running_agents() (useful in tests).
+    """
+    if active_session_map is None:
+        active_session_map = _build_active_session_map()
+
+    for finding in findings:
+        impact = ImpactAssessment()
+
+        # Active session check
+        pid = active_session_map.get(finding.log_file)
+        if pid is not None:
+            impact.is_active_session = True
+            impact.active_pid = pid
+
+        # Source file check
+        if finding.file_path:
+            found, lineno = _check_source_file(finding.file_path, finding.secret_type)
+            impact.still_in_source = found
+            impact.source_line = lineno
+
+        # Environment variable check
+        impact.env_var_matches = _check_env_vars(finding.secret_type)
+
+        finding.impact = impact

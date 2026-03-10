@@ -12,9 +12,14 @@ import pytest
 
 from agentwatch.detectors.security.secret_scanner import (
     AuditFinding,
+    ImpactAssessment,
     SecretLeakScanner,
+    _check_env_vars,
+    _check_source_file,
     _is_false_positive,
+    _pattern_for_secret_type,
     _shannon_entropy,
+    assess_impact,
     audit_log_file,
     extract_scannable_content,
     redact_log_file,
@@ -790,3 +795,106 @@ class TestRedactLogFile:
         p = tmp_path / "empty.jsonl"
         p.write_text("{}\n{}\n")
         assert redact_log_file(p) == 0
+
+
+# ---------------------------------------------------------------------------
+# TestImpactAssessment
+# ---------------------------------------------------------------------------
+
+class TestImpactAssessment:
+    """Tests for impact assessment helpers and assess_impact()."""
+
+    def _make_finding(
+        self,
+        secret_type: str = "openai_api_key",
+        log_file: str = "session1.jsonl",
+        file_path: str | None = "/app/config.py",
+    ) -> AuditFinding:
+        return AuditFinding(
+            secret_type=secret_type,
+            channel="file_write",
+            file_path=file_path,
+            log_file=log_file,
+            session_id="session1",
+            project_name="test",
+            matched_prefix="sk-proj-abc...",
+            severity="critical",
+            remediation="Remove from file",
+            timestamp=None,
+        )
+
+    # -- Active session detection --
+
+    def test_active_session_detected(self):
+        finding = self._make_finding(log_file="active.jsonl")
+        active_map = {"active.jsonl": 54321}
+        assess_impact([finding], active_session_map=active_map)
+        assert finding.impact is not None
+        assert finding.impact.is_active_session is True
+        assert finding.impact.active_pid == 54321
+
+    def test_inactive_session(self):
+        finding = self._make_finding(log_file="old.jsonl")
+        active_map = {"active.jsonl": 54321}
+        assess_impact([finding], active_session_map=active_map)
+        assert finding.impact is not None
+        assert finding.impact.is_active_session is False
+        assert finding.impact.active_pid is None
+
+    # -- Source file checks --
+
+    def test_still_in_source(self, tmp_path):
+        source = tmp_path / "config.py"
+        source.write_text('OPENAI_KEY = "sk-abcdefghij1234567890ab"\n')
+        finding = self._make_finding(file_path=str(source))
+        assess_impact([finding], active_session_map={})
+        assert finding.impact is not None
+        assert finding.impact.still_in_source is True
+        assert finding.impact.source_line == 1
+
+    def test_not_in_source_when_removed(self, tmp_path):
+        source = tmp_path / "config.py"
+        source.write_text('OPENAI_KEY = "use-env-var"\n')
+        finding = self._make_finding(file_path=str(source))
+        assess_impact([finding], active_session_map={})
+        assert finding.impact is not None
+        assert finding.impact.still_in_source is False
+
+    def test_source_file_missing(self):
+        finding = self._make_finding(file_path="/nonexistent/path/config.py")
+        assess_impact([finding], active_session_map={})
+        assert finding.impact is not None
+        assert finding.impact.still_in_source is False
+
+    def test_no_file_path_skips_source_check(self):
+        finding = self._make_finding(file_path=None)
+        assess_impact([finding], active_session_map={})
+        assert finding.impact is not None
+        assert finding.impact.still_in_source is False
+        assert finding.impact.source_line is None
+
+    # -- Environment variable checks --
+
+    def test_env_var_match(self, monkeypatch):
+        monkeypatch.setenv("MY_OPENAI_KEY", "sk-proj-abc123def456ghi789jklmno")
+        finding = self._make_finding(secret_type="openai_project_key")
+        assess_impact([finding], active_session_map={})
+        assert finding.impact is not None
+        assert "MY_OPENAI_KEY" in finding.impact.env_var_matches
+
+    def test_env_var_no_match(self, monkeypatch):
+        monkeypatch.setenv("SAFE_VAR", "nothing-secret-here")
+        finding = self._make_finding()
+        assess_impact([finding], active_session_map={})
+        assert finding.impact is not None
+        assert "SAFE_VAR" not in finding.impact.env_var_matches
+
+    # -- Pattern lookup --
+
+    def test_pattern_lookup_known(self):
+        pat = _pattern_for_secret_type("openai_api_key")
+        assert pat is not None
+        assert pat.search("sk-abcdefghij1234567890ab")
+
+    def test_pattern_lookup_unknown(self):
+        assert _pattern_for_secret_type("nonexistent_type") is None
