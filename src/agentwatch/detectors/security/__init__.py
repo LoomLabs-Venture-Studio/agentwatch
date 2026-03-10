@@ -5,6 +5,7 @@ from .credentials import (
     CredentialExfiltrationDetector,
     SecretInOutputDetector,
 )
+from .secret_scanner import SecretLeakScanner
 from .injection import (
     HiddenInstructionDetector,
     IndirectInjectionDetector,
@@ -35,6 +36,7 @@ __all__ = [
     "CredentialAccessDetector",
     "SecretInOutputDetector",
     "CredentialExfiltrationDetector",
+    "SecretLeakScanner",
     # Injection detectors
     "PromptInjectionDetector",
     "HiddenInstructionDetector",
@@ -65,6 +67,7 @@ def get_all_security_detectors():
         CredentialAccessDetector(),
         SecretInOutputDetector(),
         CredentialExfiltrationDetector(),
+        SecretLeakScanner(),
         # Injection
         PromptInjectionDetector(),
         HiddenInstructionDetector(),
