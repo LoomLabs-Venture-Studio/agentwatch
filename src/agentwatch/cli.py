@@ -869,6 +869,302 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
     click.echo()
 
 
+@cli.command()
+@click.option(
+    "--all", "all_projects",
+    is_flag=True,
+    help="Scan all projects under ~/.claude/projects/ (default: current project only)",
+)
+@click.option(
+    "--session", "session_id",
+    type=str,
+    default=None,
+    help="Restrict scan to a specific session ID",
+)
+@click.option(
+    "--json", "json_output",
+    is_flag=True,
+    help="Output as JSON for scripting/piping",
+)
+@click.option(
+    "--redact",
+    is_flag=True,
+    help="Replace detected secrets with [REDACTED] in the log files",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Run scan and impact assessment, print report, but don't modify any files",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Allow redacting active session logs (default: skip them)",
+)
+def audit(all_projects: bool, session_id: str | None, json_output: bool, redact: bool, dry_run: bool, force: bool):
+    """Scan log history for leaked secrets and credentials.
+
+    Performs a passive forensic audit of existing JSONL session logs,
+    checking for API keys, tokens, passwords, and other secrets across
+    all action channels (file writes, bash commands, model output, etc.).
+
+    \b
+    By default scans the current project. Use --all for all projects.
+    Use --redact to replace found secrets with [REDACTED] in the log files.
+    """
+    from agentwatch.cc_stats import (
+        cwd_to_project_dir,
+        find_all_project_dirs,
+        project_dir_to_name,
+    )
+    from agentwatch.detectors.security.secret_scanner import (
+        AuditFinding,
+        audit_log_file,
+        assess_impact,
+        redact_log_file,
+    )
+
+    if all_projects:
+        dirs = find_all_project_dirs()
+    else:
+        project_dir = cwd_to_project_dir()
+        if project_dir is None:
+            click.echo(
+                "No Claude Code session logs found for this project.\n"
+                "Run from a project directory or use --all for all projects.",
+                err=True,
+            )
+            sys.exit(1)
+        dirs = [project_dir]
+
+    all_findings: list[AuditFinding] = []
+    sessions_scanned = 0
+    project_names: list[str] = []
+
+    for pdir in dirs:
+        proj_name = project_dir_to_name(pdir)
+        project_names.append(proj_name)
+
+        if session_id:
+            jsonl = pdir / f"{session_id}.jsonl"
+            files = [jsonl] if jsonl.is_file() else []
+        else:
+            files = sorted(pdir.glob("*.jsonl"))
+
+        for jsonl_path in files:
+            sessions_scanned += 1
+            try:
+                findings = audit_log_file(jsonl_path, project_name=proj_name)
+                all_findings.extend(findings)
+            except (OSError, json.JSONDecodeError):
+                continue
+
+    if sessions_scanned == 0:
+        if all_projects:
+            click.echo("No Claude Code session logs found.", err=True)
+        else:
+            click.echo(
+                "No Claude Code session logs found for this project.\n"
+                "Run from a project directory or use --all for all projects.",
+                err=True,
+            )
+        sys.exit(1)
+
+    # Always run impact assessment
+    assess_impact(all_findings)
+
+    # Determine which log files belong to active sessions
+    active_log_files: set[str] = set()
+    for f in all_findings:
+        if f.impact and f.impact.is_active_session:
+            active_log_files.add(f.log_file)
+
+    # --redact: replace secrets in affected log files
+    redact_count = 0
+    skipped_active: list[str] = []
+    if redact and all_findings and not dry_run:
+        affected_files: dict[str, Path] = {}
+        for pdir in dirs:
+            for f in all_findings:
+                fp = pdir / f.log_file
+                if fp.is_file():
+                    affected_files[str(fp)] = fp
+        for fp_str, fp in affected_files.items():
+            # Skip active session logs unless --force
+            if not force and fp.name in active_log_files:
+                skipped_active.append(fp.name)
+                continue
+            try:
+                redact_count += redact_log_file(fp)
+            except OSError:
+                continue
+
+    if json_output:
+        finding_dicts = []
+        for f in all_findings:
+            d: dict = {
+                "secret_type": f.secret_type,
+                "channel": f.channel,
+                "severity": f.severity,
+                "file_path": f.file_path,
+                "matched_prefix": f.matched_prefix,
+                "log_file": f.log_file,
+                "session_id": f.session_id,
+                "project_name": f.project_name,
+                "remediation": f.remediation,
+                "timestamp": f.timestamp,
+            }
+            if f.impact:
+                d["is_active_session"] = f.impact.is_active_session
+                d["active_pid"] = f.impact.active_pid
+                d["still_in_source"] = f.impact.still_in_source
+                d["source_line"] = f.impact.source_line
+                d["env_var_matches"] = f.impact.env_var_matches
+            finding_dicts.append(d)
+
+        output: dict = {
+            "projects": project_names,
+            "sessions_scanned": sessions_scanned,
+            "total_findings": len(all_findings),
+            "redacted": redact_count if redact and not dry_run else None,
+            "skipped_active": sorted(set(skipped_active)) if skipped_active else [],
+            "findings": finding_dicts,
+        }
+        click.echo(json.dumps(output, indent=2))
+    else:
+        _print_audit_report(all_findings, sessions_scanned, project_names)
+
+        if dry_run:
+            click.echo(
+                click.style("  --dry-run: no files modified.", dim=True)
+            )
+            click.echo()
+        elif redact and redact_count > 0:
+            click.echo(
+                click.style(
+                    f"  Redacted {redact_count} secret(s) from log files.",
+                    fg="green",
+                    bold=True,
+                )
+            )
+            click.echo()
+
+        if skipped_active:
+            for log_name in sorted(set(skipped_active)):
+                click.echo(
+                    click.style(
+                        f"  Skipped {log_name} (active session). Use --force to redact.",
+                        fg="yellow",
+                    )
+                )
+            click.echo()
+
+    # Exit code: 2 if critical, 1 if high, 0 if clean
+    severities = {f.severity for f in all_findings}
+    if "critical" in severities:
+        sys.exit(2)
+    elif "high" in severities:
+        sys.exit(1)
+    sys.exit(0)
+
+
+def _print_audit_report(
+    findings: list,
+    sessions_scanned: int,
+    project_names: list[str],
+) -> None:
+    """Print a formatted secret audit report."""
+    click.echo()
+    click.echo("=" * 54)
+    click.echo("  SECRET AUDIT REPORT")
+    click.echo("=" * 54)
+    click.echo()
+    click.echo(
+        f"  Scanned: {sessions_scanned} session(s) across"
+        f" {len(project_names)} project(s)"
+    )
+    click.echo()
+
+    if not findings:
+        clean = sessions_scanned
+        click.echo(click.style("  No secrets found.", fg="green", bold=True))
+        click.echo(f"  {clean} session(s) clean.")
+        click.echo()
+        return
+
+    # Group by severity
+    critical = [f for f in findings if f.severity == "critical"]
+    high = [f for f in findings if f.severity == "high"]
+    medium = [f for f in findings if f.severity == "medium"]
+
+    for label, color, group in [
+        ("CRITICAL", "red", critical),
+        ("HIGH", "yellow", high),
+        ("MEDIUM", "blue", medium),
+    ]:
+        if not group:
+            continue
+        emoji = {"CRITICAL": "\U0001f6a8", "HIGH": "\u26a0\ufe0f ", "MEDIUM": "\u2139\ufe0f "}[label]
+        click.echo(
+            f"  {emoji} "
+            + click.style(f"{label} ({len(group)})", fg=color, bold=True)
+        )
+        click.echo()
+
+        for f in group:
+            click.echo(
+                f"     {click.style(f.secret_type, bold=True)}"
+                f" in {f.channel}"
+            )
+            parts = []
+            if f.file_path:
+                parts.append(f"File: {f.file_path}")
+            parts.append(f"Match: {f.matched_prefix}")
+            click.echo(f"        {' | '.join(parts)}")
+
+            # Log line with active session annotation
+            log_line = f"        Log: {f.log_file}"
+            if f.session_id:
+                log_line += f" | Session: {f.session_id[:8]}"
+            if f.impact and f.impact.is_active_session:
+                log_line += click.style(
+                    f" (ACTIVE SESSION pid={f.impact.active_pid})",
+                    fg="red",
+                    bold=True,
+                )
+            click.echo(log_line)
+
+            # Impact: still in source
+            if f.impact and f.impact.still_in_source:
+                click.echo(
+                    click.style(
+                        f"        Still in source: {f.file_path}:{f.impact.source_line}",
+                        fg="yellow",
+                    )
+                )
+
+            # Impact: env var matches
+            if f.impact and f.impact.env_var_matches:
+                click.echo(
+                    click.style(
+                        f"        In env: {', '.join(f.impact.env_var_matches)}",
+                        fg="yellow",
+                    )
+                )
+
+            click.echo(
+                click.style(f"        \U0001f4a1 {f.remediation}", dim=True)
+            )
+            click.echo()
+
+    # Summary: sessions with no findings
+    sessions_with_findings = len({f.session_id for f in findings if f.session_id})
+    clean = sessions_scanned - sessions_with_findings
+    if clean > 0:
+        click.echo(f"  No issues: {clean} session(s) clean")
+    click.echo()
+
+
 def main():
     """Main entry point for agentwatch CLI."""
     cli()
@@ -912,7 +1208,19 @@ def security_main():
         """Watch all agents for security issues."""
         ctx = click.Context(watch_all)
         ctx.invoke(watch_all, security=True, all_logs=all_logs)
-    
+
+    @guard_cli.command(name="audit")
+    @click.option("--all", "all_projects", is_flag=True, help="Scan all projects")
+    @click.option("--session", "session_id", type=str, default=None)
+    @click.option("--json", "json_output", is_flag=True)
+    @click.option("--redact", is_flag=True, help="Replace secrets with [REDACTED]")
+    @click.option("--dry-run", is_flag=True, help="Print report without modifying files")
+    @click.option("--force", is_flag=True, help="Redact active session logs too")
+    def guard_audit(all_projects, session_id, json_output, redact, dry_run, force):
+        """Audit log history for leaked secrets."""
+        ctx = click.Context(audit)
+        ctx.invoke(audit, all_projects=all_projects, session_id=session_id, json_output=json_output, redact=redact, dry_run=dry_run, force=force)
+
     guard_cli()
 
 
