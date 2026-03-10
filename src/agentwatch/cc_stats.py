@@ -279,25 +279,42 @@ _TRIVIAL_PROGRAMS = frozenset({
 })
 
 
+def _split_shell_commands(cmd: str) -> list[str]:
+    """Split a shell command into individual sub-commands.
+
+    Handles pipes (|), AND chains (&&), semicolons (;).
+    Returns each sub-command as a separate string.
+    """
+    import re
+    # Split on |, &&, ; while preserving quoted strings approximately
+    parts = re.split(r'\s*(?:\|\||&&|[|;])\s*', cmd)
+    return [p.strip() for p in parts if p.strip()]
+
+
+# Programs that indicate AI-generated or complex invocations
+_SUBSTANTIVE_PROGRAMS = frozenset({
+    "awk", "sed",
+    "claude",  # spawning AI agents
+    "while", "for", "if", "do", "done", "then", "fi",  # shell constructs
+})
+
+
 def is_trivial_bash(cmd: str) -> bool:
     """Check if a bash command is trivial (user could type it themselves).
 
     Trivial = a well-known CLI command that doesn't require AI reasoning
-    to formulate.  Non-trivial = inline code, complex text processing, or
-    unknown programs where the AI likely constructed the invocation.
+    to formulate.  Non-trivial = inline code, complex text processing,
+    shell constructs, AI agent spawning, or unknown programs.
+
+    ALL sub-commands in a pipeline/chain must be trivial for the overall
+    command to be trivial.
     """
     cmd = cmd.strip()
     if not cmd:
         return True
 
-    # Check each command in a pipeline/chain — ALL must be trivial
-    # Split on pipes first
-    segments = cmd.split("|")
-    for segment in segments:
-        # Split on && and ;
-        for sep in ("&&", ";"):
-            segment = segment.split(sep)[0]
-        segment = segment.strip()
+    # Check EVERY sub-command — ALL must be trivial
+    for segment in _split_shell_commands(cmd):
         if not segment:
             continue
 
@@ -310,7 +327,10 @@ def is_trivial_bash(cmd: str) -> bool:
 
         program = parts[idx].rsplit("/", 1)[-1].lower()
         rest_parts = parts[idx + 1:]
-        rest = " ".join(rest_parts).lower()
+
+        # Explicitly substantive programs
+        if program in _SUBSTANTIVE_PROGRAMS:
+            return False
 
         # Inline code is substantive — the AI wrote the script
         if program in ("python", "python3", "node", "ruby", "perl"):
@@ -318,10 +338,6 @@ def is_trivial_bash(cmd: str) -> bool:
                 return False
             # Running a script file is trivial
             continue
-
-        # Complex text processing — AI likely crafted the pattern
-        if program in ("awk", "sed"):
-            return False
 
         if program not in _TRIVIAL_PROGRAMS:
             return False

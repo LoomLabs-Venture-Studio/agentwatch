@@ -202,6 +202,23 @@ class TestIsTrivialBash:
     def test_chain_of_trivial_is_trivial(self):
         assert is_trivial_bash("git add . && git commit -m 'msg'") is True
 
+    def test_chain_with_substantive_is_substantive(self):
+        # cd is trivial but claude is not
+        assert is_trivial_bash("cd /tmp && claude -p 'do something'") is False
+        # git is trivial but awk is not
+        assert is_trivial_bash("git log; awk '{print $1}'") is False
+
+    def test_while_loop_is_substantive(self):
+        assert is_trivial_bash("while true; do echo hi; done") is False
+        assert is_trivial_bash("i=0; while true; do /usr/bin/false; done") is False
+
+    def test_for_loop_is_substantive(self):
+        assert is_trivial_bash("for f in *.py; do echo $f; done") is False
+
+    def test_claude_command_is_substantive(self):
+        assert is_trivial_bash("claude -p 'write some code'") is False
+        assert is_trivial_bash("cd /tmp && claude -p 'test'") is False
+
     def test_env_prefix_is_trivial(self):
         assert is_trivial_bash("NODE_ENV=test npm test") is True
 
