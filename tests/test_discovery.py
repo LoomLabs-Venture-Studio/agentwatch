@@ -2,12 +2,13 @@
 
 from pathlib import Path
 
+import agentwatch.discovery as discovery
 from agentwatch.discovery import (
     AgentProcess,
-    AgentTeam,
-    _walk_to_ancestor_agent,
-    _compute_depths,
     _assign_team_ids,
+    _compute_depths,
+    _find_open_jsonl,
+    _walk_to_ancestor_agent,
     build_agent_tree,
     build_teams,
 )
@@ -339,3 +340,97 @@ class TestAgentProcessProperties:
         a.depth = 1
         assert a.is_subagent is True
         assert a.is_root is False
+
+
+# ---------------------------------------------------------------------------
+# _find_open_jsonl
+# ---------------------------------------------------------------------------
+
+
+class _FakeOpenFile:
+    def __init__(self, path):
+        self.path = path
+
+
+class TestFindOpenJsonl:
+    """Uses psutil.Process.open_files() (cross-platform) instead of lsof."""
+
+    def test_finds_matching_jsonl_under_project_dir(self, tmp_path, monkeypatch):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        target = project_dir / "session-abc.jsonl"
+        target.write_text("")
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(target))]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_jsonl(pid=123, project_dir=project_dir) == target
+
+    def test_ignores_files_outside_project_dir(self, tmp_path, monkeypatch):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        outside = tmp_path / "other" / "session.jsonl"
+        outside.parent.mkdir()
+        outside.write_text("")
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(outside))]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_jsonl(pid=123, project_dir=project_dir) is None
+
+    def test_ignores_non_jsonl_files(self, tmp_path, monkeypatch):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        notes = project_dir / "notes.txt"
+        notes.write_text("")
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(notes))]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_jsonl(pid=123, project_dir=project_dir) is None
+
+    def test_returns_none_on_access_denied(self, tmp_path, monkeypatch):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                raise discovery.psutil.AccessDenied(pid)
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_jsonl(pid=123, project_dir=project_dir) is None
+
+    def test_returns_none_when_file_no_longer_exists(self, tmp_path, monkeypatch):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        gone = project_dir / "gone.jsonl"  # never created on disk
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(gone))]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_jsonl(pid=123, project_dir=project_dir) is None

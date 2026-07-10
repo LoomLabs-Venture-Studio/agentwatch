@@ -1165,13 +1165,29 @@ def _print_audit_report(
     click.echo()
 
 
+def _ensure_utf8_stdio() -> None:
+    """Force UTF-8 on stdout/stderr.
+
+    Windows consoles default Python's stdout/stderr to the legacy code page
+    (e.g. cp1252), which can't encode the box-drawing characters used in
+    report output and crashes with UnicodeEncodeError. macOS/Linux terminals
+    are already UTF-8, so this is a no-op there.
+    """
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main():
     """Main entry point for agentwatch CLI."""
+    _ensure_utf8_stdio()
     cli()
 
 
 def security_main():
     """Entry point for agentguard CLI (security-focused)."""
+    _ensure_utf8_stdio()
     # Override defaults to always include security
     @click.group()
     @click.version_option(version="0.1.4")

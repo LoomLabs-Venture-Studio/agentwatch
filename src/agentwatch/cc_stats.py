@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from agentwatch.path_encoding import encode_path_for_claude
+
 
 class ToolCategory(Enum):
     """Categories for Claude Code tool usage."""
@@ -460,14 +462,13 @@ CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 def cwd_to_project_dir(cwd: Path | None = None) -> Path | None:
     """Map a working directory to its Claude Code project directory.
 
-    Claude Code stores projects under ~/.claude/projects/ using the
-    absolute path with '/' replaced by '-'.
+    Claude Code stores projects under ~/.claude/projects/ keyed by the
+    absolute path run through `encode_path_for_claude` (see path_encoding.py).
     """
     if cwd is None:
         cwd = Path.cwd()
     cwd = cwd.resolve()
-    # /Users/zaid/foo -> -Users-zaid-foo
-    dir_name = str(cwd).replace("/", "-")
+    dir_name = encode_path_for_claude(cwd)
     project_dir = CLAUDE_PROJECTS_DIR / dir_name
     if project_dir.is_dir():
         return project_dir

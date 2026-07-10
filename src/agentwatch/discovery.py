@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import psutil
+
+from agentwatch.path_encoding import encode_path_for_claude
 
 # Agent detection patterns: maps agent_type to (process name regex, excludes)
 AGENT_PATTERNS: dict[str, dict] = {
@@ -83,49 +86,81 @@ class AgentTeam:
         return max((m.depth for m in self.members), default=0)
 
 
-def find_running_agents() -> list[AgentProcess]:
+@dataclass
+class DiscoveryCache:
+    """Memoizes per-PID cwd/log-file resolution across repeated discovery scans.
+
+    ``find_running_agents()`` is called on a fixed poll interval (e.g. every
+    5s from the multi-agent UI). Without a cache, every already-known PID
+    pays the full blocking resolution cost (cwd + open-jsonl lookup) again
+    on every single scan. This cache lets already-resolved PIDs skip that
+    work, re-resolving only when the cached log path has gone stale.
+    """
+
+    cwd_by_pid: dict[int, Path] = field(default_factory=dict)
+    log_by_pid: dict[int, tuple[Path | None, str | None]] = field(default_factory=dict)
+
+    def prune(self, live_pids: set[int]) -> None:
+        """Drop cache entries for PIDs that are no longer running."""
+        for pid in self.cwd_by_pid.keys() - live_pids:
+            self.cwd_by_pid.pop(pid, None)
+            self.log_by_pid.pop(pid, None)
+
+
+def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProcess]:
     """Discover running AI agent processes on the local machine.
 
-    Uses ``ps -eo`` to find processes matching known agent patterns
-    (including PPID for subagent detection), then ``lsof`` to resolve
-    each process's working directory.
+    Uses ``psutil.process_iter()`` to find processes matching known agent
+    patterns (including PPID for subagent detection), then
+    ``psutil.Process.cwd()`` (via ``_get_process_cwd``) to resolve each
+    process's working directory.
+
+    When *cache* is provided, already-known PIDs reuse their previously
+    resolved cwd/log-file instead of re-resolving cwd every scan.
     """
-    try:
-        result = subprocess.run(
-            ["ps", "-eo", "pid,ppid,%cpu,rss,etime,args"],
-            capture_output=True,
-            text=True,
-            timeout=5,
+    # Materialize once: psutil caches each attrs snapshot on `.info`, so
+    # both passes below read already-fetched data with no further syscalls.
+    procs = list(
+        psutil.process_iter(
+            attrs=[
+                "pid",
+                "ppid",
+                "cmdline",
+                "name",
+                "memory_info",
+                "cpu_percent",
+                "create_time",
+            ]
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return []
-
-    if result.returncode != 0:
-        return []
-
-    lines = result.stdout.strip().splitlines()[1:]  # skip header
+    )
 
     # First pass: build complete PID -> PPID map for ancestor walking
     pid_to_ppid: dict[int, int] = {}
-    for line in lines:
-        parts = line.split(None, 5)
-        if len(parts) < 6:
-            continue
+    for proc in procs:
         try:
-            pid_to_ppid[int(parts[0])] = int(parts[1])
-        except ValueError:
+            info = proc.info
+            pid_to_ppid[info["pid"]] = info["ppid"]
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
 
     # Second pass: find agent processes
     agents: list[AgentProcess] = []
     seen_pids: set[int] = set()
 
-    for line in lines:
-        parts = line.split(None, 5)
-        if len(parts) < 6:
+    for proc in procs:
+        try:
+            info = proc.info
+            pid = info["pid"]
+            ppid = info["ppid"]
+            cmdline = info["cmdline"] or []
+            name = info["name"] or ""
+            command = " ".join(cmdline) or name
+            mem_info = info["memory_info"]
+            memory_mb = (mem_info.rss / (1024.0 * 1024.0)) if mem_info else 0.0
+            cpu_percent = info["cpu_percent"] or 0.0
+            create_time = info["create_time"]
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
-
-        pid_str, ppid_str, cpu, rss, etime, command = parts
 
         for agent_type, config in AGENT_PATTERNS.items():
             pattern = config["pattern"]
@@ -136,43 +171,43 @@ def find_running_agents() -> list[AgentProcess]:
             if exclude and re.search(exclude, command):
                 continue
 
-            try:
-                pid = int(pid_str)
-            except ValueError:
-                continue
-
             if pid in seen_pids:
                 continue
             seen_pids.add(pid)
 
-            try:
-                ppid = int(ppid_str)
-            except ValueError:
-                ppid = None
+            etime = _format_etime(time.time() - create_time) if create_time else ""
 
-            # Parse memory: RSS is in KB
-            try:
-                memory_mb = float(rss) / 1024.0
-            except ValueError:
-                memory_mb = 0.0
-
-            try:
-                cpu_percent = float(cpu)
-            except ValueError:
-                cpu_percent = 0.0
-
-            # Get working directory via lsof
-            cwd = _get_process_cwd(pid)
+            # Get working directory (cached across scans when a
+            # DiscoveryCache is provided — avoids re-resolving cwd for
+            # every already-known PID on each poll tick).
+            if cache is not None:
+                cwd = cache.cwd_by_pid.get(pid) or _get_process_cwd(pid)
+                if pid not in cache.cwd_by_pid and cwd is not None:
+                    cache.cwd_by_pid[pid] = cwd
+            else:
+                cwd = _get_process_cwd(pid)
             if cwd is None:
                 continue
 
-            # Resolve log file based on agent type
+            # Resolve log file based on agent type. Reuse the cached
+            # resolution unless it's missing or the cached path no longer
+            # exists on disk (e.g. log rotated), in which case re-resolve.
             log_file = None
             session_id = None
-            if agent_type == "claude-code":
-                log_file, session_id = _resolve_claude_code_log(cwd, pid=pid)
-            elif agent_type == "aider":
-                log_file, session_id = _resolve_aider_log(cwd)
+            cache_hit = False
+            if cache is not None and pid in cache.log_by_pid:
+                cached_log, cached_session = cache.log_by_pid[pid]
+                if cached_log is not None and cached_log.exists():
+                    log_file, session_id = cached_log, cached_session
+                    cache_hit = True
+
+            if not cache_hit:
+                if agent_type == "claude-code":
+                    log_file, session_id = _resolve_claude_code_log(cwd, pid=pid)
+                elif agent_type == "aider":
+                    log_file, session_id = _resolve_aider_log(cwd)
+                if cache is not None:
+                    cache.log_by_pid[pid] = (log_file, session_id)
 
             agents.append(
                 AgentProcess(
@@ -198,6 +233,9 @@ def find_running_agents() -> list[AgentProcess]:
 
     _compute_depths(agents)
     _assign_team_ids(agents)
+
+    if cache is not None:
+        cache.prune(seen_pids)
 
     return agents
 
@@ -325,61 +363,58 @@ def build_teams(agents: list[AgentProcess]) -> list[AgentTeam]:
 
 
 def _get_process_cwd(pid: int) -> Path | None:
-    """Get the current working directory of a process using lsof."""
+    """Get the current working directory of a process using psutil."""
     try:
-        result = subprocess.run(
-            ["lsof", "-a", "-d", "cwd", "-p", str(pid), "-Fn"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+        path = Path(psutil.Process(pid).cwd())
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
         return None
 
-    if result.returncode != 0:
-        return None
-
-    # lsof -Fn outputs lines like:
-    # p<PID>
-    # n<path>
-    for line in result.stdout.strip().splitlines():
-        if line.startswith("n") and line != "n":
-            path = Path(line[1:])
-            if path.is_dir():
-                return path
-
-    return None
+    return path if path.is_dir() else None
 
 
-def _encode_path_for_claude(path: Path) -> str:
-    """Encode a filesystem path to Claude Code's project directory format.
+def _format_etime(elapsed_seconds: float) -> str:
+    """Format elapsed seconds into a ``ps -eo etime``-compatible string.
 
-    Claude Code encodes paths by replacing `/` with `-`.
-    e.g., /Users/zaid/Projects/agentwatch -> -Users-zaid-Projects-agentwatch
+    Mirrors ``ps``'s ``[[DD-]HH:]MM:SS`` shape so downstream consumers
+    (``cli.py``'s JSON output, ``parser/watcher.py``'s stale-process
+    fallback) keep receiving the same string format regardless of whether
+    the value came from ``ps`` (POSIX) or ``create_time``-based computation
+    (all platforms, via psutil).
     """
-    return str(path).replace("/", "-")
+    total_seconds = max(0, int(elapsed_seconds))
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if days > 0:
+        return f"{days:02d}-{hours:02d}:{minutes:02d}:{seconds:02d}"
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 def _find_open_jsonl(pid: int, project_dir: Path) -> Path | None:
-    """Use lsof to find which .jsonl file a specific PID has open."""
+    """Find which .jsonl file under project_dir a specific PID has open.
+
+    Uses ``psutil.Process.open_files()`` (cross-platform) instead of
+    shelling out to ``lsof``, which doesn't exist on Windows.
+    """
     try:
-        result = subprocess.run(
-            ["lsof", "-a", "-p", str(pid), "-Fn", "+D", str(project_dir)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+        open_files = psutil.Process(pid).open_files()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
         return None
 
-    if result.returncode != 0:
-        return None
-
-    for line in result.stdout.strip().splitlines():
-        if line.startswith("n") and line.endswith(".jsonl"):
-            path = Path(line[1:])
-            if path.exists():
-                return path
+    project_dir = project_dir.resolve()
+    for f in open_files:
+        path = Path(f.path)
+        if path.suffix != ".jsonl":
+            continue
+        try:
+            path.resolve().relative_to(project_dir)
+        except ValueError:
+            continue
+        if path.exists():
+            return path
     return None
 
 
@@ -393,7 +428,7 @@ def _resolve_claude_code_log(
     multiple agents share the same project directory.  Falls back to
     most-recently-modified when ``lsof`` can't determine the file.
     """
-    encoded = _encode_path_for_claude(cwd)
+    encoded = encode_path_for_claude(cwd)
     project_dir = Path.home() / ".claude" / "projects" / encoded
 
     if not project_dir.is_dir():
