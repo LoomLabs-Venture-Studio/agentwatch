@@ -68,7 +68,12 @@ signal)
 - [x] Root-level scratch files resolved: `demo_teams.py` moved to
       `scripts/`, `csv_parser.py` and `flatten_test.py` deleted (board
       sign-off obtained before removal)
-- [ ] First git commit made (pending — go-ahead requested from board)
+- [x] Commits made and pushed — see below (superseded the original
+      "first git commit" framing once it turned out `origin/main` already
+      had 30 commits of real history; see `CLAUDE.md` Known Issues)
+- [x] Draft PR opened for board review: PR #2,
+      `chore/ci-docs-perf-windows-support` -> `main`
+      (https://github.com/LoomLabs-Venture-Studio/agentwatch/pull/2)
 
 ### Implementation Plan
 1. Investigate + resolve 3 root-level scratch files — done (engineer)
@@ -82,8 +87,28 @@ signal)
 5. Reconcile detector counts / agent-support docs between README.md and
    docs/index.md — done (engineer); README's "17 detectors" was stale, real
    count is 35
-6. Update this section + stage the first commit — in progress (CTO); commit
-   itself pending explicit board go-ahead per Irreversible Action Checkpoint
+6. Update this section + stage the first commit — done (CTO). Discovered
+   mid-commit-prep that `origin/main` was never actually empty (30 real
+   commits, PyPI releases through v0.1.6) — the local `.git` was just a
+   disconnected fresh `git init`. Corrected course: branched off
+   `origin/main` instead of committing an orphan baseline, split the real
+   working-tree delta into 3 commits (bootstrap+bugfix, a previously-
+   undocumented detector performance pass reconciled into PLAYBOOK here,
+   and Sprint 1's Windows support), pushed, opened draft PR #2. Board
+   review is next, not a merge decision by CTO.
+
+**Status: Sprint 0 + Sprint 1 both done, submitted as PR #2, awaiting
+board review.** See Task #7 section below for Sprint 1 detail and the new
+"Detector Performance Pass" entry above Task #7 for the reconciled
+undocumented work.
+
+**Known non-blocking issue surfaced during push:** the local Loom-generated
+`.git/hooks/pre-push` runs `scripts/verify-deploy.mjs`, which crashes with
+`Cannot find package 'yaml'` (no `package.json`/`node_modules` in this repo
+to supply it). The hook's exit-code contract treated the crash the same as
+its own "WARN, push anyway" path, so the push wasn't blocked — but the
+check never actually ran. Flagged in the PR description; needs a devops
+follow-up (not yet assigned).
 
 ### Follow-up backlog (not in this sprint)
 - Task #7: native Windows support — scoped, promoted to Sprint 1 below.
