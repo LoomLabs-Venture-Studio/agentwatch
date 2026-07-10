@@ -97,11 +97,11 @@ agentwatch stats
 
     | Category | Detectors |
     |----------|-----------|
-    | Credentials | credential_access, secret_in_output, credential_exfiltration |
+    | Credentials | credential_access, secret_in_output, credential_exfil, secret_leak_scanner |
     | Injection | prompt_injection, hidden_instruction, indirect_injection |
     | Network | network_anomaly, data_exfiltration, c2_communication, dns_exfiltration |
-    | Privilege | privilege_escalation, dangerous_command, mass_file_operation, sensitive_directory_access |
-    | Supply Chain | malicious_skill, skill_network_activity, new_skill_execution, skill_chain, skill_install |
+    | Privilege | privilege_escalation, dangerous_command, mass_file_operation, sensitive_directory |
+    | Supply Chain | malicious_skill, skill_network, new_skill, skill_chain, skill_install |
 
 === "Efficiency Score"
 
@@ -173,7 +173,8 @@ agentwatch stats
 |----------|---------|
 | `credential_access` | Accessing secret files |
 | `secret_in_output` | Secrets in output |
-| `credential_exfiltration` | Credential theft |
+| `credential_exfil` | Credential access followed by network activity |
+| `secret_leak_scanner` | Secrets leaked through any channel |
 
 **Injection**
 
@@ -199,15 +200,15 @@ agentwatch stats
 | `privilege_escalation` | Privilege escalation |
 | `dangerous_command` | Dangerous commands |
 | `mass_file_operation` | Mass file operations |
-| `sensitive_directory_access` | Sensitive directory access |
+| `sensitive_directory` | Sensitive directory access |
 
 **Supply Chain**
 
 | Detector | Catches |
 |----------|---------|
 | `malicious_skill` | Malicious skill behavior |
-| `skill_network_activity` | Skill network requests |
-| `new_skill_execution` | New skill execution |
+| `skill_network` | Skill network requests |
+| `new_skill` | New skill execution |
 | `skill_chain` | Chained skill execution |
 | `skill_install` | Skill installation |
 
@@ -236,11 +237,20 @@ agentwatch stats
 | Agent | Detection | Log Parsing | Teams |
 |-------|-----------|-------------|-------|
 | Claude Code | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } |
-| Aider | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| Moltbot / Clawdbot | — | :material-check-circle:{ .t-green } | — |
+| Aider | :material-check-circle:{ .t-green } | — | — |
 | Codex | :material-check-circle:{ .t-green } | — | — |
+| Cursor | — | — | — |
 
-Agent processes are discovered via `ps` scanning with pattern matching.
+Agent processes are discovered via `ps` scanning with pattern matching (`agentwatch.discovery.AGENT_PATTERNS`).
 Sub-agents are linked through PPID chain walking and grouped into teams.
+
+Claude Code is the only agent with a full pipeline today (process discovery, log-file resolution, and
+log parsing into actions). Moltbot has a log parser (`parser/logs.py`) but no process-discovery pattern,
+so it must be pointed at a log file directly rather than auto-discovered. Aider's process and chat-history
+log are discovered, but there is no Aider log parser yet, so no automatic health/security analysis runs.
+Codex is detected as a running process only, with no log resolution or parsing. Cursor has no support at
+all yet — planned only.
 
 ---
 

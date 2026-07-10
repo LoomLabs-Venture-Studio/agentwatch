@@ -13,3 +13,8 @@ venv/
 .claude/
 *.jsonl
 site/
+.loom/local.yml
+.loom/handoff.md
+.loom/.handoff-consumed
+.claude/settings.local.json
+.loom/.nudge-state

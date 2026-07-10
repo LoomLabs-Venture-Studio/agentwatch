@@ -73,8 +73,10 @@ class TestHighBurn:
     def test_high_burn_rate(self):
         buffer = ActionBuffer(max_size=2000)
         now = datetime.now()
-        # 40k tokens in ~1 minute → burn rate well above 30k/min threshold
-        for i in range(10):
+        # 100k tokens over ~2.4 minutes → ~41.6k tokens/min, well above the
+        # 30k/min threshold. Session must exceed the 2-minute "very short
+        # session" grace period (score.py) for the burn penalty to apply.
+        for i in range(25):
             buffer.add(_make_action(
                 tokens_in=3000,
                 tokens_out=1000,

@@ -13,8 +13,8 @@ Team 2 — "ml-pipeline" (claude-code)
   sub-2: Model agent — hyperparameter tuning, looping on same config
   sub-3: Deploy agent — fighting docker/k8s issues, error spiral
 
-Usage:
-    .venv/bin/python demo_teams.py
+Usage (run from repo root):
+    .venv/bin/python scripts/demo_teams.py
 """
 
 from __future__ import annotations

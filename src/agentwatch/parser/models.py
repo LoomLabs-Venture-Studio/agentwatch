@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,7 @@ class SessionStats:
     """Aggregated statistics for a session."""
     
     start_time: datetime | None = None
+    last_action_time: datetime | None = None
     action_count: int = 0
     total_tokens: int = 0
     total_cost: float = 0.0
@@ -93,12 +95,18 @@ class SessionStats:
     
     @property
     def duration_minutes(self) -> float:
-        if not self.start_time:
+        """Wall-clock span covered by the buffered actions (last - first timestamp).
+
+        Deliberately derived from the actions' own timestamps rather than
+        ``datetime.now()`` so that analysis of a fixed log (e.g. ``agentwatch
+        check`` run twice against the same file) is reproducible and doesn't
+        depend on how long ago the session happened or how long analysis
+        takes to run.
+        """
+        if not self.start_time or not self.last_action_time:
             return 0.0
-        # Handle timezone-aware vs naive datetimes
-        now = datetime.now(self.start_time.tzinfo) if self.start_time.tzinfo else datetime.now()
-        delta = now - self.start_time
-        return delta.total_seconds() / 60
+        delta = self.last_action_time - self.start_time
+        return max(delta.total_seconds() / 60, 0.0)
     
     @property
     def estimated_cost(self) -> float:
@@ -151,7 +159,9 @@ class ActionBuffer:
         
         if not self._stats.start_time:
             self._stats.start_time = action.timestamp
-        
+        if self._stats.last_action_time is None or action.timestamp >= self._stats.last_action_time:
+            self._stats.last_action_time = action.timestamp
+
         if action.file_path:
             self._file_access_counts[action.file_path] = (
                 self._file_access_counts.get(action.file_path, 0) + 1
@@ -163,8 +173,10 @@ class ActionBuffer:
             self._error_messages.append(action.error_message)
     
     def last(self, n: int) -> list[Action]:
-        """Get the last n actions."""
-        return list(self.actions)[-n:]
+        """Get the last n actions (chronological order)."""
+        if n <= 0:
+            return []
+        return list(reversed(list(islice(reversed(self.actions), n))))
     
     def first(self, n: int) -> list[Action]:
         """Get the first n actions."""

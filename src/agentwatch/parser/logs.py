@@ -240,11 +240,17 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
 
 
 def _parse_timestamp(entry: dict) -> datetime:
-    """Extract timestamp from a log entry."""
+    """Extract timestamp from a log entry.
+
+    Always returns a naive datetime (tzinfo stripped) so that timestamps
+    from entries with an explicit UTC-offset string compare cleanly against
+    ones falling back to ``datetime.now()``, which is naive.
+    """
     timestamp_str = entry.get("timestamp") or entry.get("ts") or entry.get("time")
     if timestamp_str:
         try:
-            return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=None)
         except (ValueError, AttributeError):
             pass
     return datetime.now()
@@ -325,7 +331,9 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
         timestamp_str = entry.get("ts") or entry.get("timestamp")
         if timestamp_str:
             try:
-                timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")).replace(
+                    tzinfo=None
+                )
             except (ValueError, AttributeError):
                 timestamp = datetime.now()
         else:
