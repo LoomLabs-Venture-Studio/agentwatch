@@ -12,7 +12,13 @@ from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static, ListItem, ListView, Label
 
 from agentwatch.detectors import create_registry
-from agentwatch.discovery import AgentProcess, AgentTeam, build_teams, find_running_agents
+from agentwatch.discovery import (
+    AgentProcess,
+    AgentTeam,
+    DiscoveryCache,
+    build_teams,
+    find_running_agents,
+)
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.health import (
     calculate_efficiency,
@@ -224,7 +230,10 @@ class MultiAgentWatchApp(App):
         self.security_mode = security_mode
         self.agents: dict[Path, dict] = {}  # path -> {buffer, registry, item, pid, team_id}
         self.teams: dict[int, TeamHeaderItem] = {}  # team_id -> header item
+        self._team_by_pid: dict[int, int] = {}  # pid -> team_id, kept in sync with self.agents
         self._refreshing = False
+        self._scanning = False
+        self._discovery_cache = DiscoveryCache()
         self.selected_path: Path | None = None
         self._alerted_signals: set[str] = set()
         self._process_mode = agent_processes is not None
@@ -310,14 +319,20 @@ class MultiAgentWatchApp(App):
                     else:
                         item = AgentItem(log_path)
 
+                    agent_pid = proc.pid if proc else None
+                    agent_team_id = proc.team_id if proc else None
                     self.agents[log_path] = {
                         "buffer": buffer,
                         "registry": registry,
                         "item": item,
                         "rot_scorer": RotScorer(),
-                        "pid": proc.pid if proc else None,
-                        "team_id": proc.team_id if proc else None,
+                        "pid": agent_pid,
+                        "team_id": agent_team_id,
+                        "_last_count": -1,
+                        "_last_report": None,
                     }
+                    if agent_pid is not None and agent_team_id is not None:
+                        self._team_by_pid[agent_pid] = agent_team_id
 
                     # Add to sidebar
                     agent_list = self.query_one("#agent-list", ListView)
@@ -427,34 +442,54 @@ class MultiAgentWatchApp(App):
         for path, data in self.agents.items():
             if path == self.selected_path:
                 continue
-            other_warnings = data["registry"].check_all(data["buffer"])
-            other_eff = calculate_efficiency(other_warnings, data["buffer"])
-            other_rot_value: float | None = None
-            other_rot_scorer = data.get("rot_scorer")
-            if other_rot_scorer:
-                other_rot_report = other_rot_scorer.update(data["buffer"])
-                other_rot_value = other_rot_report.smoothed_score
-            other_report = calculate_health(
-                other_warnings,
-                include_security=self.security_mode,
-                efficiency_score=other_eff.score,
-                rot_score=other_rot_value,
-            )
+
+            # Change detection: action_count is a monotonically increasing
+            # free checkpoint (ActionBuffer.add() always increments it, even
+            # once the deque starts evicting old entries). If it hasn't moved
+            # since the last tick, no new actions arrived for this agent, so
+            # re-running the full detector/efficiency/rot pipeline would just
+            # reproduce the same report — skip it and reuse the cached one.
+            # (Gating rot_scorer.update() here is intentional: no new actions
+            # means no new turn to smooth, so skipping avoids EMA drift from
+            # re-scoring identical data.)
+            current_count = data["buffer"].stats.action_count
+            if current_count == data["_last_count"] and data["_last_report"] is not None:
+                other_report = data["_last_report"]
+            else:
+                other_warnings = data["registry"].check_all(data["buffer"])
+                other_eff = calculate_efficiency(other_warnings, data["buffer"])
+                other_rot_value: float | None = None
+                other_rot_scorer = data.get("rot_scorer")
+                if other_rot_scorer:
+                    other_rot_report = other_rot_scorer.update(data["buffer"])
+                    other_rot_value = other_rot_report.smoothed_score
+                other_report = calculate_health(
+                    other_warnings,
+                    include_security=self.security_mode,
+                    efficiency_score=other_eff.score,
+                    rot_score=other_rot_value,
+                )
+                if self.security_mode:
+                    self._fire_secret_alerts(other_warnings, self._agent_label(data))
+                data["_last_count"] = current_count
+                data["_last_report"] = other_report
+
             data["item"].update_status(other_report.overall_score, other_report.status)
-            if self.security_mode:
-                self._fire_secret_alerts(other_warnings, self._agent_label(data))
             if data.get("pid") is not None:
                 all_reports[data["pid"]] = other_report
 
-        # Update team health headers
+        # Update team health headers. Group reports by team in a single O(N)
+        # pass via the precomputed pid -> team_id map (self._team_by_pid),
+        # replacing the old per-team O(N) linear scan over self.agents.values()
+        # (which was O(T*N) overall across all teams).
+        reports_by_team: dict[int, dict[int, "HealthReport"]] = {}
+        for pid, r in all_reports.items():
+            team_id = self._team_by_pid.get(pid)
+            if team_id is not None:
+                reports_by_team.setdefault(team_id, {})[pid] = r
+
         for team_id, header in self.teams.items():
-            team_member_reports = {
-                pid: r for pid, r in all_reports.items()
-                if any(
-                    d.get("team_id") == team_id and d.get("pid") == pid
-                    for d in self.agents.values()
-                )
-            }
+            team_member_reports = reports_by_team.get(team_id, {})
             if team_member_reports:
                 team_report = calculate_team_health(
                     team_member_reports,
@@ -492,12 +527,23 @@ class MultiAgentWatchApp(App):
             if w.severity.value == "critical":
                 self.bell()
 
-    def _refresh_processes(self) -> None:
+    async def _refresh_processes(self) -> None:
         """Periodically re-scan running processes and update agent list."""
         if not self._process_mode:
             return
+        if self._scanning:
+            return  # a slow psutil scan is still in flight — don't stack ticks
+        self._scanning = True
+        try:
+            # Only the blocking psutil-based process scan runs off the event
+            # loop; the cache makes already-known PIDs skip cwd resolution
+            # entirely on repeat scans. Everything below touches Textual
+            # widgets/app state and must stay on the event loop, so we don't
+            # offload any further.
+            processes = await asyncio.to_thread(find_running_agents, self._discovery_cache)
+        finally:
+            self._scanning = False
 
-        processes = find_running_agents()
         new_agents = self.watcher.refresh_processes(processes)
 
         # Add new agents to sidebar
@@ -525,7 +571,11 @@ class MultiAgentWatchApp(App):
                     "rot_scorer": RotScorer(),
                     "pid": proc.pid,
                     "team_id": proc.team_id,
+                    "_last_count": -1,
+                    "_last_report": None,
                 }
+                if proc.pid is not None and proc.team_id is not None:
+                    self._team_by_pid[proc.pid] = proc.team_id
                 agent_list.append(item)
 
         # Update process info on existing items
@@ -540,6 +590,9 @@ class MultiAgentWatchApp(App):
             agent_data = self.agents.pop(log_path, None)
             if agent_data:
                 agent_data["item"].remove()
+                reaped_pid = agent_data.get("pid")
+                if reaped_pid is not None:
+                    self._team_by_pid.pop(reaped_pid, None)
             if self.selected_path == log_path:
                 self.selected_path = next(iter(self.agents), None)
 

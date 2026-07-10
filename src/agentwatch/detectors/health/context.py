@@ -45,12 +45,10 @@ class ContextRotDetector(Detector):
         forgotten = early_files - recent_files
 
         # Filter to likely important files (edited, not just read)
-        important_forgotten = []
-        for f in forgotten:
-            for action in early_actions:
-                if action.file_path == f and action.is_file_edit:
-                    important_forgotten.append(f)
-                    break
+        edited_early = {
+            a.file_path for a in early_actions if a.is_file_edit and a.file_path
+        }
+        important_forgotten = [f for f in forgotten if f in edited_early]
         
         if len(important_forgotten) >= 2:
             return Warning(
