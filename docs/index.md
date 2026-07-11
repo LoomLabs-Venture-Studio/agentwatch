@@ -238,7 +238,7 @@ agentwatch stats
 |-------|-----------|-------------|-------|
 | Claude Code | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } |
 | Moltbot / Clawdbot | — | :material-check-circle:{ .t-green } | — |
-| Aider | :material-check-circle:{ .t-green } | — | — |
+| Aider | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | Codex | :material-check-circle:{ .t-green } | — | — |
 | Cursor | — | — | — |
 
@@ -248,7 +248,10 @@ Sub-agents are linked through PPID chain walking and grouped into teams.
 Claude Code is the only agent with a full pipeline today (process discovery, log-file resolution, and
 log parsing into actions). Moltbot has a log parser (`parser/logs.py`) but no process-discovery pattern,
 so it must be pointed at a log file directly rather than auto-discovered. Aider's process and chat-history
-log are discovered, but there is no Aider log parser yet, so no automatic health/security analysis runs.
+log are discovered, and as of Sprint 3 its `.aider.chat.history.md` transcript is parsed into actions too
+(`parser/aider.py::parse_aider_log`), so `agentwatch check`/`security-scan` now run real health/security
+analysis against Aider sessions; an optional `--analytics-log` JSONL sidecar backfills token/cost data.
+Live `agentwatch watch` tailing of Aider logs is not yet supported — one-shot `check`/`security-scan` only.
 Codex is detected as a running process only, with no log resolution or parsing. Cursor has no support at
 all yet — planned only.
 

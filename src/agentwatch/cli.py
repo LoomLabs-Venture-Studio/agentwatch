@@ -125,7 +125,15 @@ def cli(theme: str):
 @click.option(
     "--log", "-l",
     type=click.Path(exists=True, path_type=Path),
-    help="Path to JSONL log file (auto-detects if not specified)",
+    help="Path to agent log file (JSONL, or Aider Markdown chat history); "
+         "auto-detects if not specified",
+)
+@click.option(
+    "--analytics-log",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to an Aider --analytics-log JSONL sidecar (optional, "
+         "backfills tokens/cost onto an Aider Markdown --log)",
 )
 @click.option(
     "--security", "-s",
@@ -137,7 +145,7 @@ def cli(theme: str):
     is_flag=True,
     help="Output as JSON",
 )
-def check(log: Path | None, security: bool, json_output: bool):
+def check(log: Path | None, analytics_log: Path | None, security: bool, json_output: bool):
     """Run a one-time health check on agent logs."""
     # Find log file
     if log is None:
@@ -146,10 +154,10 @@ def check(log: Path | None, security: bool, json_output: bool):
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
         click.echo(f"Using log: {log}")
-    
+
     # Parse logs
     buffer = ActionBuffer()
-    for action in parse_file(log):
+    for action in parse_file(log, analytics_log=analytics_log):
         buffer.add(action)
     
     if len(buffer) == 0:
@@ -437,14 +445,21 @@ def list_detectors(security: bool):
 @click.option(
     "--log", "-l",
     type=click.Path(exists=True, path_type=Path),
-    help="Path to JSONL log file",
+    help="Path to agent log file (JSONL, or Aider Markdown chat history)",
+)
+@click.option(
+    "--analytics-log",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to an Aider --analytics-log JSONL sidecar (optional, "
+         "backfills tokens/cost onto an Aider Markdown --log)",
 )
 @click.option(
     "--json", "json_output",
     is_flag=True,
     help="Output as JSON",
 )
-def security_scan(log: Path | None, json_output: bool):
+def security_scan(log: Path | None, analytics_log: Path | None, json_output: bool):
     """Run a security-focused scan on agent logs."""
     if log is None:
         log = find_latest_session()
@@ -452,10 +467,10 @@ def security_scan(log: Path | None, json_output: bool):
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
         click.echo(f"Using log: {log}")
-    
+
     # Parse logs
     buffer = ActionBuffer()
-    for action in parse_file(log):
+    for action in parse_file(log, analytics_log=analytics_log):
         buffer.add(action)
     
     if len(buffer) == 0:

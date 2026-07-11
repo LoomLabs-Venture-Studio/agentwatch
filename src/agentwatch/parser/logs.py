@@ -440,14 +440,29 @@ def detect_log_format(first_entry: dict) -> str:
     return "unknown"
 
 
-def parse_file(path: Path, session_id: str | None = None) -> Iterator[Action]:
-    """Parse a JSONL log file, auto-detecting format.
+def parse_file(
+    path: Path, session_id: str | None = None, analytics_log: Path | None = None
+) -> Iterator[Action]:
+    """Parse an agent log file, auto-detecting format.
 
     Args:
-        path: Path to the JSONL log file.
+        path: Path to the log file. JSONL (Claude Code / Moltbot) is
+            auto-detected by content; a ``.md`` extension is dispatched to
+            the Aider Markdown chat-history parser instead.
         session_id: Optional session ID to filter by. When provided, only actions
             from this exact session are yielded (prevents log bleeding between sessions).
+        analytics_log: Optional path to an Aider ``--analytics-log`` JSONL
+            sidecar. Only used when ``path`` is a ``.md`` Aider transcript;
+            ignored for JSONL logs.
     """
+    if path.suffix == ".md":
+        from .aider import parse_aider_log
+
+        for action in parse_aider_log(path, analytics_path=analytics_log):
+            if session_id is None or action.session_id == session_id:
+                yield action
+        return
+
     log_format = None
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:

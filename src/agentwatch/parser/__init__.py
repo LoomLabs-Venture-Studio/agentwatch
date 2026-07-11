@@ -1,5 +1,6 @@
 """Log parsing utilities for AI agent monitoring."""
 
+from .aider import parse_aider_analytics, parse_aider_log, parse_aider_markdown
 from .logs import (
     find_latest_session,
     find_log_files,
@@ -21,6 +22,9 @@ __all__ = [
     "find_log_files",
     "is_sensitive_path",
     "parse_file",
+    "parse_aider_analytics",
+    "parse_aider_log",
+    "parse_aider_markdown",
     "SENSITIVE_PATH_REGEX",
 ]
 

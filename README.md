@@ -7,7 +7,7 @@ Real-time health and security monitoring for AI coding agents.
 
 ## What is AgentWatch?
 
-AgentWatch monitors AI agents (full support for Claude Code; experimental/partial support for Aider, Codex CLI, and Moltbot — see [Supported Agents](#supported-agents)) for:
+AgentWatch monitors AI agents (full support for Claude Code; Aider Markdown chat-history log parsing plus experimental/partial support for Codex CLI and Moltbot — see [Supported Agents](#supported-agents)) for:
 
 - **Health Issues**: Loops, thrashing, context rot, error spirals
 - **Security Threats**: Credential theft, prompt injection, data exfiltration
@@ -216,11 +216,11 @@ A single CRITICAL severity security warning immediately sets the security score 
 | ---------------------- | ------------------------------------------------ | ------------------------------------------- | --------------------------------------------------- |
 | **Claude Code**        | Yes (`~/.claude/projects/*/` logs)               | Yes                                         | Fully supported                                     |
 | **Moltbot / Clawdbot** | No (not auto-discovered by `agentwatch ps`)      | Yes (`~/.moltbot/agents/*/sessions/` logs)  | Partial — point AgentWatch at the log file directly |
-| **Aider**              | Yes (process + `.aider.chat.history.md` located) | No (log format not yet parsed into actions) | Partial — detected but not analyzed                 |
+| **Aider**              | Yes (process + `.aider.chat.history.md` located) | Yes (Markdown chat history; optional `--analytics-log` JSONL sidecar backfills tokens/cost) | Supported — `agentwatch check --log <.aider.chat.history.md>` |
 | **Codex CLI**          | Yes (process pattern only)                       | No                                          | Detection only                                      |
 | Cursor                 | No                                               | No                                          | Planned                                             |
 
-Verified against `src/agentwatch/discovery.py` (`AGENT_PATTERNS`, log-file resolution) and `src/agentwatch/parser/logs.py` (`detect_log_format`, `parse_claude_code_entry`, `parse_moltbot_entry`).
+Verified against `src/agentwatch/discovery.py` (`AGENT_PATTERNS`, log-file resolution) and `src/agentwatch/parser/logs.py` (`detect_log_format`, `parse_claude_code_entry`, `parse_moltbot_entry`). Aider Markdown log parsing lives in `src/agentwatch/parser/aider.py` (`parse_aider_log`) — live `agentwatch watch` tailing of Aider logs is not yet supported (see that module's docstring / the Sprint 3 PRD's Open Questions), only one-shot `check`/`security-scan`.
 
 ## Usage
 
@@ -232,6 +232,12 @@ agentwatch check
 
 # Specific log file
 agentwatch check --log ~/.claude/projects/myapp/session.jsonl
+
+# Aider Markdown chat history (auto-detected by .md extension)
+agentwatch check --log ./.aider.chat.history.md
+
+# ...with an optional --analytics-log sidecar to backfill tokens/cost
+agentwatch check --log ./.aider.chat.history.md --analytics-log ./analytics.jsonl
 
 # Include security checks
 agentwatch check --security
@@ -401,7 +407,7 @@ All built-in detectors are deterministic (Tier 1) for:
 Contributions welcome! Especially:
 
 - New detectors for failure patterns you've observed
-- Support for additional agents (Cursor, Aider, etc.)
+- Support for additional agents (Cursor, Codex CLI live tailing, etc.) — Aider Markdown log parsing landed in Sprint 3
 - Better heuristics for existing detectors
 - SIEM integration (Splunk, Elastic, etc.)
 
