@@ -304,9 +304,9 @@ UTF-8 stdio fix found via the manual smoke test. Status: done.
   Cursor needs its own discovery mechanism (not `AGENT_PATTERNS`, since
   it's a GUI IDE not a spawned CLI process), and proposes a read-only
   Phase 0 research spike before implementation given how much of the
-  bubble-level content schema remains genuinely unverified. Ready for
-  sprint scoping (starting with the Phase 0 spike, per its own
-  recommendation).
+  bubble-level content schema remains genuinely unverified.
+  **Promoted to Sprint 2 below (2026-07-11)** — board picked this over
+  Aider/Codex CLI as the next sprint, scoped to the Phase 0 spike only.
 
   **Wrong file previously flagged**: `~/.cursor/ai-tracking/
   ai-code-tracking.db` exists but every table is empty except one metadata
@@ -414,6 +414,197 @@ Two more changes bundled with it:
 - [x] `python -m pytest tests/ -v` — 270/270 pass with this work included
 - [x] `ruff check .` — no new warnings versus the pre-existing ~635-warning
       baseline (confirmed by direct count during commit prep)
+
+---
+
+### Sprint: Sprint 2 — Cursor Support, Phase 0 Research Spike
+**Type:** research / spike (explicitly not implementation)
+**Priority:** Unblocks Cursor `CursorWatcher` implementation (Phase 1),
+which cannot be scoped or assigned until this phase's findings are
+reviewed — per the architecture review's own Delegation section, this is
+a harder gate than the usual "board approval to merge": it's board
+approval to even start writing Phase 1.
+**PRD Status:** architecture review exists (not a PRD) at
+`C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md`; this
+sprint's own scoping plan is at
+`C:\Users\Zaid\.claude\plans\whats-next-serialized-elephant.md`
+**Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
+
+**Why Cursor over Aider/Codex CLI:** board reviewed a comparison of all
+three researched-but-unscoped backlog items (2026-07-11). Aider is more
+tractable/lower-risk and Codex CLI has real value but an unverified core
+schema guess — both remain in the Sprint 1 follow-up backlog above,
+unscoped, for a future sprint. Board chose to prioritize Cursor's Phase 0
+spike now that a populated Cursor install (real agent-mode chat history)
+is available to inspect, which was the blocking dependency called out in
+the architecture review.
+
+### Acceptance Criteria
+- [ ] A real populated `conversationMap` directly inspected (not
+      inferred); every item in the architecture review's Open Questions
+      section answered concretely or explicitly flagged "still open,
+      tracked as follow-up" — no silent gaps. Covers: bubble schema
+      (dict-by-id vs. list; role field names/values; tool-call bubble
+      structure), whether per-turn cost/token data exists locally at all,
+      how to detect "agent finished/errored" vs. "still working," whether
+      a workspace can have multiple concurrent composers, whether Privacy
+      Mode changes/removes local persistence, and the open product
+      question of whether discovery should gate on "Cursor.exe running"
+      (flagged for board decision, not resolved unilaterally by the
+      engineer)
+- [ ] Read-while-Cursor-has-file-open behavior (`mode=ro` SQLite URI)
+      empirically confirmed on Windows, not just assumed from SQLite's
+      general concurrent-reader guarantee
+- [ ] No write ever executes against `state.vscdb` during the spike
+- [ ] Zero changes under `src/agentwatch/` — this phase produces a
+      findings document, not merged application code
+- [ ] Findings written up as an appendix/sibling to
+      `cursor-sqlite-architecture-review.md`, with sanitized (structure-
+      only, no real prompts/code) example JSON
+
+### Implementation Plan
+1. Engineer runs the spike against a populated Cursor install: read-only
+   connect to `state.vscdb`, query `composerHeaders` +
+   `cursorDiskKV` (`composerData:<uuid>`), inspect real `conversationMap`
+   content for one agent-mode and one chat-mode composer, confirm
+   read-while-open on Windows, toggle Privacy Mode and re-check. Writes
+   findings doc. **No `src/agentwatch/` changes.**
+2. CTO reviews findings against the 5 acceptance criteria above.
+3. QA independently re-runs 2-3 of the engineer's queries against a
+   populated install as a spot-check (no test suite applicable here).
+4. CTO reports findings to the board; Phase 1 (`CursorWatcher` real
+   implementation) stays unscoped until the board explicitly signs off.
+
+**Status: blocked (2026-07-11).** Engineer ran the spike against this
+machine's real `state.vscdb` (14 `composerHeaders` rows, 10 real
+`composerData` blobs — not the zero-conversation install the original
+architecture review was written against). Confirmed empirically: read-
+while-open on Windows works (20 rapid read-only queries against a live,
+actively-writing `Cursor.exe`, 0 errors), the `mode=ro` connection
+actively rejects writes (`sqlite3.OperationalError` on an explicit test
+`INSERT`, not just "we chose not to write"), a workspace can have
+multiple concurrent composers (`agent` + `chat` at once, confirmed
+directly), and `conversationMap` is a JSON object rather than a list
+(partial — key format still unknown). **Blocked on the core goal**: every
+one of the 10 real `composerData` blobs has an **empty**
+`conversationMap`, so bubble schema / role fields / tool-call structure /
+turn-boundary detection remain unanswered. Live suspect: `privacyMode:
+true` (`PRIVACY_MODE_NO_TRAINING`) is already enabled on this account —
+plausible cause, not proven, and it contradicts the architecture review's
+earlier claim (based on Cursor's own docs/forum) that Privacy Mode only
+affects server-side retention, not local disk persistence. That claim may
+need revisiting once this is resolved. Findings appended to
+`cursor-sqlite-architecture-review.md` under "Phase 0 Findings
+(2026-07-11)". `src/agentwatch/` confirmed untouched.
+
+**Retest after Privacy Mode disabled (2026-07-11, same day):** user
+turned Privacy Mode off (confirmed persisted to disk: `privacyMode`
+`"true"` -> `"false"`, `newPrivacyMode2` `PRIVACY_MODE_NO_TRAINING` ->
+`PRIVACY_MODE_USAGE_DATA_TRAINING_ALLOWED`) and ran a real agent-mode
+conversation. **`conversationMap` is still empty on every composer,
+byte-for-byte identical to before the toggle** — Privacy Mode is now
+ruled out as the cause (consistent with, not contradicting, the original
+review's forum research that it's server-side-only). New lead: 50s of
+read-only polling while Cursor stayed open showed **zero further writes**
+to `state.vscdb` after startup — points to a flush-on-close/tab-switch
+timing gap, i.e. `composerData` may only get persisted when a composer
+tab/window is closed, not live or on a short autosave timer. Findings in
+`cursor-sqlite-architecture-review.md`, new subsection "Phase 0 Findings,
+retest after Privacy Mode disabled". `src/agentwatch/` reconfirmed
+untouched.
+
+**Next step (board decision pending): close the composer tab or fully
+quit Cursor immediately after sending a message, then re-check** — not
+done automatically since force-closing the user's live session isn't a
+call an agent should make unilaterally.
+
+---
+
+### Sprint: Sprint 3 — Aider Log Parser
+**Type:** feature
+**Priority:** AgentWatch already detects running `aider` processes and
+resolves their log path (`discovery.py::_resolve_aider_log`), but
+`agentwatch check --log <aider log>` silently reports "No actions found"
+today — `parse_file()` is JSONL-only and every Markdown line fails
+`json.loads()`.
+**PRD Status:** full implementation plan approved, includes ready-to-use
+code:  `C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md`
+**Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
+**Board decision (2026-07-11):** started in parallel with the blocked
+Cursor Phase 0 spike (Sprint 2) and the devops pre-push hook fix below —
+none of the three touch overlapping files.
+
+### Acceptance Criteria (from the PRD's own Verification section)
+- [ ] New `src/agentwatch/parser/aider.py`: `parse_aider_markdown`,
+      `parse_aider_analytics`, `parse_aider_log`, matching both
+      SEARCH/REPLACE and legacy ORIGINAL/UPDATED diff-marker styles
+- [ ] `parser/logs.py::parse_file()` extension-based dispatch: `.md` ->
+      aider parser, existing JSONL loop unchanged for everything else
+- [ ] `parser/__init__.py` exports the three new entry points
+- [ ] `cli.py`: new `--analytics-log` option on `check`/`security-scan`,
+      updated `--log` help text on both
+- [ ] New `tests/test_aider_parser.py` covering: session-start parsing +
+      mtime fallback, turn-splitting incl. zero-turn edge case, both
+      diff-marker styles, commit-line success/failure inference,
+      Markdown-only "degraded but useful" zero-cost case, analytics merge
+      by ordinal incl. mismatched-count fallback, `parse_file()` dispatch
+      regression test
+- [ ] `python -m pytest tests/ -v` fully green, `ruff check .` no new
+      warnings
+- [ ] Manual smoke test: hand-written `.aider.chat.history.md` fixture ->
+      `agentwatch check --log <fixture>` reports a non-zero action count
+      (no real Aider install required for this)
+- [ ] PR description explicitly notes which Open Questions from the PRD
+      (ordinal message_send-to-turn pairing, analytics file lifecycle,
+      edit-format coverage beyond SEARCH/REPLACE, `.aider/logs/*.log`
+      fallback format, resumed-session handling) are deferred rather than
+      resolved — per the PRD, these don't block this PR but must not be
+      silently dropped
+
+### Implementation Plan
+Suggested commit sequence per the PRD: (1) Markdown-only parser + tests,
+(2) analytics JSONL parsing + ordinal merge + merge tests, (3)
+`parse_file()` dispatch + exports + dispatch regression test, (4) `cli.py`
+`--analytics-log` option + help text, (5) README/docs/index.md mention of
+Aider Markdown support. Live `agentwatch watch` tailing is explicitly out
+of scope for this sprint (see PRD Open Questions) — one-shot `check`/
+`security-scan` support only.
+
+**Status: in progress — engineer assigned (2026-07-11).**
+
+---
+
+### Devops: fix broken local pre-push hook
+**Type:** chore / infra
+**Priority:** low (non-blocking today, but the check silently never runs)
+**Problem:** `.git/hooks/pre-push` (Loom-generated) runs `node
+scripts/verify-deploy.mjs`, which crashes with `Cannot find package
+'yaml'` — no `package.json`/`node_modules` exist in this repo to supply
+the `yaml` import the script needs. The crash's exit code happens to
+match the hook's own "WARN, push anyway" contract, so pushes were never
+actually blocked, but the deploy-graph integrity checks (env polarity,
+config consistency, out-of-band DDL) never ran either. Confirmed real
+`.loom/stack.yml` + `.loom/environments.yml` manifests are present, so
+this isn't a no-op-by-design case — the checks are meant to run.
+Flagged since Sprint 0, unassigned until now.
+**Board decision (2026-07-11):** assigned to devops in parallel with
+Sprint 2/3 — touches only `package.json`/`node_modules`/`.gitignore`, no
+overlap with either.
+
+### Acceptance Criteria
+- [ ] `package.json` added with `yaml` as a dependency
+- [ ] `node_modules/` added to `.gitignore` (not currently present)
+- [ ] `node scripts/verify-deploy.mjs` runs to completion without
+      crashing (PASS/WARN/FAIL per its own documented exit codes, not an
+      import error)
+- [ ] A real git push (or `git push --dry-run` / manual hook invocation)
+      shows the hook actually executing the checks, not silently
+      no-op-ing via the old crash-shaped WARN path
+- [ ] No changes to the GitHub Actions Python CI gate
+      (`.github/workflows/verify-deploy.yml`, already repurposed in
+      Sprint 0) — this is a separate, local-only hook
+
+**Status: in progress — devops assigned (2026-07-11).**
 
 ---
 
