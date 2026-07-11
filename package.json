@@ -1,0 +1,9 @@
+{
+  "name": "agentwatch-main-devops",
+  "private": true,
+  "type": "module",
+  "description": "Local Node tooling deps for scripts/verify-deploy.mjs (loom pre-push hook). Not published, no relation to the agentwatch-monitor PyPI package.",
+  "dependencies": {
+    "yaml": "^2.6.1"
+  }
+}
