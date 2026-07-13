@@ -902,3 +902,117 @@ the replacement for `_get_process_cwd()`.
 ### Harness Integration
 If harness active: feed this Current Sprint section as the spec.
 If no harness: follow Development Protocol above directly.
+
+---
+
+## Task #8: Pure-ASCII theme for legacy Windows console compatibility
+
+**Type:** feature (small) / bugfix-adjacent
+**Priority:** low-medium — cosmetic, has a workaround, but affects default
+out-of-the-box experience for anyone on plain `cmd.exe`/`powershell.exe`
+**PRD Status:** not needed (small, recon-driven; findings below are from a
+live manual test on the user's own Windows machine, not fixture/guesswork)
+**Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
+
+### Problem, confirmed empirically (2026-07-13)
+User ran `agentwatch watch` on plain PowerShell: emoji glyphs (`🚀😓🔄🧱`
+etc., the default `agent` theme) rendered as `?`. Diagnosed live, in this
+order, each step actually tested rather than assumed:
+1. **Not a re-run of the Task #7 crash bug.** `_ensure_utf8_stdio()`
+   (`cli.py`) already reconfigures Python's own stdout/stderr to UTF-8 —
+   confirmed no crash, just wrong rendering.
+2. **Not a console code-page problem either**, though it looked like one at
+   first. User's console reported `chcp` -> code page 437 (a real, live
+   data point, not assumed) matching the "?" symptom. But switching to
+   `chcp 65001` and re-running **did not fix it** — ruled out.
+3. **Root cause: legacy `conhost.exe` (behind plain `cmd.exe`/
+   `powershell.exe`) has no font-fallback.** After `chcp 65001`, the
+   failure mode changed from a plain `?` to a "tofu" box-with-`?` — the
+   standard Unicode missing-glyph fallback, which only appears when the
+   *encoding* is already correct but the *font* has no glyph for that
+   codepoint. Confirmed even simple 1-codepoint symbols (`✓`/`✗` from the
+   `technical` theme) fail the same way, not just full-color emoji.
+   VS Code's integrated terminal renders the exact same output correctly
+   because its renderer (like Windows Terminal's) does font-fallback;
+   legacy `conhost.exe` does not. This is a Windows-console-host capability
+   gap, not something `_ensure_utf8_stdio()` or any stdout-encoding fix can
+   solve — confirmed before any code was written, not discovered by
+   shipping a broken fix.
+
+### Chosen approach
+Board decision (2026-07-13): don't chase an unfixable terminal-host
+limitation. Instead, add a genuinely pure-ASCII theme (no `✓`/`✗` dingbats
+either, since those already proved to tofu the same way) using bracketed
+text labels (e.g. `[OK]` / `[WARN]` / `[ALERT]` / `[FAIL]`) as the
+`emoji_0`..`emoji_3` values, so legacy-console users have a real escape
+hatch instead of just being told to switch terminals. Document the
+underlying conhost font-fallback limitation (README/CLAUDE.md Known
+Issues) alongside it, recommending Windows Terminal for anyone who wants
+the existing emoji themes to render correctly.
+
+### Acceptance Criteria
+- [ ] New `StatusTheme` registered in `THEMES` (`themes.py`), e.g. name
+      `"ascii"`, using only 7-bit ASCII in every `emoji_*` field —
+      bracketed text labels per the user's request (`[OK]`/`[WARN]`/
+      `[ALERT]`/`[FAIL]` or equivalent), not just swapping dingbats for
+      other dingbats
+- [ ] `StatusTheme.emoji_for()`'s unknown-status fallback (`"❓"`,
+      `themes.py` line ~77) is itself non-ASCII — confirm whether this path
+      is reachable in practice (it shouldn't be, since `status_from_score`
+      always returns one of the 4 registered labels) and either leave a
+      code comment explaining why it's safe, or fix it to a
+      theme-appropriate ASCII fallback if it *is* reachable
+- [ ] Verify rendering/alignment: existing emoji values are short
+      (1-2 display columns); bracketed text labels like `[ALERT]` are
+      longer. Check `ui/app.py`, `ui/rot_widget.py`, `health/score.py`,
+      and `cli.py`'s report formatting (the files that consume
+      `get_status_emoji`/`emoji_for`) for any fixed-width padding/alignment
+      assumptions that would misalign with a longer label, and fix or
+      confirm harmless
+- [ ] `agentwatch themes` output includes the new theme in its listing
+- [ ] `--theme ascii` works end-to-end on `check`, `watch`, and
+      `security-scan` (spot check at minimum `check`, since `watch`/TUI
+      can't be verified headlessly the same way)
+- [ ] New/updated tests in whichever `tests/test_themes*.py` (or nearest
+      equivalent) covers theme registration/lookup — add the new theme to
+      existing parametrized cases rather than hand-rolling a parallel test
+      file, if such a pattern already exists
+- [ ] `python -m pytest tests/ -v` fully green, `ruff check` clean on
+      touched files
+- [ ] **Documentation** (the other half of this task): README.md and/or
+      `CLAUDE.md` Known Issues gets a short, honest write-up of the
+      conhost font-fallback limitation — legacy `cmd.exe`/`powershell.exe`
+      can't render the emoji themes (not an AgentWatch bug, no code fix
+      possible), recommends either `--theme ascii` or switching to Windows
+      Terminal (`wt.exe`) / VS Code's integrated terminal, both of which
+      render the existing themes correctly
+
+### Implementation Plan
+1. Engineer adds the `ascii` theme to `themes.py`, checks/fixes any
+   fixed-width rendering assumptions in the consuming files listed above,
+   adds test coverage, confirms `pytest`/`ruff` clean.
+2. Engineer (or CTO, whichever is more natural given this is partly a docs
+   task) writes the README/CLAUDE.md Known Issues entry documenting the
+   conhost limitation and the two workarounds.
+3. CTO reviews.
+4. Manual smoke test on the user's real Windows machine (the same one that
+   found this bug) confirms `--theme ascii` actually renders cleanly where
+   the emoji themes tofu'd.
+
+**Status: implemented, CTO-reviewed, committed to
+`chore/ci-docs-perf-windows-support` (2026-07-13)** — not merged, not
+pushed. Engineer added `THEME_ASCII` (`[OK]`/`[WARN]`/`[ALERT]`/`[FAIL]`)
+to `themes.py`, registered in `THEMES`; added a code comment documenting
+why `emoji_for()`'s non-ASCII `"❓"` fallback is unreachable in current call
+paths rather than leaving it unexplained; traced every consumer of
+`emoji_for`/`get_status_emoji` (`cli.py`, `ui/app.py`, `ui/rot_widget.py`,
+`health/score.py`) and confirmed none apply fixed-width formatting to the
+emoji field, so the longer ASCII labels don't misalign anything; new
+`tests/test_themes.py` covers registration, ASCII-only output on all 4
+levels, and a bonus sanity check across every registered theme; `CLAUDE.md`
+Known Issues documents the conhost font-fallback root cause and both
+workarounds (`--theme ascii`, or Windows Terminal/VS Code's terminal).
+CTO independently re-ran `pytest`/`ruff` rather than trusting the
+engineer's report — 366/366 tests pass, `ruff check` clean on both touched
+files. Manual smoke test (`--theme ascii check`/`security-scan` against a
+real fixture) confirmed clean ASCII-only output.
