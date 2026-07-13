@@ -992,8 +992,19 @@ re-guessed shape). QA does a fixture-based verification pass. Phase 2
 board decision on the "does Cursor.exe running gate discovery" product
 question.
 
-**Status: implementation complete (2026-07-14), not yet CTO-reviewed or
-pushed.** Built `src/agentwatch/parser/cursor_source.py` (`open_readonly`,
+**Status: implementation complete, CTO-reviewed (2026-07-14), committed to
+`chore/ci-docs-perf-windows-support` as `9b6a4a9`** — not pushed. CTO
+independently re-ran `pytest`/`ruff` rather than trusting the engineer's
+report: 468/468 tests pass; `ruff check` clean on all 5 new/touched files;
+repo-wide `ruff check .` unchanged at 590 errors (zero new warnings);
+`git diff --stat` confirmed zero changes under `detectors/`, `ui/`,
+`cli.py`, and no `cursor_discovery.py` created. Spot-read `cursor_source.py`
+and `CursorWatcher` directly — schema matches round 4's confirmed findings,
+tool classification defaults conservatively per the Codex precedent, and
+the min-blob-poll throttle correctly leaves the watermark un-advanced
+rather than dropping a delta. Handed to QA next.
+
+Built `src/agentwatch/parser/cursor_source.py` (`open_readonly`,
 `fetch_composer_headers`, `fetch_bubbles`, `fetch_checkpoint`,
 `bubble_to_action`, `classify_cursor_tool`) against the round-4-confirmed
 `bubbleId:<composerId>:<bubbleId>` schema, not the original review's wrong
