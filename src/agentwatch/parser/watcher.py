@@ -8,37 +8,55 @@ import time
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
-from watchfiles import awatch, Change
-
-from .logs import parse_claude_code_entry, parse_moltbot_entry, detect_log_format
-from .models import Action
+from watchfiles import Change, awatch
 
 from agentwatch.discovery import AgentProcess
+
+from .codex import CodexParser
+from .logs import detect_log_format, parse_claude_code_entry, parse_moltbot_entry
+from .models import Action
 
 
 class LogWatcher:
     """Watches a log file for new entries in real-time."""
-    
+
     def __init__(self, path: Path, session_id: str | None = None):
         self.path = path
         self.session_id = session_id
         self._position = 0
         self._log_format: str | None = None
+        self._codex_parser: CodexParser | None = None
         self._callbacks: list[Callable[[Action], None]] = []
-    
+
     def on_action(self, callback: Callable[[Action], None]) -> None:
         """Register a callback for new actions."""
         self._callbacks.append(callback)
-    
+
     def _parse_entry(self, entry: dict) -> list[Action]:
         """Parse an entry using the detected format. Returns list of actions."""
         if self._log_format is None or self._log_format == "skip":
             self._log_format = detect_log_format(entry)
             if self._log_format == "skip":
                 return []
+            if self._log_format == "codex":
+                self._codex_parser = CodexParser()
 
         if self._log_format == "moltbot":
             result = parse_moltbot_entry(entry)
+        elif self._log_format == "codex":
+            # NOTE: deliberately never call self._codex_parser.flush() here.
+            # parse_file()'s one-shot batch read flushes at EOF because
+            # end-of-file there genuinely means "this is everything" -- but
+            # a live LogWatcher tail re-reads the same still-growing file on
+            # every poll cycle, and a function_call's output may simply not
+            # have arrived yet. Flushing here would emit a call as
+            # "output never arrived" prematurely, then have no way to
+            # retract that once the real output line shows up moments
+            # later. Pending calls are meant to sit in
+            # self._codex_parser._pending indefinitely across polls until
+            # matched (or the watcher itself is torn down). Do not "fix"
+            # this by unifying with parse_file()'s flush-at-EOF behavior.
+            return self._codex_parser.parse_line(entry)
         else:
             result = parse_claude_code_entry(entry)
 
@@ -47,22 +65,22 @@ class LogWatcher:
         if result:
             return [result]
         return []
-    
+
     def _read_new_lines(self) -> list[Action]:
         """Read any new lines since last check."""
         actions = []
-        
+
         try:
             with open(self.path, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(self._position)
-                
+
                 while True:
                     last_pos = f.tell()
                     line = f.readline()
-                    
+
                     if not line:
                         break
-                    
+
                     # If the line doesn't end with a newline, it might be a partial write
                     # unless we've reached EOF and the file is closed (not our case).
                     if not line.endswith("\n"):
@@ -70,12 +88,12 @@ class LogWatcher:
                         # Move back to where we started this line.
                         f.seek(last_pos)
                         break
-                        
+
                     line_stripped = line.strip()
                     if not line_stripped:
                         self._position = f.tell()
                         continue
-                        
+
                     try:
                         entry = json.loads(line_stripped)
                         parsed = self._parse_entry(entry)
@@ -95,22 +113,22 @@ class LogWatcher:
                         continue
         except FileNotFoundError:
             pass
-        
+
         return actions
-    
+
     async def watch(self) -> AsyncIterator[Action]:
         """Watch for new actions, yielding them as they arrive."""
         # First, read existing content
         for action in self._read_new_lines():
             yield action
-        
+
         # Then watch for changes
         async for changes in awatch(self.path.parent):
             for change_type, changed_path in changes:
                 if Path(changed_path) == self.path and change_type == Change.modified:
                     for action in self._read_new_lines():
                         yield action
-    
+
     async def watch_with_callbacks(self) -> None:
         """Watch and dispatch to registered callbacks."""
         async for action in self.watch():
@@ -155,7 +173,6 @@ class MultiLogWatcher:
         Updates internal process metadata, adds new log files,
         and marks stopped processes. Returns list of new processes.
         """
-        current_pids = {proc.pid for proc in processes}
         new_agents: list[AgentProcess] = []
 
         # Track which log files belong to still-running processes

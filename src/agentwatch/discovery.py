@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import psutil
@@ -206,6 +208,8 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                     log_file, session_id = _resolve_claude_code_log(cwd, pid=pid)
                 elif agent_type == "aider":
                     log_file, session_id = _resolve_aider_log(cwd)
+                elif agent_type == "codex":
+                    log_file, session_id = _resolve_codex_log(cwd)
                 if cache is not None:
                     cache.log_by_pid[pid] = (log_file, session_id)
 
@@ -484,3 +488,102 @@ def _resolve_aider_log(cwd: Path) -> tuple[Path | None, str | None]:
             return log_files[-1], None
 
     return None, None
+
+
+def _read_codex_session_meta(path: Path, max_lines: int = 5) -> dict | None:
+    """Read the leading ``session_meta`` line from a Codex rollout file.
+
+    ``session_meta`` is documented to appear once near the top of the
+    file, so this short-circuits after *max_lines* instead of reading the
+    whole (potentially large) rollout file. Returns the unwrapped
+    ``payload`` dict (or the raw entry itself for the "oldest"/flat
+    schema era — see ``parser/codex.py::_detect_codex_era``), or ``None``
+    if no session_meta line is found/readable.
+
+    Must never raise into ``find_running_agents()``'s scan loop — all
+    file/JSON errors are swallowed.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for _ in range(max_lines):
+                line = f.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "session_meta":
+                    payload = entry.get("payload", entry)
+                    return payload if isinstance(payload, dict) else None
+    except OSError:
+        return None
+    return None
+
+
+def _resolve_codex_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, str | None]:
+    """Resolve the active Codex CLI session log for a working directory.
+
+    Codex sessions live under a date-bucketed tree
+    (``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl``), not a cwd-keyed
+    directory the way Claude Code's are — so unlike
+    ``_resolve_claude_code_log``, there is no free directory-name match.
+    Reads each candidate file's leading ``session_meta`` line (bounded to
+    the day-window most likely to contain a live session) to match on
+    ``payload.cwd``, falling back to most-recently-modified when no
+    ``session_meta`` line is readable or matches.
+
+    NOTE: honors ``CODEX_HOME`` if set (root becomes ``$CODEX_HOME``
+    instead of ``~/.codex``). Whether ``CODEX_HOME`` supports a
+    comma-separated list of multiple roots is NOT confirmed (PRD Open
+    Question #2) — this implementation only supports a single root, the
+    confirmed-safe subset.
+
+    NOTE: per openai/codex issue #21660, rollout files are created
+    world-readable (``0o666 & ~umask``) on Unix rather than the tighter
+    ``0o600`` one might expect for a file containing full conversation
+    content — this is Codex's own permission looseness, not something
+    AgentWatch introduces or needs to work around.
+
+    ``pid`` is accepted for signature symmetry with
+    ``_resolve_claude_code_log`` but currently unused — Codex has no
+    ``lsof``/open-files equivalent check planned for v1 (PRD Open
+    Question #5).
+    """
+    codex_home_env = os.environ.get("CODEX_HOME")
+    codex_home = Path(codex_home_env) if codex_home_env else (Path.home() / ".codex")
+    sessions_root = codex_home / "sessions"
+    if not sessions_root.is_dir():
+        return None, None
+
+    # Bound the scan: check today and yesterday's date buckets only (a
+    # session spanning midnight still opens its file in one bucket).
+    candidates: list[Path] = []
+    for days_back in (0, 1):
+        day = datetime.now() - timedelta(days=days_back)
+        bucket = sessions_root / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
+        if bucket.is_dir():
+            candidates.extend(bucket.glob("rollout-*.jsonl"))
+
+    if not candidates:
+        return None, None
+
+    resolved_cwd = cwd.resolve()
+    for path in sorted(candidates, key=lambda f: f.stat().st_mtime, reverse=True):
+        meta = _read_codex_session_meta(path)
+        if meta and meta.get("cwd"):
+            try:
+                if Path(meta["cwd"]).resolve() == resolved_cwd:
+                    return path, meta.get("session_id") or meta.get("id")
+            except OSError:
+                pass
+
+    # Fallback: most-recently-modified candidate, cwd unverified — same
+    # trade-off _resolve_claude_code_log accepts when lsof can't resolve.
+    log_file = max(candidates, key=lambda f: f.stat().st_mtime)
+    meta = _read_codex_session_meta(log_file)
+    session_id = (meta or {}).get("session_id") or (meta or {}).get("id")
+    return log_file, session_id

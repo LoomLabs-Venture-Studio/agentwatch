@@ -10,7 +10,6 @@ from typing import Iterator
 
 from .models import Action, ToolType
 
-
 # Sensitive path patterns for security detection
 SENSITIVE_PATHS = [
     r"\.moltbot/credentials",
@@ -54,7 +53,7 @@ def is_sensitive_path(path: str | None) -> bool:
 def classify_tool(tool_name: str) -> ToolType:
     """Classify a tool name into a ToolType."""
     name_lower = tool_name.lower()
-    
+
     if any(x in name_lower for x in ["read", "view", "cat", "get_file"]):
         return ToolType.READ
     if any(x in name_lower for x in ["write", "create", "save"]):
@@ -71,7 +70,7 @@ def classify_tool(tool_name: str) -> ToolType:
         return ToolType.BROWSER
     if "mcp" in name_lower:
         return ToolType.MCP
-    
+
     return ToolType.UNKNOWN
 
 
@@ -338,13 +337,13 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
                 timestamp = datetime.now()
         else:
             timestamp = datetime.now()
-        
+
         # Message type detection
         msg_type = entry.get("type") or entry.get("role")
-        
+
         # Skill information - at top level in Moltbot
         skill_name = entry.get("skill")
-        
+
         # Tool calls in Moltbot - can be dict or nested
         tool_call = entry.get("tool_call") or {}
         if isinstance(tool_call, dict):
@@ -353,34 +352,34 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
         else:
             tool_name = msg_type or "message"
             tool_input = {}
-        
+
         # Extract file paths from tool inputs
         file_path = None
         if isinstance(tool_input, dict):
             file_path = tool_input.get("path") or tool_input.get("file")
-        
+
         # Command extraction
         command = None
         if isinstance(tool_input, dict):
             command = tool_input.get("command") or tool_input.get("cmd")
-        
+
         # Network information for security
         network_host = None
         network_port = None
         if isinstance(tool_input, dict):
             network_host = tool_input.get("host") or tool_input.get("url")
             network_port = tool_input.get("port")
-        
+
         # Incoming messages (for prompt injection detection)
         incoming_message = None
         if msg_type in ("user", "incoming", "message"):
             incoming_message = entry.get("content") or entry.get("text") or entry.get("message")
-        
+
         # Outgoing data (for exfiltration detection)
         outgoing_data = None
         if msg_type in ("assistant", "outgoing", "response"):
             outgoing_data = entry.get("content") or entry.get("text")
-        
+
         # Success/error
         success = entry.get("success", True)
         error_message = entry.get("error")
@@ -409,8 +408,15 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
         return None
 
 
+#  Known Codex rollout-line event-type strings (RolloutLine envelope's
+#  top-level "type" field). Used by detect_log_format to sniff Codex logs
+#  without a distinctive top-level key the way Claude Code (sessionId/cwd)
+#  or Moltbot (skill/tool_call) have.
+_CODEX_EVENT_TYPES = frozenset({"session_meta", "response_item", "event_msg", "turn_context"})
+
+
 def detect_log_format(first_entry: dict) -> str:
-    """Detect whether log is from Claude Code or Moltbot.
+    """Detect whether log is from Claude Code, Moltbot, or Codex.
 
     Returns "skip" for metadata-only entries (e.g. file-history-snapshot)
     that should not lock the format decision.
@@ -421,8 +427,11 @@ def detect_log_format(first_entry: dict) -> str:
         return "skip"
 
     # Claude Code indicators — check first since its logs also have "type" keys
-    # Claude Code entries have top-level sessionId/cwd/version or message.content with tool_use blocks
-    if any(key in first_entry for key in ["sessionId", "cwd", "costUSD", "cacheCreationInputTokens"]):
+    # Claude Code entries have top-level sessionId/cwd/version or
+    # message.content with tool_use blocks
+    if any(
+        key in first_entry for key in ["sessionId", "cwd", "costUSD", "cacheCreationInputTokens"]
+    ):
         return "claude_code"
     if entry_type in ("user", "assistant") and "message" in first_entry:
         msg = first_entry.get("message", {})
@@ -436,6 +445,12 @@ def detect_log_format(first_entry: dict) -> str:
         return "moltbot"
     if "role" in first_entry and "skill" not in first_entry:
         return "moltbot"
+
+    # Codex indicators — a "type" value from the known RolloutLine event
+    # set, with none of Claude Code's/Moltbot's distinguishing keys above
+    # (already ruled out by this point).
+    if entry_type in _CODEX_EVENT_TYPES:
+        return "codex"
 
     return "unknown"
 
@@ -463,7 +478,13 @@ def parse_file(
                 yield action
         return
 
+    # Imported lazily (not at module level) to avoid a logs.py <-> codex.py
+    # circular import — codex.py imports classify_tool from this module at
+    # its own module level.
+    from .codex import CodexParser
+
     log_format = None
+    codex_parser: CodexParser | None = None
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -481,10 +502,14 @@ def parse_file(
                 log_format = detect_log_format(entry)
                 if log_format == "skip":
                     continue
+                if log_format == "codex":
+                    codex_parser = CodexParser()
 
             # Parse based on format
             if log_format == "moltbot":
                 result = parse_moltbot_entry(entry)
+            elif log_format == "codex":
+                result = codex_parser.parse_line(entry)
             else:
                 result = parse_claude_code_entry(entry)
 
@@ -497,22 +522,31 @@ def parse_file(
                 if session_id is None or result.session_id == session_id:
                     yield result
 
+        # One-shot batch read: end-of-file legitimately means "this is
+        # everything", so flush any function_call left waiting for output
+        # that will now never arrive in this file. (LogWatcher's live-tail
+        # equivalent deliberately does NOT do this — see watcher.py.)
+        if log_format == "codex" and codex_parser is not None:
+            for action in codex_parser.flush():
+                if session_id is None or action.session_id == session_id:
+                    yield action
+
 
 def find_log_files(base_path: Path | None = None) -> list[Path]:
     """Find all relevant log files for known agents."""
     log_files = []
-    
+
     search_paths = DEFAULT_SEARCH_PATHS
     if base_path:
         search_paths = [base_path]
-    
+
     for search_path in search_paths:
         if search_path.exists():
             log_files.extend(search_path.rglob("*.jsonl"))
-    
+
     # Sort by modification time, newest first
     log_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    
+
     return log_files
 
 
