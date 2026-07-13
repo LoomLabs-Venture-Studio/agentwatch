@@ -10,7 +10,7 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 
-from agentwatch.themes import get_theme
+from agentwatch.themes import ascii_safe, get_theme, security_status_from_score
 from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
 if TYPE_CHECKING:
@@ -48,21 +48,19 @@ class SecurityStatus(Static):
     
     score = reactive(100)
     alert_count = reactive(0)
-    
+
     def render(self) -> str:
-        if self.score == 100:
-            status = "🛡️  SECURE"
-            color = "green"
-        elif self.score > 50:
-            status = "⚠️  AT RISK"
-            color = "yellow"
-        else:
-            status = "🚨 COMPROMISED"
-            color = "red"
-        
+        # Theme-driven, following the same pattern HealthBar (above) already
+        # uses correctly -- see security_status_from_score()'s docstring for
+        # why this is a dedicated 3-way (100/>50/else) mapping rather than
+        # StatusTheme.status_from_score()'s 4-way 80/60/40 banding.
+        theme = get_theme()
+        status = security_status_from_score(self.score)
+        emoji = theme.emoji_for(status)
+
         return f"""
   Security Score: {self.score}%
-  Status: {status}
+  Status: {emoji} {status.upper()}
   Active Alerts: {self.alert_count}
 """
 
@@ -148,7 +146,7 @@ class WarningsList(Static):
                 suggestion = w.suggestion
                 if len(suggestion) > 90:
                     suggestion = suggestion[:87] + "..."
-                lines.append(f"     💡 {suggestion}")
+                lines.append(f"     {ascii_safe('💡', '[TIP]')} {suggestion}")
 
             lines.append("")  # Blank line between warnings
 

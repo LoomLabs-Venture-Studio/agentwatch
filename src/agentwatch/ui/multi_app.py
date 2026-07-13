@@ -27,7 +27,7 @@ from agentwatch.health import (
     calculate_team_health,
 )
 from agentwatch.health.rot import RotScorer
-from agentwatch.themes import get_theme
+from agentwatch.themes import ascii_safe, get_theme
 from agentwatch.ui.app import EfficiencyBar, HealthBar, SecurityStatus, WarningsList, StatsPanel
 from agentwatch.ui.rot_widget import ContextHealthWidget
 
@@ -108,7 +108,15 @@ class AgentItem(ListItem):
             pid_text = f"{indent}PID {self.pid}" if self.pid else ""
             yield Label(pid_text, id="pid-label")
         else:
-            yield Label(f"📄 {self.log_path.name}", id="agent-name-label")
+            # NOTE: intentionally "(file)" and not "[FILE]" -- Textual's
+            # Label interprets square brackets as Rich console markup and
+            # silently strips unrecognized tags (a pre-existing quirk that
+            # already affects this same widget's `[{agent_type}]` branch
+            # above; out of scope for Task #9 to fix, but worth not
+            # colliding with here).
+            yield Label(
+                f"{ascii_safe('📄', '(file)')} {self.log_path.name}", id="agent-name-label"
+            )
             yield Label("", id="pid-label")
         yield Label(f"Health: {self.health_score}%", id="health-label")
 

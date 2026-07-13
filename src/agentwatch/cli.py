@@ -12,7 +12,13 @@ from agentwatch.detectors import create_registry
 from agentwatch.discovery import AgentProcess, AgentTeam, find_running_agents, build_agent_tree, build_teams
 from agentwatch.health import calculate_health, calculate_security_score
 from agentwatch.parser import ActionBuffer, find_latest_session, parse_file, find_log_files
-from agentwatch.themes import get_theme, set_theme, list_themes
+from agentwatch.themes import (
+    ascii_safe,
+    get_theme,
+    list_themes,
+    security_status_from_score,
+    set_theme,
+)
 
 
 def print_health_report(report, security_mode: bool = False) -> None:
@@ -48,7 +54,7 @@ def print_health_report(report, security_mode: bool = False) -> None:
     
     # Warnings
     if report.warnings:
-        click.echo(f"  ⚠️  {len(report.warnings)} warning(s):")
+        click.echo(f"  {theme.emoji_for(theme.level_2)} {len(report.warnings)} warning(s):")
         click.echo()
         for w in report.warnings[:10]:  # Limit to 10
             severity_color = {
@@ -72,13 +78,14 @@ def print_health_report(report, security_mode: bool = False) -> None:
                     click.echo(f"        → {w.details['sample_errors'][0][:100]}")
             # Show suggestion
             if w.suggestion:
-                click.echo(click.style(f"        💡 {w.suggestion[:120]}", dim=True))
+                marker = ascii_safe("💡", "[TIP]")
+                click.echo(click.style(f"        {marker} {w.suggestion[:120]}", dim=True))
             click.echo()
 
         if len(report.warnings) > 10:
             click.echo(f"     ... and {len(report.warnings) - 10} more")
     else:
-        click.echo("  ✅ No issues detected")
+        click.echo(f"  {theme.emoji_for(theme.level_0)} No issues detected")
     
     click.echo()
 
@@ -87,10 +94,18 @@ def print_security_alert(warnings) -> None:
     """Print security alerts in a prominent format."""
     critical = [w for w in warnings if w.severity.value == "critical"]
     high = [w for w in warnings if w.severity.value == "high"]
-    
+    theme = get_theme()
+
     if critical:
         click.echo()
-        click.echo(click.style("🚨 CRITICAL SECURITY ALERTS 🚨", fg="red", bold=True))
+        critical_marker = theme.emoji_for(theme.level_3)
+        click.echo(
+            click.style(
+                f"{critical_marker} CRITICAL SECURITY ALERTS {critical_marker}",
+                fg="red",
+                bold=True,
+            )
+        )
         click.echo("=" * 50)
         for w in critical:
             click.echo(f"  {w.emoji} [{w.signal}] {w.message}")
@@ -98,10 +113,14 @@ def print_security_alert(warnings) -> None:
                 for k, v in list(w.details.items())[:3]:
                     click.echo(f"      {k}: {v}")
         click.echo()
-    
+
     if high:
         click.echo()
-        click.echo(click.style("⚠️  HIGH SEVERITY WARNINGS", fg="yellow", bold=True))
+        click.echo(
+            click.style(
+                f"{theme.emoji_for(theme.level_2)} HIGH SEVERITY WARNINGS", fg="yellow", bold=True
+            )
+        )
         click.echo("-" * 50)
         for w in high:
             click.echo(f"  {w.emoji} [{w.signal}] {w.message}")
@@ -498,12 +517,18 @@ def security_scan(log: Path | None, analytics_log: Path | None, json_output: boo
         click.echo("═" * 50)
         click.echo()
         
-        if security_score == 100:
-            click.echo(click.style("  ✅ SECURE (100%)", fg="green", bold=True))
-        elif security_score > 50:
-            click.echo(click.style(f"  ⚠️  AT RISK ({security_score}%)", fg="yellow", bold=True))
-        else:
-            click.echo(click.style(f"  🚨 COMPROMISED ({security_score}%)", fg="red", bold=True))
+        # Theme-driven, sharing security_status_from_score() with
+        # ui/app.py's SecurityStatus widget rather than hand-copying the
+        # same SECURE/AT-RISK/COMPROMISED thresholds a second time (that
+        # duplication is exactly how this class of bug -- fix the emoji in
+        # one copy, miss the other -- was introduced).
+        theme = get_theme()
+        status = security_status_from_score(security_score)
+        emoji = theme.emoji_for(status)
+        color = theme.color_for(status)
+        click.echo(
+            click.style(f"  {emoji} {status.upper()} ({security_score}%)", fg=color, bold=True)
+        )
         
         click.echo()
         click.echo(f"  Analyzed {len(buffer)} actions")
