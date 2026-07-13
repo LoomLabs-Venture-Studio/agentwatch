@@ -1122,35 +1122,41 @@ on the gated ones.
    out of scope, flagged as its own future sprint, not silently dropped.
 
 ### Acceptance Criteria
-- [ ] `.aider.chat.history.md` files with 2+ `# aider chat started at`
+- [x] `.aider.chat.history.md` files with 2+ `# aider chat started at`
       headers produce 2+ distinct `session_id` values / `Action` streams,
       each internally ordinal-consistent; single-header files unaffected
       (regression test against Sprint 3's existing fixtures)
-- [ ] Analytics merge only pairs `message_send` events falling within the
+- [x] Analytics merge only pairs `message_send` events falling within the
       current session's time window when the analytics file contains
       events from multiple sessions (new fixture: one analytics JSONL
       spanning 2 synthetic sessions' worth of events, verify correct
       partitioning)
-- [ ] `.aider/logs/*.log` fallback: either a working parser branch backed
+- [x] `.aider/logs/*.log` fallback: either a working parser branch backed
       by source-derived evidence, or the dead-code path removed with a
       code comment explaining why (research citation required either way,
       matching this project's existing verification standard — no
       unverified guesses)
-- [ ] `whole`/`udiff` edit-format coverage: either extended matcher(s)
+- [x] `whole`/`udiff` edit-format coverage: either extended matcher(s)
       backed by source-derived evidence, or explicitly documented as still
       open in the PR description with the specific source files checked
       and why confidence wasn't reached
-- [ ] Mismatched analytics-event-count-vs-turn-count case now emits a
+- [x] Mismatched analytics-event-count-vs-turn-count case now emits a
       visible signal (log line or equivalent), not just silent best-effort
       pairing — regression test asserts the signal fires
-- [ ] New/extended tests in `tests/test_aider_parser.py` covering all of
+- [x] New/extended tests in `tests/test_aider_parser.py` covering all of
       the above; `python -m pytest tests/ -v` fully green, no regressions
       on existing Sprint 3 test cases
-- [ ] `ruff check .` clean on touched files
+- [x] `ruff check .` clean on touched files
 - [ ] PR description explicitly lists which of the original 5 open
       questions were resolved this sprint vs. which remain deferred (item
       5's live-install gate, item 6's live-tailing scope) — same
-      no-silent-drop standard as every prior sprint on this branch
+      no-silent-drop standard as every prior sprint on this branch. **Not
+      yet applicable**: this sprint's instructions were explicitly
+      local-commit-only (no push, no PR), same as Sprint 5 — there is no
+      PR body to put this in yet. The caveat text lives in
+      `parser/aider.py`'s module docstring and this section's status
+      writeup below instead, ready to carry forward verbatim whenever this
+      branch is actually opened for review.
 
 ### Implementation Plan
 Engineer works items 1-4 (resolvable now) plus the visible-degradation
@@ -1159,6 +1165,124 @@ independently green" commit-sequence convention. Item 6 stays explicitly
 unscoped. CTO reviews, including spot-checking the source citations for
 items 3-4 against the real aider repo rather than trusting the research
 claim at face value. QA verification pass follows.
+
+**Status: implementation complete (2026-07-14), committed to
+`chore/ci-docs-perf-windows-support` — not pushed, no PR opened, per this
+sprint's explicit local-commit-only instructions.**
+
+All 4 "resolvable now" items plus item 5's visible-degradation fix were
+implemented and tested; item 6 stayed explicitly out of scope (not touched
+— `parser/watcher.py`/`MultiLogWatcher` untouched by this sprint's diff).
+
+- **Item 1 (resumed sessions):** `parser/aider.py` gained `_split_sessions()`
+  (splits raw transcript text on every `# aider chat started at` header
+  into per-resume segments) and `_Session`/`_parse_aider_sessions()` (each
+  segment gets its own `session_id` and its own turn ordinals restarting at
+  0). `parse_aider_markdown()` now flattens across sessions; a single-header
+  or headerless file still produces exactly one segment, so Sprint 3's
+  existing fixtures/tests pass byte-identically unchanged (verified: all
+  pre-existing `TestParseSessionStart`/`TestSplitTurns`/`TestDiffBlockStyles`/
+  etc. tests still pass with zero modification to their assertions).
+- **Item 2 (analytics session-boundary detection):** new
+  `_session_time_windows()` computes a (lower, upper) epoch-seconds window
+  per session — lower-bounded by that session's own `session_start` (with a
+  24h grace period on the *first* session only, to absorb the fact that a
+  Markdown header's timestamp is a naive local wall-clock string while
+  analytics `time` values are absolute Unix epoch seconds — this grace
+  window was not just theoretical: it's what surfaced during testing that
+  one of Sprint 3's own existing analytics-merge fixtures had event
+  timestamps ~9 days away from its session header with no realistic
+  relationship to it, which needed correcting to a temporally-sane value
+  relative to that header, computed the same way the implementation does
+  it, rather than an arbitrary hardcoded epoch literal), upper-bounded by
+  the next session's start or a 24h fallback window for the last/only
+  session. An `exit` event inside a session's window caps its upper bound
+  early, per the PRD's schema notes. `parse_aider_log()` now partitions
+  `message_send` events into the correct session's window before doing
+  ordinal pairing within that session only — critical once item 1 makes
+  turn ordinals restart per session (two sessions can both have a turn
+  ordinal 0; blind whole-file ordinal pairing would incorrectly backfill
+  both sessions' turn-0 actions from the same single event). New
+  `TestAnalyticsSessionBoundaries` test class proves this with a
+  2-session fixture where naive global ordinal pairing would produce wrong
+  results but session-aware pairing produces correct, distinct per-session
+  token/cost values, plus a dedicated exit-event-boundary test.
+- **Item 3 (`.aider/logs/*.log` fallback) — resolved as "confirmed dead,
+  removed":** researched against Aider's real current source
+  (github.com/Aider-AI/aider @ main, fetched 2026-07-14). Found zero
+  evidence this is a real convention: a GitHub code search across the repo
+  for `.aider/logs`/`aider/logs` returns nothing; `aider/args.py`'s full CLI
+  flag surface only defines `--chat-history-file` (default
+  `.aider.chat.history.md`), `--llm-history-file`, `--input-history-file`,
+  and `--analytics-log` — all either arbitrary user-supplied paths or the
+  one confirmed Markdown default, none defaulting into a `.aider/logs/`
+  directory; the docs (`options.md`, `sample.aider.conf.yml`) agree. The
+  closest real reference is GitHub issue Aider-AI/aider#3574 ("Feature
+  Suggestion: Better organized aider logs") — still **open and
+  unimplemented**, and it proposes a *different* directory name
+  (`.ai-chats/`) as a third-party wrapper, not anything Aider itself
+  writes. Given this — not just "unconfirmed" but actively contradicted by
+  the full flag surface, docs, and an open feature request for something
+  similar under a different name — the dead `.aider/logs/` fallback branch
+  in `discovery.py::_resolve_aider_log()` was removed rather than left
+  producing zero actions forever, with a code comment citing exactly what
+  was checked and a note on how to re-add it if a real convention like
+  this is ever confirmed later.
+- **Item 4 (`whole`/`udiff` edit formats) — resolved, both implemented:**
+  researched directly against `aider/coders/wholefile_coder.py` +
+  `wholefile_prompts.py` and `aider/coders/udiff_coder.py` +
+  `udiff_prompts.py` in the real repo. Both formats' transcript shapes were
+  confirmed with high confidence — doubly verified against both the
+  coder's own round-trip parsing logic (which has to parse this shape back
+  out of real LLM output) and the prompt's literal `example_messages` text,
+  which agree. New `UDIFF_BLOCK_RE` (reserved ` ```diff ` fence + `---`/
+  `+++` header pair + `@@ ... @@` hunks) and `WHOLE_FILE_BLOCK_RE` (filename
+  line + fence + full raw file content, no internal marker) added, plus
+  `_extract_edit_blocks()` to dispatch across all three formats
+  (`diff`/`udiff`/`whole`) per turn without double-counting a block that
+  matches more than one matcher's shape. **Known, documented limitation**:
+  `whole` format has no internal marker distinguishing a real edit block
+  from an ordinary illustrative code sample the assistant might show for
+  an unrelated reason — this is a real, source-confirmed structural fact
+  about the format (Aider's own coder has the identical ambiguity re-parsing
+  its own model's output), not a gap in this regex, and is documented as
+  such directly in `WHOLE_FILE_BLOCK_RE`'s docstring rather than hidden.
+  New `TestWholeFileEditFormat`/`TestUdiffEditFormat` test classes, kept
+  clearly separate from the SEARCH/REPLACE/ORIGINAL-UPDATED cases, cover
+  both formats plus non-double-classification in both directions (a
+  diff-marker block isn't also picked up as `whole`; a udiff block isn't
+  swallowed by the generic `whole` matcher).
+- **Item 5 (visible degradation) — resolved:** `parse_aider_log()` now logs
+  a `WARNING`-level line via a module-level `logging.getLogger(__name__)`
+  (no pre-existing logging convention was found elsewhere in the codebase
+  to match — `grep`'d for `logging.getLogger`/`import logging` across
+  `src/agentwatch`, zero hits — so this establishes one, following the
+  standard-library idiom) whenever a session's turn count and
+  in-window `message_send` event count disagree, stating both counts and
+  the session_id. The actual pairing behavior is unchanged (still `zip()`'s
+  shortest-wins) — this is visibility only, not a fix, per the item's
+  explicit scope. `TestMismatchLogging` asserts both that the warning fires
+  on mismatch (via `caplog`) and that it does *not* fire when counts match.
+- **Item 6 (live tailing):** confirmed untouched — `git diff --stat --
+  src/agentwatch/parser/watcher.py` is empty for this sprint's diff.
+
+**Verification:** `python -m pytest tests/ -v` — **483/483 pass**, zero
+regressions (41/41 in `test_aider_parser.py` specifically, up from 26
+before this sprint). `ruff check` clean on all 3 touched files
+(`parser/aider.py`, `discovery.py`, `tests/test_aider_parser.py`);
+repo-wide `ruff check .` is **590 errors — unchanged from the documented
+pre-existing baseline**, confirming zero new warnings anywhere.
+
+**One real bug found and fixed during testing, not just research-time
+uncertainty**: `UDIFF_BLOCK_RE`'s first draft used `\S.*` (unbounded,
+under `re.DOTALL`) for the `a_path`/`b_path` capture groups, which
+greedily swallowed the entire hunk body (including newlines) into the
+path capture before backtracking — caught by
+`TestUdiffEditFormat::test_udiff_block_matches` actually asserting the
+real filename value rather than just "a match happened," and fixed by
+switching to `\S[^\n]*` (matching the same style already used for
+`DIFF_BLOCK_RE`'s `filename` group), which cannot cross a newline
+regardless of the `DOTALL` flag.
 
 ---
 

@@ -473,19 +473,44 @@ def _resolve_claude_code_log(
 def _resolve_aider_log(cwd: Path) -> tuple[Path | None, str | None]:
     """Resolve the active Aider session log for a working directory.
 
-    Looks for .aider.chat.history.md or .aider/logs/ patterns.
+    Looks for .aider.chat.history.md -- the only confirmed real Aider
+    transcript file (see below for why a ``.aider/logs/`` fallback that
+    used to live here was removed).
     """
     # Check for chat history file
     history_file = cwd / ".aider.chat.history.md"
     if history_file.exists():
         return history_file, None
 
-    # Check for logs directory
-    logs_dir = cwd / ".aider" / "logs"
-    if logs_dir.is_dir():
-        log_files = sorted(logs_dir.iterdir(), key=lambda f: f.stat().st_mtime)
-        if log_files:
-            return log_files[-1], None
+    # NOTE (PLAYBOOK Sprint 6, 2026-07-14): this function previously also
+    # fell back to the most recently modified file under a `.aider/logs/`
+    # directory when no `.aider.chat.history.md` existed. That fallback
+    # was removed after researching Aider's real current source
+    # (github.com/Aider-AI/aider @ main) turned up no evidence it's a real
+    # convention:
+    #   - `gh search code` across the repo for `.aider/logs` / `aider/logs`
+    #     returns zero hits.
+    #   - `aider/args.py` (the full CLI flag surface) only defines
+    #     `--chat-history-file` (default `.aider.chat.history.md`),
+    #     `--llm-history-file`, `--input-history-file`, and
+    #     `--analytics-log` -- all arbitrary user-supplied paths or the one
+    #     confirmed Markdown default; none default into a `.aider/logs/`
+    #     directory.
+    #   - `aider/website/docs/config/options.md` and `sample.aider.conf.yml`
+    #     document the same four options with the same defaults.
+    #   - The closest real reference found is GitHub issue
+    #     Aider-AI/aider#3574 ("Feature Suggestion: Better organized aider
+    #     logs"), which is still OPEN and unimplemented, and proposes a
+    #     *different* directory name (`.ai-chats/`) as a third-party
+    #     wrapper around `--chat-history-file` -- not anything Aider itself
+    #     writes.
+    # Conclusion: `.aider/logs/*.log` was very likely a hallucinated or
+    # conflated convention, not a real one. Removed rather than left as a
+    # dead path that would silently resolve to an unparseable file of
+    # unknown format. If a real convention like this is ever confirmed
+    # (e.g. a future Aider release implements #3574), re-add a fallback
+    # branch here alongside a parser for whatever format it turns out to
+    # be -- do not guess the format in advance.
 
     return None, None
 
