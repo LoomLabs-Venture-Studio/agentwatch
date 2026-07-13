@@ -1016,3 +1016,95 @@ CTO independently re-ran `pytest`/`ruff` rather than trusting the
 engineer's report — 366/366 tests pass, `ruff check` clean on both touched
 files. Manual smoke test (`--theme ascii check`/`security-scan` against a
 real fixture) confirmed clean ASCII-only output.
+
+**Known gap surfaced by user re-testing on their real machine (2026-07-13,
+same day): `--theme ascii` does not fully eliminate emoji in `watch`'s
+Security panel.** User ran `agentwatch --theme ascii watch` and still saw
+a tofu'd `🛡️` in the security status line. Root cause traced: Task #8 was
+correctly scoped to "theme-driven `emoji_*` glyphs," but several places in
+the codebase hardcode emoji **independent of the theme system entirely** —
+these were never in scope for Task #8 and are a pre-existing gap, not a
+regression:
+- `ui/app.py::SecurityStatus.render()` — hardcodes `"🛡️  SECURE"` /
+  `"⚠️  AT RISK"` / `"🚨 COMPROMISED"` directly, never calls `get_theme()`
+  (unlike `HealthBar`/`EfficiencyBar` in the same file, which do it right)
+- `cli.py`'s `security-scan` command (~line 500-506) — a separate,
+  duplicated copy of the same SECURE/AT RISK/COMPROMISED logic, also
+  hardcoded
+- `cli.py` — further hardcoded emoji in report headers: `"✅ No issues
+  detected"`, `"🚨 CRITICAL SECURITY ALERTS 🚨"`, `"⚠️  HIGH SEVERITY
+  WARNINGS"`
+- `detectors/base.py::Severity.emoji` — a hardcoded per-severity
+  (LOW/MEDIUM/HIGH/CRITICAL) emoji mapping, architecturally independent of
+  `StatusTheme` (severity is categorical, not score-derived), feeds into
+  `Warning.emoji` used across detector output
+- `ui/multi_app.py` — not yet fully audited, flagged for the same check
+
+**Board decision (2026-07-13): full audit, not a spot patch.** Wire all of
+the above to the theme system so `--theme ascii` is actually ASCII-clean
+everywhere, not just in the two widgets that happened to already call
+`get_theme()`.
+
+### Acceptance Criteria (Task #9 — the follow-up)
+- [ ] `ui/app.py::SecurityStatus.render()` calls `get_theme()` /
+      `emoji_for()` instead of hardcoding emoji, following the same
+      pattern already used correctly by `HealthBar` in the same file
+- [ ] `cli.py`'s `security-scan` SECURE/AT RISK/COMPROMISED block
+      shares logic with (or is replaced by calling into) the same
+      theme-driven mapping as the TUI widget, rather than staying a
+      second hand-copied hardcoded block — the duplication is exactly
+      why this bug was easy to introduce and miss in one place but not
+      the other
+- [ ] `cli.py`'s other hardcoded report-header emoji (`"✅ No issues
+      detected"`, `"🚨 CRITICAL SECURITY ALERTS 🚨"`, `"⚠️  HIGH SEVERITY
+      WARNINGS"`) audited and made theme-aware where it makes sense
+- [ ] `detectors/base.py::Severity.emoji` — this one needs actual design
+      judgment, not just a mechanical swap: `Severity` is a 4-level
+      categorical enum (LOW/MEDIUM/HIGH/CRITICAL) independent of
+      `StatusTheme`'s score-derived 4 levels, and there's no clean 1:1
+      mapping (nothing in `Severity` corresponds to `level_0`/"all
+      good"). Engineer should propose a specific mapping (e.g. onto
+      `emoji_1`/`emoji_2`/`emoji_3` with LOW and MEDIUM possibly sharing
+      a level, or another approach) and flag the tradeoff explicitly for
+      CTO review rather than picking silently
+- [ ] `ui/multi_app.py` audited for the same hardcoded-emoji pattern,
+      fixed if found
+- [ ] Regression safety: existing (non-ascii) themes' visible output is
+      unchanged after this refactor — add/extend tests asserting e.g.
+      `Warning.emoji`/`SecurityStatus` output for the default `agent`
+      theme matches pre-refactor values, not just that the `ascii` theme
+      is now clean
+- [ ] New test(s) proving zero non-ASCII characters appear anywhere in
+      `watch --security` / `security-scan` / `check --security` output
+      when `--theme ascii` is active — this is the actual regression
+      test for what the user just found, not just unit-level emoji
+      checks
+- [ ] `python -m pytest tests/ -v` fully green, `ruff check` clean on all
+      touched files
+
+### Implementation Plan
+Engineer audits and fixes each hardcoded-emoji site above, proposes the
+`Severity.emoji` mapping explicitly rather than deciding silently, adds
+the end-to-end zero-non-ASCII regression test. CTO reviews (including the
+`Severity` mapping tradeoff specifically). Manual smoke test on the user's
+real Windows machine again before considering this closed — that's the
+only environment that's actually caught real bugs here so far, twice.
+
+**Status: implemented, CTO-reviewed, committed to
+`chore/ci-docs-perf-windows-support` (2026-07-13)** — not merged, not
+pushed. Engineer added `security_status_from_score()` and `ascii_safe()`
+shared helpers (`themes.py`); redesigned `Severity.emoji`
+(`detectors/base.py`) to stay unchanged for all 11 non-ascii themes and
+only swap to `[LOW]`/`[MED]`/`[HIGH]`/`[CRIT]` under `ascii` (design
+tradeoff documented in-code, reviewed); wired `SecurityStatus`
+(`ui/app.py`) and `security-scan` (`cli.py`) to the shared helper instead
+of two hand-copied hardcoded blocks; found and fixed one more hardcoded
+glyph in `ui/multi_app.py` not in the original audit list. New
+`tests/test_theme_emoji_wiring.py` (77 tests) covers widget/CLI/TUI-pilot
+level output plus per-theme regression (all 11 non-ascii themes visually
+unchanged). CTO independently re-verified: 443/443 tests pass; ruff
+before/after diffed per touched file against the pre-edit baseline (zero
+new warnings, several files' counts actually decreased); live smoke test
+against a real session log (`--theme ascii check --security`) confirmed
+fully ASCII-clean output (`[OK]`, `[WARN]`, `[ALERT]`, `[MED]`, `[TIP]`,
+no tofu).
