@@ -157,6 +157,20 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   real `~/.claude/projects/` entry, not guessed. `psutil>=5.9.0` is now a
   core dependency. 270/270 tests pass, including the previously-failing
   `test_cc_stats.py::TestCwdMapping::test_cwd_to_project_dir_existing`.
+- **Emoji themes render as `?`/tofu boxes on legacy Windows consoles**
+  (Task #8, confirmed live 2026-07-13 on plain PowerShell). This is not a
+  re-run of the Task #7 bug and not fixable in this codebase: `_ensure_utf8_
+  stdio()` (`cli.py`) already gets stdout/stderr encoding right, and
+  `chcp 65001` does not fix it either. The root cause is that legacy
+  `conhost.exe` (the host behind plain `cmd.exe`/`powershell.exe`) has no
+  Unicode font-fallback, so any codepoint missing from its selected font is
+  a permanent tofu box — confirmed even for the `technical` theme's
+  single-codepoint `✓`/`✗`, not just full-color emoji. Windows Terminal
+  (`wt.exe`) and VS Code's integrated terminal both do font-fallback and
+  render every theme correctly. Fix shipped: a pure-ASCII `ascii` theme
+  (`themes.py`, `--theme ascii`) using bracketed labels (`[OK]`/`[WARN]`/
+  `[ALERT]`/`[FAIL]`) as a real escape hatch for anyone stuck on legacy
+  conhost; otherwise switch to Windows Terminal or VS Code's terminal.
 
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.

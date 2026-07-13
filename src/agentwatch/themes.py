@@ -7,7 +7,6 @@ The default theme uses agent-specific language (productive, struggling, spinning
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
 
 
 @dataclass(frozen=True)
@@ -73,7 +72,18 @@ class StatusTheme:
         return self.level_3
 
     def emoji_for(self, status: str) -> str:
-        """Get emoji for a status label."""
+        """Get emoji for a status label.
+
+        The "❓" fallback below is intentionally non-ASCII (it would defeat
+        the point of the `ascii` theme if it were ever actually emitted by
+        it). In practice this is unreachable: every call site passes a
+        `status` string that was itself derived from the *current* theme
+        (`status_from_score()`, `RotState.label`, or a value already stored
+        from `theme.level_0`), so `status` always matches one of the four
+        keys `self.emojis` was just built from. It only fires if a caller
+        passes a label from a *different* theme than the one currently
+        active, which no code in this codebase does today.
+        """
         return self.emojis.get(status, "❓")
 
     def color_for(self, status: str) -> str:
@@ -217,6 +227,27 @@ THEME_TECHNICAL = StatusTheme(
     color_3="red",
 )
 
+# Pure 7-bit ASCII theme — for legacy Windows consoles (plain cmd.exe /
+# powershell.exe via conhost.exe) that have no Unicode font-fallback and
+# render every other theme's glyphs (including `technical`'s ✓/~/!/✗) as
+# "?" or a tofu box. Bracketed text labels instead of dingbats, so this is
+# safe even on the oldest conhost. See CLAUDE.md Known Issues.
+THEME_ASCII = StatusTheme(
+    name="ascii",
+    level_0="ok",
+    level_1="warning",
+    level_2="alert",
+    level_3="failure",
+    emoji_0="[OK]",
+    emoji_1="[WARN]",
+    emoji_2="[ALERT]",
+    emoji_3="[FAIL]",
+    color_0="green",
+    color_1="yellow",
+    color_2="orange",
+    color_3="red",
+)
+
 
 # =============================================================================
 # Theme Registry
@@ -234,6 +265,7 @@ THEMES: dict[str, StatusTheme] = {
     "simple": THEME_SIMPLE,
     "gaming": THEME_GAMING,
     "technical": THEME_TECHNICAL,
+    "ascii": THEME_ASCII,
 }
 
 # Default theme - agent-specific language
