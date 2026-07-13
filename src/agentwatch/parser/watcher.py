@@ -13,6 +13,13 @@ from watchfiles import Change, awatch
 from agentwatch.discovery import AgentProcess
 
 from .codex import CodexParser
+from .cursor_source import (
+    bubble_to_action,
+    fetch_bubbles,
+    fetch_checkpoint,
+    fetch_composer_headers,
+    open_readonly,
+)
 from .logs import detect_log_format, parse_claude_code_entry, parse_moltbot_entry
 from .models import Action
 
@@ -128,6 +135,122 @@ class LogWatcher:
                 if Path(changed_path) == self.path and change_type == Change.modified:
                     for action in self._read_new_lines():
                         yield action
+
+    async def watch_with_callbacks(self) -> None:
+        """Watch and dispatch to registered callbacks."""
+        async for action in self.watch():
+            for callback in self._callbacks:
+                try:
+                    callback(action)
+                except Exception:
+                    pass  # Don't let callback errors stop watching
+
+
+class CursorWatcher:
+    """Polls a Cursor ``state.vscdb`` for new composer bubble activity.
+
+    Unlike ``LogWatcher``, there is no append-only byte stream to tail --
+    SQLite files are rewritten in place and Cursor does not leave a WAL to
+    stream incrementally when idle (see
+    ``C:\\Users\\Zaid\\.claude\\plans\\cursor-sqlite-architecture-review.md``).
+    This watcher instead re-queries on an interval, using
+    ``composerHeaders.lastUpdatedAt`` as a cheap per-composer change signal
+    before paying to re-fetch that composer's ``bubbleId:*`` rows (the
+    round-4-confirmed real per-bubble content store -- see
+    ``cursor_source.py``'s module docstring for the schema-correction
+    history this is built against, and for why ``Action`` field values like
+    ``tokens_in``/``tokens_out``/``cost_usd`` stay at ``0``/``0.0`` rather
+    than being estimated).
+
+    Two-tier poll, matching the architecture review's recommendation (a)
+    gated by (c) -- a plain timer-based loop is used as the baseline (no
+    ``watchfiles.awatch`` early-wake optimization; not needed to satisfy
+    this sprint's scope):
+
+    1. Every ``header_poll_interval`` seconds, cheaply check every
+       composer's ``lastUpdatedAt`` watermark via
+       ``fetch_composer_headers``.
+    2. Only for composers whose watermark advanced *and* whose last bubble
+       refetch was at least ``min_blob_poll_interval`` seconds ago, pay for
+       the more expensive ``fetch_bubbles`` query and emit ``Action``s for
+       any bubbles not yet seen, tracked via a per-composer emitted-count
+       cursor. If a composer is throttled by ``min_blob_poll_interval``,
+       its watermark is deliberately left un-advanced so the next tick
+       retries it -- a delta is only ever delayed, never silently dropped.
+    """
+
+    def __init__(
+        self,
+        db_path: Path,
+        header_poll_interval: float = 5.0,
+        min_blob_poll_interval: float = 1.0,
+    ):
+        self.db_path = db_path
+        self.header_poll_interval = header_poll_interval
+        self.min_blob_poll_interval = min_blob_poll_interval
+        self._last_updated: dict[str, int] = {}  # composer_id -> lastUpdatedAt watermark
+        self._bubble_cursor: dict[str, int] = {}  # composer_id -> bubbles already emitted
+        self._last_blob_fetch: dict[str, float] = {}  # composer_id -> monotonic fetch time
+        self._callbacks: list[Callable[[Action], None]] = []
+
+    def on_action(self, callback: Callable[[Action], None]) -> None:
+        """Register a callback for new actions."""
+        self._callbacks.append(callback)
+
+    def _poll_once(self) -> list[Action]:
+        """Run one full poll tick: cheap header scan, then a selective
+        bubble refetch for composers whose watermark advanced.
+
+        Synchronous and side-effect-only-via-instance-state, so tests can
+        drive it directly without running the async ``watch()`` loop.
+        """
+        actions: list[Action] = []
+        conn = open_readonly(self.db_path)
+        try:
+            headers = fetch_composer_headers(conn)
+            for composer_id, header in headers.items():
+                last_updated = header.get("lastUpdatedAt")
+                if last_updated is None:
+                    continue  # composer exists but never got a message (real case)
+
+                prev = self._last_updated.get(composer_id)
+                if prev is not None and last_updated <= prev:
+                    continue  # unchanged since last poll
+
+                now = time.monotonic()
+                last_fetch = self._last_blob_fetch.get(composer_id)
+                if last_fetch is not None and (now - last_fetch) < self.min_blob_poll_interval:
+                    # Throttled: leave the watermark un-advanced so the next
+                    # tick retries this composer instead of losing the delta.
+                    continue
+
+                self._last_blob_fetch[composer_id] = now
+                self._last_updated[composer_id] = last_updated
+
+                bubbles = fetch_bubbles(conn, composer_id)
+                seen = self._bubble_cursor.get(composer_id, 0)
+                new_bubbles = bubbles[seen:]
+                self._bubble_cursor[composer_id] = len(bubbles)
+
+                for bubble in new_bubbles:
+                    checkpoint = None
+                    checkpoint_id = bubble.get("checkpointId")
+                    if checkpoint_id:
+                        checkpoint = fetch_checkpoint(conn, composer_id, checkpoint_id)
+                    actions.append(bubble_to_action(bubble, composer_id, checkpoint))
+        finally:
+            conn.close()
+        return actions
+
+    async def watch(self) -> AsyncIterator[Action]:
+        """Watch for new bubble actions, yielding them as they arrive."""
+        for action in self._poll_once():
+            yield action
+
+        while True:
+            await asyncio.sleep(self.header_poll_interval)
+            for action in self._poll_once():
+                yield action
 
     async def watch_with_callbacks(self) -> None:
         """Watch and dispatch to registered callbacks."""

@@ -2,6 +2,14 @@
 
 from .aider import parse_aider_analytics, parse_aider_log, parse_aider_markdown
 from .codex import CodexParser, classify_codex_tool
+from .cursor_source import (
+    bubble_to_action,
+    classify_cursor_tool,
+    fetch_bubbles,
+    fetch_checkpoint,
+    fetch_composer_headers,
+    open_readonly,
+)
 from .logs import (
     SENSITIVE_PATH_REGEX,
     find_latest_session,
@@ -10,7 +18,7 @@ from .logs import (
     parse_file,
 )
 from .models import Action, ActionBuffer, SessionStats, ToolType
-from .watcher import LogWatcher, MultiLogWatcher
+from .watcher import CursorWatcher, LogWatcher, MultiLogWatcher
 
 __all__ = [
     "Action",
@@ -19,6 +27,13 @@ __all__ = [
     "ToolType",
     "CodexParser",
     "classify_codex_tool",
+    "CursorWatcher",
+    "bubble_to_action",
+    "classify_cursor_tool",
+    "fetch_bubbles",
+    "fetch_checkpoint",
+    "fetch_composer_headers",
+    "open_readonly",
     "LogWatcher",
     "MultiLogWatcher",
     "find_latest_session",

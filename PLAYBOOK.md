@@ -900,7 +900,7 @@ implement against the original sketch; implement against the corrected
 schema below.
 
 ### Acceptance Criteria
-- [ ] New `src/agentwatch/parser/cursor_source.py`: `open_readonly()`
+- [x] New `src/agentwatch/parser/cursor_source.py`: `open_readonly()`
       (`mode=ro` URI, per the architecture review's snippet — unchanged),
       `fetch_composer_headers()` using the **real, corrected**
       `composerHeaders` schema (`composerId`, `workspaceId`, `createdAt`,
@@ -910,7 +910,7 @@ schema below.
       'bubbleId:' || ? || ':%'`, `fetch_checkpoint(conn, composer_id,
       checkpoint_id)` querying `checkpointId:<composerId>:<checkpointId>`
       for file/diff cross-reference
-- [ ] Bubble-to-`Action` mapping uses the round-4-confirmed real fields,
+- [x] Bubble-to-`Action` mapping uses the round-4-confirmed real fields,
       not the original guess: `type` (int: `1`=user, `2`=assistant) ->
       role, `text` -> content (not `conversationMap`, not `richText`),
       `thinking`/`thinkingDurationMs`/`thinkingStyle` -> optional
@@ -920,30 +920,36 @@ schema below.
       sample seen — do not treat a zero reading as a parsing bug),
       `modelInfo.modelName` -> model identity when present (first bubble
       of a turn only, per round 4), `checkpointId` -> cross-referenced
-      `checkpointId:*` row's `files`/`nonExistentFiles` for `file_path`
-- [ ] `toolResults` (list) exists structurally but its **populated shape
+      `checkpointId:*` row's `files`/`nonExistentFiles` for `file_path`.
+      **Note**: `Action` has no dedicated model-identity field, so
+      `modelInfo` (like `thinking`/`thinkingDurationMs`/`thinkingStyle`) is
+      surfaced via `raw` rather than promoted to a top-level attribute —
+      the same "stuff the source object into `raw` for detector access to
+      un-promoted fields" pattern every other parser in this package
+      already uses, not a gap.
+- [x] `toolResults` (list) exists structurally but its **populated shape
       was never observed in any of the 4 investigation rounds** — no tool
       call happened in the one real exchange available. Tool-call
       classification must default conservatively (analogous to Codex's
       `classify_codex_tool` UNKNOWN-until-confirmed precedent) rather than
       guess a shape. Document this as a known limitation in the module
       docstring, not hidden.
-- [ ] Do **not** fall back to `SessionStats.estimated_cost`'s blended-rate
+- [x] Do **not** fall back to `SessionStats.estimated_cost`'s blended-rate
       heuristic for Cursor sources when `tokenCount` reads zero — leave
       `tokens_in`/`tokens_out`/`cost_usd` at `0`/`0.0`, per the original
       architecture review's explicit instruction not to duplicate that
       fallback
-- [ ] New `CursorWatcher` class in `parser/watcher.py`: two-tier poll
+- [x] New `CursorWatcher` class in `parser/watcher.py`: two-tier poll
       (`composerHeaders.lastUpdatedAt` cheap check first, selective
       `bubbleId:*` refetch only for composers whose watermark advanced),
       matching the architecture review's recommendation (a) gated by (c).
       `header_poll_interval`/`min_blob_poll_interval` as constructor args,
       not hardcoded, mirroring `MultiLogWatcher.poll_interval`
-- [ ] `mode=ro` enforced on every connection; a test asserts an explicit
+- [x] `mode=ro` enforced on every connection; a test asserts an explicit
       `INSERT` attempt raises `sqlite3.OperationalError`, not just that the
       code never calls `INSERT`/`UPDATE` (matches how round 1 empirically
       verified this, not just assumed it)
-- [ ] New tests (`test_cursor_source.py`, `test_cursor_watcher.py`) against
+- [x] New tests (`test_cursor_source.py`, `test_cursor_watcher.py`) against
       a hand-built fixture SQLite DB matching the **real, round-4-confirmed
       schema** (`composerHeaders` real columns, `bubbleId:*` real JSON
       shape incl. `type`/`text`/`tokenCount`/`checkpointId`,
@@ -954,10 +960,10 @@ schema below.
       `bubbleId:*` refetch (assert on query/mock call count, not just
       output), an empty/vestigial `conversationMap` composer producing no
       spurious actions
-- [ ] Zero changes to `detectors/health/*.py` or `detectors/security/*.py`
+- [x] Zero changes to `detectors/health/*.py` or `detectors/security/*.py`
       — the `Action` abstraction should mean detectors need no changes;
       existing detector test suite passes unmodified as a regression check
-- [ ] Explicitly out of scope, not attempted this sprint: `cursor_discovery.
+- [x] Explicitly out of scope, not attempted this sprint: `cursor_discovery.
       py` (Phase 2), any `ui/multi_app.py`/`cli.py` wiring, `agentKv:blob:*`
       or `conversation-search.db` as alternate/cross-check sources (round 4
       flagged both as options for whoever scopes Phase 1 in more detail —
@@ -966,8 +972,14 @@ schema below.
       schema derived from one real (but tool-call-free) exchange; tool-call
       bubble shape and whether `tokenCount` is ever populated for paid
       model tiers remain open, tracked as follow-up gates before
-      production-ready, same honesty standard as the Codex CLI sprint
-- [ ] `python -m pytest tests/ -v` fully green, `ruff check .` clean on all
+      production-ready, same honesty standard as the Codex CLI sprint —
+      **not attempted this sprint**: no PR was opened (explicit instruction
+      this sprint was local-commit-only, mirroring how Sprint 4 also ended
+      at "committed, not pushed, not PR'd"). The substance of this caveat
+      is documented instead in `cursor_source.py`'s module docstring and in
+      the status writeup below, ready to carry into the PR body verbatim
+      whenever a PR for this branch is opened.
+- [x] `python -m pytest tests/ -v` fully green, `ruff check .` clean on all
       new/touched files
 
 ### Implementation Plan
@@ -979,6 +991,60 @@ re-guessed shape). QA does a fixture-based verification pass. Phase 2
 (`cursor_discovery.py` + UI/CLI wiring) stays unscoped pending a separate
 board decision on the "does Cursor.exe running gate discovery" product
 question.
+
+**Status: implementation complete (2026-07-14), not yet CTO-reviewed or
+pushed.** Built `src/agentwatch/parser/cursor_source.py` (`open_readonly`,
+`fetch_composer_headers`, `fetch_bubbles`, `fetch_checkpoint`,
+`bubble_to_action`, `classify_cursor_tool`) against the round-4-confirmed
+`bubbleId:<composerId>:<bubbleId>` schema, not the original review's wrong
+`conversationMap` guess. Added `CursorWatcher` to `parser/watcher.py`,
+structurally parallel to `LogWatcher` (`watch() -> AsyncIterator[Action]`,
+`on_action`, `watch_with_callbacks`), internally a synchronous `_poll_once()`
+two-tier poll (cheap `lastUpdatedAt` watermark check, then a
+`min_blob_poll_interval`-throttled selective `fetch_bubbles` refetch that
+deliberately leaves the watermark un-advanced when throttled so a delta is
+delayed, never dropped) driven by a plain `asyncio.sleep(header_poll_interval)`
+timer loop — no `watchfiles.awatch` early-wake optimization was added, per
+the sprint's own "acceptable as baseline, don't over-engineer" guidance.
+Both intervals are constructor args (`header_poll_interval=5.0`,
+`min_blob_poll_interval=1.0`), not hardcoded. `parser/__init__.py` updated to
+export `CursorWatcher` and the `cursor_source` entry points, mirroring how
+Sprint 4 wired `CodexParser`/`classify_codex_tool` — not explicitly required
+by this sprint's acceptance criteria, but consistent with existing project
+pattern and not itself UI/CLI wiring (no `ui/`, `cli.py`, or
+`cursor_discovery.py` touched — confirmed via `git diff --stat` showing only
+`parser/__init__.py`, `parser/watcher.py` modified and `parser/cursor_source.py`
+new).
+
+New `tests/test_cursor_source.py` (19 tests) and `tests/test_cursor_watcher.py`
+(6 tests) build a hand-crafted fixture SQLite DB against the real schema
+(`composerHeaders` real columns, `cursorDiskKV` `bubbleId:*`/`checkpointId:*`
+real key shapes) — every specifically-required case is covered: a
+user+assistant bubble pair producing 2 correctly-typed `Action`s, a
+`lastUpdatedAt` change across two/three poll ticks asserted via
+`unittest.mock.patch(..., wraps=...)` call-count on `fetch_bubbles` (not just
+output), an empty/vestigial composer (header exists, zero `bubbleId:*` rows)
+producing zero spurious actions, a composer with `lastUpdatedAt IS NULL`
+(never messaged) skipped without crashing, `open_readonly()` + an explicit
+`INSERT` raising `sqlite3.OperationalError` (replicating round 1's empirical
+proof, not a mocked assertion), and a deterministic (fake-clock, no real
+`sleep`) throttle-then-recovery test for `min_blob_poll_interval`. `python -m
+pytest tests/ -v` — **468/468 pass**, zero regressions (up from Sprint 4's
+345; the delta includes this sprint's 25 new tests plus other work already
+on this branch). `ruff check` on the 5 new/touched files (`cursor_source.py`,
+`watcher.py`, `parser/__init__.py`, both new test files) is clean; repo-wide
+`ruff check .` is **590 errors — unchanged from the documented pre-existing
+baseline**, confirming zero new warnings introduced anywhere. `git diff
+--stat -- src/agentwatch/detectors/` and `-- src/agentwatch/ui/
+src/agentwatch/cli.py` are both empty, confirming the scope boundary
+(detectors untouched, no UI/CLI wiring, no `cursor_discovery.py`) held.
+
+**Flagged, not resolved unilaterally**: the acceptance criteria's "PR
+description" bullet is left unchecked above — this sprint's instructions
+were explicitly local-commit-only (no push, no PR), so there is no PR body
+to put the fixture-verified-only caveat in yet. That caveat text lives in
+`cursor_source.py`'s module docstring instead, ready to carry forward
+verbatim into a PR body whenever this branch is actually opened for review.
 
 ---
 
