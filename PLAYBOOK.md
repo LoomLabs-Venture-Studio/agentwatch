@@ -566,20 +566,21 @@ text verbatim, consistent with every prior sanitized-findings entry in
 that doc.
 
 ### Acceptance Criteria
-- [ ] `conversationState`'s encoding scheme identified with direct
+- [x] `conversationState`'s encoding scheme identified with direct
       evidence (not guessed) — e.g. successfully decoded via a specific
       library/method, or a documented reason why a specific guess was
       ruled out
-- [ ] If decodable: a working prototype decode function (scratch script,
+- [x] If decodable: a working prototype decode function (scratch script,
       not `src/agentwatch/`) that turns the raw string into structured
       data for at least one real captured `conversationState` value
-- [ ] Decoded structure's shape documented (sanitized) in
+- [x] Decoded structure's shape documented (sanitized) in
       `cursor-sqlite-architecture-review.md`: bubble/message boundaries,
       role field name(s) and values, tool-call representation if present
 - [ ] If NOT decodable within reasonable effort: findings document why
       (e.g. proprietary/unknown framing, no matching known format found),
       explicit recommendation on whether further effort is worth it
-- [ ] Zero changes under `src/agentwatch/`; zero writes to `state.vscdb`
+      — N/A, it was decodable (see below)
+- [x] Zero changes under `src/agentwatch/`; zero writes to `state.vscdb`
 
 ### Implementation Plan
 1. Engineer takes the real `conversationState` value already captured in
@@ -597,7 +598,30 @@ that doc.
    already solved this — both were cited in the earlier encryption
    research as real, fetched-and-verified tools).
 
-**Status: in progress — engineer assigned (2026-07-12).**
+**Status: complete (2026-07-12), reported 2026-07-13.** Encoding
+identified with direct evidence: `~` sentinel + base64 + a valid,
+byte-complete protobuf message, hand-decoded via a dependency-free
+scratch parser (never committed, per constraints). Result **refutes the
+hypothesis that motivated it**: the decoded payload is ~97%
+context-window token-accounting/telemetry (per-category token budgets for
+rules/skills/MCP/subagents), not conversation content — no `role` field,
+no message text, no tool-call data anywhere in it. This is the third
+field-level hypothesis in this investigation (`conversationMap`, the
+flush-on-close theory, now `conversationState`) to come up empty.
+
+The engineer then ran an unscoped but flagged follow-on ("Investigation
+round 4" in `cursor-sqlite-architecture-review.md`) and found what this
+sub-investigation was actually trying to unblock: **three independent,
+corroborating sources of real bubble content** — `cursorDiskKV
+bubbleId:<composerId>:<bubbleId>` rows (the real per-bubble store, `type`
+1/2 = user/assistant), `agentKv:blob:*` cache rows, and a newly-discovered
+`conversation-search.db` FTS5 index. Round 4's recommendation: route back
+to the board to authorize Phase 1 (`CursorWatcher`) against `bubbleId:*`
+as primary source — the blocking gap is closed. Alternative next steps it
+also flagged: one more full-file byte-diff pass (the method that has
+reliably surfaced every real signal in this investigation so far), or
+park Cursor support as not currently tractable. **Board decision needed**
+on which of these three to take before Phase 1 work is scoped/assigned.
 
 ---
 
@@ -616,26 +640,26 @@ Cursor Phase 0 spike (Sprint 2) and the devops pre-push hook fix below —
 none of the three touch overlapping files.
 
 ### Acceptance Criteria (from the PRD's own Verification section)
-- [ ] New `src/agentwatch/parser/aider.py`: `parse_aider_markdown`,
+- [x] New `src/agentwatch/parser/aider.py`: `parse_aider_markdown`,
       `parse_aider_analytics`, `parse_aider_log`, matching both
       SEARCH/REPLACE and legacy ORIGINAL/UPDATED diff-marker styles
-- [ ] `parser/logs.py::parse_file()` extension-based dispatch: `.md` ->
+- [x] `parser/logs.py::parse_file()` extension-based dispatch: `.md` ->
       aider parser, existing JSONL loop unchanged for everything else
-- [ ] `parser/__init__.py` exports the three new entry points
-- [ ] `cli.py`: new `--analytics-log` option on `check`/`security-scan`,
+- [x] `parser/__init__.py` exports the three new entry points
+- [x] `cli.py`: new `--analytics-log` option on `check`/`security-scan`,
       updated `--log` help text on both
-- [ ] New `tests/test_aider_parser.py` covering: session-start parsing +
+- [x] New `tests/test_aider_parser.py` covering: session-start parsing +
       mtime fallback, turn-splitting incl. zero-turn edge case, both
       diff-marker styles, commit-line success/failure inference,
       Markdown-only "degraded but useful" zero-cost case, analytics merge
       by ordinal incl. mismatched-count fallback, `parse_file()` dispatch
       regression test
-- [ ] `python -m pytest tests/ -v` fully green, `ruff check .` no new
+- [x] `python -m pytest tests/ -v` fully green, `ruff check .` no new
       warnings
-- [ ] Manual smoke test: hand-written `.aider.chat.history.md` fixture ->
+- [x] Manual smoke test: hand-written `.aider.chat.history.md` fixture ->
       `agentwatch check --log <fixture>` reports a non-zero action count
       (no real Aider install required for this)
-- [ ] PR description explicitly notes which Open Questions from the PRD
+- [x] PR description explicitly notes which Open Questions from the PRD
       (ordinal message_send-to-turn pairing, analytics file lifecycle,
       edit-format coverage beyond SEARCH/REPLACE, `.aider/logs/*.log`
       fallback format, resumed-session handling) are deferred rather than
@@ -651,7 +675,22 @@ Aider Markdown support. Live `agentwatch watch` tailing is explicitly out
 of scope for this sprint (see PRD Open Questions) — one-shot `check`/
 `security-scan` support only.
 
-**Status: in progress — engineer assigned (2026-07-11).**
+**Status: complete (implemented 2026-07-11, verified 2026-07-13).** Code-level
+work was fully done and committed (`c3129cd`) well before this status line was
+ever updated. CTO re-verification (not just trusting the original engineer
+report): `parser/aider.py`/`__init__.py`/`logs.py`/`cli.py` all match the PRD
+exactly; `test_aider_parser.py` covers every listed case including 3
+in-code-documented QA regression fixes (empty-block diff matching,
+backtick-wrapped filenames, turn-headers-inside-fences); `pytest` 443/443
+green; `aider.py` + its test file individually 100% ruff-clean; repo-wide
+ruff warning count actually *decreased* (635 -> 590) comparing pre-Sprint-3
+to current HEAD, confirming no new warnings anywhere, not just in touched
+files. Manual smoke test re-run directly against a hand-written fixture:
+`agentwatch check --log <fixture>` produced a real health report, not "No
+actions found." **Gap found and now fixed**: the PR description originally
+covered Codex's 7 open questions but not Aider's 5 — corrected in the same
+pass that closed this status update (PR #2 body edited to add the missing
+paragraph and refresh a stale Cursor reference).
 
 ---
 
@@ -673,19 +712,27 @@ Sprint 2/3 — touches only `package.json`/`node_modules`/`.gitignore`, no
 overlap with either.
 
 ### Acceptance Criteria
-- [ ] `package.json` added with `yaml` as a dependency
-- [ ] `node_modules/` added to `.gitignore` (not currently present)
-- [ ] `node scripts/verify-deploy.mjs` runs to completion without
+- [x] `package.json` added with `yaml` as a dependency
+- [x] `node_modules/` added to `.gitignore` (not currently present)
+- [x] `node scripts/verify-deploy.mjs` runs to completion without
       crashing (PASS/WARN/FAIL per its own documented exit codes, not an
       import error)
-- [ ] A real git push (or `git push --dry-run` / manual hook invocation)
+- [x] A real git push (or `git push --dry-run` / manual hook invocation)
       shows the hook actually executing the checks, not silently
       no-op-ing via the old crash-shaped WARN path
-- [ ] No changes to the GitHub Actions Python CI gate
+- [x] No changes to the GitHub Actions Python CI gate
       (`.github/workflows/verify-deploy.yml`, already repurposed in
       Sprint 0) — this is a separate, local-only hook
 
-**Status: in progress — devops assigned (2026-07-11).**
+**Status: complete (implemented 2026-07-11, verified 2026-07-13).**
+CTO re-verification: `package.json` present with `yaml ^2.6.1`;
+`.gitignore` has `node_modules/`; ran `node scripts/verify-deploy.mjs`
+directly — clean exit 0, real skip semantics (`0 pass, 0 warn, 0 fail, 3
+skip`), no crash/import error; a real push already exercised this hook
+end-to-end during the prior session (first real proof-of-life, replacing
+the old `yaml`-import crash); confirmed `.github/workflows/verify-deploy.yml`
+untouched since before this branch (`git diff 430bad6..HEAD --stat` empty
+for that path). All 5 acceptance criteria met.
 
 ---
 
