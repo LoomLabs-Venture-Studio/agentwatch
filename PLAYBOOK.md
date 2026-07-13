@@ -518,6 +518,87 @@ quit Cursor immediately after sending a message, then re-check** — not
 done automatically since force-closing the user's live session isn't a
 call an agent should make unilaterally.
 
+**Flush-timing retest completed (2026-07-12).** User sent a real message
+and fully quit Cursor. Baseline + after-close read-only snapshots taken and
+diffed (see `cursor-sqlite-architecture-review.md`, "Baseline snapshot
+before flush-timing retest" and "After-close snapshot, flush-timing
+retest" sections). **Literal theory refuted**: `conversationMap` is still
+empty (`{}`) on every composer, including the newly-created one — closing/
+quitting does not populate that field. **But a real write did land, in a
+different place than expected**: `fullConversationHeadersOnly` went from
+empty to a populated per-bubble index (`bubbleId`, numeric `type` enum,
+`createdAt`, grouping flags — no message content), and `conversationState`
+grew from a 1-character placeholder (`"~"`) to a 19,329-character
+non-JSON, fully-printable string (`"~Ci..."..."W0="`) — very likely
+protobuf or another binary/structured encoding rather than plain JSON.
+New token/context-usage fields also appeared (`contextTokensUsed`,
+`contextTokenLimit`, `promptTokenBreakdown`, etc.), correcting an earlier
+guess about where usage data lives. **Caveat**: the test composer was
+`chat` mode, not `agent` mode — confirms the flush mechanism generally,
+not yet confirmed specifically for agent-mode composers.
+
+**Net effect**: this changes Phase 1's actual target. The plan can no
+longer assume "parse JSON out of `conversationMap`" — real content lives
+in `conversationState`, which needs a decode step the original
+architecture review never anticipated. **Board decision (2026-07-12):
+invest in decoding `conversationState`'s encoding** rather than building
+`CursorWatcher` on metadata-only fields or parking Cursor. Scoped as a
+sub-investigation below.
+
+### Sub-investigation: decode `conversationState` encoding
+**Type:** research / spike
+**Goal:** determine `conversationState`'s encoding scheme (leading
+candidates: protobuf, base64/custom-framed, or a proprietary format) and
+produce a working prototype decoder, so a future Phase 1 can actually
+extract bubble/message content instead of only the empty-`conversationMap`
+metadata layer.
+**Constraints (same as prior Cursor recon passes)**: read-only against
+`state.vscdb`, zero writes, zero changes under `src/agentwatch/` (this is
+still investigation, not implementation — decoder prototypes belong in a
+scratch script, not shipped code, until the encoding is actually
+confirmed). **New constraint specific to this task**: decoding will likely
+surface real conversation content for the first time in this
+investigation — that's expected and fine since this is the user's own
+local data and they explicitly directed this work, but findings written to
+`cursor-sqlite-architecture-review.md` must still describe *structure*
+(field names, types, nesting) rather than reproduce real prompt/message
+text verbatim, consistent with every prior sanitized-findings entry in
+that doc.
+
+### Acceptance Criteria
+- [ ] `conversationState`'s encoding scheme identified with direct
+      evidence (not guessed) — e.g. successfully decoded via a specific
+      library/method, or a documented reason why a specific guess was
+      ruled out
+- [ ] If decodable: a working prototype decode function (scratch script,
+      not `src/agentwatch/`) that turns the raw string into structured
+      data for at least one real captured `conversationState` value
+- [ ] Decoded structure's shape documented (sanitized) in
+      `cursor-sqlite-architecture-review.md`: bubble/message boundaries,
+      role field name(s) and values, tool-call representation if present
+- [ ] If NOT decodable within reasonable effort: findings document why
+      (e.g. proprietary/unknown framing, no matching known format found),
+      explicit recommendation on whether further effort is worth it
+- [ ] Zero changes under `src/agentwatch/`; zero writes to `state.vscdb`
+
+### Implementation Plan
+1. Engineer takes the real `conversationState` value already captured in
+   the after-close snapshot (or re-queries fresh if needed, read-only) and
+   attempts decoding: check for base64/base64url framing (the trailing
+   `=` is suggestive), check for protobuf magic-byte patterns, try common
+   compression (gzip/zlib) after any base64 strip, per the `"~"` prefix
+   possibly being a placeholder/sentinel character rather than payload.
+2. If a working decode path is found, document structure + write a
+   prototype in a scratch location.
+3. CTO reviews findings against acceptance criteria.
+4. Report to board: is Phase 1 (`CursorWatcher`) now unblocked, or does
+   this need more investigation / external reference (e.g. checking if
+   `somogyijanos/cursor-chat-export` or `saharmor/cursor-view` have
+   already solved this — both were cited in the earlier encryption
+   research as real, fetched-and-verified tools).
+
+**Status: in progress — engineer assigned (2026-07-12).**
+
 ---
 
 ### Sprint: Sprint 3 — Aider Log Parser
@@ -605,6 +686,140 @@ overlap with either.
       Sprint 0) — this is a separate, local-only hook
 
 **Status: in progress — devops assigned (2026-07-11).**
+
+---
+
+### Sprint: Sprint 4 — Codex CLI Support, Phase 1 (fixture-based implementation)
+**Type:** feature
+**Priority:** `discovery.py::AGENT_PATTERNS` already detects running `codex`
+processes, but `find_running_agents()`'s log-resolution dispatch only
+branches on `"claude-code"`/`"aider"` — Codex processes always get
+`log_file=None`, so `agentwatch check`/`watch` can never parse a Codex
+session even though the process is visible in `agentwatch ps`.
+**PRD Status:** full implementation plan exists:
+`C:\Users\Zaid\.claude\plans\codex-cli-support-prd.md` — written entirely
+from source/issue-tracker research (real `openai/codex` repo,
+`codex-rs/protocol/src/protocol.rs`, issues #4963/#13463/#21660,
+`PixelPaw-Labs/codex-trace`), **no live Codex CLI install was available to
+verify against** (confirmed again 2026-07-12: no `~/.codex`, no `codex` on
+PATH on this machine either). Confidence is high on file locations and the
+outer JSONL envelope; explicitly not high on exact inner field names — see
+PRD's "Open Questions / Requires Live Install to Confirm" (7 items, most
+importantly #1: the literal `type` string nesting on `response_item`
+lines).
+**Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
+**Board decision (2026-07-12):** given no live install exists on this or
+any available machine right now, board chose to proceed with implementation
+now (fixture-based, version-era-guarded) rather than block on a research-only
+spike or wait indefinitely for a live install — matching the PRD's own
+recommended delegation split, not a deviation from it.
+
+### Scope for this sprint
+PRD's Suggested Commit Sequence, **steps 1-4 only**:
+1. `discovery.py`: new `_resolve_codex_log()` + `_read_codex_session_meta()`
+   helper, wired into `find_running_agents()`'s dispatch; honors
+   `CODEX_HOME` (single-root only — comma-separated multi-root support is
+   unconfirmed, PRD Open Question #2)
+2. New `src/agentwatch/parser/codex.py`: `CodexParser` (stateful,
+   `call_id`-based function-call/output correlation, `flush()` for
+   end-of-stream), `_detect_codex_era()` (version/shape-sniffing across the
+   3 confirmed schema eras), `classify_codex_tool()` — all built and unit
+   tested against a **hand-authored fixture file**, not real captured
+   output
+3. `logs.py`: `detect_log_format()` Codex branch + `parse_file()` wiring;
+   `parser/__init__.py` exports (`CodexParser`, `classify_codex_tool`)
+4. `watcher.py`: `LogWatcher` stateful-parser wiring — lazy `CodexParser`
+   construction, **no `flush()` call on the tail path** (a live tail keeps
+   pending calls buffered indefinitely; only `parse_file()`'s one-shot
+   batch read flushes at EOF) — this asymmetry must be code-commented, not
+   just implied
+
+**Explicitly out of scope / hard-gated, not this sprint:** PRD commit 5 (the
+"confirm against a real install" gate) — requires installing Codex CLI,
+capturing a real `rollout-*.jsonl`, and patching whatever the research got
+wrong (expected: era-detection field name, `type` string nesting, real tool
+names for `classify_codex_tool`). Do not mark this sprint's output
+production-verified; it is fixture-verified only, with a known-unconfirmed
+core assumption (PRD Open Question #1) baked into both the parser and its
+own test fixtures.
+
+### Acceptance Criteria
+- [x] `discovery.py::_resolve_codex_log()` implemented, wired into
+      `find_running_agents()`'s dispatch, unit-tested against hand-authored
+      fixture `session_meta` lines (both cwd-match and mtime-fallback paths)
+- [x] `parser/codex.py` (`CodexParser`, `classify_codex_tool`,
+      `_detect_codex_era`, extraction helpers) implemented and unit-tested
+      against a hand-authored fixture `rollout-*.jsonl` built from the
+      confirmed `protocol.rs` envelope shape
+- [x] `logs.py::detect_log_format` correctly identifies the fixture file as
+      `"codex"`, no cross-contamination with existing Claude Code/Moltbot/
+      Aider detection (regression check on existing fixtures)
+- [x] `parse_file()` and `LogWatcher` both produce a correct `Action` stream
+      from the fixture, including: a `function_call`/`function_call_output`
+      pair separated by narration (non-adjacent lines), and a call whose
+      output never arrives before end-of-stream (validates `flush()` on
+      `parse_file`, validates no premature/no flush on `LogWatcher`)
+- [x] `python -m pytest tests/ -v` fully green, no regressions — **345/345
+      pass**
+- [x] `ruff check .` clean on all new/touched files — confirmed zero
+      warnings on the 7 files this sprint touched; repo's ~598 pre-existing
+      warnings are all in unrelated files, out of scope
+- [x] PR description explicitly flags: (a) this is fixture-verified only,
+      no live Codex install exists to confirm against; (b) all 7 PRD Open
+      Questions carried forward, unresolved, into a follow-up gate — not
+      silently dropped; (c) `classify_codex_tool` is expected to
+      misclassify most/all real Codex actions as `UNKNOWN` until real tool
+      names are confirmed (PRD Open Question #3)
+- [ ] **Not in this sprint's acceptance criteria, tracked separately as a
+      follow-up gate**: live-install re-validation (PRD's own commit-5 gate)
+      before this is called production-ready
+
+### Implementation Plan
+Per the PRD's own Delegation section: engineer implements steps 1-4 against
+the hand-authored fixtures, fully test-covered, ruff-clean. CTO reviews.
+QA does a fixture-based verification pass (no live-install spot-check
+possible this sprint). Live-install re-validation stays an explicit unscoped
+follow-up, blocking a separate future "production-ready" sign-off, not this
+sprint's merge.
+
+**Status: implementation complete, CTO-reviewed (2026-07-13), committed to
+`chore/ci-docs-perf-windows-support` — not merged, not pushed.** CTO review
+(read-only pass against the diff + a real `pytest`/`ruff` run) confirmed all
+6 code-level acceptance criteria above are met with no rework needed:
+`_resolve_codex_log()` covers both cwd-match and mtime-fallback with
+`CODEX_HOME` override support; `CodexParser`/`classify_codex_tool`/
+`_detect_codex_era` are implemented and fixture-tested;
+`detect_log_format` identifies Codex fixtures with zero cross-contamination
+on existing Claude Code/Moltbot/Aider detection (regression-tested); the
+`flush()`-on-`parse_file()`-but-never-on-`LogWatcher` asymmetry is
+explicitly code-commented in both `logs.py` and `watcher.py`, not just
+implied; `pytest tests/ -v` is 345/345 green; `ruff check` is clean on all
+7 new/touched files.
+
+**PR-description caveats (carried into the PR body verbatim, not just this
+file):**
+1. **Fixture-verified only.** No live Codex CLI install exists on this or
+   any available machine (confirmed 2026-07-10 and again 2026-07-12) — every
+   test in `test_codex_discovery.py` / `test_codex_parser.py` runs against
+   hand-authored fixtures built from source-code research
+   (`codex-rs/protocol/src/protocol.rs`), not a captured real session.
+2. **All 7 PRD Open Questions remain unresolved**, carried forward as an
+   explicit follow-up gate, not silently dropped — most importantly Open
+   Question #1 (whether `response_item` lines nest `type` literally as
+   `"response_item/function_call"` vs. `type="response_item"` +
+   `payload.type`), which the parser's core dispatch logic depends on.
+3. **`classify_codex_tool` is expected to misclassify most/all real Codex
+   actions as `UNKNOWN`** until real tool names are confirmed against a live
+   install (PRD Open Question #3) — this is a known, accepted limitation of
+   this sprint's scope, not a bug.
+
+Live-install re-validation (PRD's own commit-5 gate) stays an explicit,
+separately-tracked follow-up before this is called production-ready — it is
+not part of this sprint's completion and does not block this commit.
+
+**Next:** hand off to QA for a fixture-based verification pass (no
+live-install spot-check possible this sprint). No push to the remote branch
+yet — local commits only, pending review.
 
 ---
 
