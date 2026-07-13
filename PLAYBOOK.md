@@ -1106,5 +1106,27 @@ unchanged). CTO independently re-verified: 443/443 tests pass; ruff
 before/after diffed per touched file against the pre-edit baseline (zero
 new warnings, several files' counts actually decreased); live smoke test
 against a real session log (`--theme ascii check --security`) confirmed
-fully ASCII-clean output (`[OK]`, `[WARN]`, `[ALERT]`, `[MED]`, `[TIP]`,
-no tofu).
+clean output (`[OK]`, `[WARN]`, `[ALERT]`, `[MED]`, `[TIP]`, no tofu).
+
+**QA correction (2026-07-13):** independent QA verification (byte-level
+scan of real command output, not just the unit-test suite) found that
+`check`/`security-scan` output under `--theme ascii` still contains
+`═`/`╔╗╚╝` box-drawing characters (U+2550 etc.) in `cli.py`'s report
+headers — literally non-ASCII, which contradicts this section's original
+"fully ASCII-clean" / "zero non-ASCII characters" wording above. **This is
+a documentation-precision correction, not a functional bug**: box-drawing
+characters are part of CP437 (the exact legacy code page confirmed active
+on the user's real machine during the Task #8 investigation), which was
+built for DOS-era box-drawing UI and renders them natively — unlike emoji/
+dingbats, which are the actual, and only, root cause of the conhost
+font-fallback problem this task exists to fix. `test_theme_emoji_wiring.py`
+already scoped box-drawing out for this exact reason (see its module
+docstring's "SCOPE NOTE"), but that scoping was never reflected back into
+this section's completion language, which is the gap QA correctly caught.
+**Re-verified live** (2026-07-13, same day): user ran
+`agentwatch --theme ascii check --security` in their real PowerShell
+(the same environment that found the original Task #8 bug) and confirmed
+the `═` divider lines render as actual horizontal double-lines, not tofu/
+`?`. Task #9's actual, correctly-scoped claim is: **zero emoji/dingbat
+characters** render under `--theme ascii` — not "zero non-ASCII
+characters" — and that narrower claim holds, live-verified.
