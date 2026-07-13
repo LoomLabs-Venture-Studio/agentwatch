@@ -870,6 +870,221 @@ yet — local commits only, pending review.
 
 ---
 
+### Sprint: Sprint 5 — Cursor Support, Phase 1 (`CursorWatcher`)
+**Type:** feature
+**Priority:** unblocks Cursor support entirely — every prior investigation
+round (1-3) was blocked on "no populated conversation exists to inspect";
+round 4 (2026-07-12) closed that gap with real, three-way-corroborated
+content.
+**PRD Status:** architecture review + 4 rounds of investigation exist at
+`C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md`. No
+separate PRD document — this section's acceptance criteria serve that role,
+derived directly from round 4's confirmed findings.
+**Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
+**Board decision (2026-07-14):** authorize `CursorWatcher` build against
+`bubbleId:*` as primary source, per round 4's recommendation #1. Scoped to
+architecture review's **Phase 1 only** (steps 1-3: `cursor_source.py`,
+`CursorWatcher`, bubble-to-`Action` mapping) — Phase 2 (`cursor_discovery.py`
++ UI/CLI wiring) stays out of scope, both because the review phases it
+separately and because it carries its own unresolved product question
+("does Cursor.exe running need to gate discovery") that the board hasn't
+ruled on.
+
+### Critical correction this sprint must build against
+The architecture review's original Approach step 3 sketch (`_diff_bubbles`
+reading `composerData.conversationMap`) is **confirmed wrong** —
+`conversationMap` is empty/vestigial on every composer observed across all
+4 investigation rounds. Round 4 found the real per-bubble content store:
+`cursorDiskKV` rows keyed `bubbleId:<composerId>:<bubbleId>`. Do not
+implement against the original sketch; implement against the corrected
+schema below.
+
+### Acceptance Criteria
+- [ ] New `src/agentwatch/parser/cursor_source.py`: `open_readonly()`
+      (`mode=ro` URI, per the architecture review's snippet — unchanged),
+      `fetch_composer_headers()` using the **real, corrected**
+      `composerHeaders` schema (`composerId`, `workspaceId`, `createdAt`,
+      `lastUpdatedAt` int column — not JSON-only, `isArchived`,
+      `isSubagent`, `recency`, `checkpointAt`, `value` JSON), `fetch_bubbles
+      (conn, composer_id)` querying `cursorDiskKV WHERE key LIKE
+      'bubbleId:' || ? || ':%'`, `fetch_checkpoint(conn, composer_id,
+      checkpoint_id)` querying `checkpointId:<composerId>:<checkpointId>`
+      for file/diff cross-reference
+- [ ] Bubble-to-`Action` mapping uses the round-4-confirmed real fields,
+      not the original guess: `type` (int: `1`=user, `2`=assistant) ->
+      role, `text` -> content (not `conversationMap`, not `richText`),
+      `thinking`/`thinkingDurationMs`/`thinkingStyle` -> optional
+      reasoning metadata, `tokenCount.inputTokens`/`outputTokens` ->
+      `tokens_in`/`tokens_out` (real field, but document in-code that it
+      was observed as always `{0,0}` for the `composer-2.5` model in every
+      sample seen — do not treat a zero reading as a parsing bug),
+      `modelInfo.modelName` -> model identity when present (first bubble
+      of a turn only, per round 4), `checkpointId` -> cross-referenced
+      `checkpointId:*` row's `files`/`nonExistentFiles` for `file_path`
+- [ ] `toolResults` (list) exists structurally but its **populated shape
+      was never observed in any of the 4 investigation rounds** — no tool
+      call happened in the one real exchange available. Tool-call
+      classification must default conservatively (analogous to Codex's
+      `classify_codex_tool` UNKNOWN-until-confirmed precedent) rather than
+      guess a shape. Document this as a known limitation in the module
+      docstring, not hidden.
+- [ ] Do **not** fall back to `SessionStats.estimated_cost`'s blended-rate
+      heuristic for Cursor sources when `tokenCount` reads zero — leave
+      `tokens_in`/`tokens_out`/`cost_usd` at `0`/`0.0`, per the original
+      architecture review's explicit instruction not to duplicate that
+      fallback
+- [ ] New `CursorWatcher` class in `parser/watcher.py`: two-tier poll
+      (`composerHeaders.lastUpdatedAt` cheap check first, selective
+      `bubbleId:*` refetch only for composers whose watermark advanced),
+      matching the architecture review's recommendation (a) gated by (c).
+      `header_poll_interval`/`min_blob_poll_interval` as constructor args,
+      not hardcoded, mirroring `MultiLogWatcher.poll_interval`
+- [ ] `mode=ro` enforced on every connection; a test asserts an explicit
+      `INSERT` attempt raises `sqlite3.OperationalError`, not just that the
+      code never calls `INSERT`/`UPDATE` (matches how round 1 empirically
+      verified this, not just assumed it)
+- [ ] New tests (`test_cursor_source.py`, `test_cursor_watcher.py`) against
+      a hand-built fixture SQLite DB matching the **real, round-4-confirmed
+      schema** (`composerHeaders` real columns, `bubbleId:*` real JSON
+      shape incl. `type`/`text`/`tokenCount`/`checkpointId`,
+      `checkpointId:*` real shape) — not the original review's guessed
+      `conversationMap`-based sketch, which is now known-wrong. Cover: a
+      user+assistant bubble pair -> 2 correctly-typed `Action`s, a
+      `lastUpdatedAt` change across two poll ticks triggering exactly one
+      `bubbleId:*` refetch (assert on query/mock call count, not just
+      output), an empty/vestigial `conversationMap` composer producing no
+      spurious actions
+- [ ] Zero changes to `detectors/health/*.py` or `detectors/security/*.py`
+      — the `Action` abstraction should mean detectors need no changes;
+      existing detector test suite passes unmodified as a regression check
+- [ ] Explicitly out of scope, not attempted this sprint: `cursor_discovery.
+      py` (Phase 2), any `ui/multi_app.py`/`cli.py` wiring, `agentKv:blob:*`
+      or `conversation-search.db` as alternate/cross-check sources (round 4
+      flagged both as options for whoever scopes Phase 1 in more detail —
+      deferred, not silently dropped)
+- [ ] PR description explicitly states: fixture-verified only against a
+      schema derived from one real (but tool-call-free) exchange; tool-call
+      bubble shape and whether `tokenCount` is ever populated for paid
+      model tiers remain open, tracked as follow-up gates before
+      production-ready, same honesty standard as the Codex CLI sprint
+- [ ] `python -m pytest tests/ -v` fully green, `ruff check .` clean on all
+      new/touched files
+
+### Implementation Plan
+Engineer implements `cursor_source.py` + `CursorWatcher` against the
+corrected `bubbleId:*`-based schema above, fixture-tested. CTO reviews
+against acceptance criteria (including verifying the fixture schema
+actually matches round 4's documented field names/types, not a
+re-guessed shape). QA does a fixture-based verification pass. Phase 2
+(`cursor_discovery.py` + UI/CLI wiring) stays unscoped pending a separate
+board decision on the "does Cursor.exe running gate discovery" product
+question.
+
+---
+
+### Sprint: Sprint 6 — Aider Log Parser, Phase 2 (deferred open questions)
+**Type:** feature / hardening
+**Priority:** closes gaps explicitly deferred (not resolved) when Sprint 3
+shipped — several materially affect correctness for real aider sessions
+(resumed sessions, long-lived analytics files) even though none blocked
+the original PR
+**PRD Status:** original PRD (`C:\Users\Zaid\.claude\plans\
+aider-log-parser-prd.md`) Open Questions section is the source for this
+sprint's scope
+**Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
+**Board decision (2026-07-14):** scope and delegate now. Split the 5
+deferred open questions by whether they're resolvable without a live
+aider install (research- or design-only) vs. genuinely live-install-gated,
+same honesty standard already applied to Codex CLI — don't guess silently
+on the gated ones.
+
+### Scope for this sprint
+**Resolvable now (implement):**
+1. **Resumed-session handling.** `.aider.chat.history.md` can contain
+   multiple `# aider chat started at` headers if the user resumes aider
+   against the same project. Currently the whole file is treated as one
+   session. Split on each header into a separate synthetic `session_id`/
+   `Action` stream per resume — this is fully determined by the documented
+   format, no live install needed to implement or test.
+2. **Analytics file lifecycle / session-boundary detection.** Harden
+   `parse_aider_log()`'s ordinal `message_send`-to-turn pairing for the
+   case where `--analytics-log` points at a long-lived file reused across
+   many sessions: detect session boundaries within the analytics JSONL via
+   `exit` events or large time gaps between consecutive `message_send`
+   entries, and only pair events falling within the current Markdown
+   session's time window (bounded below by `_parse_session_start()`'s
+   timestamp) rather than blind whole-file ordinal pairing.
+3. **`.aider/logs/*.log` fallback format.** Research aider's current real
+   source (github.com/Aider-AI/aider) to confirm whether this
+   `discovery.py::_resolve_aider_log()` fallback path is still a live
+   convention and, if so, what format it's actually in. If confidently
+   derivable from source without a live install (same evidentiary bar the
+   original PRD held itself to for the Markdown format), add a parser
+   branch; if the convention is confirmed dead, remove the dead fallback
+   path rather than leaving it silently producing zero actions forever.
+4. **Edit-format coverage (`whole`/`udiff`).** Research aider's real edit-
+   format coder implementations (`aider/coders/*.py` in the real repo) to
+   determine actual transcript rendering for the `whole` and `udiff` edit
+   formats, the same way the original SEARCH/REPLACE regex was derived
+   from real captured transcripts, not guessed. Extend `DIFF_BLOCK_RE` or
+   add format-specific matchers only if source-derived with real
+   confidence; otherwise leave explicitly flagged as still open rather
+   than shipping a guessed regex.
+
+**Explicitly still live-install-gated, not attempted this sprint:**
+5. **Ordinal `message_send`-to-turn pairing under two-model edit formats
+   (architect+editor) or retry-on-malformed-edit.** Cannot be confirmed
+   without a real multi-turn session using a two-model format. Instead of
+   leaving this silently fragile, make the mismatched-count case degrade
+   *visibly*: emit a code comment and a debug-level log/warning when the
+   analytics event count and turn count disagree, rather than pairing
+   silently with reduced confidence and no signal to the caller.
+6. **Live `agentwatch watch`/TUI tailing for Aider.** Confirmed real,
+   separate feature work (block-aware incremental parser in `LogWatcher`,
+   relaxing `MultiLogWatcher`'s hardcoded `.jsonl`-only filters) — stays
+   out of scope, flagged as its own future sprint, not silently dropped.
+
+### Acceptance Criteria
+- [ ] `.aider.chat.history.md` files with 2+ `# aider chat started at`
+      headers produce 2+ distinct `session_id` values / `Action` streams,
+      each internally ordinal-consistent; single-header files unaffected
+      (regression test against Sprint 3's existing fixtures)
+- [ ] Analytics merge only pairs `message_send` events falling within the
+      current session's time window when the analytics file contains
+      events from multiple sessions (new fixture: one analytics JSONL
+      spanning 2 synthetic sessions' worth of events, verify correct
+      partitioning)
+- [ ] `.aider/logs/*.log` fallback: either a working parser branch backed
+      by source-derived evidence, or the dead-code path removed with a
+      code comment explaining why (research citation required either way,
+      matching this project's existing verification standard — no
+      unverified guesses)
+- [ ] `whole`/`udiff` edit-format coverage: either extended matcher(s)
+      backed by source-derived evidence, or explicitly documented as still
+      open in the PR description with the specific source files checked
+      and why confidence wasn't reached
+- [ ] Mismatched analytics-event-count-vs-turn-count case now emits a
+      visible signal (log line or equivalent), not just silent best-effort
+      pairing — regression test asserts the signal fires
+- [ ] New/extended tests in `tests/test_aider_parser.py` covering all of
+      the above; `python -m pytest tests/ -v` fully green, no regressions
+      on existing Sprint 3 test cases
+- [ ] `ruff check .` clean on touched files
+- [ ] PR description explicitly lists which of the original 5 open
+      questions were resolved this sprint vs. which remain deferred (item
+      5's live-install gate, item 6's live-tailing scope) — same
+      no-silent-drop standard as every prior sprint on this branch
+
+### Implementation Plan
+Engineer works items 1-4 (resolvable now) plus the visible-degradation
+fix for item 5, in roughly that order per the PRD's existing "each
+independently green" commit-sequence convention. Item 6 stays explicitly
+unscoped. CTO reviews, including spot-checking the source citations for
+items 3-4 against the real aider repo rather than trusting the research
+claim at face value. QA verification pass follows.
+
+---
+
 ## Task #7: Native Windows Support
 
 **Status:** Implemented (2026-07-10). Full native support via `psutil`,
