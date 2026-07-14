@@ -804,7 +804,7 @@ class TestRedactLogFile:
         p = tmp_path / "fp.jsonl"
         p.write_text(json.dumps({"data": placeholder}) + "\n")
 
-        count = redact_log_file(p)
+        redact_log_file(p)
         # The placeholder should survive (false positive not redacted)
         content = p.read_text()
         assert "placeholder" in content

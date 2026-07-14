@@ -140,13 +140,11 @@ class FileChurnDetector(Detector):
 
         # Track per-file: edits since last successful bash
         file_edit_runs: dict[str, int] = {}  # file -> consecutive edits without success
-        last_success_seen = False
 
         for action in recent:
             if action.is_bash and action.success:
                 # Reset all counters — a successful run clears churn
                 file_edit_runs.clear()
-                last_success_seen = True
             elif action.is_file_edit and action.file_path:
                 file_edit_runs[action.file_path] = file_edit_runs.get(action.file_path, 0) + 1
 

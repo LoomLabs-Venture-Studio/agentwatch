@@ -337,10 +337,10 @@ def calculate_efficiency(
     else:
         io_penalty = 0.0
 
-    # --- 4. Cost velocity (0 at ≤$0.05/min, 1.0 at ≥$0.30/min) ---
+    # --- 4. Cost velocity (informational only — see _W_* comment above;
+    #        not converted to a penalty since cost is excluded from scoring) ---
     cost_total = stats.estimated_cost
     cost_vel = cost_total / duration if duration > 0 else 0.0
-    cost_penalty = _clamp01((cost_vel - 0.05) / (0.30 - 0.05))
 
     # --- 5. Cache hit rate (penalty = 1 - hit_rate; 0 if no cache data) ---
     total_cache = stats.total_cache_creation + stats.total_cache_read
