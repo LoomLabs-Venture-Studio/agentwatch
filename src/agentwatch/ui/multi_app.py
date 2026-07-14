@@ -34,6 +34,7 @@ from agentwatch.ui.rot_widget import ContextHealthWidget
 if TYPE_CHECKING:
     from agentwatch.parser.models import Action
     from agentwatch.detectors.base import Warning
+    from agentwatch.health.score import HealthReport
 
 
 class TeamHeaderItem(ListItem):

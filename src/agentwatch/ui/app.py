@@ -16,6 +16,7 @@ from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 if TYPE_CHECKING:
     from agentwatch.detectors.base import Warning
     from agentwatch.health.score import EfficiencyReport, HealthReport
+    from agentwatch.parser.models import Action
 
 
 class HealthBar(Static):
