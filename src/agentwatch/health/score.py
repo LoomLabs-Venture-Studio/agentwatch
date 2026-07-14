@@ -43,11 +43,11 @@ def _score_to_status(score: int) -> str:
 @dataclass
 class CategoryScore:
     """Score for a single category."""
-    
+
     category: Category
     score: int  # 0-100
     warnings: list["Warning"] = field(default_factory=list)
-    
+
     @property
     def status(self) -> str:
         return _score_to_status(self.score)
@@ -72,17 +72,17 @@ class HealthReport:
     @property
     def emoji(self) -> str:
         return _STATUS_EMOJI().get(self.status, "❓")
-    
+
     @property
     def health_warnings(self) -> list["Warning"]:
         """Get only health-related warnings."""
         return [w for w in self.warnings if w.is_health]
-    
+
     @property
     def security_warnings(self) -> list["Warning"]:
         """Get only security-related warnings."""
         return [w for w in self.warnings if w.is_security]
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -525,23 +525,23 @@ def calculate_team_health(
 def calculate_security_score(warnings: list["Warning"]) -> int:
     """
     Calculate a security-specific score.
-    
+
     Returns:
         Score from 0-100 (100 = secure, 0 = compromised)
     """
     security_warnings = [w for w in warnings if w.is_security]
-    
+
     if not security_warnings:
         return 100
-    
+
     # Security is more strict - critical = immediate 0
     for w in security_warnings:
         if w.severity == Severity.CRITICAL:
             return 0
-    
+
     # Otherwise deduct based on severity
     score = 100
     for w in security_warnings:
         score -= w.severity.score_impact
-    
+
     return max(0, score)
