@@ -290,18 +290,18 @@ def bubble_to_action(
       which have no dedicated ``Action`` field).
 
     **Known detector-calibration limitation, found via a live smoke test
-    against a real 58-bubble conversation (PLAYBOOK Sprint 7, 2026-07-14),
-    not fixed here**: ``tool_name`` is always the literal constant
-    ``"user_message"``/``"assistant_message"`` for every bubble, unlike
-    Claude Code/Aider/Codex where it reflects the actual tool invoked.
-    ``detectors/health/loops.py::LoopDetector`` keys its repetition check on
-    ``f"{tool_name}:{file_path}"``, so any Cursor conversation with >=4
-    assistant (or user) turns within its 10-action window trips a "loop"
-    false positive purely from the constant role label, not from real
-    repeated behavior. Fixing this well needs either richer per-turn
-    ``tool_name`` values derived from ``toolResults`` (whose populated shape
-    is still unconfirmed -- see ``classify_cursor_tool``) or a detector-side
-    carve-out; tracked as a follow-up, not silently masked here.
+    against a real 58-bubble conversation (PLAYBOOK Sprint 7, 2026-07-14)**:
+    ``tool_name`` is always one of the ``NON_TOOL_ROLE_LABELS`` sentinels
+    (``"user_message"``/``"assistant_message"``/``"unknown_bubble"``) for
+    every bubble, unlike Claude Code/Aider/Codex where it reflects the
+    actual tool invoked. Left as-is rather than guessed at: richer per-turn
+    ``tool_name`` values would need to come from ``toolResults``, whose
+    populated shape is still unconfirmed (see ``classify_cursor_tool``).
+    Repetition-based detectors (``detectors/health/loops.py::LoopDetector``)
+    are the consumer that cares about this -- they exclude
+    ``NON_TOOL_ROLE_LABELS`` from their counts (a detector-side carve-out)
+    so a normal multi-turn Cursor conversation doesn't trip a "loop" false
+    positive purely from the constant role label.
     """
     bubble_type = bubble.get("type")
     is_user = bubble_type == 1

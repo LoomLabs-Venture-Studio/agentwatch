@@ -24,6 +24,16 @@ class ToolType(Enum):
     UNKNOWN = "unknown"
 
 
+# `tool_name` sentinels used by parsers whose source format has no real
+# per-action tool name to report (e.g. Cursor's `state.vscdb` bubbles only
+# carry a user/assistant role, not a tool invocation -- see
+# `cursor_source.py::bubble_to_action`). These are role labels, not repeated
+# tool calls, so repetition-based detectors (`detectors/health/loops.py`)
+# must exclude them from their counts to avoid flagging every multi-turn
+# conversation as a "loop".
+NON_TOOL_ROLE_LABELS = frozenset({"user_message", "assistant_message", "unknown_bubble"})
+
+
 @dataclass
 class Action:
     """Represents a single agent action parsed from logs."""
