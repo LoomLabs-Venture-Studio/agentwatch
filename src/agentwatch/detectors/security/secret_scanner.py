@@ -14,7 +14,6 @@ from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
 
-
 # ---------------------------------------------------------------------------
 # Pattern registry — each entry: (compiled regex, secret_type label)
 # ---------------------------------------------------------------------------
@@ -50,7 +49,10 @@ _p(r"glpat-[a-zA-Z0-9\-]{20,}", "gitlab_pat")
 
 # AWS
 _p(r"AKIA[0-9A-Z]{16}", "aws_access_key")
-_p(r"(?:aws_secret_access_key|aws_secret)['\"]?\s*[:=]\s*['\"]?[A-Za-z0-9/+=]{40}", "aws_secret_key")
+_p(
+    r"(?:aws_secret_access_key|aws_secret)['\"]?\s*[:=]\s*['\"]?[A-Za-z0-9/+=]{40}",
+    "aws_secret_key",
+)
 
 # Google Cloud
 _p(r"AIza[0-9A-Za-z\-_]{35}", "google_api_key")
@@ -66,7 +68,10 @@ _p(r"pk_live_[0-9a-zA-Z]{24,}", "stripe_publishable_key")
 _p(r"postgres://[^:\s]+:[^@\s]+@[^\s]*neon\.tech", "neondb_connection_string")
 
 # Database connection strings with embedded passwords (generic)
-_p(r"(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://[^:\s]+:[^@\s]+@[^\s]+", "database_connection_string")
+_p(
+    r"(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://[^:\s]+:[^@\s]+@[^\s]+",
+    "database_connection_string",
+)
 
 # Private keys
 _p(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", "private_key")
@@ -265,9 +270,13 @@ _CHANNEL_SEVERITY: dict[str, Severity] = {
 # ---------------------------------------------------------------------------
 
 _REMEDIATION: dict[str, str] = {
-    "openai_api_key": "Remove from file, use env var OPENAI_API_KEY, rotate key at platform.openai.com",
+    "openai_api_key": (
+        "Remove from file, use env var OPENAI_API_KEY, rotate key at platform.openai.com"
+    ),
     "openai_project_key": "Remove from file, use env var, rotate at platform.openai.com",
-    "anthropic_api_key": "Remove from file, use env var ANTHROPIC_API_KEY, rotate at console.anthropic.com",
+    "anthropic_api_key": (
+        "Remove from file, use env var ANTHROPIC_API_KEY, rotate at console.anthropic.com"
+    ),
     "github_pat": "Remove immediately, rotate at github.com/settings/tokens",
     "github_oauth": "Remove and rotate at GitHub OAuth app settings",
     "github_app_token": "Remove and rotate at GitHub app settings",
@@ -279,7 +288,9 @@ _REMEDIATION: dict[str, str] = {
     "slack_token": "Remove from file, use env var, rotate in Slack app settings",
     "stripe_secret_key": "Remove immediately, rotate at dashboard.stripe.com/apikeys",
     "stripe_publishable_key": "Review exposure scope, rotate at dashboard.stripe.com/apikeys",
-    "database_connection_string": "Remove from file, use env var or secret manager for DB credentials",
+    "database_connection_string": (
+        "Remove from file, use env var or secret manager for DB credentials"
+    ),
     "private_key": "Remove from file, regenerate key pair, never commit private keys",
     "pgp_private_key": "Remove from file, regenerate PGP key pair",
     "jwt_token": "Remove from file, tokens may need regeneration if leaked",
@@ -287,29 +298,48 @@ _REMEDIATION: dict[str, str] = {
     "bearer_token": "Remove from file, rotate token, use env var",
     "generic_api_key": "Remove from file, use env var, rotate if committed to git",
     "high_entropy_secret": "Review value—if a real secret, remove from file and rotate",
-    "claude_api_key": "Remove from file, use env var ANTHROPIC_API_KEY, rotate at console.anthropic.com",
+    "claude_api_key": (
+        "Remove from file, use env var ANTHROPIC_API_KEY, rotate at console.anthropic.com"
+    ),
     "openrouter_api_key": "Remove from file, use env var, rotate at openrouter.ai/keys",
     "firecrawl_api_key": "Remove from file, use env var, rotate at firecrawl.dev dashboard",
     "railway_token": "Remove from file, use env var, rotate at railway.app account settings",
     "supabase_service_key": "Remove from file, use env var, rotate in Supabase dashboard",
-    "supabase_jwt_key": "Remove from file, use env var, rotate JWT secret in Supabase dashboard",
+    "supabase_jwt_key": (
+        "Remove from file, use env var, rotate JWT secret in Supabase dashboard"
+    ),
     "neondb_api_key": "Remove from file, use env var, rotate at console.neon.tech",
     "neondb_connection_string": "Remove from file, use env var, rotate password in Neon console",
     "vercel_token": "Remove from file, use env var, rotate at vercel.com/account/tokens",
     "netlify_pat": "Remove from file, use env var, rotate at app.netlify.com/user/applications",
     "twilio_api_key": "Remove from file, use env var, rotate at twilio.com/console",
-    "sendgrid_api_key": "Remove from file, use env var, rotate at app.sendgrid.com/settings/api_keys",
-    "mailgun_api_key": "Remove from file, use env var, rotate at app.mailgun.com/settings/api_security",
-    "datadog_api_key": "Remove from file, use env var, rotate at app.datadoghq.com/organization-settings/api-keys",
-    "huggingface_token": "Remove from file, use env var, rotate at huggingface.co/settings/tokens",
-    "replicate_api_key": "Remove from file, use env var, rotate at replicate.com/account/api-tokens",
+    "sendgrid_api_key": (
+        "Remove from file, use env var, rotate at app.sendgrid.com/settings/api_keys"
+    ),
+    "mailgun_api_key": (
+        "Remove from file, use env var, rotate at app.mailgun.com/settings/api_security"
+    ),
+    "datadog_api_key": (
+        "Remove from file, use env var, rotate at "
+        "app.datadoghq.com/organization-settings/api-keys"
+    ),
+    "huggingface_token": (
+        "Remove from file, use env var, rotate at huggingface.co/settings/tokens"
+    ),
+    "replicate_api_key": (
+        "Remove from file, use env var, rotate at replicate.com/account/api-tokens"
+    ),
     "pinecone_api_key": "Remove from file, use env var, rotate at app.pinecone.io",
-    "discord_bot_token": "Remove from file, use env var, regenerate at discord.com/developers/applications",
+    "discord_bot_token": (
+        "Remove from file, use env var, regenerate at discord.com/developers/applications"
+    ),
     "doppler_service_token": "Remove from file, use env var, rotate at dashboard.doppler.com",
     "linear_api_key": "Remove from file, use env var, rotate at linear.app/settings/api",
     "npm_token": "Remove from file, use env var, rotate at npmjs.com/settings/tokens",
     "pypi_token": "Remove from file, use env var, rotate at pypi.org/manage/account",
-    "cloudflare_api_token": "Remove from file, use env var, rotate at dash.cloudflare.com/profile/api-tokens",
+    "cloudflare_api_token": (
+        "Remove from file, use env var, rotate at dash.cloudflare.com/profile/api-tokens"
+    ),
 }
 
 
@@ -537,15 +567,23 @@ def redact_log_file(log_path: Path) -> int:
     for line in lines:
         new_line = line
         for pattern, _label in _SECRET_PATTERNS:
-            # Replace all occurrences of each pattern in this line
+            # Replace all occurrences of each pattern in this line. Track the
+            # actual redaction count ourselves rather than relying on
+            # re.subn()'s return value, which counts every regex match --
+            # including ones where _redact() recognized a false positive and
+            # returned the text unchanged.
+            actual_count = 0
+
             def _redact(m: re.Match) -> str:
+                nonlocal actual_count
                 matched = m.group(0)
                 if _is_false_positive(matched):
                     return matched  # leave placeholders/test data alone
+                actual_count += 1
                 return "[REDACTED]"
 
-            new_line, count = pattern.subn(_redact, new_line)
-            total_replacements += count
+            new_line = pattern.sub(_redact, new_line)
+            total_replacements += actual_count
         new_lines.append(new_line)
 
     if total_replacements > 0:

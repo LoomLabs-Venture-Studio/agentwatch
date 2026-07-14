@@ -13,7 +13,6 @@ from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, Detector, Severity, Warning
 
-
 # Maps raw error strings to a normalized error class
 _ERROR_CLASS_PATTERNS = [
     (re.compile(r"SyntaxError", re.IGNORECASE), "SyntaxError"),
@@ -27,7 +26,10 @@ _ERROR_CLASS_PATTERNS = [
     (re.compile(r"ImportError|ModuleNotFoundError", re.IGNORECASE), "ImportError"),
     (re.compile(r"FileNotFoundError|No such file", re.IGNORECASE), "FileNotFoundError"),
     (re.compile(r"PermissionError|Permission denied", re.IGNORECASE), "PermissionError"),
-    (re.compile(r"ConnectionError|ConnectionRefused|ECONNREFUSED", re.IGNORECASE), "ConnectionError"),
+    (
+        re.compile(r"ConnectionError|ConnectionRefused|ECONNREFUSED", re.IGNORECASE),
+        "ConnectionError",
+    ),
     (re.compile(r"TimeoutError|timed?\s*out", re.IGNORECASE), "TimeoutError"),
     (re.compile(r"AssertionError|AssertError", re.IGNORECASE), "AssertionError"),
     (re.compile(r"exit code \d+|exited with|returned? \d+", re.IGNORECASE), "NonZeroExit"),
@@ -98,8 +100,14 @@ class SameOutcomeDetector(Detector):
             category=self.category,
             severity=Severity.HIGH if count >= 5 else Severity.MEDIUM,
             signal="same_outcome",
-            message=f"Tried {edits_seen} different edits but keep hitting {most_common_class} ({count}x)",
-            suggestion=f"The edits aren't resolving the root cause. Consider stepping back and re-reading the error: \"{example_msg}\"",
+            message=(
+                f"Tried {edits_seen} different edits but keep hitting "
+                f"{most_common_class} ({count}x)"
+            ),
+            suggestion=(
+                "The edits aren't resolving the root cause. Consider stepping back "
+                f'and re-reading the error: "{example_msg}"'
+            ),
             details={
                 "error_class": most_common_class,
                 "occurrences": count,
@@ -132,13 +140,11 @@ class FileChurnDetector(Detector):
 
         # Track per-file: edits since last successful bash
         file_edit_runs: dict[str, int] = {}  # file -> consecutive edits without success
-        last_success_seen = False
 
         for action in recent:
             if action.is_bash and action.success:
                 # Reset all counters — a successful run clears churn
                 file_edit_runs.clear()
-                last_success_seen = True
             elif action.is_file_edit and action.file_path:
                 file_edit_runs[action.file_path] = file_edit_runs.get(action.file_path, 0) + 1
 
@@ -164,8 +170,11 @@ class FileChurnDetector(Detector):
             severity=Severity.HIGH if worst_count >= 6 else Severity.MEDIUM,
             signal="file_churn",
             message=f"Edited {worst_file} {worst_count}x with no successful test in between",
-            suggestion=f"Stop editing and re-read the file from scratch. The repeated edits suggest a misunderstanding of the code."
-            + (f" Last error: \"{last_error}\"" if last_error else ""),
+            suggestion=(
+                "Stop editing and re-read the file from scratch. "
+                "The repeated edits suggest a misunderstanding of the code."
+                + (f' Last error: "{last_error}"' if last_error else "")
+            ),
             details={
                 "file": worst_file,
                 "edit_count": worst_count,
@@ -236,8 +245,14 @@ class ExplorationStallDetector(Detector):
             category=self.category,
             severity=Severity.MEDIUM if recent_errors < 5 else Severity.HIGH,
             signal="exploration_stall",
-            message=f"Last {recent_action_count} actions only touched {len(recent_files)} known file(s), no new files explored",
-            suggestion=f"The agent is circling the same files: {', '.join(stuck_files)}. Consider reading related files or taking a different approach entirely.",
+            message=(
+                f"Last {recent_action_count} actions only touched {len(recent_files)} "
+                "known file(s), no new files explored"
+            ),
+            suggestion=(
+                f"The agent is circling the same files: {', '.join(stuck_files)}. "
+                "Consider reading related files or taking a different approach entirely."
+            ),
             details={
                 "recent_action_count": recent_action_count,
                 "unique_recent_files": len(recent_files),
@@ -309,8 +324,15 @@ class ErrorClassPersistenceDetector(Detector):
             category=self.category,
             severity=Severity.HIGH if count >= 6 else Severity.MEDIUM,
             signal="error_class_persistence",
-            message=f"{most_common_class} persisting across {total_edits} edits ({count} failures)",
-            suggestion=f"The root cause isn't being addressed. The error type is consistently {most_common_class} — focus on why that specific error class keeps occurring rather than patching symptoms.",
+            message=(
+                f"{most_common_class} persisting across {total_edits} edits "
+                f"({count} failures)"
+            ),
+            suggestion=(
+                "The root cause isn't being addressed. The error type is consistently "
+                f"{most_common_class} — focus on why that specific error class keeps "
+                "occurring rather than patching symptoms."
+            ),
             details={
                 "error_class": most_common_class,
                 "failure_count": count,

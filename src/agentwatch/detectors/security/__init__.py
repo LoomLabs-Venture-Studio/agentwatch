@@ -5,7 +5,6 @@ from .credentials import (
     CredentialExfiltrationDetector,
     SecretInOutputDetector,
 )
-from .secret_scanner import SecretLeakScanner
 from .injection import (
     HiddenInstructionDetector,
     IndirectInjectionDetector,
@@ -23,6 +22,7 @@ from .privilege import (
     PrivilegeEscalationDetector,
     SensitiveDirectoryAccessDetector,
 )
+from .secret_scanner import SecretLeakScanner
 from .supply_chain import (
     MaliciousSkillDetector,
     NewSkillExecutionDetector,
