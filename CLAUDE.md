@@ -206,13 +206,16 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   `watch-all` now live-tail a growing `.aider.chat.history.md` (confirmed
   live against a real appended file). Single-agent `agentwatch watch --log
   <state.vscdb>` and `--all-logs` directory-scan mode remain explicitly out
-  of scope for Cursor (see PLAYBOOK Sprint 7). Known, documented, not-fixed
-  gap found live: Cursor's `tool_name` is always the literal constant
-  `"user_message"`/`"assistant_message"`, which trips
+  of scope for Cursor (see PLAYBOOK Sprint 7). Known gap found live —
+  Cursor's `tool_name` is always the literal constant
+  `"user_message"`/`"assistant_message"`, which tripped
   `detectors/health/loops.py::LoopDetector`'s repetition check as a false
-  positive on any Cursor conversation with >=4 turns in its window — needs
-  either richer per-turn `tool_name` (blocked on `toolResults`' populated
-  shape still being unconfirmed) or a detector-side carve-out.
+  positive on any Cursor conversation with >=4 turns in its window — was
+  **fixed same-day** via a detector-side carve-out: a shared
+  `NON_TOOL_ROLE_LABELS` sentinel set (`parser/models.py`) excluded from
+  `LoopDetector`'s tally (`tests/test_loops.py`). Richer per-turn
+  `tool_name` from `toolResults` remains unconfirmed/unpursued — not
+  needed for this fix.
 - **Codex CLI hardened against the real, current `openai/codex` source, still
   not live-install-verified** (Sprint 8, 2026-07-14): fetched
   `codex-rs/protocol/src/{protocol,models}.rs` directly from the public repo

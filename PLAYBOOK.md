@@ -1697,18 +1697,23 @@ tests in each.
   machinery `watch-all` uses) confirmed a real `CursorWatcher` instance
   gets constructed for it alongside the real Claude Code session watcher
 
-**Known limitation found live, documented not fixed (real scope
-boundary)**: `detectors/health/loops.py::LoopDetector` keys repetition on
+**Known limitation found live, fixed in a follow-up session (2026-07-14,
+same day)**: `detectors/health/loops.py::LoopDetector` keys repetition on
 `f"{tool_name}:{file_path}"`. Every Cursor turn's `tool_name` is the
 literal constant `"user_message"`/`"assistant_message"` (unlike Claude
 Code/Aider/Codex, where it reflects the actual tool invoked) — so any
 Cursor conversation with >=4 turns in the detector's 10-action window
-trips a "loop" false positive purely from the constant role label. Real
-example seen live in the 89% report above. Documented in
-`cursor_source.py::bubble_to_action`'s docstring as a follow-up (needs
-either richer per-turn `tool_name` from `toolResults`, whose populated
-shape is still unconfirmed, or a detector-side carve-out) — not fixed this
-sprint, out of scope for discovery/wiring.
+tripped a "loop" false positive purely from the constant role label. Real
+example seen live in the 89% report above. Fixed via a detector-side
+carve-out (the option identified but not yet chosen at the time this note
+was originally written): a new shared `NON_TOOL_ROLE_LABELS` sentinel set
+in `parser/models.py` (`{"user_message", "assistant_message",
+"unknown_bubble"}`), excluded from `LoopDetector`'s repetition tally.
+`RereadDetector`/`ThrashDetector` key on `file_path` directly, not
+`tool_name`, so they were never affected and needed no change. Richer
+per-turn `tool_name` from `toolResults` remains unconfirmed/unpursued —
+the carve-out doesn't depend on it. Covered by `tests/test_loops.py`
+(536/536 tests passing repo-wide after this fix, up from 532).
 
 **Explicitly out of scope, not attempted**: single-agent `agentwatch watch
 --log <state.vscdb>` (live TUI) — Cursor's poll-based, composer-picking
