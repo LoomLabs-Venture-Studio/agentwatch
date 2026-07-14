@@ -9,6 +9,12 @@ from enum import Enum
 from itertools import islice
 from typing import Any
 
+from .security_patterns import (
+    is_credential_like_path,
+    is_injection_like,
+    is_privilege_command,
+)
+
 
 class ToolType(Enum):
     """Types of tools an agent can use."""
@@ -95,7 +101,21 @@ class SessionStats:
     error_count: int = 0
     files_touched: set[str] = field(default_factory=set)
 
-    # Security stats
+    # Security stats -- DESIGN DECISION (Sprint 14, resolved not guessed):
+    # these are RAW per-action pattern-match counts, not "how many times a
+    # detector fired a Warning". Rationale: the field names ("accesses" /
+    # "commands" / "connections" / "attempts") read as raw occurrence
+    # counts, matching the existing precedent set by `error_count` above
+    # (incremented on every failed action in `ActionBuffer.add()`,
+    # independent of whether any error-related detector's own
+    # window/threshold logic decides to raise a Warning about it).
+    # `detectors/security/{credentials,privilege,network,injection}.py`
+    # apply additional windowing/threshold/severity logic on top of these
+    # same raw signals (sharing the exact same regexes via
+    # `security_patterns.py` where applicable) -- that's a separate,
+    # higher-level decision from "did this action's raw content look
+    # credential/privilege/network/injection-like", which is all these
+    # running counters track. See `ActionBuffer.add()` for the increments.
     credential_accesses: int = 0
     privilege_commands: int = 0
     network_connections: int = 0
@@ -179,6 +199,21 @@ class ActionBuffer:
         if not action.success and action.error_message:
             self._stats.error_count += 1
             self._error_messages.append(action.error_message)
+
+        # Raw per-action security-stat counters -- see the design-decision
+        # comment on `SessionStats` above for why these count raw pattern
+        # matches rather than detector-fired Warnings. Each check reuses the
+        # exact same regex/logic as its corresponding detector (imported
+        # from `security_patterns.py`, or `Action.is_network` itself for
+        # network activity) rather than reimplementing new detection logic.
+        if action.file_path and is_credential_like_path(action.file_path):
+            self._stats.credential_accesses += 1
+        if action.command and is_privilege_command(action.command):
+            self._stats.privilege_commands += 1
+        if action.is_network:
+            self._stats.network_connections += 1
+        if action.incoming_message and is_injection_like(action.incoming_message):
+            self._stats.injection_attempts += 1
 
     def last(self, n: int) -> list[Action]:
         """Get the last n actions (chronological order)."""

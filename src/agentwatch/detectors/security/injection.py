@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 
 from agentwatch.parser.models import ActionBuffer
+from agentwatch.parser.security_patterns import (
+    INJECTION_PATTERNS as _SHARED_INJECTION_PATTERNS,
+)
+from agentwatch.parser.security_patterns import INJECTION_REGEX
 
 from ..base import Category, SecurityDetector, Severity, Warning
 
@@ -16,48 +20,15 @@ class PromptInjectionDetector(SecurityDetector):
     name = "prompt_injection"
     description = "Potential prompt injection attempt detected"
 
-    # Known injection patterns
-    INJECTION_PATTERNS = [
-        # Direct instruction override
-        r"ignore (?:previous|all|prior|above|your) (?:instructions?|rules?|guidelines?)",
-        r"disregard (?:previous|all|prior|your) (?:instructions?|rules?)",
-        r"forget (?:everything|all|your) (?:previous|prior)?",
+    # Known injection patterns. Sourced from
+    # `agentwatch.parser.security_patterns` (Sprint 14) so this detector and
+    # `SessionStats.injection_attempts`'s raw counter (`parser/models.py`)
+    # share one definition instead of two that could drift apart.
+    INJECTION_PATTERNS = _SHARED_INJECTION_PATTERNS
 
-        # Role/persona manipulation
-        r"you are now",
-        r"act as (?:if you were|a)",
-        r"pretend (?:you are|to be)",
-        r"roleplay as",
-        r"new persona",
-        r"your new (role|identity|name) is",
-
-        # Jailbreak attempts
-        r"jailbreak",
-        r"DAN mode",
-        r"developer mode",
-        r"unrestricted mode",
-        r"no (?:rules|restrictions|limits)",
-
-        # System prompt manipulation
-        r"system:\s*",
-        r"<\|im_start\|>",  # ChatML injection
-        r"<\|system\|>",
-        r"\[INST\]",  # Llama format
-        r"<<SYS>>",
-        r"\[system\]",
-
-        # Authority claims
-        r"(?:I am|this is) (?:the|your|an?) (?:admin|developer|owner|creator)",
-        r"(?:admin|root|sudo) (?:access|mode|privileges?)",
-        r"override (?:safety|security|restrictions?)",
-
-        # Encoded instructions
-        r"base64[:\s]",
-        r"decode (?:this|the following)",
-        r"execute (?:the following|this) (?:code|command)",
-    ]
-
-    # Weighted patterns (more likely to be actual attacks)
+    # Weighted patterns (more likely to be actual attacks) -- a confidence
+    # tier on top of INJECTION_PATTERNS, not a distinct raw signal, so this
+    # one stays local to the detector rather than moving to the shared module.
     HIGH_CONFIDENCE_PATTERNS = [
         r"ignore (?:all )?(?:previous |prior )?instructions",
         r"disregard .{0,20}(?:rules|guidelines|instructions)",
@@ -67,10 +38,7 @@ class PromptInjectionDetector(SecurityDetector):
     ]
 
     def __init__(self):
-        self._pattern = re.compile(
-            "|".join(self.INJECTION_PATTERNS),
-            re.IGNORECASE | re.MULTILINE
-        )
+        self._pattern = INJECTION_REGEX
         self._high_confidence = re.compile(
             "|".join(self.HIGH_CONFIDENCE_PATTERNS),
             re.IGNORECASE

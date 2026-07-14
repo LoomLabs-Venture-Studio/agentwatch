@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .base import Detector, Warning
 from .health import get_all_health_detectors
@@ -100,6 +100,59 @@ class DetectorRegistry:
                     pass
 
         return warnings
+
+    def check_security_with_audit(
+        self, buffer: "ActionBuffer"
+    ) -> tuple[list[Warning], list[dict[str, Any]]]:
+        """Run only security detectors via `check_with_audit()`.
+
+        Unlike `check_security()` (which calls the plain `.check()` and
+        only ever sees detectors that fired a `Warning`), this exercises
+        `SecurityDetector.check_with_audit()` -- previously fully
+        implemented but with zero call sites (Sprint 14 dead-code sweep) --
+        to also collect one audit-log entry *per detector that ran*,
+        whether it triggered or not. That's a "prove you checked"
+        compliance trail, distinct from the SIEM export (`--siem-log`),
+        which only ever records positive findings.
+
+        Mirrors `check_security()`'s exception-isolation invariant: one
+        detector raising must never abort the run for the others. A
+        detector that raises still gets a best-effort audit entry (with
+        `"error"` set) so the "did every detector run" trail doesn't
+        silently drop it.
+
+        Returns:
+            (warnings, audit_logs) -- `warnings` is exactly the triggered
+            subset also present (as `audit_log["warning"]`) inside the
+            corresponding `audit_logs` entries.
+        """
+        warnings: list[Warning] = []
+        audit_logs: list[dict[str, Any]] = []
+
+        for detector in self.detectors:
+            # `is_security_detector` (not `isinstance(detector,
+            # SecurityDetector)`) to match the exact filtering convention
+            # `check_security()`/`health_detectors`/`security_detectors`
+            # already use elsewhere in this class -- a detector that sets
+            # the flag without providing a real `check_with_audit()` still
+            # falls into the `except` below rather than crashing the run.
+            if not detector.is_security_detector:
+                continue
+            try:
+                warning, audit_log = detector.check_with_audit(buffer)
+                audit_logs.append(audit_log)
+                if warning:
+                    warnings.append(warning)
+            except Exception:
+                audit_logs.append({
+                    "detector": detector.name,
+                    "category": detector.category.value,
+                    "triggered": False,
+                    "action_count": len(buffer),
+                    "error": "detector raised an exception",
+                })
+
+        return warnings, audit_logs
 
     @property
     def health_detectors(self) -> list[Detector]:
