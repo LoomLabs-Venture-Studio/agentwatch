@@ -1927,3 +1927,80 @@ right, and clearly scope what's newly discovered but not yet implemented.
 **532/532 pass**; `ruff check` clean on `codex.py`/`logs.py`/
 `test_codex_parser.py`; repo-wide `ruff check .` **589 errors — unchanged**
 from the post-Sprint-7 baseline, zero new warnings anywhere.
+
+---
+
+### Sprint 9 — Task #9 follow-up: non-emoji punctuation missed by the
+ascii-theme audit
+**Type:** bugfix
+**Priority:** small, self-contained correctness gap in an already-shipped
+fix (Task #9), found while resuming this branch — a stray uncommitted edit
+in `cli.py` (extracting `_print_burn_report`'s `×` literal to a local
+variable, no behavior change yet) turned out to be a real, unfinished bug
+fix rather than a discardable scratch edit.
+**PRD Status:** not needed — same bug class and same fix mechanism
+(`themes.ascii_safe()`) as Task #9, scoped directly against what that
+task's own test file (`test_theme_emoji_wiring.py`) documented as
+deliberately out of scope.
+
+### What this sprint found
+Task #9's `test_theme_emoji_wiring.py` module docstring claimed the
+`→`-style arrows used throughout `cli.py` "render fine via the legacy
+CP437 codepage even where emoji doesn't," lumping them in with the
+box-drawing characters (`═`/`╔`/`╗`/`╚`/`╝`) that genuinely are CP437-safe
+and so were correctly left alone. That claim was never actually verified
+and is wrong: `"→".encode("cp437")` raises `UnicodeEncodeError`, and so do
+`•` (bullet) and `…` (ellipsis) — none of the three have CP437 coverage,
+unlike box-drawing, which was purpose-built for DOS-era UI. These three
+were hardcoded (not `ascii_safe()`-wired) at several call sites the
+original emoji-range grep never would have caught, since none of them are
+in the emoji Unicode blocks: `cli.py`'s per-warning detail arrow (used by
+both `check` and `security-scan`), `list-detectors`' bullet, `themes`'
+legend separator, `stats --burn`'s "×N" trivial-command counts
+(`_print_burn_report`), and three TUI widgets' "waiting for data…" /
+"loading…" placeholders and detail arrows (`ui/app.py`'s `EfficiencyBar`
+and `WarningsList`, `ui/rot_widget.py`'s `ContextHealthWidget`).
+
+**Deliberately left alone, same reasoning as `--help` text and box-drawing
+before it**: em-dashes (`—`) embedded in prose — `--help` option
+descriptions, `stats --burn`'s verdict sentences, and detector-supplied
+`description`/`message` strings (e.g. `loops.py`'s "Repeated
+edit→test→fail cycle", which also contains an arrow). These are content
+strings, not one-off UI decoration, so they don't fit `ascii_safe()`'s
+"generic glyph with no natural theme home" model — fixing them would mean
+rewriting prose across every detector and every `--help` string, a much
+larger and separate concern, consistent with how Task #9 itself scoped
+out box-drawing rather than silently pulling it in.
+
+### Acceptance Criteria
+- [x] All 8 identified call sites wired through `themes.ascii_safe()`,
+      matching the existing `💡`/`📄` pattern exactly
+- [x] `test_theme_emoji_wiring.py` module docstring corrected (the
+      "arrows render fine via CP437" claim was false — see above) and a
+      new `TestNonEmojiPunctuationAsciiSafe` class added (9 new tests:
+      CLI-runner-level for `list-detectors`/`themes`/`stats --burn`,
+      widget-level for the three TUI placeholders), each with a paired
+      default-theme test proving nothing was silently ASCII-ified
+- [x] `list-detectors`' test scoped to just the bullet, not a blanket
+      "no arrows anywhere" — some detectors' own description text uses
+      `→` as prose punctuation, which is registry content, not decoration,
+      and correctly out of scope (documented in the test itself)
+- [x] `python -m pytest tests/ -v` fully green — **544/544 pass** (536
+      baseline + 8 new; one of the 9 new tests reuses an existing
+      CliRunner invocation)
+- [x] `ruff check` clean on all 4 touched files; repo-wide `ruff check .`
+      **585 errors — down from 589**, zero new warnings
+- [x] Live-verified: `python -m agentwatch.cli --theme ascii list-detectors`
+      and `--theme ascii themes` both confirmed to render `*`/`->` in
+      place of `•`/`→` in real command output, not just under test
+
+### Implementation Plan
+Finish the stray uncommitted edit (the `×` extraction was correct
+groundwork, just not wired to `ascii_safe()` yet), then grep the whole
+`src/agentwatch` tree for any character that survives a `str.encode(
+"cp437")` check outside comments/docstrings to find the rest of this bug
+class, triage each hit into "decorative glyph → fix" vs. "prose content →
+leave, document why," and extend the existing Task #9 test file rather
+than starting a new one.
+
+**Status: complete (2026-07-14).**

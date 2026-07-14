@@ -70,12 +70,13 @@ def print_health_report(report, security_mode: bool = False) -> None:
             )
             # Show key details
             if w.details:
+                arrow = ascii_safe("→", "->")
                 for key in ("last_error", "error_pattern", "last_command", "file"):
                     if key in w.details and w.details[key]:
-                        click.echo(f"        → {w.details[key][:100]}")
+                        click.echo(f"        {arrow} {w.details[key][:100]}")
                         break
                 if "sample_errors" in w.details and w.details["sample_errors"]:
-                    click.echo(f"        → {w.details['sample_errors'][0][:100]}")
+                    click.echo(f"        {arrow} {w.details['sample_errors'][0][:100]}")
             # Show suggestion
             if w.suggestion:
                 marker = ascii_safe("💡", "[TIP]")
@@ -453,8 +454,9 @@ def list_detectors(security: bool):
     for cat, detectors in sorted(detectors_by_cat.items()):
         click.echo()
         click.echo(click.style(f"  {cat.upper()}", bold=True))
+        bullet = ascii_safe("•", "*")
         for d in detectors:
-            click.echo(f"    • {d}")
+            click.echo(f"    {bullet} {d}")
     
     click.echo()
     click.echo(f"Total: {len(registry.detectors)} detectors")
@@ -558,10 +560,14 @@ def themes():
     click.echo("=" * 60)
     click.echo()
 
+    arrow = ascii_safe("→", "->")
     for name, theme in THEMES.items():
         is_default = " (default)" if name == "agent" else ""
         click.echo(click.style(f"  {name}{is_default}", bold=True))
-        click.echo(f"    {theme.emoji_0} {theme.level_0} → {theme.emoji_1} {theme.level_1} → {theme.emoji_2} {theme.level_2} → {theme.emoji_3} {theme.level_3}")
+        click.echo(
+            f"    {theme.emoji_0} {theme.level_0} {arrow} {theme.emoji_1} {theme.level_1} "
+            f"{arrow} {theme.emoji_2} {theme.level_2} {arrow} {theme.emoji_3} {theme.level_3}"
+        )
         click.echo()
 
     click.echo("Use --theme <name> to select a theme.")
@@ -811,8 +817,9 @@ def _print_burn_report(report) -> None:
             reverse=True,
         )[:10]
         click.echo("  Top trivial commands:")
+        times_symbol = ascii_safe("\u00d7", "x")
         for cmd, count in sorted_cmds:
-            click.echo(f"    {cmd:<20} {click.style(f'\u00d7{count}', dim=True)}")
+            click.echo(f"    {cmd:<20} {click.style(f'{times_symbol}{count}', dim=True)}")
         click.echo()
 
     # Substantive

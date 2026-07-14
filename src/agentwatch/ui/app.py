@@ -80,7 +80,7 @@ class EfficiencyBar(Static):
     def _build_content(self) -> str:
         r = self._report
         if r is None:
-            return "  Efficiency: waiting for data…"
+            return "  Efficiency: waiting for data" + ascii_safe("…", "...")
 
         filled = int(r.score / 5)  # 20 chars total
         bar = "█" * filled + "░" * (20 - filled)
@@ -138,7 +138,7 @@ class WarningsList(Static):
             # Show key details inline
             detail_line = self._format_details(w)
             if detail_line:
-                lines.append(f"     → {detail_line}")
+                lines.append(f"     {ascii_safe('→', '->')} {detail_line}")
 
             # Show suggestion
             if w.suggestion:
@@ -179,7 +179,9 @@ class WarningsList(Static):
         if "last_error" in d and d["last_error"]:
             return f"Error: {d['last_error'][:100]}"
         if "last_command" in d and d["last_command"]:
-            err = f" → {d.get('last_error', '')[:60]}" if d.get("last_error") else ""
+            last_error = d.get("last_error", "")
+            arrow = ascii_safe("→", "->")
+            err = f" {arrow} {last_error[:60]}" if last_error else ""
             return f"Command: {d['last_command'][:80]}{err}"
         if "error_pattern" in d:
             return f"Error: {d['error_pattern'][:100]}"

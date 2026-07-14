@@ -15,11 +15,23 @@ the same emoji code-point ranges the hardcoded-emoji audit grepped for
 the same ranges Task #8's `ascii` theme exists to avoid, because they have
 no CP437/font-fallback on plain conhost.exe. It deliberately does NOT
 extend to the pre-existing box-drawing decoration used throughout
-`cli.py`'s report formatting (``"=" * 50`` style rules using U+2550, the
-``->`` style arrows), which renders fine via the legacy CP437 codepage
-even where emoji doesn't, predates Task #8, and is a separate, much wider
-concern flagged for the CTO rather than silently pulled into this task's
-scope.
+`cli.py`'s report formatting (``"=" * 50`` style rules using U+2550 and
+friends), which renders fine via the legacy CP437 codepage even where
+emoji doesn't, predates Task #8, and is a separate, much wider concern
+flagged for the CTO rather than silently pulled into this task's scope.
+
+CORRECTION (post-Sprint-8 follow-up): the original wording above also
+claimed the U+2192 arrow (``->``-style) rendered fine via CP437 the same
+way box-drawing does. That was never actually verified and turned out to
+be wrong -- ``"→".encode("cp437")`` raises ``UnicodeEncodeError``, same
+as emoji. So do U+2022 (bullet) and U+2026 (ellipsis). Unlike box-drawing
+(built into CP437 for DOS-era UI) these are ordinary Unicode punctuation
+with no legacy-codepage coverage, and were hardcoded at several call sites
+outside the emoji audit's grep ranges (`cli.py`'s warning-detail arrows,
+`list-detectors`' bullet, `themes`' legend arrows, `stats --burn`'s `x`
+count symbol, and three TUI widgets' ellipsis/arrow/bullet). All now
+route through `ascii_safe()` like the emoji fixes; see
+`TestNonEmojiPunctuationAsciiSafe` below.
 """
 
 from __future__ import annotations
@@ -242,6 +254,136 @@ class TestMultiAppFileMarker:
         rendered = name_label.render().plain
         assert "(file)" in rendered
         assert_no_emoji(rendered)
+
+
+# ---------------------------------------------------------------------------
+# Post-Sprint-8 follow-up: U+2192 arrow / U+2022 bullet / U+2026 ellipsis
+# call sites the original emoji audit's grep ranges didn't cover (see the
+# module docstring's CORRECTION note) -- none of these are CP437-safe like
+# box-drawing, so they tofu'd on legacy conhost under `--theme ascii` too.
+# ---------------------------------------------------------------------------
+
+
+NON_ASCII_PUNCTUATION_RE = re.compile("[→•…×]")
+
+
+def assert_no_non_ascii_punctuation(text: str) -> None:
+    matches = NON_ASCII_PUNCTUATION_RE.findall(text)
+    assert not matches, f"found non-ASCII punctuation: {matches!r} in:\n{text}"
+
+
+class TestNonEmojiPunctuationAsciiSafe:
+    def test_list_detectors_bullet_ascii_safe_under_ascii_theme(self):
+        """Only the leading bullet is a decorative glyph gated by
+        `ascii_safe()`; some detectors' own description text uses arrows
+        as prose punctuation ("edit→test→fail") -- that's registry content,
+        not UI decoration, and out of scope here (same category as the
+        em-dashes in --help text noted in the module docstring)."""
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--theme", "ascii", "list-detectors"])
+        assert result.exit_code == 0, result.output
+        assert "•" not in result.output
+        assert "* " in result.output
+
+    def test_list_detectors_bullet_unchanged_for_default_theme(self):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--theme", "agent", "list-detectors"])
+        assert result.exit_code == 0, result.output
+        assert "• " in result.output
+
+    def test_themes_command_arrow_ascii_safe_under_ascii_theme(self):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--theme", "ascii", "themes"])
+        assert result.exit_code == 0, result.output
+        assert "→" not in result.output
+        assert "->" in result.output
+
+    def test_burn_report_times_symbol_ascii_safe_under_ascii_theme(self, capsys):
+        from agentwatch.cc_stats import StatsReport, TokenBucket
+        from agentwatch.cli import _print_burn_report
+
+        set_theme("ascii")
+        report = StatsReport(
+            project_name="demo",
+            session_count=1,
+            message_count=5,
+            tool_call_count=5,
+            totals=TokenBucket(input_tokens=1000, output_tokens=500),
+            trivial=TokenBucket(input_tokens=200, output_tokens=50, call_count=3),
+            substantive=TokenBucket(input_tokens=800, output_tokens=450, call_count=2),
+            top_trivial_commands={"ls": 4, "pwd": 2},
+        )
+        _print_burn_report(report)
+        output = capsys.readouterr().out
+        assert_no_non_ascii_punctuation(output)
+        assert "x4" in output and "x2" in output
+
+    def test_burn_report_times_symbol_unchanged_for_default_theme(self, capsys):
+        from agentwatch.cc_stats import StatsReport, TokenBucket
+        from agentwatch.cli import _print_burn_report
+
+        set_theme("agent")
+        report = StatsReport(
+            project_name="demo",
+            session_count=1,
+            message_count=5,
+            tool_call_count=5,
+            totals=TokenBucket(input_tokens=1000, output_tokens=500),
+            trivial=TokenBucket(input_tokens=200, output_tokens=50, call_count=3),
+            substantive=TokenBucket(input_tokens=800, output_tokens=450, call_count=2),
+            top_trivial_commands={"ls": 4},
+        )
+        _print_burn_report(report)
+        output = capsys.readouterr().out
+        assert "×4" in output
+
+    def test_efficiency_bar_ellipsis_ascii_safe_under_ascii_theme(self):
+        from agentwatch.ui.app import EfficiencyBar
+
+        set_theme("ascii")
+        widget = EfficiencyBar()
+        rendered = widget._build_content()
+        assert_no_non_ascii_punctuation(rendered)
+        assert "waiting for data..." in rendered
+
+    def test_context_health_widget_ellipsis_ascii_safe_under_ascii_theme(self):
+        from agentwatch.ui.rot_widget import ContextHealthWidget
+
+        set_theme("ascii")
+        widget = ContextHealthWidget()
+        rendered = widget._build_content()
+        assert_no_non_ascii_punctuation(rendered)
+        assert "waiting for data..." in rendered
+
+    def test_warnings_list_detail_arrow_ascii_safe_under_ascii_theme(self):
+        set_theme("ascii")
+        widget = WarningsList()
+        widget.update_warnings(
+            [
+                Warning(
+                    category=Category.ERRORS,
+                    severity=Severity.HIGH,
+                    signal="error_spiral",
+                    message="repeated failure",
+                    details={"last_command": "pytest", "last_error": "AssertionError"},
+                )
+            ]
+        )
+        rendered = widget._build_content()
+        assert_no_non_ascii_punctuation(rendered)
+        assert "->" in rendered
 
 
 # ---------------------------------------------------------------------------
