@@ -10,7 +10,12 @@ import click
 
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Warning
-from agentwatch.discovery import AgentProcess, AgentTeam, find_running_agents, build_agent_tree, build_teams
+from agentwatch.discovery import (
+    AgentProcess,
+    build_agent_tree,
+    build_teams,
+    find_running_agents,
+)
 from agentwatch.health import calculate_health, calculate_security_score
 from agentwatch.llm import (
     DEFAULT_OLLAMA_MODEL,
@@ -18,7 +23,7 @@ from agentwatch.llm import (
     LlmUnavailableError,
     OllamaAnalyzer,
 )
-from agentwatch.parser import ActionBuffer, find_latest_session, parse_file, find_log_files
+from agentwatch.parser import ActionBuffer, find_latest_session, parse_file
 from agentwatch.siem import SiemExportError, SiemLogger
 from agentwatch.themes import (
     ascii_safe,
@@ -538,8 +543,8 @@ def watch_all(security: bool, all_logs: bool):
     By default, auto-discovers active agent processes and monitors only their
     log files. Use --all-logs to scan all known log directories instead.
     """
-    from agentwatch.ui.multi_app import MultiAgentWatchApp
     from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
+    from agentwatch.ui.multi_app import MultiAgentWatchApp
 
     if all_logs:
         # Legacy behavior: scan all log directories
@@ -1130,8 +1135,8 @@ def audit(all_projects: bool, session_id: str | None, json_output: bool, redact:
     )
     from agentwatch.detectors.security.secret_scanner import (
         AuditFinding,
-        audit_log_file,
         assess_impact,
+        audit_log_file,
         redact_log_file,
     )
 

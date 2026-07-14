@@ -9,7 +9,7 @@ from textual.widgets import Static
 from agentwatch.themes import ascii_safe, get_theme
 
 if TYPE_CHECKING:
-    from agentwatch.health.rot import RotReport, RotState
+    from agentwatch.health.rot import RotReport
 
 
 def _mini_bar(value: float, width: int = 10) -> str:

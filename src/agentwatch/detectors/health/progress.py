@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
 from agentwatch.detectors.health._window import scaled_turn_window, session_maturity_factor
+from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer

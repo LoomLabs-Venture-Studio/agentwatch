@@ -6,7 +6,6 @@ import re
 from typing import TYPE_CHECKING
 
 from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
-from agentwatch.detectors.health._window import scaled_turn_window
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer

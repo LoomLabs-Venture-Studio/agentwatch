@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 
@@ -15,7 +15,7 @@ from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
 if TYPE_CHECKING:
     from agentwatch.detectors.base import Warning
-    from agentwatch.health.score import EfficiencyReport, HealthReport
+    from agentwatch.health.score import EfficiencyReport
     from agentwatch.parser.models import Action
 
 

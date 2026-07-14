@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.reactive import reactive
-from textual.widgets import Footer, Header, Static, ListItem, ListView, Label
+from textual.containers import Vertical
+from textual.widgets import Footer, Header, Label, ListItem, ListView
 
 from agentwatch.detectors import create_registry
 from agentwatch.discovery import (
@@ -19,7 +18,6 @@ from agentwatch.discovery import (
     build_teams,
     find_running_agents,
 )
-from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.health import (
     calculate_efficiency,
     calculate_health,
@@ -27,12 +25,12 @@ from agentwatch.health import (
     calculate_team_health,
 )
 from agentwatch.health.rot import RotScorer
+from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.themes import ascii_safe, get_theme
-from agentwatch.ui.app import EfficiencyBar, HealthBar, SecurityStatus, WarningsList, StatsPanel
+from agentwatch.ui.app import EfficiencyBar, HealthBar, SecurityStatus, StatsPanel, WarningsList
 from agentwatch.ui.rot_widget import ContextHealthWidget
 
 if TYPE_CHECKING:
-    from agentwatch.parser.models import Action
     from agentwatch.detectors.base import Warning
     from agentwatch.health.score import HealthReport
 

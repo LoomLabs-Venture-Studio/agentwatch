@@ -23,8 +23,8 @@ import json
 import random
 import shutil
 import tempfile
-import time
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -436,7 +436,7 @@ SCENARIOS = {
 # ── Main ──────────────────────────────────────────────────────────────────
 
 def main():
-    from agentwatch.discovery import AgentProcess, _compute_depths, _assign_team_ids, build_teams
+    from agentwatch.discovery import AgentProcess, _assign_team_ids, _compute_depths, build_teams
     from agentwatch.ui.multi_app import MultiAgentWatchApp
 
     processes = []
