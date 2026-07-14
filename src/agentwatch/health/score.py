@@ -279,13 +279,11 @@ _W_CACHE_HIT = 0.15
 _W_ACTIONS_TURN = 0.10
 _W_DURATION = 0.15
 
-# Context window and session budget estimates (tokens).
-# The window is the model's context limit.  The budget is the total
-# throughput (input+cache+output summed across all turns) at which we
-# consider the session fully pressured — roughly 10× the window to
-# account for cache-heavy workloads where the same ~200k window is
-# refilled on every turn.
-_CONTEXT_WINDOW = 200_000
+# Session budget estimate (tokens).
+# The budget is the total throughput (input+cache+output summed across
+# all turns) at which we consider the session fully pressured — roughly
+# 10× a 200k-token context window, to account for cache-heavy workloads
+# where the same window is refilled on every turn.
 _SESSION_BUDGET = 2_000_000
 
 
