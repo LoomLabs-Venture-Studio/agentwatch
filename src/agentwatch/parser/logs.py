@@ -412,7 +412,31 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
 #  top-level "type" field). Used by detect_log_format to sniff Codex logs
 #  without a distinctive top-level key the way Claude Code (sessionId/cwd)
 #  or Moltbot (skill/tool_call) have.
-_CODEX_EVENT_TYPES = frozenset({"session_meta", "response_item", "event_msg", "turn_context"})
+#
+#  PLAYBOOK Sprint 8 (2026-07-14): the original 4 values were confirmed by
+#  research against issue trackers/community tools, not the primary source.
+#  Fetched the real, current codex-rs/protocol/src/protocol.rs from
+#  github.com/openai/codex @ main directly: `RolloutItem`
+#  (`#[serde(tag = "type", content = "payload")]`, flattened into
+#  `RolloutLine`) has 8 real variants, not 4 -- the original set is missing
+#  "compacted", "world_state", "inter_agent_communication", and
+#  "inter_agent_communication_metadata" (the latter two are a multi-agent
+#  feature not previously documented anywhere in this investigation).
+#  Practical impact is low (detect_log_format only needs the FIRST entry,
+#  and "session_meta" is always first in a real rollout file), but this is
+#  now complete against the real enum rather than a partial guess.
+_CODEX_EVENT_TYPES = frozenset(
+    {
+        "session_meta",
+        "response_item",
+        "event_msg",
+        "turn_context",
+        "compacted",
+        "world_state",
+        "inter_agent_communication",
+        "inter_agent_communication_metadata",
+    }
+)
 
 
 def detect_log_format(first_entry: dict) -> str:
@@ -461,11 +485,15 @@ def parse_file(
     """Parse an agent log file, auto-detecting format.
 
     Args:
-        path: Path to the log file. JSONL (Claude Code / Moltbot) is
+        path: Path to the log file. JSONL (Claude Code / Moltbot / Codex) is
             auto-detected by content; a ``.md`` extension is dispatched to
-            the Aider Markdown chat-history parser instead.
+            the Aider Markdown chat-history parser, and a ``.vscdb``
+            extension to Cursor's ``state.vscdb`` SQLite store, instead.
         session_id: Optional session ID to filter by. When provided, only actions
-            from this exact session are yielded (prevents log bleeding between sessions).
+            from this exact session are yielded (prevents log bleeding between
+            sessions). For a ``.vscdb`` path this is the Cursor composer_id to
+            parse; when omitted the most-recently-active agent-mode composer
+            is auto-picked (see ``cursor_source.select_latest_agent_composer``).
         analytics_log: Optional path to an Aider ``--analytics-log`` JSONL
             sidecar. Only used when ``path`` is a ``.md`` Aider transcript;
             ignored for JSONL logs.
@@ -476,6 +504,13 @@ def parse_file(
         for action in parse_aider_log(path, analytics_path=analytics_log):
             if session_id is None or action.session_id == session_id:
                 yield action
+        return
+
+    if path.suffix == ".vscdb":
+        from .cursor_source import parse_cursor_session
+
+        for action in parse_cursor_session(path, composer_id=session_id):
+            yield action
         return
 
     # Imported lazily (not at module level) to avoid a logs.py <-> codex.py

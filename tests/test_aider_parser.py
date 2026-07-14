@@ -832,6 +832,97 @@ class TestParseFileDispatch:
         assert len(actions) == 1
         assert actions[0].tool_name == "text_output"
 
+    def test_vscdb_extension_dispatches_to_cursor_parser(self, tmp_path):
+        """PLAYBOOK Sprint 7 (Cursor Phase 2): a `.vscdb` path dispatches to
+        `cursor_source.parse_cursor_session`, auto-picking the latest
+        agent-mode composer when no session_id filter is given."""
+        import sqlite3
+
+        db_path = tmp_path / "state.vscdb"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE composerHeaders (
+                    composerId TEXT PRIMARY KEY, workspaceId TEXT, createdAt INTEGER,
+                    lastUpdatedAt INTEGER, isArchived INTEGER, isSubagent INTEGER,
+                    recency INTEGER, checkpointAt INTEGER, value TEXT
+                );
+                CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT);
+                """
+            )
+            conn.execute(
+                "INSERT INTO composerHeaders VALUES (?, 'ws', 0, 1000, 0, 0, 0, NULL, ?)",
+                ("c1", json.dumps({"unifiedMode": "agent"})),
+            )
+            conn.execute(
+                "INSERT INTO cursorDiskKV VALUES (?, ?)",
+                (
+                    "bubbleId:c1:b1",
+                    json.dumps(
+                        {
+                            "type": 1,
+                            "text": "hello from cursor",
+                            "tokenCount": {"inputTokens": 0, "outputTokens": 0},
+                            "toolResults": [],
+                            "createdAt": "2026-07-14T00:00:00.000Z",
+                        }
+                    ),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        actions = list(parse_file(db_path))
+        assert len(actions) == 1
+        assert actions[0].incoming_message == "hello from cursor"
+        assert actions[0].session_id == "c1"
+
+    def test_vscdb_session_id_filters_to_one_composer(self, tmp_path):
+        import sqlite3
+
+        db_path = tmp_path / "state.vscdb"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE composerHeaders (
+                    composerId TEXT PRIMARY KEY, workspaceId TEXT, createdAt INTEGER,
+                    lastUpdatedAt INTEGER, isArchived INTEGER, isSubagent INTEGER,
+                    recency INTEGER, checkpointAt INTEGER, value TEXT
+                );
+                CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT);
+                """
+            )
+            for cid, ts, text in (("c1", 1000, "first"), ("c2", 2000, "second")):
+                conn.execute(
+                    "INSERT INTO composerHeaders VALUES (?, 'ws', 0, ?, 0, 0, 0, NULL, ?)",
+                    (cid, ts, json.dumps({"unifiedMode": "agent"})),
+                )
+                conn.execute(
+                    "INSERT INTO cursorDiskKV VALUES (?, ?)",
+                    (
+                        f"bubbleId:{cid}:b1",
+                        json.dumps(
+                            {
+                                "type": 1,
+                                "text": text,
+                                "tokenCount": {"inputTokens": 0, "outputTokens": 0},
+                                "toolResults": [],
+                                "createdAt": "2026-07-14T00:00:00.000Z",
+                            }
+                        ),
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        actions = list(parse_file(db_path, session_id="c1"))
+        assert len(actions) == 1
+        assert actions[0].incoming_message == "first"
+
 
 def parse_aider_markdown_from_text(text: str, tmp_path=None):
     """Helper: write `text` to a temp `.aider.chat.history.md` and parse it.

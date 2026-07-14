@@ -144,8 +144,8 @@ def cli(theme: str):
 @click.option(
     "--log", "-l",
     type=click.Path(exists=True, path_type=Path),
-    help="Path to agent log file (JSONL, or Aider Markdown chat history); "
-         "auto-detects if not specified",
+    help="Path to agent log file (JSONL, Aider Markdown chat history, or "
+         "Cursor's state.vscdb); auto-detects if not specified",
 )
 @click.option(
     "--analytics-log",
@@ -215,7 +215,8 @@ def check(log: Path | None, analytics_log: Path | None, security: bool, json_out
 @click.option(
     "--log", "-l",
     type=click.Path(exists=True, path_type=Path),
-    help="Path to JSONL log file (auto-detects if not specified)",
+    help="Path to agent log file (JSONL, or Aider Markdown chat history); "
+         "auto-detects if not specified",
 )
 @click.option(
     "--security", "-s",
@@ -464,7 +465,8 @@ def list_detectors(security: bool):
 @click.option(
     "--log", "-l",
     type=click.Path(exists=True, path_type=Path),
-    help="Path to agent log file (JSONL, or Aider Markdown chat history)",
+    help="Path to agent log file (JSONL, Aider Markdown chat history, or "
+         "Cursor's state.vscdb)",
 )
 @click.option(
     "--analytics-log",
