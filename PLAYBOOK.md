@@ -2310,3 +2310,317 @@ risk): Track A engineer works from `origin/main`/PR #3; Track B engineer
 works from `origin/chore/ci-docs-perf-windows-support`. Both get the exact
 file lists and guardrails above, not a vague "clean it up" brief. CTO
 reviews both before a single QA pass verifies both branches.
+
+**Status: complete, both tracks landed (2026-07-14).** This status line
+was previously left unchecked even though both tracks were actually
+finished and pushed -- corrected now after CTO re-verified both PR bodies
+directly (commit-by-commit) rather than trusting the stale checklist
+above. Track A (PR #3, 11 commits incl. the `redact_log_file()` fix and
+`_CONTEXT_WINDOW` dead-code removal) and Track B (PR #4, 10 commits,
+stacked on PR #2, rule-batched lint fixes + `Turn.touched_files`/
+`failed_actions` dead-code removal) both landed. Merge order executed:
+PR #3 -> `main`, then PR #2 -> `main`, then PR #4 rebased onto `main`
+(`gh pr edit 4 --base main`, re-verified mergeable) -> `main`. `ruff
+check .` passed clean (0 errors, both Python 3.11/3.12 CI jobs) at the
+point all three landed.
+
+**IMPORTANT correction (2026-07-14, same day, later):** the board
+reverted all three merges directly on `main` shortly after this landed
+(three `git revert` commits, `main` back to byte-for-byte the pre-merge
+state). Per explicit board instruction, this is not up for discussion in
+this doc and the reasoning is not recorded here. **Working model going
+forward: `main` is not the active integration branch.** A new
+`develop` branch was created at the pre-revert merge point (commit
+`9cfe710`, i.e. PR #2+#3+#4's combined content) to serve as the actual
+base for ongoing work. All new feature branches target `develop`, not
+`main`. Nothing merges to `main` without the board explicitly saying the
+literal words "commit to main" -- no exceptions, no assuming a prior
+approval carries forward. Every sprint section below this point should be
+read against `develop`, not `main`.
+**One new real bug found in the process, not by any prior sprint**: CI's
+`pip install -e ".[dev]"` step never installed the `siem`/`llm` extras, so
+the merge of PR #4 (which brought CI live on `main` for the first
+time -- see below) exposed 12 real `tests/test_siem.py` failures
+(`ModuleNotFoundError: pythonjsonlogger`) that no prior sprint's local
+`pytest` runs caught, because those were always run in dev venvs that
+happened to have the extra installed. `test_llm.py` unaffected -- it
+degrades gracefully without the `llm` extra by design (Sprint 10).
+Tracked as a new fast-follow, see "CI: install `siem`/`llm` extras" below.
+
+**Also discovered while merging**: `.github/workflows/verify-deploy.yml`
+(Sprint 0's "real CI gate", per `CLAUDE.md`) only ever existed on PR #2's
+branch -- it was never on `main` until PR #2 merged just now. This is why
+PR #3 (branched off `main`) showed zero CI runs the entire time it was
+open, not a misconfiguration in PR #3 itself. `main` had no automated CI
+gate at all until this merge sequence landed it.
+
+---
+
+### Sprint 13 -- Live-TUI wiring for SIEM export + Tier-2 LLM analysis
+**Type:** feature
+**Priority:** Sprint 10 shipped `--siem-log`/`--llm` on `check`/
+`security-scan` only, explicitly deferring live `watch`/`watch_all` TUI
+wiring (see Sprint 10 above and README's Contributing section). Board
+asked to close this gap now that PR #2/#3/#4 are merged.
+**PRD Status:** not needed -- same feature, same reusable helpers
+(`_export_siem_log`, `_run_llm_assessment`, `SiemLogger`, `OllamaAnalyzer`)
+already exist in `cli.py`/`siem.py`/`llm.py`; this sprint wires them into
+the two live-TUI entry points instead of writing new detection logic.
+**Board decision (2026-07-14):** user said "let's try finishing everything
+in the feature scope" and selected this item directly (alongside the PR
+merges above) via `AskUserQuestion`.
+
+### Critical design constraint this sprint must not ignore
+Both `AgentWatchApp` (`ui/app.py`) and `MultiAgentWatchApp`
+(`ui/multi_app.py`) refresh on a **1-second** `set_interval` tick
+(`ui/app.py:372`, `ui/multi_app.py:296`), re-running
+`registry.check_all()` + `calculate_health()` every tick. Naively calling
+`_export_siem_log`/`_run_llm_assessment` from inside that loop the same
+way `check` calls them once would (a) re-append the same still-open
+warning to the SIEM log every second for as long as it stays open, and
+(b) re-submit the same warning to a local Ollama model every second --
+both wrong and, for LLM, a real resource/latency problem (each
+`assess_warning` call is a real local model round-trip). This sprint must
+design and implement:
+- A **dedup key** for "have I already exported/assessed this warning,"
+  since `Warning` objects are very likely reconstructed fresh each
+  `check_all()` tick rather than persisted -- confirm this directly
+  (don't assume) and pick a content-based key (e.g. `signal` + `message`,
+  or a stable hash) if so.
+- A **throttled cadence** for LLM assessment specifically (e.g. only
+  re-run on a much coarser interval than 1s, or only for warnings not yet
+  assessed) -- exact interval is an implementation choice, not a product
+  question, but it must not be "every tick."
+- SIEM export can reasonably append only *newly seen* warnings per tick
+  (once dedup is in place) rather than needing a separate throttle,
+  since appending new warnings as they appear is the expected SIEM
+  behavior (a real-time event stream), unlike LLM assessment which is
+  costly per call.
+
+### Acceptance Criteria
+- [ ] `watch` (`ui/app.py` / `AgentWatchApp`) gains `--siem-log`/`--llm`/
+      `--llm-model` CLI options, same help text style as `check`
+- [ ] `watch_all` (`ui/multi_app.py` / `MultiAgentWatchApp`) gains the same
+      three options, applied per-agent (each agent's own warnings export/
+      assess independently, consistent with its existing per-agent
+      `registry`/`buffer` structure at `ui/multi_app.py:395-474`)
+- [ ] Dedup key strategy implemented and unit-tested: re-running the same
+      still-open warning across multiple simulated refresh ticks must not
+      produce duplicate SIEM log lines or duplicate LLM assessment calls
+- [ ] LLM assessment throttled to a coarser cadence than the 1s UI refresh,
+      with the exact interval documented and justified in code comments
+- [ ] Neither feature blocks or visibly stalls the TUI -- `OllamaAnalyzer`
+      calls happen off the render path (confirm existing async patterns in
+      both apps, e.g. `run_worker`/background task, don't add a synchronous
+      call inside `refresh_display`/`refresh_ui`)
+- [ ] SIEM export failure (`SiemExportError`, e.g. bad path) surfaces as a
+      visible but non-fatal TUI notification, not a silent drop and not a
+      hard crash of the running dashboard (`check`'s `sys.exit(1)` behavior
+      is wrong for a long-running TUI -- must degrade instead)
+- [ ] Ollama unavailable (`LlmUnavailableError`) surfaces once (not spammed
+      every tick) as a non-fatal TUI notification, matching `check`'s
+      graceful-degrade philosophy
+- [ ] New tests covering: dedup across ticks, throttle timing, TUI
+      non-blocking behavior (headless Textual pilot, same pattern as
+      `tests/test_multi_app_refresh.py`), and both new failure-mode paths
+      above
+- [ ] `python -m pytest tests/ -v` fully green, `ruff check .` clean (repo
+      is at 0 pre-existing errors now, so this sprint must not reintroduce
+      any)
+- [ ] README's Contributing section wishlist line updated (currently lists
+      "live-TUI wiring for both" as the open item this sprint closes)
+
+### Implementation Plan
+Delegate to engineer with this file list: `ui/app.py`, `ui/multi_app.py`,
+`cli.py` (new options only, reuse existing `_export_siem_log`/
+`_run_llm_assessment` helpers rather than duplicating), and new/extended
+test files. CTO reviews for the dedup/throttle design specifically (the
+part most likely to be gotten wrong) before QA verification.
+
+**Status: complete, CTO-reviewed, QA-verified (2026-07-14).** Delivered as
+PR #6 (`feature/live-tui-siem-llm` -> `develop` -- see correction above,
+`develop` not `main` is the integration line). New `ui/live_integrations.py`
+module: `warning_dedup_key()` (content-based identity, deliberately
+excludes `message` since several detectors embed a live counter in it --
+confirmed against `errors.py`'s `ErrorSpiralDetector`), `LiveSiemExporter`
+(exports only newly-seen warnings), `LiveLlmAssessor` (30s throttle,
+dispatched via `asyncio.to_thread` inside a Textual `run_worker`, never on
+the render path). CTO review confirmed the design directly against the
+diff, not just the PR body; independently triggered a real CI run (the
+first attempt surfaced the still-open `siem`/`llm` extras gap from the
+Fast-follow below, since PR #6 branched before that fix landed on
+`develop` -- merged the fix in and re-verified green). QA independently
+re-ran from a fresh venv: 634/634 tests pass, ruff clean, dedup-key logic
+traced against a real detector's live-counter message, 2 test bodies read
+in full and confirmed genuine behavioral proof (not mocks). Nothing
+flagged. Sitting on `develop`, unmerged further, per board instruction.
+
+---
+
+### Fast-follow: CI install `siem`/`llm` extras (found during PR #2/#3/#4 merge)
+**Type:** bugfix / infra
+**Priority:** the first real CI run on `main` (right after PR #4 merged,
+before the revert -- see correction above) was red: 12 `test_siem.py`
+failures, root cause `verify-deploy.yml` never installed the `siem`/`llm`
+extras, so `test_siem.py`'s hard dependency on `python-json-logger` was
+never exercised by real CI, only by dev venvs that happened to have it.
+**Board decision:** identified and delegated as part of the same
+"finish everything" pass (2026-07-14), assigned to devops since it's a
+workflow-file change, not application code.
+
+### Acceptance Criteria
+- [x] `.github/workflows/verify-deploy.yml`'s install step installs the
+      `siem` extra at minimum (`llm` too, for real coverage of
+      `test_llm.py`, even though that file already degrades gracefully
+      without it)
+- [x] `python -m pytest tests/` in CI shows the full green count (592
+      passed pre-Sprint-13, matching every fully-provisioned dev venv's
+      results all sprint) -- 0 failures, not 12
+- [x] `ruff check .` still passes (this change shouldn't touch anything
+      ruff cares about, but confirm no regression)
+- [x] New branch, draft PR, board approval required to merge -- not
+      pushed directly to `main` despite being a small change (retargeted
+      to `develop` after the revert, per the correction above)
+
+### Implementation Plan
+Devops: one-line change to the install step, open draft PR, confirm green
+CI on the PR itself before requesting review.
+
+**Status: complete (2026-07-14).** Delivered as PR #5
+(`devops/ci-install-siem-llm-extras`), fix is `pip install -e
+".[dev,siem,llm]"`. Locally verified before/after (12 failed/580 passed
+-> 592 passed/0 failed) and confirmed via real CI on the PR itself (both
+Python 3.11/3.12 green). Retargeted from `main` to `develop` after the
+revert and merged into `develop` -- this is what unblocked PR #6's own CI
+(see Sprint 13 status above).
+
+---
+
+### Sprint 14 -- Finish scaffolding flagged (not deleted) during Sprint 12's
+dead-code sweep
+**Type:** feature + cleanup
+**Priority:** Sprint 12's dead-code sweep found 5 items that were computed/
+declared but never fully wired up, and correctly declined to unilaterally
+delete or build any of them out ("flag, don't silently delete" per that
+sprint's own guardrails). Board asked to close these out now.
+**PRD Status:** not needed -- CTO read every relevant file directly
+(`parser/models.py`, `detectors/base.py`, `health/score.py`,
+`detectors/registry.py`, the 4 security detector modules) before scoping
+below; board picked the per-item disposition via `AskUserQuestion`
+(2026-07-14).
+**Board decision (2026-07-14):** finish `peak_context_tokens` display,
+finish all 4 security-stat counters, finish `check_with_audit` wiring.
+Investigate `Action.user_id` removal safety first (repo-wide grep +
+serialization-compatibility check), then remove only if confirmed safe --
+not a blind delete. Leave `Category.GOAL` untouched (no detector built,
+no removal) -- explicitly deferred, not in scope this sprint.
+
+### Per-item scope
+
+**1. `SessionStats.peak_context_tokens` (`parser/models.py:96`) -- finish.**
+Already actively computed on every `ActionBuffer.add()` call (high-water
+mark of per-action context size, survives compaction) but never read
+anywhere outside its own file. Note: this field belongs to the
+`check`/`security-scan`/`watch` pipeline's `SessionStats`, NOT the
+standalone `stats` command (which uses an entirely separate data model
+from `cc_stats.py` parsing `~/.claude/projects/*.jsonl` independently --
+confirmed by reading `_print_stats_report`). Investigate whether
+`health/rot.py`'s `RotScorer` or `ui/rot_widget.py`'s
+`ContextHealthWidget` is the more natural home (both already deal with
+context-window pressure) before picking a surfacing point -- don't bolt
+it onto the unrelated `stats` command just because the name sounds
+similar.
+
+**2. Security-stat counters (`credential_accesses`, `privilege_commands`,
+`network_connections`, `injection_attempts`, all `parser/models.py:101-104`)
+-- finish.** All 4 currently have zero increment sites anywhere (confirmed
+via repo-wide grep). Each maps 1:1 onto an existing detector module
+(`detectors/security/{credentials,privilege,network,injection}.py`,
+which each contain 3-4 separate detector classes). Design question the
+engineer must resolve and document, not guess silently: do these count
+*raw per-action pattern matches* (e.g. every action that touches a
+credential-like value, regardless of whether a detector's threshold fired
+a `Warning`) or *detector-fired counts*? The field names ("accesses",
+"commands", "connections", "attempts") read as raw occurrence counts, not
+"number of warnings" -- lean that direction, but confirm against how
+`SessionStats.error_count` is incremented (`parser/models.py:182`, inside
+`ActionBuffer.add()`) as the existing precedent for this kind of running
+counter, and reuse each detector's existing pattern-matching logic rather
+than reimplementing new regexes. Surface the 4 counts as a summary line
+in `security-scan`'s output (and consider the SIEM export's
+`log_report_summary` too, since it already carries a report-level
+summary).
+
+**3. `Action.user_id` (`parser/models.py:60`) -- investigate then remove,
+gated on a real safety check, not a blind delete.** CTO's own repo-wide
+grep already found zero readers/writers beyond the declaration line
+across `src/`, `tests/`, `scripts/`. Per board instruction: engineer must
+independently re-confirm this (repo-wide grep, plus check
+`Action.to_dict()`/any serialization round-trip and whether any test
+fixture or external-facing JSON schema references `user_id`) before
+removing. If any usage is found, stop and report back instead of
+removing. No current log format (Claude Code, Moltbot, Aider, Cursor,
+Codex) actually carries a real per-action user identity -- this is a
+single-local-user tool, which is presumably why it was never populated.
+
+**4. `Category.GOAL` (`detectors/base.py:20`, weighted 15% in
+`health/score.py`'s `HEALTH_CATEGORY_WEIGHTS`) -- explicitly out of scope
+this sprint.** No detector ever sets `category=Category.GOAL`, so this
+weight is currently unreachable (the weighted-average calculation in
+`calculate_health` only sums weights for categories actually present in
+`category_scores`, so the other 3 categories' weights renormalize to fill
+the gap automatically -- not a broken calculation, just a permanently
+-unused slot). Building a real goal-drift/alignment detector is a
+genuine new-feature design exercise (what does "goal" mean operationally;
+likely needs the Tier-2 LLM module to compare actions against stated
+intent), not a quick wire-up like the other 4 items. Board chose to leave
+this untouched for now -- do not remove the category, do not build a
+detector for it, do not change its weight.
+
+**5. `SecurityDetector.check_with_audit` (`detectors/base.py:183`) --
+finish.** Fully implemented (returns `(warning, audit_log)` with
+detector name/category/triggered/action_count), zero call sites --
+`DetectorRegistry.check_all()`/`check_security()` (`detectors/registry.py:50,89`)
+call `.check()` directly. Add a new `DetectorRegistry` method (e.g.
+`check_security_with_audit()`) that mirrors `check_security()`'s existing
+exception-isolation pattern but calls `check_with_audit()` and collects
+both warnings and audit-log dicts. Wire a new `--audit-log <path>` option
+into `security-scan` (CLI, not TUI -- matches how `--siem-log`/`--llm`
+were scoped in Sprint 10) that writes each security detector's audit-log
+entry as JSON-lines, covering every detector that ran (triggered or not)
+-- this is genuinely distinct from the existing SIEM export, which only
+records positive findings; this is a "prove you checked" compliance
+trail.
+
+### Acceptance Criteria
+- [ ] `peak_context_tokens` surfaced somewhere a user actually sees it
+      (health report, TUI context widget, or rot scoring -- engineer's
+      call on exact placement, justified in the PR body)
+- [ ] All 4 security-stat counters actually increment during real
+      detector runs, with the raw-vs-detector-fired design choice
+      explicitly documented and justified in code comments
+- [ ] `security-scan` prints a summary line for the 4 counters
+- [ ] `Action.user_id` either removed (if the engineer's independent
+      safety check confirms zero usage) or left in place with a written
+      explanation of what usage was found -- either outcome is
+      acceptable, a silent guess is not
+- [ ] `Category.GOAL` completely untouched -- no code changes referencing
+      it anywhere in this sprint's diff
+- [ ] New `DetectorRegistry.check_security_with_audit()` method,
+      exception-isolated per detector matching `check_security()`'s
+      existing pattern
+- [ ] `security-scan --audit-log <path>` writes JSON-lines covering every
+      security detector's run (triggered or not), distinct from
+      `--siem-log`'s warnings-only export
+- [ ] New tests for all of the above; `python -m pytest tests/ -v` fully
+      green, `ruff check .` clean (repo is at 0 errors on `develop`, must
+      not regress)
+- [ ] New branch off `develop` (not `main`), draft PR targeting `develop`
+
+### Implementation Plan
+Single engineer (files are related enough -- `parser/models.py` touched
+by items 1/2/3, `detectors/security/*.py` by item 2, `detectors/base.py`/
+`registry.py`/`cli.py` by item 5 -- to justify one pass rather than
+splitting). CTO reviews the raw-vs-detector-fired design choice for item
+2 and the `user_id` safety-check evidence for item 3 specifically before
+QA verification.
