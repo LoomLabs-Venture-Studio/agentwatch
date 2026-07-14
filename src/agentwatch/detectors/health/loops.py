@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from agentwatch.parser.models import NON_TOOL_ROLE_LABELS, ActionBuffer
+from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, Detector, Severity, Warning
 
@@ -25,21 +25,11 @@ class LoopDetector(Detector):
             return None
         
         recent = buffer.last(self.window)
-
-        # Check for repeated identical tool calls. Exclude parsers' role-label
-        # sentinels (e.g. Cursor's "user_message"/"assistant_message" -- see
-        # NON_TOOL_ROLE_LABELS) since those mark conversation turns, not
-        # repeated tool invocations, and would otherwise flag any ordinary
-        # multi-turn conversation as a "loop".
-        tool_sequence = [
-            f"{a.tool_name}:{a.file_path or ''}"
-            for a in recent
-            if a.tool_name not in NON_TOOL_ROLE_LABELS
-        ]
-        if not tool_sequence:
-            return None
+        
+        # Check for repeated identical tool calls
+        tool_sequence = [f"{a.tool_name}:{a.file_path or ''}" for a in recent]
         counts = Counter(tool_sequence)
-
+        
         most_common, count = counts.most_common(1)[0]
         
         if count >= self.threshold:

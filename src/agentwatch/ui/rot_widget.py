@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from textual.widgets import Static
 
-from agentwatch.themes import ascii_safe, get_theme
+from agentwatch.themes import get_theme
 
 if TYPE_CHECKING:
     from agentwatch.health.rot import RotReport, RotState
@@ -22,7 +22,7 @@ class ContextHealthWidget(Static):
     """Displays the composite rot score, state, per-module bars, and top reasons."""
 
     def __init__(self, **kwargs):
-        super().__init__("  Context Health: loading" + ascii_safe("…", "..."), **kwargs)
+        super().__init__("  Context Health: loading…", **kwargs)
         self._report: RotReport | None = None
 
     def update_report(self, report: "RotReport") -> None:
@@ -32,7 +32,7 @@ class ContextHealthWidget(Static):
     def _build_content(self) -> str:
         r = self._report
         if r is None:
-            return "  Context Health: waiting for data" + ascii_safe("…", "...")
+            return "  Context Health: waiting for data…"
 
         theme = get_theme()
         state_label = r.state.label  # Theme-aware label
@@ -62,11 +62,10 @@ class ContextHealthWidget(Static):
         if r.top_reasons:
             lines.append("")
             lines.append("  Top signals:")
-            bullet = ascii_safe("•", "*")
             for reason in r.top_reasons[:3]:
                 # Truncate long evidence strings
                 if len(reason) > 80:
                     reason = reason[:77] + "..."
-                lines.append(f"    {bullet} {reason}")
+                lines.append(f"    • {reason}")
 
         return "\n".join(lines)

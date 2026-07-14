@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import textwrap
 from pathlib import Path
+
+import pytest
 
 from agentwatch.cc_stats import (
     BashCategory,
     StatsReport,
     TokenBucket,
     ToolCategory,
+    TrivialCall,
     classify_bash_command,
     classify_tool_name,
     compute_stats,
@@ -18,7 +22,7 @@ from agentwatch.cc_stats import (
     parse_session_stats,
     project_dir_to_name,
 )
-from agentwatch.path_encoding import encode_path_for_claude
+
 
 # ---------------------------------------------------------------------------
 # Tool classification
@@ -334,20 +338,15 @@ class TestCwdMapping:
     def test_cwd_to_project_dir_existing(self, tmp_path, monkeypatch):
         projects = tmp_path / ".claude" / "projects"
         projects.mkdir(parents=True)
-        # Use a real directory so cwd.resolve() behaves identically to
-        # production, and derive the expected encoded name from the shared
-        # encoder itself rather than a hardcoded POSIX literal — this keeps
-        # the test correct on both POSIX (/ -> -) and Windows (\, :, space
-        # -> -) without branching on platform.
-        target = tmp_path / "myproject"
-        target.mkdir()
-        expected_name = encode_path_for_claude(target.resolve())
+        # Simulate: CWD = /Users/zaid/foo -> dir = -Users-zaid-foo
+        cwd = Path("/Users/zaid/foo")
+        expected_name = "-Users-zaid-foo"
         (projects / expected_name).mkdir()
 
         monkeypatch.setattr(
             "agentwatch.cc_stats.CLAUDE_PROJECTS_DIR", projects
         )
-        result = cwd_to_project_dir(target)
+        result = cwd_to_project_dir(cwd)
         assert result is not None
         assert result.name == expected_name
 

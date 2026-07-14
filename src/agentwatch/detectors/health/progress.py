@@ -77,12 +77,10 @@ def _file_churn(turns: list[Turn], n: int = 8) -> tuple[float, list[str]]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_progress(
-    buffer: "ActionBuffer", n_turns: int | None = None, *, turns: list[Turn] | None = None
-) -> MetricResult:
+def compute_progress(buffer: "ActionBuffer", n_turns: int | None = None) -> MetricResult:
     """Compute the diff-based progress deficit metric."""
 
-    turns = turns_from_buffer(buffer) if turns is None else turns
+    turns = turns_from_buffer(buffer)
     if len(turns) < 2:
         return MetricResult(name="progress", value=0.0)
 

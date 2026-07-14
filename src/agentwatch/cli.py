@@ -9,102 +9,10 @@ from pathlib import Path
 import click
 
 from agentwatch.detectors import create_registry
-from agentwatch.detectors.base import Warning
 from agentwatch.discovery import AgentProcess, AgentTeam, find_running_agents, build_agent_tree, build_teams
 from agentwatch.health import calculate_health, calculate_security_score
-from agentwatch.llm import (
-    DEFAULT_OLLAMA_MODEL,
-    MAX_WARNINGS_TO_ASSESS,
-    LlmUnavailableError,
-    OllamaAnalyzer,
-)
 from agentwatch.parser import ActionBuffer, find_latest_session, parse_file, find_log_files
-from agentwatch.siem import SiemExportError, SiemLogger
-from agentwatch.themes import (
-    ascii_safe,
-    get_theme,
-    list_themes,
-    security_status_from_score,
-    set_theme,
-)
-
-
-def _export_siem_log(
-    siem_log: Path,
-    warnings: list[Warning],
-    buffer: ActionBuffer,
-    *,
-    report_type: str,
-    score: float,
-) -> None:
-    """Append *warnings* + a run summary to *siem_log* as JSON-lines.
-
-    Exits the process with a clear error if the `siem` extra isn't
-    installed, rather than silently skipping export the caller explicitly
-    asked for.
-    """
-    session_id = buffer.actions[0].session_id if buffer.actions else None
-    try:
-        with SiemLogger(siem_log, session_id=session_id) as siem:
-            for warning in warnings:
-                siem.log_warning(warning)
-            siem.log_report_summary(report_type, score, len(warnings))
-    except SiemExportError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
-
-
-def _run_llm_assessment(warnings: list[Warning], llm_model: str) -> None:
-    """Best-effort Tier-2 triage of up to the first `MAX_WARNINGS_TO_ASSESS`
-    *warnings*, mutating `warning.details["llm_assessment"]` in place.
-
-    Deliberately never raises out to the caller: Tier 2 being unavailable
-    (Ollama not running, model not pulled) or a single assessment call
-    failing must never fail the surrounding `check`/`security-scan` run --
-    it degrades to a printed warning and Tier-1-only results, matching this
-    feature's "opt-in enrichment, not a dependency" design (see
-    `llm.py`'s module docstring).
-    """
-    try:
-        analyzer = OllamaAnalyzer(model=llm_model)
-        analyzer.check_available()
-    except LlmUnavailableError as exc:
-        click.echo(f"  (Tier-2 LLM analysis skipped: {exc})", err=True)
-        return
-
-    assessed = 0
-    for warning in warnings:
-        if assessed >= MAX_WARNINGS_TO_ASSESS:
-            break
-        try:
-            assessment = analyzer.assess_warning(warning)
-        except Exception as exc:
-            click.echo(f"  (Tier-2 LLM assessment failed for one warning: {exc})", err=True)
-            continue
-        warning.details["llm_assessment"] = assessment.to_dict()
-        assessed += 1
-
-
-def _print_llm_assessments(warnings: list[Warning]) -> None:
-    """Print a dedicated section for any warnings carrying a Tier-2
-    `llm_assessment` (set by `_run_llm_assessment`)."""
-    assessed = [w for w in warnings if "llm_assessment" in w.details]
-    if not assessed:
-        return
-
-    click.echo()
-    click.echo(click.style("  TIER-2 LLM ASSESSMENT (local Ollama, advisory only)", bold=True))
-    click.echo("  " + "-" * 48)
-    for w in assessed:
-        verdict = w.details["llm_assessment"]
-        ltp = verdict["likely_true_positive"]
-        verdict_label = (
-            "likely real" if ltp is True else "likely false positive" if ltp is False else "unclear"
-        )
-        click.echo(f"  [{w.signal}] {verdict_label} ({verdict['confidence']} confidence)")
-        if verdict["rationale"]:
-            click.echo(f"      {verdict['rationale']}")
-    click.echo()
+from agentwatch.themes import get_theme, set_theme, list_themes
 
 
 def print_health_report(report, security_mode: bool = False) -> None:
@@ -140,7 +48,7 @@ def print_health_report(report, security_mode: bool = False) -> None:
     
     # Warnings
     if report.warnings:
-        click.echo(f"  {theme.emoji_for(theme.level_2)} {len(report.warnings)} warning(s):")
+        click.echo(f"  ⚠️  {len(report.warnings)} warning(s):")
         click.echo()
         for w in report.warnings[:10]:  # Limit to 10
             severity_color = {
@@ -156,23 +64,21 @@ def print_health_report(report, security_mode: bool = False) -> None:
             )
             # Show key details
             if w.details:
-                arrow = ascii_safe("→", "->")
                 for key in ("last_error", "error_pattern", "last_command", "file"):
                     if key in w.details and w.details[key]:
-                        click.echo(f"        {arrow} {w.details[key][:100]}")
+                        click.echo(f"        → {w.details[key][:100]}")
                         break
                 if "sample_errors" in w.details and w.details["sample_errors"]:
-                    click.echo(f"        {arrow} {w.details['sample_errors'][0][:100]}")
+                    click.echo(f"        → {w.details['sample_errors'][0][:100]}")
             # Show suggestion
             if w.suggestion:
-                marker = ascii_safe("💡", "[TIP]")
-                click.echo(click.style(f"        {marker} {w.suggestion[:120]}", dim=True))
+                click.echo(click.style(f"        💡 {w.suggestion[:120]}", dim=True))
             click.echo()
 
         if len(report.warnings) > 10:
             click.echo(f"     ... and {len(report.warnings) - 10} more")
     else:
-        click.echo(f"  {theme.emoji_for(theme.level_0)} No issues detected")
+        click.echo("  ✅ No issues detected")
     
     click.echo()
 
@@ -181,18 +87,10 @@ def print_security_alert(warnings) -> None:
     """Print security alerts in a prominent format."""
     critical = [w for w in warnings if w.severity.value == "critical"]
     high = [w for w in warnings if w.severity.value == "high"]
-    theme = get_theme()
-
+    
     if critical:
         click.echo()
-        critical_marker = theme.emoji_for(theme.level_3)
-        click.echo(
-            click.style(
-                f"{critical_marker} CRITICAL SECURITY ALERTS {critical_marker}",
-                fg="red",
-                bold=True,
-            )
-        )
+        click.echo(click.style("🚨 CRITICAL SECURITY ALERTS 🚨", fg="red", bold=True))
         click.echo("=" * 50)
         for w in critical:
             click.echo(f"  {w.emoji} [{w.signal}] {w.message}")
@@ -200,14 +98,10 @@ def print_security_alert(warnings) -> None:
                 for k, v in list(w.details.items())[:3]:
                     click.echo(f"      {k}: {v}")
         click.echo()
-
+    
     if high:
         click.echo()
-        click.echo(
-            click.style(
-                f"{theme.emoji_for(theme.level_2)} HIGH SEVERITY WARNINGS", fg="yellow", bold=True
-            )
-        )
+        click.echo(click.style("⚠️  HIGH SEVERITY WARNINGS", fg="yellow", bold=True))
         click.echo("-" * 50)
         for w in high:
             click.echo(f"  {w.emoji} [{w.signal}] {w.message}")
@@ -231,15 +125,7 @@ def cli(theme: str):
 @click.option(
     "--log", "-l",
     type=click.Path(exists=True, path_type=Path),
-    help="Path to agent log file (JSONL, Aider Markdown chat history, or "
-         "Cursor's state.vscdb); auto-detects if not specified",
-)
-@click.option(
-    "--analytics-log",
-    type=click.Path(exists=True, path_type=Path),
-    default=None,
-    help="Path to an Aider --analytics-log JSONL sidecar (optional, "
-         "backfills tokens/cost onto an Aider Markdown --log)",
+    help="Path to JSONL log file (auto-detects if not specified)",
 )
 @click.option(
     "--security", "-s",
@@ -251,35 +137,7 @@ def cli(theme: str):
     is_flag=True,
     help="Output as JSON",
 )
-@click.option(
-    "--siem-log",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Append findings as JSON-lines to this file for SIEM ingestion "
-         "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
-)
-@click.option(
-    "--llm",
-    is_flag=True,
-    help="Enable Tier-2 semantic triage of warnings via a local Ollama model "
-         "(requires the 'llm' extra and a running `ollama serve`; degrades "
-         "to Tier-1-only if unavailable)",
-)
-@click.option(
-    "--llm-model",
-    default=DEFAULT_OLLAMA_MODEL,
-    show_default=True,
-    help="Local Ollama model to use for --llm",
-)
-def check(
-    log: Path | None,
-    analytics_log: Path | None,
-    security: bool,
-    json_output: bool,
-    siem_log: Path | None,
-    llm: bool,
-    llm_model: str,
-):
+def check(log: Path | None, security: bool, json_output: bool):
     """Run a one-time health check on agent logs."""
     # Find log file
     if log is None:
@@ -288,45 +146,33 @@ def check(
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
         click.echo(f"Using log: {log}")
-
+    
     # Parse logs
     buffer = ActionBuffer()
-    for action in parse_file(log, analytics_log=analytics_log):
+    for action in parse_file(log):
         buffer.add(action)
-
+    
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
         sys.exit(1)
-
+    
     # Create registry and run checks
     mode = "all" if security else "health"
     registry = create_registry(mode=mode)
     warnings = registry.check_all(buffer)
-
-    # Calculate scores (Tier-1 only -- LLM assessment below is advisory
-    # enrichment applied to warning.details after scoring, never before)
+    
+    # Calculate scores
     report = calculate_health(warnings, include_security=security)
-
-    if llm:
-        _run_llm_assessment(warnings, llm_model)
-
-    if siem_log is not None:
-        _export_siem_log(
-            siem_log, warnings, buffer, report_type="health", score=report.overall_score
-        )
-
+    
     if json_output:
         click.echo(json.dumps(report.to_dict(), indent=2))
     else:
         print_health_report(report, security_mode=security)
-
+        
         # Extra security output
         if security and report.security_warnings:
             print_security_alert(report.security_warnings)
-
-        if llm:
-            _print_llm_assessments(warnings)
-
+    
     # Exit code based on score thresholds (theme-independent)
     # < 40 = level_3 (critical/stuck) -> exit 2
     # < 60 = level_2 (warning/spinning) -> exit 1
@@ -342,8 +188,7 @@ def check(
 @click.option(
     "--log", "-l",
     type=click.Path(exists=True, path_type=Path),
-    help="Path to agent log file (JSONL, or Aider Markdown chat history); "
-         "auto-detects if not specified",
+    help="Path to JSONL log file (auto-detects if not specified)",
 )
 @click.option(
     "--security", "-s",
@@ -580,9 +425,8 @@ def list_detectors(security: bool):
     for cat, detectors in sorted(detectors_by_cat.items()):
         click.echo()
         click.echo(click.style(f"  {cat.upper()}", bold=True))
-        bullet = ascii_safe("•", "*")
         for d in detectors:
-            click.echo(f"    {bullet} {d}")
+            click.echo(f"    • {d}")
     
     click.echo()
     click.echo(f"Total: {len(registry.detectors)} detectors")
@@ -593,49 +437,14 @@ def list_detectors(security: bool):
 @click.option(
     "--log", "-l",
     type=click.Path(exists=True, path_type=Path),
-    help="Path to agent log file (JSONL, Aider Markdown chat history, or "
-         "Cursor's state.vscdb)",
-)
-@click.option(
-    "--analytics-log",
-    type=click.Path(exists=True, path_type=Path),
-    default=None,
-    help="Path to an Aider --analytics-log JSONL sidecar (optional, "
-         "backfills tokens/cost onto an Aider Markdown --log)",
+    help="Path to JSONL log file",
 )
 @click.option(
     "--json", "json_output",
     is_flag=True,
     help="Output as JSON",
 )
-@click.option(
-    "--siem-log",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Append findings as JSON-lines to this file for SIEM ingestion "
-         "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
-)
-@click.option(
-    "--llm",
-    is_flag=True,
-    help="Enable Tier-2 semantic triage of warnings via a local Ollama model "
-         "(requires the 'llm' extra and a running `ollama serve`; degrades "
-         "to Tier-1-only if unavailable)",
-)
-@click.option(
-    "--llm-model",
-    default=DEFAULT_OLLAMA_MODEL,
-    show_default=True,
-    help="Local Ollama model to use for --llm",
-)
-def security_scan(
-    log: Path | None,
-    analytics_log: Path | None,
-    json_output: bool,
-    siem_log: Path | None,
-    llm: bool,
-    llm_model: str,
-):
+def security_scan(log: Path | None, json_output: bool):
     """Run a security-focused scan on agent logs."""
     if log is None:
         log = find_latest_session()
@@ -643,28 +452,22 @@ def security_scan(
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
         click.echo(f"Using log: {log}")
-
+    
     # Parse logs
     buffer = ActionBuffer()
-    for action in parse_file(log, analytics_log=analytics_log):
+    for action in parse_file(log):
         buffer.add(action)
-
+    
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
         sys.exit(1)
-
+    
     # Run only security detectors
     registry = create_registry(mode="security")
     warnings = registry.check_all(buffer)
-
+    
     security_score = calculate_security_score(warnings)
-
-    if llm:
-        _run_llm_assessment(warnings, llm_model)
-
-    if siem_log is not None:
-        _export_siem_log(siem_log, warnings, buffer, report_type="security", score=security_score)
-
+    
     if json_output:
         output = {
             "security_score": security_score,
@@ -680,18 +483,12 @@ def security_scan(
         click.echo("═" * 50)
         click.echo()
         
-        # Theme-driven, sharing security_status_from_score() with
-        # ui/app.py's SecurityStatus widget rather than hand-copying the
-        # same SECURE/AT-RISK/COMPROMISED thresholds a second time (that
-        # duplication is exactly how this class of bug -- fix the emoji in
-        # one copy, miss the other -- was introduced).
-        theme = get_theme()
-        status = security_status_from_score(security_score)
-        emoji = theme.emoji_for(status)
-        color = theme.color_for(status)
-        click.echo(
-            click.style(f"  {emoji} {status.upper()} ({security_score}%)", fg=color, bold=True)
-        )
+        if security_score == 100:
+            click.echo(click.style("  ✅ SECURE (100%)", fg="green", bold=True))
+        elif security_score > 50:
+            click.echo(click.style(f"  ⚠️  AT RISK ({security_score}%)", fg="yellow", bold=True))
+        else:
+            click.echo(click.style(f"  🚨 COMPROMISED ({security_score}%)", fg="red", bold=True))
         
         click.echo()
         click.echo(f"  Analyzed {len(buffer)} actions")
@@ -700,10 +497,7 @@ def security_scan(
         
         if warnings:
             print_security_alert(warnings)
-
-        if llm:
-            _print_llm_assessments(warnings)
-
+    
     # Exit code
     if security_score < 50:
         sys.exit(2)
@@ -722,14 +516,10 @@ def themes():
     click.echo("=" * 60)
     click.echo()
 
-    arrow = ascii_safe("→", "->")
     for name, theme in THEMES.items():
         is_default = " (default)" if name == "agent" else ""
         click.echo(click.style(f"  {name}{is_default}", bold=True))
-        click.echo(
-            f"    {theme.emoji_0} {theme.level_0} {arrow} {theme.emoji_1} {theme.level_1} "
-            f"{arrow} {theme.emoji_2} {theme.level_2} {arrow} {theme.emoji_3} {theme.level_3}"
-        )
+        click.echo(f"    {theme.emoji_0} {theme.level_0} → {theme.emoji_1} {theme.level_1} → {theme.emoji_2} {theme.level_2} → {theme.emoji_3} {theme.level_3}")
         click.echo()
 
     click.echo("Use --theme <name> to select a theme.")
@@ -979,9 +769,8 @@ def _print_burn_report(report) -> None:
             reverse=True,
         )[:10]
         click.echo("  Top trivial commands:")
-        times_symbol = ascii_safe("\u00d7", "x")
         for cmd, count in sorted_cmds:
-            click.echo(f"    {cmd:<20} {click.style(f'{times_symbol}{count}', dim=True)}")
+            click.echo(f"    {cmd:<20} {click.style(f'\u00d7{count}', dim=True)}")
         click.echo()
 
     # Substantive
@@ -1376,29 +1165,13 @@ def _print_audit_report(
     click.echo()
 
 
-def _ensure_utf8_stdio() -> None:
-    """Force UTF-8 on stdout/stderr.
-
-    Windows consoles default Python's stdout/stderr to the legacy code page
-    (e.g. cp1252), which can't encode the box-drawing characters used in
-    report output and crashes with UnicodeEncodeError. macOS/Linux terminals
-    are already UTF-8, so this is a no-op there.
-    """
-    if sys.platform == "win32":
-        for stream in (sys.stdout, sys.stderr):
-            if hasattr(stream, "reconfigure"):
-                stream.reconfigure(encoding="utf-8", errors="replace")
-
-
 def main():
     """Main entry point for agentwatch CLI."""
-    _ensure_utf8_stdio()
     cli()
 
 
 def security_main():
     """Entry point for agentguard CLI (security-focused)."""
-    _ensure_utf8_stdio()
     # Override defaults to always include security
     @click.group()
     @click.version_option(version="0.1.4")

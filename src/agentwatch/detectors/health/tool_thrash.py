@@ -93,15 +93,13 @@ def _repeated_errors(buffer: "ActionBuffer", window: int = 20) -> tuple[float, l
     return score, evidence
 
 
-def _turns_since_progress(
-    buffer: "ActionBuffer", turns: list[Turn] | None = None
-) -> tuple[float, list[str]]:
+def _turns_since_progress(buffer: "ActionBuffer") -> tuple[float, list[str]]:
     """Count turns since the last turn that had a file edit + successful bash.
 
     Returns (score 0..1, evidence).
     Score mapping: 3 turns = 0.3, 6 turns = 0.6, 10+ = 1.0
     """
-    turns = turns_from_buffer(buffer) if turns is None else turns
+    turns = turns_from_buffer(buffer)
     if not turns:
         return 0.0, []
 
@@ -126,19 +124,17 @@ def _turns_since_progress(
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_tool_thrash(
-    buffer: "ActionBuffer", *, turns: list[Turn] | None = None
-) -> MetricResult:
+def compute_tool_thrash(buffer: "ActionBuffer") -> MetricResult:
     """Compute the tool-thrash & stall metric."""
 
     window = scaled_action_window(buffer)
     tool_score, tool_ev = _repeated_tool_calls(buffer, window=window)
     err_score, err_ev = _repeated_errors(buffer, window=window)
-    stall_score, stall_ev = _turns_since_progress(buffer, turns=turns)
+    stall_score, stall_ev = _turns_since_progress(buffer)
 
     # Scale stall penalty by session maturity to avoid penalizing early conversation.
     # Tool/error repeats are real problems and stay at full strength.
-    turns = turns_from_buffer(buffer) if turns is None else turns
+    turns = turns_from_buffer(buffer)
     maturity = session_maturity_factor(turns)
     stall_score = stall_score * maturity
 

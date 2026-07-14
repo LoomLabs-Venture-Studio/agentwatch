@@ -16,7 +16,7 @@ from agentwatch.detectors.health.constraints import compute_constraints
 from agentwatch.detectors.health.progress import compute_progress
 from agentwatch.detectors.health.repetition import compute_repetition
 from agentwatch.detectors.health.tool_thrash import compute_tool_thrash
-from agentwatch.parser.models import MetricResult, turns_from_buffer
+from agentwatch.parser.models import MetricResult
 from agentwatch.themes import get_theme
 
 if TYPE_CHECKING:
@@ -126,21 +126,17 @@ class RotScorer:
     def update(self, buffer: "ActionBuffer") -> RotReport:
         """Compute all modules, aggregate, smooth, and classify."""
 
-        # --- Compute turns once and share across all modules ---
-        turns = turns_from_buffer(buffer)
-
         # --- Compute each module ---
-        behavioral = compute_behavioral(buffer, turns=turns)
-        repetition = compute_repetition(buffer, turns=turns)
-        thrash = compute_tool_thrash(buffer, turns=turns)
-        progress = compute_progress(buffer, turns=turns)
+        behavioral = compute_behavioral(buffer)
+        repetition = compute_repetition(buffer)
+        thrash = compute_tool_thrash(buffer)
+        progress = compute_progress(buffer)
         constraint = compute_constraints(
             buffer,
             no_new_deps=self._no_new_deps,
             forbidden_prefixes=self._forbidden_prefixes,
             must_touch_paths=self._must_touch_paths,
             must_touch_after=self._must_touch_after,
-            turns=turns,
         )
 
         modules = {

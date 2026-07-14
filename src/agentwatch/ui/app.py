@@ -10,7 +10,7 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 
-from agentwatch.themes import ascii_safe, get_theme, security_status_from_score
+from agentwatch.themes import get_theme
 from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
 if TYPE_CHECKING:
@@ -48,19 +48,21 @@ class SecurityStatus(Static):
     
     score = reactive(100)
     alert_count = reactive(0)
-
+    
     def render(self) -> str:
-        # Theme-driven, following the same pattern HealthBar (above) already
-        # uses correctly -- see security_status_from_score()'s docstring for
-        # why this is a dedicated 3-way (100/>50/else) mapping rather than
-        # StatusTheme.status_from_score()'s 4-way 80/60/40 banding.
-        theme = get_theme()
-        status = security_status_from_score(self.score)
-        emoji = theme.emoji_for(status)
-
+        if self.score == 100:
+            status = "🛡️  SECURE"
+            color = "green"
+        elif self.score > 50:
+            status = "⚠️  AT RISK"
+            color = "yellow"
+        else:
+            status = "🚨 COMPROMISED"
+            color = "red"
+        
         return f"""
   Security Score: {self.score}%
-  Status: {emoji} {status.upper()}
+  Status: {status}
   Active Alerts: {self.alert_count}
 """
 
@@ -80,7 +82,7 @@ class EfficiencyBar(Static):
     def _build_content(self) -> str:
         r = self._report
         if r is None:
-            return "  Efficiency: waiting for data" + ascii_safe("…", "...")
+            return "  Efficiency: waiting for data…"
 
         filled = int(r.score / 5)  # 20 chars total
         bar = "█" * filled + "░" * (20 - filled)
@@ -138,7 +140,7 @@ class WarningsList(Static):
             # Show key details inline
             detail_line = self._format_details(w)
             if detail_line:
-                lines.append(f"     {ascii_safe('→', '->')} {detail_line}")
+                lines.append(f"     → {detail_line}")
 
             # Show suggestion
             if w.suggestion:
@@ -146,7 +148,7 @@ class WarningsList(Static):
                 suggestion = w.suggestion
                 if len(suggestion) > 90:
                     suggestion = suggestion[:87] + "..."
-                lines.append(f"     {ascii_safe('💡', '[TIP]')} {suggestion}")
+                lines.append(f"     💡 {suggestion}")
 
             lines.append("")  # Blank line between warnings
 
@@ -179,9 +181,7 @@ class WarningsList(Static):
         if "last_error" in d and d["last_error"]:
             return f"Error: {d['last_error'][:100]}"
         if "last_command" in d and d["last_command"]:
-            last_error = d.get("last_error", "")
-            arrow = ascii_safe("→", "->")
-            err = f" {arrow} {last_error[:60]}" if last_error else ""
+            err = f" → {d.get('last_error', '')[:60]}" if d.get("last_error") else ""
             return f"Command: {d['last_command'][:80]}{err}"
         if "error_pattern" in d:
             return f"Error: {d['error_pattern'][:100]}"
@@ -346,21 +346,15 @@ class AgentWatchApp(App):
         # Initialize components
         from agentwatch.detectors import create_registry
         from agentwatch.health.rot import RotScorer
-        from agentwatch.parser import ActionBuffer, AiderLogWatcher, LogWatcher
+        from agentwatch.parser import ActionBuffer, LogWatcher
 
         self._buffer = ActionBuffer()
         mode = "all" if self.security_mode else "health"
         self._detector_registry = create_registry(mode=mode)
         self._rot_scorer = RotScorer()
-
-        # Set up log watcher. .md is an Aider Markdown chat-history transcript
-        # (PLAYBOOK Sprint 6 item 6 / Sprint 7 -- live tailing); everything
-        # else is JSONL (Claude Code/Moltbot/Codex), handled by LogWatcher's
-        # own format auto-detection.
-        if self.log_path.suffix == ".md":
-            self.watcher = AiderLogWatcher(self.log_path)
-        else:
-            self.watcher = LogWatcher(self.log_path)
+        
+        # Set up log watcher
+        self.watcher = LogWatcher(self.log_path)
         self.watcher.on_action(self._on_action)
         
         # Start watching in background

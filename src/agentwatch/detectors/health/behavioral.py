@@ -100,12 +100,10 @@ def _length_inflation_slope(lengths: list[int]) -> float:
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_behavioral(
-    buffer: ActionBuffer, n_turns: int | None = None, *, turns: list[Turn] | None = None
-) -> MetricResult:
+def compute_behavioral(buffer: ActionBuffer, n_turns: int | None = None) -> MetricResult:
     """Compute the behavioral-degradation metric over the last *n_turns* turns."""
 
-    turns = turns_from_buffer(buffer) if turns is None else turns
+    turns = turns_from_buffer(buffer)
     if len(turns) < 2:
         return MetricResult(name="behavioral", value=0.0)
 
