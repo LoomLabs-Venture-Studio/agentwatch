@@ -1,0 +1,269 @@
+/* ── LoomLabs Brand Tokens ────────────────────────────────── */
+
+:root {
+  --ll-bg:          #050911;
+  --ll-surface:     #0B0F18;
+  --ll-border:      #1B1F2A;
+  --ll-muted:       #9BA3B0;
+  --ll-text:        #F7F9FB;
+  --ll-primary:     #9A5BF5;
+  --ll-primary-glow:#B47FFF;
+  --ll-secondary:   #F56D2A;
+  --ll-secondary-glow:#FF7F40;
+}
+
+/* ── Material Theme Overrides ────────────────────────────── */
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:        var(--ll-primary);
+  --md-primary-fg-color--light: var(--ll-primary-glow);
+  --md-primary-fg-color--dark:  #7B3FD6;
+  --md-accent-fg-color:         var(--ll-secondary);
+  --md-default-bg-color:        var(--ll-bg);
+  --md-default-bg-color--light: var(--ll-surface);
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color:        var(--ll-primary);
+  --md-primary-fg-color--light: var(--ll-primary-glow);
+  --md-accent-fg-color:         var(--ll-secondary);
+}
+
+/* ── Hero Section ─────────────────────────────────────────── */
+
+.aw-hero {
+  padding: 4rem 1rem 3rem;
+  background: var(--ll-bg);
+  background-image:
+    radial-gradient(circle at 40% 20%, rgba(154, 91, 245, 0.12), transparent 60%),
+    radial-gradient(circle at 80% 0%, rgba(245, 109, 42, 0.08), transparent 50%);
+  color: var(--ll-text);
+}
+
+.aw-hero__inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3rem;
+  align-items: center;
+}
+
+.aw-hero__title {
+  font-size: 3.2rem;
+  font-weight: 800;
+  margin: 0 0 1rem;
+  background: linear-gradient(135deg, var(--ll-primary), var(--ll-secondary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.aw-hero__tagline {
+  font-size: 1.15rem;
+  line-height: 1.7;
+  color: var(--ll-muted);
+  margin: 0 0 2rem;
+}
+
+.aw-hero__cta {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.aw-hero__cta .md-button {
+  border-radius: 0.75rem;
+  font-weight: 600;
+  padding: 0.6rem 1.6rem;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.aw-hero__cta .md-button--primary {
+  background: linear-gradient(135deg, var(--ll-primary), var(--ll-secondary));
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 0 20px rgba(154, 91, 245, 0.25);
+}
+
+.aw-hero__cta .md-button--primary:hover {
+  box-shadow: 0 0 40px rgba(154, 91, 245, 0.4);
+  transform: translateY(-1px);
+}
+
+.aw-hero__cta .md-button:not(.md-button--primary) {
+  border-color: var(--ll-border);
+  color: var(--ll-text);
+  background: rgba(11, 15, 24, 0.5);
+  backdrop-filter: blur(8px);
+}
+
+.aw-hero__cta .md-button:not(.md-button--primary):hover {
+  border-color: var(--ll-primary);
+  color: var(--ll-primary-glow);
+}
+
+/* ── Terminal Mockup ─────────────────────────────────────── */
+
+.aw-terminal {
+  border-radius: 0.75rem;
+  overflow: hidden;
+  background: var(--ll-bg);
+  box-shadow: 0 8px 32px rgba(5, 9, 17, 0.5);
+  border: 1px solid var(--ll-border);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.aw-terminal__bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  background: var(--ll-surface);
+  border-bottom: 1px solid var(--ll-border);
+}
+
+.aw-terminal__dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.aw-terminal__dot--red    { background: #EB3333; }
+.aw-terminal__dot--yellow { background: var(--ll-secondary); }
+.aw-terminal__dot--green  { background: #34D058; }
+
+.aw-terminal__title {
+  margin-left: 8px;
+  color: var(--ll-muted);
+  font-size: 0.75rem;
+}
+
+.aw-terminal__body {
+  padding: 1rem 1.2rem;
+  overflow-x: auto;
+}
+
+.aw-terminal__body pre {
+  margin: 0;
+  background: transparent !important;
+}
+
+.aw-terminal__body code {
+  background: transparent !important;
+  color: var(--ll-text);
+  font-size: 0.78rem;
+}
+
+/* Terminal color tokens */
+.t-green  { color: #34D058; }
+.t-yellow { color: var(--ll-secondary-glow); }
+.t-red    { color: #EB3333; }
+.t-dim    { color: #555D6B; }
+.t-header { color: var(--ll-text); font-weight: 700; }
+.t-label  { color: var(--ll-muted); }
+.t-warn   { color: var(--ll-secondary); }
+
+/* ── Feature Cards ───────────────────────────────────────── */
+
+.aw-features {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.2rem;
+  margin: 2rem 0;
+}
+
+.aw-card {
+  border: 1px solid var(--ll-border);
+  border-radius: 0.75rem;
+  padding: 1.8rem;
+  background: var(--ll-surface);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.aw-card:hover {
+  border-color: var(--ll-primary);
+  transform: translateY(-3px);
+  box-shadow: 0 0 40px rgba(154, 91, 245, 0.15);
+}
+
+.aw-card__icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
+.aw-card__icon--health   { background: rgba(52, 208, 88, 0.12); color: #34D058; }
+.aw-card__icon--security { background: rgba(154, 91, 245, 0.12); color: var(--ll-primary); }
+.aw-card__icon--tokens   { background: rgba(245, 109, 42, 0.12); color: var(--ll-secondary); }
+.aw-card__icon--teams    { background: rgba(180, 127, 255, 0.12); color: var(--ll-primary-glow); }
+
+.aw-card__title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem;
+  color: var(--ll-text);
+}
+
+.aw-card__text {
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--ll-muted);
+  margin: 0;
+}
+
+/* ── Detector Columns ────────────────────────────────────── */
+
+.aw-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+/* ── Footer CTA ──────────────────────────────────────────── */
+
+.aw-footer-cta {
+  text-align: center;
+  padding: 2rem 0;
+}
+
+.aw-footer-cta .md-button {
+  margin: 0 0.5rem;
+}
+
+/* ── Responsive ──────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .aw-hero__inner {
+    grid-template-columns: 1fr;
+    text-align: center;
+  }
+
+  .aw-hero__cta {
+    justify-content: center;
+  }
+
+  .aw-hero__title {
+    font-size: 2.4rem;
+  }
+
+  .aw-features {
+    grid-template-columns: 1fr;
+  }
+
+  .aw-two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Hide navigation/TOC on home ─────────────────────────── */
+
+.md-content__inner > h1:first-child {
+  display: none;
+}
