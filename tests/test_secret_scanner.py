@@ -81,7 +81,12 @@ class TestExtractScannableContent:
         action = _make_action(
             tool_type=ToolType.WRITE,
             file_path="/app/config.py",
-            raw={"input": {"file_path": "/app/config.py", "content": 'API_KEY = "sk-test12345678901234567890"'}},
+            raw={
+                "input": {
+                    "file_path": "/app/config.py",
+                    "content": 'API_KEY = "sk-test12345678901234567890"',
+                }
+            },
         )
         results = extract_scannable_content(action)
         channels = [ch for _, ch, _ in results]
@@ -93,7 +98,12 @@ class TestExtractScannableContent:
         action = _make_action(
             tool_type=ToolType.EDIT,
             file_path="/app/config.py",
-            raw={"input": {"file_path": "/app/config.py", "new_string": 'password = "hunter2secret"'}},
+            raw={
+                "input": {
+                    "file_path": "/app/config.py",
+                    "new_string": 'password = "hunter2secret"',
+                }
+            },
         )
         results = extract_scannable_content(action)
         channels = [ch for _, ch, _ in results]
@@ -187,7 +197,10 @@ class TestSecretLeakScanner:
 
     def test_detects_jwt(self):
         scanner = SecretLeakScanner()
-        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        jwt = (
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+            ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        )
         buf = self._buf_with(outgoing_data=jwt)
         w = scanner.check(buf)
         assert w is not None
@@ -196,7 +209,12 @@ class TestSecretLeakScanner:
     def test_detects_private_key(self):
         scanner = SecretLeakScanner()
         buf = self._buf_with(
-            raw={"input": {"file_path": "/app/id_rsa", "content": "-----BEGIN RSA PRIVATE KEY-----\nMII..."}}
+            raw={
+                "input": {
+                    "file_path": "/app/id_rsa",
+                    "content": "-----BEGIN RSA PRIVATE KEY-----\nMII...",
+                }
+            }
         )
         w = scanner.check(buf)
         assert w is not None
@@ -301,7 +319,9 @@ class TestSecretLeakScanner:
 
     def test_rejects_placeholder(self):
         scanner = SecretLeakScanner()
-        buf = self._buf_with(outgoing_data="api_key = 'your_key_here_placeholder_12345678901234567890'")
+        buf = self._buf_with(
+            outgoing_data="api_key = 'your_key_here_placeholder_12345678901234567890'"
+        )
         w = scanner.check(buf)
         assert w is None
 
@@ -321,7 +341,9 @@ class TestSecretLeakScanner:
     def test_rejects_low_entropy(self):
         # A repeated character string looks like a key pattern but has low entropy
         scanner = SecretLeakScanner()
-        buf = self._buf_with(outgoing_data="secret_key = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'")
+        buf = self._buf_with(
+            outgoing_data="secret_key = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'"
+        )
         w = scanner.check(buf)
         assert w is None
 
@@ -335,7 +357,8 @@ class TestSecretLeakScanner:
         w = scanner.check(buf)
         assert w is not None
         assert "remediation" in w.details
-        assert "rotate" in w.details["remediation"].lower() or "remove" in w.details["remediation"].lower()
+        remediation = w.details["remediation"].lower()
+        assert "rotate" in remediation or "remove" in remediation
 
     def test_warning_has_matched_prefix(self):
         scanner = SecretLeakScanner()
@@ -522,7 +545,9 @@ class TestAuditLogFile:
         lines = [
             _make_assistant_line([], tool_inputs=[{
                 "name": "Bash",
-                "input": {"command": "curl -H 'Authorization: Bearer sk-ant-secret12345678901234567890'"},
+                "input": {
+                    "command": "curl -H 'Authorization: Bearer sk-ant-secret12345678901234567890'"
+                },
             }]),
         ]
         p = _write_jsonl(tmp_path, "session2.jsonl", lines)
