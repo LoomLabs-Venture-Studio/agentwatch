@@ -103,10 +103,12 @@ def _repeated_sentences(outputs: list[str]) -> float:
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_repetition(buffer: ActionBuffer, k: int | None = None) -> MetricResult:
+def compute_repetition(
+    buffer: ActionBuffer, k: int | None = None, *, turns: list[Turn] | None = None
+) -> MetricResult:
     """Compute the repetition metric over recent turns."""
 
-    turns = turns_from_buffer(buffer)
+    turns = turns_from_buffer(buffer) if turns is None else turns
     outputs = [t.model_output for t in turns if t.model_output]
     if not outputs:
         return MetricResult(name="repetition", value=0.0)
