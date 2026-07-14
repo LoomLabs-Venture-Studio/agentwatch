@@ -25,6 +25,8 @@ from agentwatch.parser.cursor_source import (
     fetch_checkpoint,
     fetch_composer_headers,
     open_readonly,
+    parse_cursor_session,
+    select_latest_agent_composer,
 )
 from agentwatch.parser.models import ToolType
 
@@ -369,3 +371,121 @@ class TestBubbleToAction:
         assert action.tool_name == "unknown_bubble"
         assert action.incoming_message is None
         assert action.outgoing_data is None
+
+
+# ---------------------------------------------------------------------------
+# select_latest_agent_composer / parse_cursor_session
+#
+# Separate fixture DB (not `fixture_db` above) with multiple composers of
+# varying mode/archived/draft/timestamp status, matching the real shape
+# confirmed via a live smoke test against this machine's Cursor install
+# (PLAYBOOK Sprint 7, 2026-07-14) that found the real `empty-state-draft`
+# case.
+# ---------------------------------------------------------------------------
+
+
+def build_multi_composer_db(path) -> None:
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.executescript(SCHEMA_SQL)
+
+        def insert_header(composer_id, last_updated_at, value_extra, archived=0):
+            value = {"unifiedMode": "agent", "forceMode": "edit", **value_extra}
+            conn.execute(
+                "INSERT INTO composerHeaders "
+                "(composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, "
+                "isSubagent, recency, checkpointAt, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    composer_id, "workspace-1", 1000, last_updated_at,
+                    archived, 0, 1, None, json.dumps(value),
+                ),
+            )
+
+        # The real conversation -- oldest lastUpdatedAt of the qualifying set.
+        insert_header("c-real", 1000, {})
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)",
+            (
+                "bubbleId:c-real:b1",
+                json.dumps(
+                    {
+                        "type": 1,
+                        "text": "hello",
+                        "tokenCount": {"inputTokens": 0, "outputTokens": 0},
+                        "toolResults": [],
+                        "createdAt": "2026-07-12T03:10:08.000Z",
+                    }
+                ),
+            ),
+        )
+
+        # Newer chat-mode composer -- must never be auto-picked.
+        insert_header("c-chat", 2000, {"unifiedMode": "chat"})
+
+        # Newer archived agent composer -- must never be auto-picked.
+        insert_header("c-archived", 3000, {}, archived=1)
+
+        # Newest of all, but a draft with zero bubbles -- the real bug found
+        # live: without isDraft filtering this wins the "most recent" pick
+        # and produces zero actions.
+        insert_header("empty-state-draft", 9999, {"isDraft": True})
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def multi_composer_db(tmp_path):
+    db_path = tmp_path / "state.vscdb"
+    build_multi_composer_db(db_path)
+    return db_path
+
+
+class TestSelectLatestAgentComposer:
+    def test_picks_real_composer_over_newer_draft(self, multi_composer_db):
+        conn = open_readonly(multi_composer_db)
+        try:
+            headers = fetch_composer_headers(conn)
+        finally:
+            conn.close()
+
+        assert select_latest_agent_composer(headers) == "c-real"
+
+    def test_no_qualifying_composer_returns_none(self):
+        headers = {
+            "c1": {"unifiedMode": "chat", "isArchived": False, "lastUpdatedAt": 100},
+            "c2": {"unifiedMode": "agent", "isArchived": True, "lastUpdatedAt": 200},
+            "c3": {"unifiedMode": "agent", "isArchived": False, "lastUpdatedAt": None},
+            "c4": {
+                "unifiedMode": "agent", "isArchived": False,
+                "isDraft": True, "lastUpdatedAt": 300,
+            },
+        }
+        assert select_latest_agent_composer(headers) is None
+
+
+class TestParseCursorSession:
+    def test_auto_pick_returns_real_composer_actions(self, multi_composer_db):
+        actions = parse_cursor_session(multi_composer_db)
+        assert len(actions) == 1
+        assert actions[0].session_id == "c-real"
+        assert actions[0].incoming_message == "hello"
+
+    def test_explicit_composer_id_bypasses_auto_pick(self, multi_composer_db):
+        actions = parse_cursor_session(multi_composer_db, composer_id="c-chat")
+        assert actions == []  # c-chat has a header but zero bubbles
+
+    def test_unknown_composer_id_returns_empty(self, multi_composer_db):
+        assert parse_cursor_session(multi_composer_db, composer_id="does-not-exist") == []
+
+    def test_no_qualifying_composer_returns_empty(self, tmp_path):
+        db_path = tmp_path / "empty.vscdb"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(SCHEMA_SQL)
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert parse_cursor_session(db_path) == []

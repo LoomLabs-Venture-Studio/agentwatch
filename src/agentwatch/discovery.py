@@ -48,6 +48,15 @@ class AgentProcess:
     parent_agent_pid: int | None = None  # Nearest ancestor that is also a discovered agent
     depth: int = 0  # Nesting level: 0 = root agent, 1 = subagent, etc.
     team_id: int | None = None  # PID of the root ancestor (team identifier)
+    # Real state.vscdb path for agent_type == "cursor" entries. Cursor has no
+    # per-session log file the way Claude Code/Aider/Codex do -- every
+    # composer across every workspace lives in one shared SQLite file, so
+    # log_file holds a synthetic, never-created-on-disk per-composer
+    # identity key instead (see cursor_discovery.py::_cursor_synthetic_log_key)
+    # -- MultiLogWatcher keys its tracking dicts by log_file, and every
+    # composer would otherwise collide on the one real db path. Real I/O
+    # always goes through this field.
+    cursor_db_path: Path | None = None
 
     @property
     def project_name(self) -> str:
@@ -234,6 +243,21 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
         ancestor = _walk_to_ancestor_agent(agent.pid, pid_to_ppid, agent_pids)
         if ancestor is not None:
             agent.parent_agent_pid = ancestor
+
+    # Cursor composers have no OS-process ancestry to walk (the whole IDE,
+    # not a per-session process, hosts every composer across every
+    # workspace) -- appended after the PPID-based ancestor walk above so
+    # they never get spuriously matched against pid_to_ppid, but before
+    # depth/team assignment so they still get a valid depth=0/team_id=self
+    # like any other rootless agent. Lazy import mirrors the logs.py <->
+    # codex.py pattern: avoids a module-load-time cycle since
+    # cursor_discovery.py imports AgentProcess from this module.
+    try:
+        from agentwatch.cursor_discovery import find_cursor_agents
+
+        agents.extend(find_cursor_agents())
+    except Exception:
+        pass
 
     _compute_depths(agents)
     _assign_team_ids(agents)

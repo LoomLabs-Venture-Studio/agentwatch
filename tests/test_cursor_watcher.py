@@ -207,6 +207,52 @@ class TestCursorWatcherPolling:
             assert spy.call_count == 2
 
 
+class TestCursorWatcherComposerFilter:
+    """`composer_id_filter` restricts polling to one composer -- needed when
+    MultiLogWatcher spins up one CursorWatcher per composer (via
+    cursor_discovery.py) against a state.vscdb shared by many composers, so
+    independent watcher instances don't duplicate each other's actions."""
+
+    def test_filter_only_emits_actions_for_the_named_composer(self, db):
+        db.upsert_header("c1", last_updated_at=1000)
+        db.add_bubble("c1", "b1", _bubble(1, "hello", "2026-07-12T03:10:08.000Z"))
+        db.upsert_header("c2", last_updated_at=1000)
+        db.add_bubble("c2", "b1", _bubble(1, "unrelated", "2026-07-12T03:10:08.000Z"))
+
+        watcher = CursorWatcher(db.path, min_blob_poll_interval=0.0, composer_id_filter="c1")
+        actions = watcher._poll_once()
+
+        assert len(actions) == 1
+        assert actions[0].session_id == "c1"
+
+    def test_filter_ignores_other_composers_updating_later(self, db):
+        db.upsert_header("c1", last_updated_at=1000)
+        db.add_bubble("c1", "b1", _bubble(1, "hello", "2026-07-12T03:10:08.000Z"))
+        db.upsert_header("c2", last_updated_at=1000)
+        db.add_bubble("c2", "b1", _bubble(1, "unrelated", "2026-07-12T03:10:08.000Z"))
+
+        watcher = CursorWatcher(db.path, min_blob_poll_interval=0.0, composer_id_filter="c1")
+        first = watcher._poll_once()
+        assert len(first) == 1
+
+        # c2 advances -- filtered watcher must not pick it up.
+        db.upsert_header("c2", last_updated_at=2000)
+        db.add_bubble("c2", "b2", _bubble(2, "still unrelated", "2026-07-12T03:10:12.000Z"))
+        second = watcher._poll_once()
+        assert second == []
+
+    def test_no_filter_preserves_original_whole_db_behavior(self, db):
+        db.upsert_header("c1", last_updated_at=1000)
+        db.add_bubble("c1", "b1", _bubble(1, "hello", "2026-07-12T03:10:08.000Z"))
+        db.upsert_header("c2", last_updated_at=1000)
+        db.add_bubble("c2", "b1", _bubble(1, "also here", "2026-07-12T03:10:08.000Z"))
+
+        watcher = CursorWatcher(db.path, min_blob_poll_interval=0.0)
+        actions = watcher._poll_once()
+
+        assert len(actions) == 2
+
+
 class TestCursorWatcherReadOnly:
     def test_poll_never_writes_to_the_db(self, db):
         """`_poll_once()` must only ever open the DB via `open_readonly()`

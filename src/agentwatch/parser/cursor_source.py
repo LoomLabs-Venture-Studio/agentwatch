@@ -288,6 +288,20 @@ def bubble_to_action(
       fields not promoted to top-level ``Action`` attributes (e.g.
       ``thinking``/``thinkingDurationMs``/``thinkingStyle``, ``modelInfo``,
       which have no dedicated ``Action`` field).
+
+    **Known detector-calibration limitation, found via a live smoke test
+    against a real 58-bubble conversation (PLAYBOOK Sprint 7, 2026-07-14),
+    not fixed here**: ``tool_name`` is always the literal constant
+    ``"user_message"``/``"assistant_message"`` for every bubble, unlike
+    Claude Code/Aider/Codex where it reflects the actual tool invoked.
+    ``detectors/health/loops.py::LoopDetector`` keys its repetition check on
+    ``f"{tool_name}:{file_path}"``, so any Cursor conversation with >=4
+    assistant (or user) turns within its 10-action window trips a "loop"
+    false positive purely from the constant role label, not from real
+    repeated behavior. Fixing this well needs either richer per-turn
+    ``tool_name`` values derived from ``toolResults`` (whose populated shape
+    is still unconfirmed -- see ``classify_cursor_tool``) or a detector-side
+    carve-out; tracked as a follow-up, not silently masked here.
     """
     bubble_type = bubble.get("type")
     is_user = bubble_type == 1
@@ -327,3 +341,68 @@ def bubble_to_action(
         session_id=composer_id,
         raw=bubble,
     )
+
+
+def select_latest_agent_composer(headers: dict[str, dict[str, Any]]) -> str | None:
+    """Pick the most-recently-updated non-archived agent-mode composer.
+
+    Mirrors how ``parser/logs.py::find_latest_session()`` auto-picks the
+    most-recently-modified JSONL file when no explicit session is given --
+    the Cursor equivalent of "just parse whatever's most current" for a
+    one-shot ``check``/``security-scan`` run with no ``--session`` filter.
+
+    Excludes ``isDraft`` composers -- confirmed real on a live install
+    (2026-07-14): Cursor creates a placeholder composer (literal id
+    ``"empty-state-draft"``, ``isDraft: true``) that carries its own
+    ``lastUpdatedAt`` timestamp but zero real bubbles, so without this
+    filter both this function and ``cursor_discovery.py::find_cursor_agents``
+    would pick/surface a phantom empty "agent" ahead of the real
+    conversation whenever the draft's timestamp happens to be newer.
+    """
+    candidates = [
+        (header["lastUpdatedAt"], composer_id)
+        for composer_id, header in headers.items()
+        if header.get("unifiedMode") == "agent"
+        and not header.get("isArchived")
+        and not header.get("isDraft")
+        and header.get("lastUpdatedAt") is not None
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    return candidates[0][1]
+
+
+def parse_cursor_session(db_path: Path, composer_id: str | None = None) -> list[Action]:
+    """One-shot parse of a single Cursor composer's bubbles into an Action list.
+
+    Unlike ``CursorWatcher`` (which tails every composer live via
+    ``lastUpdatedAt`` polling), this mirrors ``parser/logs.py::parse_file()``'s
+    one-shot semantics for JSONL/Markdown logs: read everything that exists
+    right now for ONE composer and return. When *composer_id* is omitted,
+    auto-picks via ``select_latest_agent_composer`` -- the same "most
+    recent, no explicit selection" convention every other agent's one-shot
+    ``check``/``security-scan`` path already uses.
+
+    Returns an empty list (rather than raising) for every failure mode: no
+    such composer, unreadable DB, or a *composer_id* that doesn't exist --
+    consistent with ``parse_file()``'s existing "no actions found" handling
+    in ``cli.py`` for any other empty/unparseable log.
+    """
+    conn = open_readonly(db_path)
+    try:
+        headers = fetch_composer_headers(conn)
+        target = composer_id or select_latest_agent_composer(headers)
+        if target is None or target not in headers:
+            return []
+
+        actions: list[Action] = []
+        for bubble in fetch_bubbles(conn, target):
+            checkpoint = None
+            checkpoint_id = bubble.get("checkpointId")
+            if checkpoint_id:
+                checkpoint = fetch_checkpoint(conn, target, checkpoint_id)
+            actions.append(bubble_to_action(bubble, target, checkpoint))
+        return actions
+    finally:
+        conn.close()

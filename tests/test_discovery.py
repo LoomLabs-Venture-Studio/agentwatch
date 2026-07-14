@@ -11,6 +11,7 @@ from agentwatch.discovery import (
     _walk_to_ancestor_agent,
     build_agent_tree,
     build_teams,
+    find_running_agents,
 )
 
 
@@ -434,3 +435,107 @@ class TestFindOpenJsonl:
         monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
 
         assert _find_open_jsonl(pid=123, project_dir=project_dir) is None
+
+
+# ---------------------------------------------------------------------------
+# find_running_agents -- Cursor merge (PLAYBOOK Sprint 7, Cursor Phase 2)
+# ---------------------------------------------------------------------------
+
+
+class TestFindRunningAgentsCursorMerge:
+    """`find_running_agents()` appends `cursor_discovery.find_cursor_agents()`
+    results after the real-process scan. These tests fake out both halves
+    independently so the merge logic (depth/team_id assignment, and that a
+    Cursor failure never breaks discovery of real processes) is isolated
+    from either implementation's internals."""
+
+    def _empty_process_iter(self, attrs=None):
+        return iter([])
+
+    def test_cursor_agents_are_merged_in(self, monkeypatch):
+        monkeypatch.setattr(discovery.psutil, "process_iter", self._empty_process_iter)
+
+        cursor_agent = AgentProcess(
+            pid=999,
+            agent_type="cursor",
+            working_directory=Path("/tmp/cursor-project"),
+            session_id="composer-1",
+        )
+        monkeypatch.setattr(
+            "agentwatch.cursor_discovery.find_cursor_agents", lambda: [cursor_agent]
+        )
+
+        agents = find_running_agents()
+
+        assert len(agents) == 1
+        assert agents[0].agent_type == "cursor"
+        assert agents[0].depth == 0
+        assert agents[0].team_id == 999
+
+    def test_cursor_agents_coexist_with_real_processes(self, monkeypatch):
+        class _FakeProcess:
+            def __init__(self, pid):
+                self.info = {
+                    "pid": pid,
+                    "ppid": 1,
+                    "cmdline": ["claude", "--resume"],
+                    "name": "claude",
+                    "memory_info": __import__("types").SimpleNamespace(rss=1024),
+                    "cpu_percent": 0.0,
+                    "create_time": 1_700_000_000.0,
+                }
+
+        monkeypatch.setattr(
+            discovery.psutil, "process_iter", lambda attrs=None: iter([_FakeProcess(500)])
+        )
+        monkeypatch.setattr(discovery, "_get_process_cwd", lambda pid: Path("/tmp/claude-project"))
+        monkeypatch.setattr(
+            discovery, "_resolve_claude_code_log", lambda cwd, pid=None: (None, None)
+        )
+
+        cursor_agent = AgentProcess(
+            pid=999,
+            agent_type="cursor",
+            working_directory=Path("/tmp/cursor-project"),
+            session_id="composer-1",
+        )
+        monkeypatch.setattr(
+            "agentwatch.cursor_discovery.find_cursor_agents", lambda: [cursor_agent]
+        )
+
+        agents = find_running_agents()
+
+        agent_types = {a.agent_type for a in agents}
+        assert agent_types == {"claude-code", "cursor"}
+        assert len(agents) == 2
+
+    def test_cursor_discovery_failure_does_not_break_real_process_discovery(self, monkeypatch):
+        class _FakeProcess:
+            def __init__(self, pid):
+                self.info = {
+                    "pid": pid,
+                    "ppid": 1,
+                    "cmdline": ["claude", "--resume"],
+                    "name": "claude",
+                    "memory_info": __import__("types").SimpleNamespace(rss=1024),
+                    "cpu_percent": 0.0,
+                    "create_time": 1_700_000_000.0,
+                }
+
+        monkeypatch.setattr(
+            discovery.psutil, "process_iter", lambda attrs=None: iter([_FakeProcess(500)])
+        )
+        monkeypatch.setattr(discovery, "_get_process_cwd", lambda pid: Path("/tmp/claude-project"))
+        monkeypatch.setattr(
+            discovery, "_resolve_claude_code_log", lambda cwd, pid=None: (None, None)
+        )
+
+        def _raise():
+            raise RuntimeError("cursor discovery blew up")
+
+        monkeypatch.setattr("agentwatch.cursor_discovery.find_cursor_agents", _raise)
+
+        agents = find_running_agents()
+
+        assert len(agents) == 1
+        assert agents[0].agent_type == "claude-code"
