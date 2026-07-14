@@ -7,7 +7,7 @@ Real-time health and security monitoring for AI coding agents.
 
 ## What is AgentWatch?
 
-AgentWatch monitors AI agents (full support for Claude Code; Aider Markdown chat-history log parsing plus experimental/partial support for Codex CLI and Moltbot — see [Supported Agents](#supported-agents)) for:
+AgentWatch monitors AI agents (full support for Claude Code and Moltbot; Aider and Cursor are wired end-to-end and live-tested against real installs; Codex CLI support is fixture-verified only, no live install exists to confirm against — see [Supported Agents](#supported-agents)) for:
 
 - **Health Issues**: Loops, thrashing, context rot, error spirals
 - **Security Threats**: Credential theft, prompt injection, data exfiltration
@@ -31,6 +31,11 @@ pip install agentwatch-monitor
 
 > [!TIP]
 > Use `pipx` for CLI tools to avoid "externally managed environment" errors and keep your system Python clean.
+
+Optional extras (`pip install "agentwatch-monitor[llm]"` / `[siem]`) add
+[Tier-2 LLM analysis](#tier-2-llm-analysis-optional) and
+[SIEM export](#siem-integration-optional) — everything else works with the
+base install.
 
 ## Quick Start
 
@@ -212,15 +217,15 @@ A single CRITICAL severity security warning immediately sets the security score 
 
 ## Supported Agents
 
-| Agent                  | Process Discovery                                | Log Parsing (health/security analysis)      | Status                                              |
-| ---------------------- | ------------------------------------------------ | ------------------------------------------- | --------------------------------------------------- |
-| **Claude Code**        | Yes (`~/.claude/projects/*/` logs)               | Yes                                         | Fully supported                                     |
-| **Moltbot / Clawdbot** | No (not auto-discovered by `agentwatch ps`)      | Yes (`~/.moltbot/agents/*/sessions/` logs)  | Partial — point AgentWatch at the log file directly |
-| **Aider**              | Yes (process + `.aider.chat.history.md` located) | Yes (Markdown chat history; optional `--analytics-log` JSONL sidecar backfills tokens/cost) | Supported — `agentwatch check --log <.aider.chat.history.md>` |
-| **Codex CLI**          | Yes (process pattern only)                       | No                                          | Detection only                                      |
-| Cursor                 | No                                               | No                                          | Planned                                             |
+| Agent                  | Process Discovery                                                | Log Parsing (health/security analysis) | Live Tailing (`watch`/`watch-all`)          | Status                                                          |
+| ---------------------- | ------------------------------------------------------------------ | --------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------- |
+| **Claude Code**        | Yes (`~/.claude/projects/*/` logs)                                | Yes                                      | Yes                                          | Fully supported                                                 |
+| **Moltbot / Clawdbot** | No (not auto-discovered by `agentwatch ps`)                       | Yes (`~/.moltbot/agents/*/sessions/` logs) | No                                          | Partial — point AgentWatch at the log file directly              |
+| **Aider**              | Yes (process + `.aider.chat.history.md` located)                  | Yes (Markdown chat history; optional `--analytics-log` JSONL sidecar backfills tokens/cost) | Yes (live-tested against a real appended file) | Fully supported                                                 |
+| **Cursor**             | Yes, process-gated (`Cursor.exe`/`Cursor` running -> `state.vscdb`) | Yes (SQLite composer store)             | Yes (poll-based, live-tested)                | Fully supported — single-agent `watch --log <state.vscdb>` and `--all-logs` remain out of scope |
+| **Codex CLI**          | Yes (process pattern only)                                        | Yes (rollout JSONL, fixture-verified)   | Untested                                     | Fixture-verified only — no live install exists to confirm against |
 
-Verified against `src/agentwatch/discovery.py` (`AGENT_PATTERNS`, log-file resolution) and `src/agentwatch/parser/logs.py` (`detect_log_format`, `parse_claude_code_entry`, `parse_moltbot_entry`). Aider Markdown log parsing lives in `src/agentwatch/parser/aider.py` (`parse_aider_log`) — live `agentwatch watch` tailing of Aider logs is not yet supported (see that module's docstring / the Sprint 3 PRD's Open Questions), only one-shot `check`/`security-scan`.
+Verified against `src/agentwatch/discovery.py` (`AGENT_PATTERNS`, log-file resolution, `psutil`-based on all platforms including Windows) and `src/agentwatch/parser/logs.py` (`detect_log_format`, `parse_claude_code_entry`, `parse_moltbot_entry`). Aider Markdown log parsing lives in `src/agentwatch/parser/aider.py` (`parse_aider_log`, `AiderLogWatcher`); Cursor's read/poll layer lives in `src/agentwatch/parser/cursor_source.py` and `src/agentwatch/cursor_discovery.py`; Codex's rollout JSONL parsing lives in `src/agentwatch/parser/codex.py` and has been hardened against the real `openai/codex` source but still has no live install to verify against.
 
 ## Usage
 
@@ -383,11 +388,11 @@ registry.add_detector(MyDetector())
 │  - Zero cost, zero latency, auditable                   │
 └─────────────────────────────────────────────────────────┘
                           │
-                          v (optional, on suspicious activity)
+                          v (optional, --llm flag)
 ┌─────────────────────────────────────────────────────────┐
-│  TIER 2: LLM Analysis (opt-in)                          │
-│  - Semantic analysis of ambiguous cases                 │
-│  - Local model (Ollama) or cheap API (Haiku)            │
+│  TIER 2: LLM Analysis (opt-in, --llm)                    │
+│  - Semantic triage of Tier-1 warnings                   │
+│  - Local Ollama only -- no external API, ever            │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -398,18 +403,66 @@ All built-in detectors are deterministic (Tier 1) for:
 - **Cost**: No API calls
 - **No meta-injection**: Can't fool a regex
 
+Tier 1 is the sole driver of every health/security score -- Tier 2 never
+changes a score or severity, it only attaches an advisory opinion to
+warnings Tier 1 already found (see [Tier-2 LLM Analysis](#tier-2-llm-analysis-optional)
+below).
+
+## Tier-2 LLM Analysis (optional)
+
+```bash
+pip install "agentwatch-monitor[llm]"
+ollama pull llama3.2   # or any other locally-pulled chat model
+ollama serve
+
+agentwatch security-scan --log ~/.claude/projects/myapp/session.jsonl --llm
+agentwatch check --security --llm --llm-model llama3.2
+```
+
+Local-only, by explicit design, not an oversight: this project's own
+security detectors exist partly to catch credential leaks and secrets *in
+agent logs*, so Tier 2 only ever talks to a local Ollama daemon -- nothing
+here makes a network call to any external host, and there's no API-key env
+var to configure. If Ollama isn't running or the requested model isn't
+pulled, `--llm` degrades to a printed warning and Tier-1-only results
+rather than failing the scan.
+
+Each assessed warning gets a `likely_true_positive`/`confidence`/
+`rationale` opinion attached under `details.llm_assessment` in JSON output
+(and consequently in `--siem-log` export too), plus a dedicated "TIER-2 LLM
+ASSESSMENT" section in plain-text output. Capped at the first 10 warnings
+per run to keep `--llm` runs bounded against a slow local model.
+
+## SIEM Integration (optional)
+
+```bash
+pip install "agentwatch-monitor[siem]"
+
+agentwatch security-scan --log ~/.claude/projects/myapp/session.jsonl --siem-log /var/log/agentwatch/findings.jsonl
+```
+
+Appends one JSON object per finding (plus a run summary line) to the given
+path, using `python-json-logger`. This deliberately doesn't target or know
+about any specific SIEM product -- a JSON-lines file is the standard
+hand-off point any log-forwarding agent (Splunk Universal Forwarder,
+Filebeat, Datadog Agent, ...) already knows how to tail and parse. Opens in
+append mode, so it's safe to point every run at the same path. Currently
+wired into `check`/`security-scan` only; live `watch`/`watch-all` streaming
+export is not yet implemented (see [Contributing](#contributing)).
+
 ## Multi-Agent Monitoring
 
-`agentwatch watch-all` auto-discovers running agents via process scanning and monitors them on a unified dashboard. Each agent gets its own isolated scoring pipeline. Agent identification uses `lsof` to resolve the exact log file each process has open, preventing cross-contamination when multiple agents work on the same project.
+`agentwatch watch-all` auto-discovers running agents via process scanning and monitors them on a unified dashboard. Each agent gets its own isolated scoring pipeline. Agent identification uses `psutil` (cross-platform, including native Windows support) to resolve the exact log file each process has open, preventing cross-contamination when multiple agents work on the same project.
 
 ## Contributing
 
 Contributions welcome! Especially:
 
 - New detectors for failure patterns you've observed
-- Support for additional agents (Cursor, Codex CLI live tailing, etc.) — Aider Markdown log parsing landed in Sprint 3
+- Codex CLI: a real captured rollout log to verify the fixture-based parser against (see [Supported Agents](#supported-agents))
 - Better heuristics for existing detectors
-- SIEM integration (Splunk, Elastic, etc.)
+- Live `watch`/`watch-all` streaming export for `--siem-log` (currently one-shot `check`/`security-scan` only)
+- Tier-2 LLM analysis in the live TUI (currently one-shot `check`/`security-scan` only)
 
 ## License
 

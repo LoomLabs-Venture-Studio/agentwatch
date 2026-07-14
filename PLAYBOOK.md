@@ -2004,3 +2004,141 @@ leave, document why," and extend the existing Task #9 test file rather
 than starting a new one.
 
 **Status: complete (2026-07-14).**
+
+---
+
+### Sprint 10 — Feature gap closure: Codex ExecCommandEnd, Cursor
+Linux/macOS, SIEM export, Tier-2 LLM analysis, doc reconciliation
+**Type:** feature + hardening + docs
+**Priority:** user asked "what other things should be done" then "what
+other features are left to add", surfacing five concrete gaps in one pass:
+two real-but-unimplemented advertised features (`[llm]`/`[siem]` extras in
+`pyproject.toml` with zero corresponding code anywhere in `src/agentwatch`)
+and three scoped-but-deferred hardening items already on record
+(Codex `ExecCommandEnd` correlation from Sprint 8, Cursor macOS/Linux from
+Sprint 7, README staleness from Sprint 0-9 drift).
+**PRD Status:** no separate PRD -- scoped directly from the gaps found;
+two product decisions (LLM local-vs-external, SIEM format) were genuinely
+the user's to make and were resolved via direct question before writing
+any code, not picked unilaterally.
+**Board decision (2026-07-14):** user said "do all of them" -- authorized
+implementing all five in one continuous pass, same authorization pattern
+as Sprint 7.
+
+### What this sprint did
+
+**1. Codex `ExecCommandEnd`/`PatchApplyEnd` correlation
+(`parser/codex.py`)** -- the exact follow-up Sprint 8 scoped out and
+recommended as "a well-scoped next sprint." Re-fetched
+`codex-rs/protocol/src/protocol.rs` from `github.com/openai/codex` @ main
+and confirmed `EventMsg`'s real tagging (`#[serde(tag = "type",
+rename_all = "snake_case")]`) plus `ExecCommandEndEvent`/
+`PatchApplyEndEvent`'s exact fields. `CodexParser` now correlates this
+second event family into the same `_pending` dict `function_call`/
+`function_call_output` already use, via a `_PendingCall.resolved_by_
+event_msg` flag that stops `function_call_output`'s honest-but-always-
+`False` guess from clobbering a real signal that already arrived.
+Directly answers Sprint 8's open question "what carries success for
+apply_patch" (`PatchApplyEndEvent.success: bool`, a plain bool, not a
+status enum). 15 new tests (`tests/test_codex_parser.py`); all 38
+pre-existing Codex tests still pass unmodified.
+
+**2. Cursor macOS/Linux path verification (`cursor_discovery.py`)** --
+fetched VS Code's own real `getDefaultUserDataPath`
+(`src/vs/platform/environment/node/userDataPath.ts`, `microsoft/vscode` @
+main; Cursor is a VS Code fork) to check `default_cursor_user_dir()`
+against, rather than leaving it an unverified "same convention" guess.
+macOS matched exactly. Linux did not: the real source respects
+`XDG_CONFIG_HOME` before falling back to `~/.config`, which this function
+previously ignored outright -- a real, confirmed bug, now fixed. 5 new
+tests (`tests/test_cursor_discovery.py`); this function had zero test
+coverage before this sprint.
+
+**3. SIEM JSON-lines export (`siem.py`, new module)** -- the `[siem]`
+`pyproject.toml` extra (`python-json-logger`) had zero corresponding code
+anywhere before this sprint, despite being listed in the README's own
+"Contributing" wishlist. **User decision**: a `--siem-log <path>` option
+producing structured JSON-lines (not a syslog/webhook push) -- the
+standard SIEM hand-off point any log-forwarding agent already knows how
+to tail. Wired into `check`/`security-scan` only (live `watch`/
+`watch-all` streaming export explicitly deferred, flagged in README's
+Contributing section, not silently dropped). One real implementation bug
+caught and fixed before landing: `JsonFormatter`'s field set is controlled
+by its `fmt` string, not "every LogRecord attribute" by default --
+omitting `%(levelname)s` from `fmt` silently dropped `severity` from
+every output line, caught via a real live CLI run against a fixture log,
+not just the unit tests. 15 new tests (`tests/test_siem.py`), including
+CliRunner-level coverage of `--siem-log` on both commands.
+
+**4. Tier-2 LLM analysis (`llm.py`, new module)** -- the `[llm]` extra
+(`anthropic`, `ollama`) had zero corresponding code anywhere before this
+sprint, despite the README's own architecture diagram describing it as if
+it existed. **User decision**: local-only via Ollama, no external API,
+no new API-key env var (this project's own security detectors exist
+partly to catch credential leaks in agent logs -- sending that same log
+content to an external API would be in direct tension with that purpose).
+`OllamaAnalyzer` triages up to the first 10 warnings per run via a local
+chat model, attaching an advisory `likely_true_positive`/`confidence`/
+`rationale` opinion to `warning.details["llm_assessment"]` -- never
+touches severity or score, preserving Tier 1's deterministic-scoring
+guarantee. Degrades gracefully (printed warning, Tier-1-only results) if
+Ollama isn't running or the model isn't pulled, per explicit user
+requirement -- confirmed **live** against this machine's real installed-
+but-not-running Ollama (`check_available()` correctly raised in 2.1s with
+an actionable message, no hang). Response parsing salvages a JSON object
+embedded in extra prose (small local models don't always obey
+`format="json"` perfectly) rather than crashing. Wired into `check`/
+`security-scan` only (live TUI deferred, same reasoning as SIEM). 13 new
+tests (`tests/test_llm.py`) against a fake Ollama client double modeled
+directly on the real SDK's response shapes (`ollama` package installed
+via the `llm` extra to confirm those shapes, not guessed).
+
+**5. README reconciliation** -- several claims had drifted since Sprint 0:
+the "Supported Agents" table still said Cursor was "Planned" (shipped
+Sprint 5-7) and Codex was "Detection only" (shipped Sprint 4, hardened
+Sprint 8-9); the Aider row still said live tailing wasn't supported
+(shipped Sprint 7); agent identification was still described as using
+`lsof` (replaced by `psutil` in Sprint 1, Windows-inclusive). Reconciled
+against `CLAUDE.md`'s own accurate description and this sprint's new
+Supported Agents columns (Process Discovery / Log Parsing / **Live
+Tailing** -- a new column, since that axis didn't exist in the old table
+at all). Added usage sections for both new features and updated
+Contributing's wishlist to reflect what's actually still open (live-TUI
+wiring for both, not "SIEM integration" as a bare unstarted line item).
+
+### Acceptance Criteria
+- [x] Every corrected/new claim in `codex.py`/`cursor_discovery.py`
+      cites the specific primary source read (file/struct/URL), matching
+      Sprint 8/9's evidentiary bar -- no re-guessing
+- [x] SIEM/LLM product decisions (format, local-vs-external) resolved via
+      direct question to the user before implementation, not picked
+      unilaterally -- both touch security-sensitive tradeoffs (log content
+      leaving the machine; a new persistent output file) explicitly out of
+      scope for silent unilateral choice
+- [x] `python -m pytest tests/ -v` fully green -- **592/592 pass** (559
+      after Codex, 564 after Cursor, 579 after SIEM, 592 after LLM; 28 net
+      new tests this sprint on top of the 564 baseline post-Sprint-9)
+- [x] `ruff check` clean on every new/touched file; repo-wide `ruff check .`
+      **574 errors -- down from 585**, zero new warnings anywhere
+- [x] Live-verified, not just unit-tested: SIEM export against a real
+      fixture log via the actual CLI (caught the `JsonFormatter` fmt-string
+      bug this way); LLM graceful-degrade against this machine's real
+      Ollama install (installed but not running)
+- [x] Neither new feature changes a health/security score -- Tier 2 is
+      pure advisory annotation, SIEM export reads warnings after scoring,
+      never before
+
+### Implementation Plan
+Codex and Cursor: primary-source research (fetch real upstream source,
+cross-check existing assumptions, fix confirmed bugs, add regression
+tests) -- same method as Sprint 8. SIEM and LLM: resolve the two genuine
+open product questions with the user first (`AskUserQuestion`), then
+build each as a new, independently-testable module (`siem.py`/`llm.py`)
+wired into `check`/`security-scan` via a shared helper pattern
+(`_export_siem_log`/`_run_llm_assessment`/`_print_llm_assessments` in
+`cli.py`), with real (not mocked-away) SDK response shapes confirmed by
+installing each optional extra into this dev environment. README: audit
+every agent-support claim against `CLAUDE.md`'s own reconciled state
+rather than re-deriving from scratch.
+
+**Status: complete (2026-07-14).**
