@@ -13,7 +13,6 @@ from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, Detector, Severity, Warning
 
-
 # Maps raw error strings to a normalized error class
 _ERROR_CLASS_PATTERNS = [
     (re.compile(r"SyntaxError", re.IGNORECASE), "SyntaxError"),

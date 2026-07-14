@@ -1,10 +1,7 @@
 """Tests for team health scoring."""
 
-from agentwatch.detectors.base import Category, Severity, Warning
 from agentwatch.health.score import (
     HealthReport,
-    CategoryScore,
-    TeamHealthReport,
     calculate_team_health,
 )
 

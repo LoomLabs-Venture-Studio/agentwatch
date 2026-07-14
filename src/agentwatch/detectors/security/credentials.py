@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from agentwatch.parser.models import ActionBuffer
 from agentwatch.parser.logs import is_sensitive_path
+from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
 

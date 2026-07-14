@@ -14,7 +14,6 @@ from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
 
-
 # ---------------------------------------------------------------------------
 # Pattern registry — each entry: (compiled regex, secret_type label)
 # ---------------------------------------------------------------------------

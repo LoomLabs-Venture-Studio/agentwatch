@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import Category, Detector, Warning
+from .base import Detector, Warning
 from .health import get_all_health_detectors
 from .security import get_all_security_detectors
 

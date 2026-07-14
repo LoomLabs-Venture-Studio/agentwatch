@@ -6,16 +6,10 @@ import json
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 from agentwatch.detectors.security.secret_scanner import (
     AuditFinding,
-    ImpactAssessment,
     SecretLeakScanner,
-    _check_env_vars,
-    _check_source_file,
     _is_false_positive,
     _pattern_for_secret_type,
     _shannon_entropy,
@@ -25,7 +19,6 @@ from agentwatch.detectors.security.secret_scanner import (
     redact_log_file,
 )
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
-
 
 # ---------------------------------------------------------------------------
 # Helpers

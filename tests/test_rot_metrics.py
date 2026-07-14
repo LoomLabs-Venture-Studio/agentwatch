@@ -20,8 +20,13 @@ from agentwatch.detectors.health.progress import compute_progress
 from agentwatch.detectors.health.repetition import compute_repetition
 from agentwatch.detectors.health.tool_thrash import compute_tool_thrash
 from agentwatch.health.rot import RotScorer, RotState
-from agentwatch.parser.models import Action, ActionBuffer, MetricResult, ToolType, Turn, turns_from_actions
-
+from agentwatch.parser.models import (
+    Action,
+    ActionBuffer,
+    MetricResult,
+    ToolType,
+    turns_from_actions,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
