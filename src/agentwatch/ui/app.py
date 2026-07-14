@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 
@@ -15,7 +15,8 @@ from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
 if TYPE_CHECKING:
     from agentwatch.detectors.base import Warning
-    from agentwatch.health.score import EfficiencyReport, HealthReport
+    from agentwatch.health.score import EfficiencyReport
+    from agentwatch.parser.models import Action
 
 
 class HealthBar(Static):
@@ -45,7 +46,7 @@ class HealthBar(Static):
 
 class SecurityStatus(Static):
     """Widget showing security status."""
-    
+
     score = reactive(100)
     alert_count = reactive(0)
 
@@ -70,7 +71,11 @@ class EfficiencyBar(Static):
 
     def __init__(self, **kwargs):
         theme = get_theme()
-        super().__init__(f"  Efficiency: [████████████████████] 100%  Status: {theme.level_0.upper()}\n  Session is {theme.level_0}", **kwargs)
+        super().__init__(
+            f"  Efficiency: [████████████████████] 100%  Status: {theme.level_0.upper()}\n"
+            f"  Session is {theme.level_0}",
+            **kwargs,
+        )
         self._report: EfficiencyReport | None = None
 
     def update_efficiency(self, report: "EfficiencyReport") -> None:
@@ -97,9 +102,17 @@ class EfficiencyBar(Static):
         # Per-category mini bars with detail
         burn_k = r.token_burn_rate / 1000
         categories = [
-            ("Pressure", r.penalty_context, f"{r.context_usage_pct:.0f}% ctx, {burn_k:.1f}k tok/min"),
+            (
+                "Pressure",
+                r.penalty_context,
+                f"{r.context_usage_pct:.0f}% ctx, {burn_k:.1f}k tok/min",
+            ),
             ("Cache", r.penalty_cache, f"{r.cache_hit_rate * 100:.0f}% hit rate"),
-            ("Pacing", r.penalty_pacing, f"{r.duration_minutes:.0f}min, {r.actions_per_turn:.1f} act/turn"),
+            (
+                "Pacing",
+                r.penalty_pacing,
+                f"{r.duration_minutes:.0f}min, {r.actions_per_turn:.1f} act/turn",
+            ),
         ]
         for label, penalty, detail in categories:
             mini = _mini_bar(penalty)
@@ -202,7 +215,8 @@ class WarningsList(Static):
         if "file" in d:
             return f"File: {d['file']}"
         if "error_class" in d:
-            return f"Error type: {d['error_class']} ({d.get('occurrences', d.get('failure_count', '?'))}x)"
+            occurrences = d.get("occurrences", d.get("failure_count", "?"))
+            return f"Error type: {d['error_class']} ({occurrences}x)"
 
         return ""
 
@@ -226,31 +240,34 @@ class StatsPanel(Static):
         self.update(self._build_content())
 
     def _build_content(self) -> str:
-        return f"  Actions: {self._action_count}  Errors: {self._error_count}  Duration: {int(self._duration)}m"
+        return (
+            f"  Actions: {self._action_count}  Errors: {self._error_count}  "
+            f"Duration: {int(self._duration)}m"
+        )
 
 
 class AgentWatchApp(App):
     """Main TUI application for AgentWatch."""
-    
+
     CSS = """
     Screen {
         layout: grid;
         grid-size: 2 3;
         grid-rows: auto 1fr auto;
     }
-    
+
     #health-panel {
         column-span: 1;
         border: solid green;
         padding: 1;
     }
-    
+
     #security-panel {
         column-span: 1;
         border: solid yellow;
         padding: 1;
     }
-    
+
     #efficiency-panel {
         column-span: 2;
         border: solid cyan;
@@ -274,18 +291,18 @@ class AgentWatchApp(App):
         border: solid blue;
         padding: 1;
     }
-    
+
     .hidden {
         display: none;
     }
     """
-    
+
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
         ("s", "toggle_security", "Toggle Security"),
     ]
-    
+
     def __init__(
         self,
         log_path: Path,
@@ -300,15 +317,15 @@ class AgentWatchApp(App):
         self._rot_scorer = None
         self._refreshing = False
         self._alerted_signals: set[str] = set()
-    
+
     def compose(self) -> ComposeResult:
         yield Header()
-        
+
         yield Container(
             HealthBar(id="health-bar"),
             id="health-panel",
         )
-        
+
         yield Container(
             SecurityStatus(id="security-status"),
             id="security-panel",
@@ -329,20 +346,20 @@ class AgentWatchApp(App):
             WarningsList(id="warnings-list"),
             id="warnings-panel",
         )
-        
+
         yield Container(
             StatsPanel(id="stats-display"),
             id="stats-panel",
         )
-        
+
         yield Footer()
-    
+
     def on_mount(self) -> None:
         """Called when app starts."""
         self.title = f"AgentWatch - {self.log_path.name}"
         if self.security_mode:
             self.title += " [SECURITY]"
-        
+
         # Initialize components
         from agentwatch.detectors import create_registry
         from agentwatch.health.rot import RotScorer
@@ -362,15 +379,15 @@ class AgentWatchApp(App):
         else:
             self.watcher = LogWatcher(self.log_path)
         self.watcher.on_action(self._on_action)
-        
+
         # Start watching in background
         self.run_worker(self.watcher.watch_with_callbacks())
-        
+
         self.refresh_display()
-        
+
         # Set up periodic refresh as backup (1s for responsive feel)
         self.set_interval(1.0, self.refresh_display)
-    
+
     def _on_action(self, action: Action) -> None:
         """Callback for new actions from watcher."""
         if self._buffer:
@@ -378,7 +395,7 @@ class AgentWatchApp(App):
             # The 1s interval timer handles refreshes — don't pile up extra
             # calls via call_after_refresh, which was causing sporadic updates
             # when compute time exceeded the interval.
-    
+
     def refresh_display(self) -> None:
         """Update all widgets with current data."""
         if not self._buffer or not self._detector_registry:
@@ -441,7 +458,7 @@ class AgentWatchApp(App):
         # Update warnings list
         warnings_list = self.query_one("#warnings-list", WarningsList)
         warnings_list.update_warnings(warnings)
-        
+
         # Update stats
         stats = self.query_one("#stats-display", StatsPanel)
         stats.update_stats(
@@ -449,14 +466,17 @@ class AgentWatchApp(App):
             self._buffer.stats.error_count,
             self._buffer.stats.duration_minutes,
         )
-    
+
     def _fire_secret_alerts(self, warnings: list["Warning"]) -> None:
         """Fire toast notifications for new secret leak warnings."""
         for w in warnings:
             if w.signal != "secret_leak":
                 continue
             d = w.details
-            key = f"secret_leak:{d.get('secret_type', '')}:{d.get('channel', '')}:{d.get('file_path', '')}"
+            key = (
+                f"secret_leak:{d.get('secret_type', '')}:"
+                f"{d.get('channel', '')}:{d.get('file_path', '')}"
+            )
             if key in self._alerted_signals:
                 continue
             self._alerted_signals.add(key)
@@ -472,11 +492,11 @@ class AgentWatchApp(App):
     def action_refresh(self) -> None:
         """Manual refresh action."""
         self.refresh_display()
-    
+
     def action_toggle_security(self) -> None:
         """Toggle security panel visibility."""
         self.security_mode = not self.security_mode
-        
+
         security_panel = self.query_one("#security-panel")
         if self.security_mode:
             security_panel.remove_class("hidden")
@@ -484,10 +504,10 @@ class AgentWatchApp(App):
         else:
             security_panel.add_class("hidden")
             self.title = f"AgentWatch - {self.log_path.name}"
-        
+
         # Recreate registry with new mode
         from agentwatch.detectors import create_registry
         mode = "all" if self.security_mode else "health"
         self._detector_registry = create_registry(mode=mode)
-        
+
         self.refresh_display()

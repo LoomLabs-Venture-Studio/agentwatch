@@ -9,7 +9,7 @@ from textual.widgets import Static
 from agentwatch.themes import ascii_safe, get_theme
 
 if TYPE_CHECKING:
-    from agentwatch.health.rot import RotReport, RotState
+    from agentwatch.health.rot import RotReport
 
 
 def _mini_bar(value: float, width: int = 10) -> str:
@@ -40,7 +40,8 @@ class ContextHealthWidget(Static):
         score_pct = int(round((1.0 - r.smoothed_score) * 100))
 
         lines: list[str] = []
-        lines.append(f"  {emoji} Context Health: [{_mini_bar(1.0 - r.smoothed_score, 20)}] {score_pct}%")
+        mini_bar = _mini_bar(1.0 - r.smoothed_score, 20)
+        lines.append(f"  {emoji} Context Health: [{mini_bar}] {score_pct}%")
         lines.append(f"  State: {state_label.upper()}")
         lines.append("")
 

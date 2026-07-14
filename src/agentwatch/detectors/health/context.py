@@ -9,11 +9,11 @@ from ..base import Category, Detector, Severity, Warning
 
 class ContextRotDetector(Detector):
     """Detects when important early-session files are forgotten."""
-    
+
     category = Category.CONTEXT
     name = "context_rot"
     description = "Important early files no longer being referenced"
-    
+
     def __init__(
         self,
         early_fraction: float = 0.25,
@@ -49,7 +49,7 @@ class ContextRotDetector(Detector):
             a.file_path for a in early_actions if a.is_file_edit and a.file_path
         }
         important_forgotten = [f for f in forgotten if f in edited_early]
-        
+
         if len(important_forgotten) >= 2:
             return Warning(
                 category=self.category,
@@ -62,17 +62,17 @@ class ContextRotDetector(Detector):
                     "total_recent": len(recent_files),
                 },
             )
-        
+
         return None
 
 
 class ContextPressureDetector(Detector):
     """Estimates context window usage and warns when filling up."""
-    
+
     category = Category.CONTEXT
     name = "context_pressure"
     description = "Context window filling up"
-    
+
     # Rough estimate: average tokens per action type
     TOKENS_PER_ACTION = {
         "read": 500,
@@ -81,45 +81,45 @@ class ContextPressureDetector(Detector):
         "write": 150,
         "default": 150,
     }
-    
+
     # Approximate context limits by model
     CONTEXT_LIMITS = {
         "claude": 180_000,
         "gpt4": 128_000,
         "default": 128_000,
     }
-    
+
     def __init__(
-        self, 
-        warning_threshold: float = 0.7, 
+        self,
+        warning_threshold: float = 0.7,
         critical_threshold: float = 0.85,
         model: str = "claude",
     ):
         self.warning_threshold = warning_threshold
         self.critical_threshold = critical_threshold
         self.context_limit = self.CONTEXT_LIMITS.get(model, self.CONTEXT_LIMITS["default"])
-    
+
     def check(self, buffer: ActionBuffer) -> Warning | None:
         if len(buffer) < 10:
             return None
-        
+
         # Estimate tokens used
         estimated_tokens = 0
         for action in buffer.actions:  # All buffered actions represent cumulative context
             action_type = action.tool_type.value
             tokens = self.TOKENS_PER_ACTION.get(
-                action_type, 
+                action_type,
                 self.TOKENS_PER_ACTION["default"]
             )
-            
+
             # Use actual tokens if available
             if action.tokens_in or action.tokens_out:
                 tokens = action.tokens_in + action.tokens_out
-            
+
             estimated_tokens += tokens
-        
+
         usage_ratio = estimated_tokens / self.context_limit
-        
+
         if usage_ratio >= self.critical_threshold:
             return Warning(
                 category=self.category,
@@ -144,31 +144,31 @@ class ContextPressureDetector(Detector):
                     "limit": self.context_limit,
                 },
             )
-        
+
         return None
 
 
 class RediscoveryDetector(Detector):
     """Detects when agent is re-discovering things it should already know."""
-    
+
     category = Category.CONTEXT
     name = "rediscovery"
     description = "Agent re-discovering previously learned information"
-    
+
     def __init__(self, window: int = 200, rediscovery_gap: int = 30):
         self.window = window
         self.rediscovery_gap = rediscovery_gap
-    
+
     def check(self, buffer: ActionBuffer) -> Warning | None:
         if len(buffer) < self.window:
             return None
-        
+
         actions = buffer.last(self.window)
-        
+
         # Track file read positions
         file_first_read: dict[str, int] = {}
         file_reread_gaps: dict[str, list[int]] = {}
-        
+
         for i, action in enumerate(actions):
             if action.is_file_read and action.file_path:
                 path = action.file_path
@@ -182,7 +182,7 @@ class RediscoveryDetector(Detector):
                     file_first_read[path] = i
                 else:
                     file_first_read[path] = i
-        
+
         # Find files with significant rediscovery
         worst_file = None
         worst_count = 0
@@ -190,7 +190,7 @@ class RediscoveryDetector(Detector):
             if len(gaps) > worst_count:
                 worst_file = path
                 worst_count = len(gaps)
-        
+
         if worst_count >= 2:
             return Warning(
                 category=self.category,
@@ -202,5 +202,5 @@ class RediscoveryDetector(Detector):
                     "rediscovery_count": worst_count,
                 },
             )
-        
+
         return None

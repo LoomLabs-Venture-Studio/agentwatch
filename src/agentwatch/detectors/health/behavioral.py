@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
 from agentwatch.detectors.health._window import scaled_turn_window
+from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -125,7 +125,11 @@ def compute_behavioral(
     inflation_result = MetricResult(
         name="length_inflation",
         value=round(inflation, 4),
-        evidence=[f"word counts over last {len(lengths)} turns: {lengths}"] if inflation > 0.1 else [],
+        evidence=(
+            [f"word counts over last {len(lengths)} turns: {lengths}"]
+            if inflation > 0.1
+            else []
+        ),
     )
 
     # Sub-metric: hedge density (average over recent outputs)
