@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,7 @@ from textual.containers import Container
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 
+from agentwatch.llm import DEFAULT_OLLAMA_MODEL
 from agentwatch.themes import ascii_safe, get_theme, security_status_from_score
 from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
@@ -161,6 +163,22 @@ class WarningsList(Static):
                     suggestion = suggestion[:87] + "..."
                 lines.append(f"     {ascii_safe('💡', '[TIP]')} {suggestion}")
 
+            # Show Tier-2 LLM triage, if --llm assessed this warning
+            # (LiveLlmAssessor.stamp() attaches it before we get here)
+            if "llm_assessment" in w.details:
+                verdict = w.details["llm_assessment"]
+                ltp = verdict.get("likely_true_positive")
+                verdict_label = (
+                    "likely real"
+                    if ltp is True
+                    else "likely false positive"
+                    if ltp is False
+                    else "unclear"
+                )
+                lines.append(
+                    f"     [Tier-2] {verdict_label} ({verdict.get('confidence', '?')} confidence)"
+                )
+
             lines.append("")  # Blank line between warnings
 
         if len(self._warnings) > 8:
@@ -307,16 +325,24 @@ class AgentWatchApp(App):
         self,
         log_path: Path,
         security_mode: bool = False,
+        siem_log: Path | None = None,
+        llm: bool = False,
+        llm_model: str = DEFAULT_OLLAMA_MODEL,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.log_path = log_path
         self.security_mode = security_mode
+        self.siem_log = siem_log
+        self.llm = llm
+        self.llm_model = llm_model
         self._buffer = None
         self._detector_registry = None
         self._rot_scorer = None
         self._refreshing = False
         self._alerted_signals: set[str] = set()
+        self._siem_exporter = None
+        self._llm_assessor = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -370,6 +396,16 @@ class AgentWatchApp(App):
         self._detector_registry = create_registry(mode=mode)
         self._rot_scorer = RotScorer()
 
+        if self.siem_log is not None or self.llm:
+            from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
+
+            if self.siem_log is not None:
+                self._siem_exporter = LiveSiemExporter(
+                    self.siem_log, source_log=str(self.log_path)
+                )
+            if self.llm:
+                self._llm_assessor = LiveLlmAssessor(self.llm_model)
+
         # Set up log watcher. .md is an Aider Markdown chat-history transcript
         # (PLAYBOOK Sprint 6 item 6 / Sprint 7 -- live tailing); everything
         # else is JSONL (Claude Code/Moltbot/Codex), handled by LogWatcher's
@@ -420,6 +456,26 @@ class AgentWatchApp(App):
         # Run detectors
         warnings = self._detector_registry.check_all(self._buffer)
 
+        # SIEM export (new warnings only, by content-based dedup key -- see
+        # live_integrations module docstring for why) and throttled Tier-2
+        # LLM triage. Both degrade to a one-time notify() rather than
+        # raising -- neither may ever crash this long-running dashboard.
+        if self._siem_exporter is not None:
+            session_id = self._buffer.actions[0].session_id if self._buffer.actions else None
+            siem_error = self._siem_exporter.export_new(warnings, session_id=session_id)
+            if siem_error:
+                self.notify(siem_error, title="SIEM export failed", severity="error", timeout=10)
+
+        if self._llm_assessor is not None:
+            # Re-attach any previously-cached verdict before this tick's
+            # warnings render -- check_all() built brand new Warning objects,
+            # so nothing survives from a prior tick without this.
+            self._llm_assessor.stamp(warnings)
+            if self._llm_assessor.due():
+                new_warnings = self._llm_assessor.new_warnings(warnings)
+                self._llm_assessor.mark_run()
+                self.run_worker(self._run_llm_batch(new_warnings))
+
         # Compute efficiency and rot first so they feed into overall health
         eff = calculate_efficiency(warnings, self._buffer)
 
@@ -466,6 +522,25 @@ class AgentWatchApp(App):
             self._buffer.stats.error_count,
             self._buffer.stats.duration_minutes,
         )
+
+    async def _run_llm_batch(self, new_warnings: list["Warning"]) -> None:
+        """Run Tier-2 assessment for *new_warnings* off the render path.
+
+        `LiveLlmAssessor.run_batch` makes real blocking Ollama HTTP calls;
+        `asyncio.to_thread` keeps that off the event loop so a slow/hanging
+        local model can never stall the TUI's render tick.
+        """
+        assessor = self._llm_assessor
+        if assessor is None:
+            return
+        error = await asyncio.to_thread(assessor.run_batch, new_warnings)
+        if error:
+            self.notify(error, title="Tier-2 LLM unavailable", severity="warning", timeout=10)
+
+    def on_unmount(self) -> None:
+        """Flush and release the SIEM log file handle on app exit."""
+        if self._siem_exporter is not None:
+            self._siem_exporter.close()
 
     def _fire_secret_alerts(self, warnings: list["Warning"]) -> None:
         """Fire toast notifications for new secret leak warnings."""
