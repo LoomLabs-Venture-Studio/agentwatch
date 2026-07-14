@@ -150,7 +150,9 @@ def scenario_orchestrator(lp, sid):
         t += timedelta(seconds=1)
 
         if turn % 2 == 0:
-            _w(lp, _entry("assistant", "Edit", {"file_path": f, "old_string": "v1", "new_string": "v2"},
+            _w(lp, _entry(
+                "assistant", "Edit",
+                {"file_path": f, "old_string": "v1", "new_string": "v2"},
                 text=f"Updating {f} to integrate changes from sub-agents.",
                 tok_in=700, tok_out=350, cr=300, ts=t, sid=sid))
             t += timedelta(seconds=3)
@@ -183,7 +185,10 @@ def scenario_frontend_dev(lp, sid):
         _w(lp, _entry("user", "Read", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
-        _w(lp, _entry("assistant", "Edit", {"file_path": f"src/{c}", "old_string": "className", "new_string": "className + responsive"},
+        _w(lp, _entry(
+            "assistant", "Edit",
+            {"file_path": f"src/{c}", "old_string": "className",
+             "new_string": "className + responsive"},
             text=f"Adding responsive breakpoints to {c}.",
             tok_in=600, tok_out=280, cr=200, ts=t, sid=sid))
         t += timedelta(seconds=2)
@@ -214,7 +219,9 @@ def scenario_backend_errors(lp, sid):
         _w(lp, _entry("user", "Read", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
-        _w(lp, _entry("assistant", "Edit", {"file_path": "api/routes.py", "old_string": "db.query", "new_string": "db.execute"},
+        _w(lp, _entry(
+            "assistant", "Edit",
+            {"file_path": "api/routes.py", "old_string": "db.query", "new_string": "db.execute"},
             text="Switching from db.query to db.execute for better connection handling.",
             tok_in=700, tok_out=350, ts=t, sid=sid))
         t += timedelta(seconds=2)
@@ -229,7 +236,8 @@ def scenario_backend_errors(lp, sid):
             tok_in=600, tok_out=200, ts=t, sid=sid))
         t += timedelta(seconds=3)
         bash_err = random.random() < 0.65
-        _w(lp, _entry("user", "Bash", err=bash_err, text="Connection refused: postgres:5432", ts=t, sid=sid))
+        _w(lp, _entry(
+            "user", "Bash", err=bash_err, text="Connection refused: postgres:5432", ts=t, sid=sid))
         if bash_err:
             err_count += 1
         t += timedelta(seconds=1)
@@ -259,12 +267,15 @@ def scenario_flaky_tests(lp, sid):
         t += timedelta(seconds=1)
 
         # Same edit every cycle
-        _w(lp, _entry("assistant", "Edit",
-            {"file_path": "tests/test_checkout.py", "old_string": "assert total", "new_string": "assert round(total, 2)"},
+        _w(lp, _entry(
+            "assistant", "Edit",
+            {"file_path": "tests/test_checkout.py", "old_string": "assert total",
+             "new_string": "assert round(total, 2)"},
             text="Adding rounding to fix floating point comparison.",
             tok_in=700, tok_out=200, ts=t, sid=sid))
         t += timedelta(seconds=2)
-        _w(lp, _entry("user", "Edit", err=True, text="old_string not found in file", ts=t, sid=sid))
+        _w(lp, _entry(
+            "user", "Edit", err=True, text="old_string not found in file", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
         # Run test — always fails
@@ -272,7 +283,9 @@ def scenario_flaky_tests(lp, sid):
             text="Running the checkout test again.",
             tok_in=600, tok_out=150, ts=t, sid=sid))
         t += timedelta(seconds=4)
-        _w(lp, _entry("user", "Bash", err=True, text="FAILED test_checkout_total - AssertionError", ts=t, sid=sid))
+        _w(lp, _entry(
+            "user", "Bash", err=True,
+            text="FAILED test_checkout_total - AssertionError", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
         # Re-read (loop!)
@@ -303,7 +316,9 @@ def scenario_ml_lead(lp, sid):
 
         if turn % 2 == 0:
             edit_f = random.choice(["models/config.yaml", "models/train.py", "data/loader.py"])
-            _w(lp, _entry("assistant", "Edit", {"file_path": edit_f, "old_string": "lr: 0.001", "new_string": "lr: 0.0005"},
+            _w(lp, _entry(
+                "assistant", "Edit",
+                {"file_path": edit_f, "old_string": "lr: 0.001", "new_string": "lr: 0.0005"},
                 text=f"Tuning learning rate in {edit_f}.",
                 tok_in=600, tok_out=250, cr=200, ts=t, sid=sid))
             t += timedelta(seconds=3)
@@ -311,7 +326,8 @@ def scenario_ml_lead(lp, sid):
             t += timedelta(seconds=1)
 
         if turn % 5 == 0:
-            _w(lp, _entry("assistant", "Bash", {"command": "python models/eval.py --checkpoint latest"},
+            _w(lp, _entry(
+                "assistant", "Bash", {"command": "python models/eval.py --checkpoint latest"},
                 text="Evaluating latest checkpoint metrics.",
                 tok_in=500, tok_out=100, ts=t, sid=sid))
             t += timedelta(seconds=6)
@@ -335,7 +351,10 @@ def scenario_data_prep(lp, sid):
         _w(lp, _entry("user", "Read", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
-        _w(lp, _entry("assistant", "Edit", {"file_path": "data/clean.py", "old_string": "dropna()", "new_string": "dropna(subset=['id'])"},
+        _w(lp, _entry(
+            "assistant", "Edit",
+            {"file_path": "data/clean.py", "old_string": "dropna()",
+             "new_string": "dropna(subset=['id'])"},
             text="Narrowing dropna to only required columns.",
             tok_in=600, tok_out=300, cr=150, ts=t, sid=sid))
         t += timedelta(seconds=2)
@@ -347,7 +366,8 @@ def scenario_data_prep(lp, sid):
             text="Running data validation pipeline.",
             tok_in=500, tok_out=100, ts=t, sid=sid))
         t += timedelta(seconds=3)
-        _w(lp, _entry("user", "Bash", err=random.random() < 0.25, text="KeyError: 'user_id'", ts=t, sid=sid))
+        _w(lp, _entry(
+            "user", "Bash", err=random.random() < 0.25, text="KeyError: 'user_id'", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
         time.sleep(random.uniform(3, 5))
@@ -365,15 +385,18 @@ def scenario_hyperparam_loop(lp, sid):
         _w(lp, _entry("user", "Read", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
-        _w(lp, _entry("assistant", "Edit",
-            {"file_path": "models/config.yaml", "old_string": "batch_size: 32", "new_string": "batch_size: 64"},
+        _w(lp, _entry(
+            "assistant", "Edit",
+            {"file_path": "models/config.yaml", "old_string": "batch_size: 32",
+             "new_string": "batch_size: 64"},
             text="Doubling batch size to see if training stabilizes.",
             tok_in=600, tok_out=180, ts=t, sid=sid))
         t += timedelta(seconds=2)
         _w(lp, _entry("user", "Edit", err=True, text="old_string not found", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
-        _w(lp, _entry("assistant", "Bash", {"command": "python models/train.py --epochs 1 --dry-run"},
+        _w(lp, _entry(
+            "assistant", "Bash", {"command": "python models/train.py --epochs 1 --dry-run"},
             text="Trying a dry run with current config.",
             tok_in=700, tok_out=120, ts=t, sid=sid))
         t += timedelta(seconds=4)
@@ -399,21 +422,26 @@ def scenario_deploy_spiral(lp, sid):
         ("docker build -t ml-pipeline .", "ERROR: failed to solve: dockerfile parse error"),
         ("kubectl apply -f deploy/k8s.yaml", "error: unable to connect to server"),
         ("docker-compose up -d", "ERROR: Service 'model-server' failed to build"),
-        ("kubectl rollout status deployment/ml-api", "error: deployment exceeded progress deadline"),
+        ("kubectl rollout status deployment/ml-api",
+         "error: deployment exceeded progress deadline"),
     ]
     idx = 0
     while True:
         cmd, errmsg = cmds[idx % len(cmds)]
 
-        _w(lp, _entry("assistant", "Read", {"file_path": "deploy/Dockerfile" if "docker" in cmd else "deploy/k8s.yaml"},
+        _w(lp, _entry(
+            "assistant", "Read",
+            {"file_path": "deploy/Dockerfile" if "docker" in cmd else "deploy/k8s.yaml"},
             text=f"Checking deployment config before running: {cmd.split()[0]}",
             tok_in=700, tok_out=100, cr=40, ts=t, sid=sid))
         t += timedelta(seconds=2)
         _w(lp, _entry("user", "Read", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
-        _w(lp, _entry("assistant", "Edit",
-            {"file_path": "deploy/Dockerfile", "old_string": "FROM python:3.11", "new_string": "FROM python:3.12"},
+        _w(lp, _entry(
+            "assistant", "Edit",
+            {"file_path": "deploy/Dockerfile", "old_string": "FROM python:3.11",
+             "new_string": "FROM python:3.12"},
             text="Trying a newer base image to fix build.",
             tok_in=600, tok_out=250, ts=t, sid=sid))
         t += timedelta(seconds=2)
