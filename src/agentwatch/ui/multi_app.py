@@ -159,7 +159,7 @@ class AgentItem(ListItem):
 
 class MultiAgentWatchApp(App):
     """Unified dashboard for monitoring all active agents."""
-    
+
     CSS = """
     Screen {
         layout: horizontal;
@@ -219,13 +219,13 @@ class MultiAgentWatchApp(App):
         display: none;
     }
     """
-    
+
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("s", "toggle_security", "Toggle Security"),
         ("c", "clear_cache", "Clear Cache"),
     ]
-    
+
     def __init__(
         self,
         watch_paths: list[Path] | None = None,
@@ -252,14 +252,14 @@ class MultiAgentWatchApp(App):
         else:
             self._initial_processes = []
             self.watcher = MultiLogWatcher(self.watch_paths)
-    
+
     def compose(self) -> ComposeResult:
         yield Header()
-        
+
         with Vertical(id="agent-sidebar"):
             yield Label("Active Agents", variant="title")
             yield ListView(id="agent-list")
-            
+
         with Vertical(id="detail-area"):
             yield HealthBar(id="health-bar")
             yield EfficiencyBar(id="efficiency-bar")
@@ -270,9 +270,9 @@ class MultiAgentWatchApp(App):
             )
             yield WarningsList(id="warnings-list")
             yield StatsPanel(id="stats-display")
-        
+
         yield Footer()
-    
+
     def on_mount(self) -> None:
         """Called when app starts."""
         self.title = "AgentWatch - Multi-Agent Dashboard"
@@ -433,7 +433,7 @@ class MultiAgentWatchApp(App):
             self._fire_secret_alerts(warnings, agent_label)
 
         self.query_one("#warnings-list", WarningsList).update_warnings(warnings)
-        
+
         stats = self.query_one("#stats-display", StatsPanel)
         stats.update_stats(
             buffer.stats.action_count,
