@@ -20,16 +20,50 @@ shape, for two reasons:
    ``_detect_codex_era`` below), which needs some internal version-dispatch
    structure with no equivalent in any existing parser here.
 
-**Fixture-based implementation, not verified against a live Codex CLI
+**Fixture-based implementation, still not verified against a live Codex CLI
 install** (see `PLAYBOOK.md` Sprint 4 and
 ``codex-cli-support-prd.md``'s "Open Questions / Requires Live Install to
-Confirm" section). The single highest-priority unconfirmed assumption (Open
-Question #1) is that ``response_item`` lines nest as
-``{"type": "response_item", "payload": {"type": "function_call", ...}}``
-(two-level nesting) rather than a flat compound ``type`` string. All of the
-era-detection and field-extraction logic below is written to be patchable
-in isolation once a real captured rollout file is available — it does not
-leak the nested-shape assumption outside this module.
+Confirm" section) — but PLAYBOOK Sprint 8 (2026-07-14) closed the gap
+between "guessed from research/issue trackers" and "read from the real
+source" for several of the original Open Questions, by fetching
+``codex-rs/protocol/src/protocol.rs`` and ``models.rs`` directly from
+github.com/openai/codex @ main (public repo, no live install needed to read
+its own current source).
+
+**Open Question #1 — RESOLVED with direct primary-source evidence.**
+``RolloutLine { timestamp, ordinal, #[serde(flatten)] item: RolloutItem }``
+where ``RolloutItem`` is ``#[serde(tag = "type", content = "payload")]`` —
+i.e. the two-level nesting this module always assumed
+(``{"type": "response_item", "payload": {"type": "function_call", ...}}``)
+is exactly right, confirmed from the struct definitions themselves, not
+inferred. A previously-undocumented ``ordinal: Option<u64>`` field also
+exists on every line (not currently extracted — low priority, timestamps
+already provide ordering). ``ResponseItem`` (the ``response_item`` payload)
+is itself internally tagged (``#[serde(tag = "type")]``, no further
+nesting) with real ``FunctionCall`` fields matching this module's
+extraction exactly: ``id: Option``, ``name: String``,
+``arguments: String`` (JSON-encoded — confirms ``_coerce_json``'s
+string-or-already-parsed handling), ``call_id: String``.
+
+**New, well-evidenced follow-up found in the same pass, NOT implemented
+here (documented, not silently dropped)**: ``FunctionCallOutputPayload``'s
+real ``Deserialize`` impl hardcodes ``success: None`` and its wire shape is
+only ever a plain string or a content-item array — never an object with
+``success``/``error`` keys, so ``function_call_output`` carries no error
+signal at all (see ``_extract_function_call_output``'s docstring for the
+correction this caused). The REAL success/failure signal for exec-type
+calls is a separate ``event_msg`` event, ``ExecCommandEnd`` — real fields
+``call_id`` (same correlation id as the ``FunctionCall``), ``exit_code:
+i32``, ``status: Completed | Failed | Declined``, plus real ``stdout``/
+``stderr``/``formatted_output``. Wiring this in would mean correlating a
+SECOND independent event family by ``call_id`` into ``CodexParser``'s
+existing single-pending-dict model — a real architectural change, not a
+one-line fix, and genuine open questions remain even with this source
+access (does ``exec_command_end`` always co-occur with
+``function_call_output`` for the same call, or only for shell-type calls;
+what carries success for ``apply_patch``/``PatchApplyEnd``, MCP tool calls,
+etc.). Recommended as a well-scoped next sprint, not attempted here per
+this sprint's "best-effort hardening, no live install" instructions.
 """
 
 from __future__ import annotations
@@ -183,39 +217,70 @@ def _extract_function_call(payload: dict, era: str) -> _FunctionCall | None:
 def _extract_function_call_output(payload: dict, era: str) -> _FunctionCallOutput | None:
     """Extract a ``function_call_output`` response_item's fields from
     *payload*. See ``_extract_function_call`` for the ``era`` rationale.
+
+    **PLAYBOOK Sprint 8 correction (2026-07-14), direct primary-source
+    evidence**: fetched the real, current ``codex-rs/protocol/src/models.rs``
+    from github.com/openai/codex @ main. ``FunctionCallOutputPayload``'s
+    ``Deserialize`` impl unconditionally sets ``success: None`` (never reads
+    a ``success`` key off the wire), and its ``Serialize`` impl emits
+    *only* the body — either a plain string or a JSON array of content
+    items, never an object with ``success``/``error`` keys. The previous
+    ``isinstance(output, dict)`` check this function used to run was
+    checking for a shape that cannot occur on the wire (confirmed dead
+    code, not just unconfirmed) — silently classifying every real
+    ``function_call_output`` as success, including actual failures.
+    ``is_error`` is honestly left ``False`` here (there is no error signal
+    to read from *this* event) rather than a guessed heuristic on a string/
+    list body. The REAL success/failure signal for exec-type calls is a
+    separate, correlatable-by-``call_id`` ``event_msg`` (``ExecCommandEnd``,
+    carrying ``exit_code``/``status: Completed|Failed|Declined``) not yet
+    wired into this parser — see module docstring's Open Questions section
+    for the follow-up this unblocks.
     """
     del era  # reserved for future per-era divergence
     if not isinstance(payload, dict) or payload.get("type") != "function_call_output":
         return None
 
     call_id = payload.get("call_id") or payload.get("id")
-    output = _coerce_json(payload.get("output"))
-
-    is_error = False
-    error_text = None
-    if isinstance(output, dict):
-        is_error = output.get("success") is False or bool(output.get("error"))
-        if is_error:
-            error_text = output.get("error") or output.get("content")
-            if error_text is not None:
-                error_text = str(error_text)[:500]
-
-    return _FunctionCallOutput(call_id=call_id, is_error=is_error, error_text=error_text)
+    return _FunctionCallOutput(call_id=call_id, is_error=False, error_text=None)
 
 
 def _extract_token_count(payload: dict, session_id: str | None, entry: dict) -> Action | None:
     """Extract a ``token_count`` ``event_msg`` payload into a synthetic
     Action carrying token totals.
 
-    Whether these are per-call deltas or session-cumulative snapshots is
-    unconfirmed (PRD Open Question #6) — this treats them as per-action
-    values without commitment, matching the PRD's stub.
+    **PLAYBOOK Sprint 8 correction (2026-07-14), direct primary-source
+    evidence**: fetched the real, current ``codex-rs/protocol/src/
+    protocol.rs`` from github.com/openai/codex @ main. ``TokenCountEvent``'s
+    real shape is ``{"type": "token_count", "info": {"total_token_usage":
+    {...}, "last_token_usage": {...}, "model_context_window": ...},
+    "rate_limits": {...}}`` -- token fields are NOT flat on the payload
+    (the previous ``payload.get("input_tokens")``/``"prompt_tokens"``
+    guess read a shape one level too shallow and always fell through to
+    0/0) and ``TokenUsage``'s real field names are ``input_tokens``/
+    ``cached_input_tokens``/``output_tokens``/``reasoning_output_tokens``/
+    ``total_tokens`` -- not ``prompt_tokens``/``completion_tokens``.
+    **PRD Open Question #6 resolved**: both a per-turn delta
+    (``last_token_usage``) and a session-cumulative snapshot
+    (``total_token_usage``) exist as separate, unambiguous fields -- this
+    was never actually ambiguous on the wire, just unconfirmed. Maps
+    ``last_token_usage`` (the delta) onto ``Action.tokens_in``/
+    ``tokens_out``, matching the per-action-delta semantics every other
+    parser in this package uses; ``total_token_usage``/
+    ``model_context_window`` stay in ``raw`` for anyone wanting the
+    cumulative view.
     """
     if not isinstance(payload, dict) or payload.get("type") != "token_count":
         return None
 
-    tokens_in = payload.get("input_tokens") or payload.get("prompt_tokens") or 0
-    tokens_out = payload.get("output_tokens") or payload.get("completion_tokens") or 0
+    info = payload.get("info")
+    tokens_in = 0
+    tokens_out = 0
+    if isinstance(info, dict):
+        last_usage = info.get("last_token_usage")
+        if isinstance(last_usage, dict):
+            tokens_in = last_usage.get("input_tokens") or 0
+            tokens_out = last_usage.get("output_tokens") or 0
 
     return Action(
         timestamp=_parse_codex_timestamp(entry),

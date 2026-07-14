@@ -5,12 +5,19 @@ Covers `agentwatch.parser.codex` (`CodexParser`, `classify_codex_tool`,
 route into it: `parser/logs.py`'s `detect_log_format`/`parse_file`, and
 `parser/watcher.py`'s `LogWatcher`.
 
-Everything here is built against a **hand-authored fixture**, shaped from
-`codex-cli-support-prd.md`'s researched (not live-captured) `RolloutLine`
-envelope -- see that PRD's "Open Questions / Requires Live Install to
-Confirm" section, especially #1 (the `payload` nesting assumption). This
-suite validates internal consistency of the parser against its own
-documented assumption, not correctness against real Codex output.
+Everything here is built against a **hand-authored fixture**, originally
+shaped from `codex-cli-support-prd.md`'s researched (not live-captured)
+`RolloutLine` envelope. PLAYBOOK Sprint 8 (2026-07-14) upgraded the
+evidentiary bar for two of these shapes from "researched guess" to "read
+directly from the real, current `codex-rs/protocol/src/{protocol,models}.rs`
+source" (github.com/openai/codex @ main) -- the `function_call_output`
+and `token_count` fixture lines below were corrected to match what those
+struct definitions actually say (see `codex.py`'s module docstring and
+`_extract_function_call_output`/`_extract_token_count`'s docstrings for the
+full citation). This suite still doesn't validate against a live-captured
+real rollout file (Open Questions #2/#3/#5 and the new ExecCommandEnd
+follow-up remain open), but two more of its assumptions are now
+source-confirmed rather than guessed.
 """
 
 from __future__ import annotations
@@ -33,9 +40,11 @@ from agentwatch.parser.watcher import LogWatcher
 # Shape: session_meta (new era, cli_version present) -> turn_context
 # (ignored) -> function_call (call_1, "shell") -> narration event_msg
 # (ignored, non-adjacent to its output on purpose) -> function_call_output
-# (call_1, success) -> function_call (call_2, "apply_patch") ->
-# function_call_output (call_2, error) -> function_call (call_3, "shell",
-# output NEVER arrives -- tests flush() vs no-flush) -> token_count event_msg.
+# (call_1) -> function_call (call_2, "apply_patch") -> function_call_output
+# (call_2, real wire shape -- a plain string body, no success/error keys;
+# see codex.py's Sprint 8 correction) -> function_call (call_3, "shell",
+# output NEVER arrives -- tests flush() vs no-flush) -> token_count event_msg
+# (real nested info.last_token_usage shape, also a Sprint 8 correction).
 # ---------------------------------------------------------------------------
 
 CODEX_FIXTURE_LINES: list[dict] = [
@@ -74,7 +83,9 @@ CODEX_FIXTURE_LINES: list[dict] = [
         "payload": {
             "type": "function_call_output",
             "call_id": "call_1",
-            "output": json.dumps({"content": "file1\nfile2", "success": True}),
+            # Real wire shape (confirmed PLAYBOOK Sprint 8): a plain string
+            # body, never a {"success": ..., "content": ...} object.
+            "output": "file1\nfile2",
         },
     },
     {
@@ -93,7 +104,11 @@ CODEX_FIXTURE_LINES: list[dict] = [
         "payload": {
             "type": "function_call_output",
             "call_id": "call_2",
-            "output": json.dumps({"content": "patch failed", "success": False}),
+            # Real wire shape: even a FAILED call's output is just a plain
+            # string -- there is no success/error key on this event at all
+            # (confirmed via FunctionCallOutputPayload's real Deserialize
+            # impl, which hardcodes success: None on every read).
+            "output": "patch failed",
         },
     },
     {
@@ -109,7 +124,30 @@ CODEX_FIXTURE_LINES: list[dict] = [
     {
         "timestamp": "2026-07-12T10:00:08Z",
         "type": "event_msg",
-        "payload": {"type": "token_count", "input_tokens": 120, "output_tokens": 45},
+        # Real wire shape (confirmed PLAYBOOK Sprint 8, TokenCountEvent /
+        # TokenUsageInfo in protocol.rs): token fields are nested two levels
+        # deep under info.last_token_usage (the per-turn delta) /
+        # info.total_token_usage (cumulative), not flat on the payload.
+        "payload": {
+            "type": "token_count",
+            "info": {
+                "last_token_usage": {
+                    "input_tokens": 120,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 45,
+                    "reasoning_output_tokens": 0,
+                    "total_tokens": 165,
+                },
+                "total_token_usage": {
+                    "input_tokens": 500,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 200,
+                    "reasoning_output_tokens": 0,
+                    "total_tokens": 700,
+                },
+                "model_context_window": 128000,
+            },
+        },
     },
 ]
 
@@ -219,17 +257,26 @@ class TestCodexParser:
         assert action.session_id == "sess-abc123"
         assert "call_1" not in parser._pending
 
-    def test_error_output_marks_action_failed_with_error_message(self):
+    def test_function_call_output_never_signals_failure(self):
+        """PLAYBOOK Sprint 8 correction: function_call_output's real wire
+        shape (confirmed against FunctionCallOutputPayload's actual
+        Deserialize impl) carries no success/error signal at all -- even a
+        call whose output text describes a failure (like call_2's "patch
+        failed" body here) must resolve as success=True, since there is
+        nothing on this event to detect failure from. This replaces the old
+        test_error_output_marks_action_failed_with_error_message, which
+        encoded a guessed {"success": False} shape that cannot occur on the
+        real wire."""
         parser = CodexParser()
-        for line in CODEX_FIXTURE_LINES[0:7]:  # through call_2's error output
+        for line in CODEX_FIXTURE_LINES[0:7]:  # through call_2's output
             actions = parser.parse_line(line)
 
         assert len(actions) == 1
         action = actions[0]
         assert action.tool_name == "apply_patch"
         assert action.tool_type == ToolType.EDIT
-        assert action.success is False
-        assert action.error_message == "patch failed"
+        assert action.success is True
+        assert action.error_message is None
 
     def test_output_with_no_matching_pending_call_still_surfaces(self):
         parser = CodexParser()
@@ -240,7 +287,7 @@ class TestCodexParser:
             "payload": {
                 "type": "function_call_output",
                 "call_id": "call_never_seen",
-                "output": json.dumps({"content": "ok", "success": True}),
+                "output": "ok",
             },
         }
         result = parser.parse_line(orphan_output)
@@ -278,6 +325,22 @@ class TestCodexParser:
         parser.parse_line(CODEX_FIXTURE_LINES[0])
         assert parser.flush() == []
 
+    def test_token_count_missing_info_defaults_to_zero(self):
+        """Defensive coverage for the Sprint 8 nested-shape correction: a
+        token_count event_msg with no `info` key (or a malformed one) must
+        not raise, and must leave tokens at 0/0 rather than guessing."""
+        parser = CodexParser()
+        parser.parse_line(CODEX_FIXTURE_LINES[0])
+        entry = {
+            "timestamp": "2026-07-12T10:00:09Z",
+            "type": "event_msg",
+            "payload": {"type": "token_count"},  # no "info" at all
+        }
+        result = parser.parse_line(entry)
+        assert len(result) == 1
+        assert result[0].tokens_in == 0
+        assert result[0].tokens_out == 0
+
 
 # ---------------------------------------------------------------------------
 # detect_log_format: Codex detection + regression on existing formats
@@ -296,6 +359,15 @@ class TestDetectLogFormatCodex:
 
     def test_turn_context_line_detected_as_codex(self):
         assert detect_log_format(CODEX_FIXTURE_LINES[1]) == "codex"
+
+    def test_newly_confirmed_rollout_item_types_detected_as_codex(self):
+        """PLAYBOOK Sprint 8: _CODEX_EVENT_TYPES was extended with 4 real
+        RolloutItem variants (compacted/world_state/inter_agent_communication
+        /inter_agent_communication_metadata) confirmed directly against the
+        real protocol.rs enum, missing from the original 4-value guess."""
+        for type_value in ("compacted", "world_state", "inter_agent_communication"):
+            entry = {"timestamp": "2026-07-12T10:00:00Z", "type": type_value, "payload": {}}
+            assert detect_log_format(entry) == "codex"
 
 
 class TestDetectLogFormatRegression:
@@ -340,8 +412,10 @@ class TestParseFileCodex:
         actions = list(parse_file(log_path))
 
         tool_names = [a.tool_name for a in actions]
-        # call_1 (shell, resolved), call_2 (apply_patch, resolved+error),
-        # token_count, and call_3 (shell, flushed at EOF with no output).
+        # call_1 (shell, resolved), call_2 (apply_patch, resolved --
+        # function_call_output carries no error signal on the real wire,
+        # see Sprint 8 correction), token_count, and call_3 (shell, flushed
+        # at EOF with no output).
         assert tool_names.count("shell") == 2  # call_1 resolved + call_3 flushed
         assert "apply_patch" in tool_names
         assert "token_count" in tool_names
@@ -350,8 +424,8 @@ class TestParseFileCodex:
         assert call_1_action.command == "ls -la"
 
         apply_patch_action = next(a for a in actions if a.tool_name == "apply_patch")
-        assert apply_patch_action.success is False
-        assert apply_patch_action.error_message == "patch failed"
+        assert apply_patch_action.success is True
+        assert apply_patch_action.error_message is None
 
         # call_3 must be present (proves flush() ran at EOF) even though its
         # output line never appears in the fixture.
