@@ -93,7 +93,8 @@ for info in AGENTS.values():
 _CTR = 0
 
 def _tid():
-    global _CTR; _CTR += 1
+    global _CTR
+    _CTR += 1
     return f"toolu_{_CTR:08d}"
 
 def _entry(role, tool=None, inp=None, text=None, tok_in=500, tok_out=200,
@@ -163,7 +164,8 @@ def scenario_orchestrator(lp, sid):
             _w(lp, _entry("user", "Bash", ts=t, sid=sid))
             t += timedelta(seconds=1)
 
-        time.sleep(random.uniform(3, 5)); t = datetime.utcnow()
+        time.sleep(random.uniform(3, 5))
+        t = datetime.utcnow()
 
 
 def scenario_frontend_dev(lp, sid):
@@ -196,7 +198,8 @@ def scenario_frontend_dev(lp, sid):
             _w(lp, _entry("user", "Bash", ts=t, sid=sid))
             t += timedelta(seconds=1)
 
-        time.sleep(random.uniform(3, 6)); t = datetime.utcnow()
+        time.sleep(random.uniform(3, 6))
+        t = datetime.utcnow()
 
 
 def scenario_backend_errors(lp, sid):
@@ -227,7 +230,8 @@ def scenario_backend_errors(lp, sid):
         t += timedelta(seconds=3)
         bash_err = random.random() < 0.65
         _w(lp, _entry("user", "Bash", err=bash_err, text="Connection refused: postgres:5432", ts=t, sid=sid))
-        if bash_err: err_count += 1
+        if bash_err:
+            err_count += 1
         t += timedelta(seconds=1)
 
         if err_count > 4:
@@ -238,7 +242,8 @@ def scenario_backend_errors(lp, sid):
             _w(lp, _entry("user", "Read", ts=t, sid=sid))
             t += timedelta(seconds=1)
 
-        time.sleep(random.uniform(2, 4)); t = datetime.utcnow()
+        time.sleep(random.uniform(2, 4))
+        t = datetime.utcnow()
 
 
 def scenario_flaky_tests(lp, sid):
@@ -278,7 +283,8 @@ def scenario_flaky_tests(lp, sid):
         _w(lp, _entry("user", "Read", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
-        time.sleep(random.uniform(2, 4)); t = datetime.utcnow()
+        time.sleep(random.uniform(2, 4))
+        t = datetime.utcnow()
 
 
 def scenario_ml_lead(lp, sid):
@@ -312,7 +318,8 @@ def scenario_ml_lead(lp, sid):
             _w(lp, _entry("user", "Bash", ts=t, sid=sid))
             t += timedelta(seconds=1)
 
-        time.sleep(random.uniform(3, 6)); t = datetime.utcnow()
+        time.sleep(random.uniform(3, 6))
+        t = datetime.utcnow()
 
 
 def scenario_data_prep(lp, sid):
@@ -343,7 +350,8 @@ def scenario_data_prep(lp, sid):
         _w(lp, _entry("user", "Bash", err=random.random() < 0.25, text="KeyError: 'user_id'", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
-        time.sleep(random.uniform(3, 5)); t = datetime.utcnow()
+        time.sleep(random.uniform(3, 5))
+        t = datetime.utcnow()
 
 
 def scenario_hyperparam_loop(lp, sid):
@@ -380,7 +388,8 @@ def scenario_hyperparam_loop(lp, sid):
         _w(lp, _entry("user", "Read", ts=t, sid=sid))
         t += timedelta(seconds=1)
 
-        time.sleep(random.uniform(2, 4)); t = datetime.utcnow()
+        time.sleep(random.uniform(2, 4))
+        t = datetime.utcnow()
 
 
 def scenario_deploy_spiral(lp, sid):
@@ -419,7 +428,8 @@ def scenario_deploy_spiral(lp, sid):
         t += timedelta(seconds=1)
 
         idx += 1
-        time.sleep(random.uniform(2, 4)); t = datetime.utcnow()
+        time.sleep(random.uniform(2, 4))
+        t = datetime.utcnow()
 
 
 SCENARIOS = {
