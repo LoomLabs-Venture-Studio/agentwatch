@@ -2141,4 +2141,172 @@ installing each optional extra into this dev environment. README: audit
 every agent-support claim against `CLAUDE.md`'s own reconciled state
 rather than re-deriving from scratch.
 
-**Status: complete (2026-07-14).**
+---
+
+### Sprint 11 — Lint debt paydown, PR #2-safe subset
+**Type:** chore
+**Priority:** `ruff check .` sits at 574 pre-existing errors, tracked since
+Sprint 0 as accepted debt (585 -> 574 net drift across Sprints 8-10, never
+actively paid down). Board asked for active cleanup this sprint.
+**PRD Status:** not needed -- mechanical lint cleanup, no product surface.
+**Scope constraint (board-specified):** PR #2 (`chore/ci-docs-perf-windows-
+support` -> `main`, 33 commits, awaiting board review) currently touches 51
+Python files. Modifying any file also in that diff risks merge conflicts
+between two independently-reviewed PRs. `git diff origin/main...HEAD --
+name-only` (run from the PR #2 branch) cross-referenced against `ruff check
+.`'s file list splits the 574 errors as:
+- **337 errors / 19 files -- safe**, zero overlap with PR #2's diff. This
+  sprint's actual scope.
+- **237 errors / 14 files -- deferred**, all inside PR #2's diff
+  (`cli.py`, `parser/models.py`, `ui/app.py`, `ui/multi_app.py`,
+  `ui/rot_widget.py`, `detectors/base.py`, 6 `detectors/health/*.py`
+  files, `scripts/demo_teams.py`). Explicitly out of scope this sprint --
+  revisit once PR #2 lands on `main`.
+
+### Acceptance Criteria
+- [ ] New branch off `origin/main` (not stacked on PR #2's branch) --
+      `chore/ruff-cleanup`
+- [ ] Only the 19 safe-listed files touched; the 14 PR #2-overlap files
+      untouched (verified via `git diff origin/main...HEAD --name-only`
+      against the same overlap list before each commit)
+- [ ] Fixed in logical rule-type batches, not one giant commit; `python -m
+      pytest tests/ -v` run and green after every batch before it's
+      committed
+- [ ] Mechanical/autofixable batches (W293/W291 whitespace, F401 unused
+      imports, I001 import sort, F541 f-string-without-placeholder) may use
+      `ruff check --fix`, but the diff must still be reviewed before commit
+      -- an F401 removal that turns out to be a side-effecting import
+      (registration-by-import pattern) is a real regression, not a lint
+      false positive, until checked
+- [ ] Manual/non-autofixable batches (E501 line-too-long: 66; F841 unused
+      local: 3; N802 naming: 2) fixed by hand, one logical concern per
+      commit. In particular: `health/score.py`'s two N802 hits
+      (`STATUS_LABELS`, `_STATUS_EMOJI`) read as intentional
+      constant-style-named properties, not accidental camelCase drift --
+      check every caller before renaming; if renaming would touch a public
+      API surface, prefer `# noqa: N802` with a one-line comment over a
+      blind rename
+- [x] Final state: `ruff check .` on the new branch shows exactly 311
+      remaining (648 baseline on `origin/main` minus the 337 in-scope
+      fixes -- differs from the "237 remaining" estimate above because
+      that estimate was measured against PR #2's branch total, not bare
+      `main`; the 337-error/19-file *scope* matched exactly either way)
+      with zero new warnings introduced; `python -m pytest tests/ -v`
+      fully green (243 passed, 2 pre-existing failures unchanged from
+      bare `origin/main`)
+- [x] Opened as a new draft PR (not merged, not stacked on PR #2) for board
+      review -- PR #3, `chore/ruff-cleanup` -> `main`
+      (https://github.com/LoomLabs-Venture-Studio/agentwatch/pull/3)
+
+### Implementation Plan
+Delegate to engineer with the exact 19-file safe list and 14-file deferred
+list (both already enumerated above), rule-type batch order (whitespace ->
+imports -> f-strings -> line-length -> unused-locals -> naming, roughly
+safest-to-riskiest), and the test-after-every-batch requirement. CTO
+reviews the branch before QA verification pass.
+
+**Status: complete (2026-07-14).** 9 commits, CTO review + independent QA
+verification both passed (QA re-derived every number from a fresh worktree
+rather than trusting the PR body, including a programmatic byte-diff of
+the riskiest single change -- a JWT fixture string split in
+`test_secret_scanner.py`). Two real bugs found and deliberately left
+unfixed as out-of-scope for a lint-only sprint, carried into Sprint 12
+below: `health/score.py`'s dead `cost_penalty` computation (removed, but
+flagged as a possibly-incomplete feature -- no `penalty_cost` field exists
+unlike its three siblings) and `secret_scanner.py::redact_log_file()`'s
+substitution-count overcounting false positives it didn't actually redact.
+
+---
+
+### Sprint 12 -- Close out Sprint 11's flagged bug, finish the deferred
+lint debt, repo-wide dead-code sweep
+**Type:** bugfix + chore
+**Priority:** board asked to (1) fix the `redact_log_file()` overcounting
+bug Sprint 11 flagged but deliberately left unfixed, (2) pick up the 237
+ruff errors in the 14 files Sprint 11 deferred (they're inside PR #2's
+diff), and (3) do a whole-codebase dead-code sweep, explicitly scoped via
+`AskUserQuestion` to "all of the above" / "whole-codebase" rather than
+assumed.
+**PRD Status:** not needed -- same mechanical-cleanup-plus-one-bugfix
+category as Sprint 11, scoped directly from board answers.
+**Board decision (2026-07-14):** two clarifying questions asked before
+delegating (which problems to fix; how broad the dead-code sweep should
+be) because one option would have re-opened the exact merge-conflict risk
+Sprint 11 was scoped to avoid. Board chose "all of the above" (fix the bug
++ the 14 deferred files) and "whole-codebase sweep."
+
+### Branch strategy (why two tracks, not one)
+The 14 deferred files are still inside PR #2's own diff, and PR #2 is
+still unmerged/awaiting board review. Branching a second cleanup off
+`main` and editing those same 14 files again would create close-to-certain
+merge conflicts when PR #2 eventually lands (both diffs touching the same
+lines). Instead:
+- **Track A** (off `origin/main`, extends PR #3 `chore/ruff-cleanup`):
+  the `redact_log_file()` bug fix, plus a dead-code sweep restricted to
+  every `.py` file in the repo that is *not* part of PR #2's diff (23
+  files -- the 19 already lint-cleaned in Sprint 11, plus
+  `detectors/__init__.py`, `ui/__init__.py`, `test_context_detectors.py`,
+  which had zero ruff errors but weren't excluded from a dead-code look).
+  Zero new conflict risk with PR #2.
+- **Track B** (new branch **stacked on PR #2's own branch**,
+  `chore/ci-docs-perf-windows-support`, not on `main`): the remaining 237
+  ruff errors, plus a dead-code sweep, both restricted to exactly PR #2's
+  14 deferred files. Building directly on top of PR #2's own tree means
+  this PR's diff is against PR #2's *current* content, not a competing
+  copy -- no conflict is created regardless of merge order, but this PR
+  cannot itself merge to `main` until PR #2 does (documented in its own
+  PR body as a stacked dependency, not silently hidden).
+
+### Dead-code-sweep guardrails (both tracks)
+"Redundant code that doesn't affect overall performance or integrity"
+means *provably dead* code only, not speculative simplification:
+- A function/class/module-level constant qualifies for removal only if a
+  repo-wide grep (`src/`, `tests/`, `scripts/`, `pyproject.toml` entry
+  points) shows zero callers/references anywhere.
+- Anything reachable via the detector plugin pattern (subclassing
+  `Detector`/`SecurityDetector`, `DetectorRegistry`'s auto-collection) or
+  exported in an `__all__` counts as *used* even with zero direct call
+  sites -- these are reflection/registration-driven, not naively
+  greppable, and Sprint 0-11 have already shown this codebase leans on
+  that pattern heavily.
+- Anything that reads as unfinished-feature scaffolding rather than
+  actual dead code (the `cost_penalty` case from Sprint 11 is the
+  template: computed, unused, but clearly intended to eventually feed a
+  field that was never wired in) gets flagged for a product decision, not
+  silently deleted.
+- When in doubt, don't delete -- flag in the report instead, same
+  evidentiary bar as every prior sprint's "confirmed vs. guessed"
+  standard.
+
+### Acceptance Criteria
+- [ ] Track A: `redact_log_file()` fixed so its returned count matches its
+      own docstring ("number of replacements made"), with a regression
+      test asserting `count == 0` for the false-positive-only case (the
+      assertion that failed at runtime in Sprint 11)
+- [ ] Track A: dead-code sweep across the 23-file non-PR#2 pool, each
+      removal justified by a zero-caller grep, committed separately from
+      the bugfix
+- [ ] Track A: PR #3 updated with new commits; `ruff check .` and
+      `python -m pytest tests/ -v` still green after every batch
+- [ ] Track B: new branch off `origin/chore/ci-docs-perf-windows-support`
+      (verified via `git merge-base`, not assumed), touching only the 14
+      deferred files
+- [ ] Track B: remaining 237 ruff errors resolved in the same
+      rule-type-batched, test-after-every-batch style as Sprint 11
+- [ ] Track B: dead-code sweep restricted to those same 14 files, same
+      zero-caller-grep standard as Track A
+- [ ] Track B: opened as a **draft PR with base = `chore/ci-docs-perf-
+      windows-support`** (not `main`), body explicitly states the stacked
+      dependency on PR #2
+- [ ] Both tracks: CTO review, then independent QA re-verification pass
+      (re-derive numbers from a fresh worktree, don't trust either PR
+      body) before either is reported ready for board review
+- [ ] Neither PR merged; no board-approval request beyond "ready for
+      review"
+
+### Implementation Plan
+Two engineer agents in parallel (disjoint file sets, no shared-state
+risk): Track A engineer works from `origin/main`/PR #3; Track B engineer
+works from `origin/chore/ci-docs-perf-windows-support`. Both get the exact
+file lists and guardrails above, not a vague "clean it up" brief. CTO
+reviews both before a single QA pass verifies both branches.
