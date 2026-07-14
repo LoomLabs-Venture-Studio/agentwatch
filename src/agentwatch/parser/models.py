@@ -56,7 +56,6 @@ class Action:
     outgoing_data: str | None = None     # For exfiltration detection
     network_host: str | None = None      # For C2 detection
     network_port: int | None = None
-    user_id: str | None = None           # For audit trail
     skill_name: str | None = None        # For supply chain detection
 
     session_id: str | None = None
