@@ -46,7 +46,10 @@ class ErrorSpiralDetector(Detector):
                 severity=Severity.HIGH,
                 signal="error_spiral",
                 message=f"Error spiral: {consecutive_failures} consecutive failures",
-                suggestion="Nothing has succeeded recently. Consider reverting recent changes or trying a completely different approach.",
+                suggestion=(
+                    "Nothing has succeeded recently. Consider reverting recent changes "
+                    "or trying a completely different approach."
+                ),
                 details={
                     "consecutive_failures": consecutive_failures,
                     "recent_errors": recent_errs,
@@ -100,7 +103,10 @@ class ErrorBlindnessDetector(Detector):
                 severity=Severity.HIGH,
                 signal="error_blindness",
                 message=f"Same error repeated {count}x without fix",
-                suggestion=f"The error \"{most_common[:80]}\" keeps appearing unchanged. The agent isn't reading or addressing the error message.",
+                suggestion=(
+                    f'The error "{most_common[:80]}" keeps appearing unchanged. '
+                    "The agent isn't reading or addressing the error message."
+                ),
                 details={
                     "error_pattern": most_common[:100],
                     "count": count,
@@ -157,7 +163,10 @@ class SyntaxLoopDetector(Detector):
                 severity=Severity.MEDIUM,
                 signal="syntax_loop",
                 message=f"Repeated syntax/import errors ({syntax_errors}x)",
-                suggestion=f"Recurring syntax/import errors suggest a structural issue. Errors seen: {'; '.join(samples[:2])}",
+                suggestion=(
+                    "Recurring syntax/import errors suggest a structural issue. "
+                    f"Errors seen: {'; '.join(samples[:2])}"
+                ),
                 details={"count": syntax_errors, "sample_errors": samples},
             )
 
@@ -190,8 +199,14 @@ class HighErrorRateDetector(Detector):
                 category=self.category,
                 severity=Severity.HIGH if error_rate > 0.75 else Severity.MEDIUM,
                 signal="high_error_rate",
-                message=f"High error rate: {int(error_rate * 100)}% of actions failing ({failures}/{len(recent)})",
-                suggestion=f"{failures} out of {len(recent)} recent actions failed. The agent may be in an unrecoverable state for this approach.",
+                message=(
+                    f"High error rate: {int(error_rate * 100)}% of actions failing "
+                    f"({failures}/{len(recent)})"
+                ),
+                suggestion=(
+                    f"{failures} out of {len(recent)} recent actions failed. "
+                    "The agent may be in an unrecoverable state for this approach."
+                ),
                 details={
                     "error_rate": round(error_rate, 2),
                     "failures": failures,

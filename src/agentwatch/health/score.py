@@ -11,12 +11,13 @@ if TYPE_CHECKING:
 
 from agentwatch.detectors.base import Category, Severity
 from agentwatch.themes import (
-    get_theme,
-    status_from_score as _theme_status_from_score,
     get_status_emojis,
     get_status_labels,
+    get_theme,
 )
-
+from agentwatch.themes import (
+    status_from_score as _theme_status_from_score,
+)
 
 # ---------------------------------------------------------------------------
 # Unified status thresholds — shared by health, efficiency, and rot display
@@ -445,7 +446,8 @@ def calculate_team_health(
     sub-agents split the remaining 50% equally.  If multiple sub-agents
     are struggling, a cross-agent warning is emitted.
     """
-    from agentwatch.detectors.base import Warning as Warn, Category, Severity
+    from agentwatch.detectors.base import Category, Severity
+    from agentwatch.detectors.base import Warning as Warn
 
     if not member_reports:
         return TeamHealthReport(
@@ -486,7 +488,9 @@ def calculate_team_health(
                     severity=Severity.HIGH,
                     signal="team_cascade_failure",
                     message=f"{struggling}/{len(subagent_pids)} sub-agents are struggling",
-                    suggestion="Root agent may be issuing unclear instructions or an impossible task",
+                    suggestion=(
+                        "Root agent may be issuing unclear instructions or an impossible task"
+                    ),
                     details={"struggling_count": struggling, "total_subagents": len(subagent_pids)},
                 )
             )
