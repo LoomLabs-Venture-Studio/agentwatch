@@ -20,13 +20,8 @@ from agentwatch.detectors.health.progress import compute_progress
 from agentwatch.detectors.health.repetition import compute_repetition
 from agentwatch.detectors.health.tool_thrash import compute_tool_thrash
 from agentwatch.health.rot import RotScorer, RotState
-from agentwatch.parser.models import (
-    Action,
-    ActionBuffer,
-    MetricResult,
-    ToolType,
-    turns_from_actions,
-)
+from agentwatch.parser.models import Action, ActionBuffer, MetricResult, ToolType, Turn, turns_from_actions
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -251,13 +246,8 @@ class TestProgress:
         actions: list[Action] = []
         for i in range(8):
             actions.append(_act(outgoing_data=f"Turn {i}", offset_s=i * 10))
-            actions.append(_act(
-                tool="Edit", tool_type=ToolType.EDIT, file_path=f"f{i}.py", offset_s=i * 10 + 1
-            ))
-            actions.append(_act(
-                tool="Bash", tool_type=ToolType.BASH, command="pytest",
-                success=True, offset_s=i * 10 + 2,
-            ))
+            actions.append(_act(tool="Edit", tool_type=ToolType.EDIT, file_path=f"f{i}.py", offset_s=i * 10 + 1))
+            actions.append(_act(tool="Bash", tool_type=ToolType.BASH, command="pytest", success=True, offset_s=i * 10 + 2))
         buf = _buffer_from(actions)
         result = compute_progress(buf)
         assert result.value < 0.2
@@ -277,9 +267,7 @@ class TestProgress:
         actions: list[Action] = []
         for i in range(8):
             actions.append(_act(outgoing_data=f"Fix attempt {i}", offset_s=i * 10))
-            actions.append(_act(
-                tool="Edit", tool_type=ToolType.EDIT, file_path="app.py", offset_s=i * 10 + 1
-            ))
+            actions.append(_act(tool="Edit", tool_type=ToolType.EDIT, file_path="app.py", offset_s=i * 10 + 1))
             actions.append(_act(
                 tool="Bash", tool_type=ToolType.BASH, command="pytest",
                 success=False, error_message="FAIL", offset_s=i * 10 + 2,
@@ -337,9 +325,7 @@ class TestConstraints:
             actions.append(_act(outgoing_data=f"Turn {i}", offset_s=i * 10))
             actions.append(_act(tool="Read", file_path=f"f{i}.py", offset_s=i * 10 + 1))
         buf = _buffer_from(actions)
-        result = compute_constraints(
-            buf, must_touch_paths=["tests/test_app.py"], must_touch_after=6
-        )
+        result = compute_constraints(buf, must_touch_paths=["tests/test_app.py"], must_touch_after=6)
         assert result.value > 0.0
         assert any("test_app.py" in e for e in result.evidence)
 
@@ -350,13 +336,9 @@ class TestConstraints:
             actions.append(_act(outgoing_data=f"Turn {i}", offset_s=i * 10))
             actions.append(_act(tool="Read", file_path=f"f{i}.py", offset_s=i * 10 + 1))
         # Touch the required file
-        actions.append(_act(
-            tool="Edit", tool_type=ToolType.EDIT, file_path="tests/test_app.py", offset_s=100
-        ))
+        actions.append(_act(tool="Edit", tool_type=ToolType.EDIT, file_path="tests/test_app.py", offset_s=100))
         buf = _buffer_from(actions)
-        result = compute_constraints(
-            buf, must_touch_paths=["tests/test_app.py"], must_touch_after=6
-        )
+        result = compute_constraints(buf, must_touch_paths=["tests/test_app.py"], must_touch_after=6)
         assert result.value == 0.0
 
 
@@ -371,13 +353,8 @@ class TestRotScorer:
         actions: list[Action] = []
         for i in range(8):
             actions.append(_act(outgoing_data=f"Turn {i} doing work", offset_s=i * 10))
-            actions.append(_act(
-                tool="Edit", tool_type=ToolType.EDIT, file_path=f"f{i}.py", offset_s=i * 10 + 1
-            ))
-            actions.append(_act(
-                tool="Bash", tool_type=ToolType.BASH, command="pytest",
-                success=True, offset_s=i * 10 + 2,
-            ))
+            actions.append(_act(tool="Edit", tool_type=ToolType.EDIT, file_path=f"f{i}.py", offset_s=i * 10 + 1))
+            actions.append(_act(tool="Bash", tool_type=ToolType.BASH, command="pytest", success=True, offset_s=i * 10 + 2))
         buf = _buffer_from(actions)
         report = scorer.update(buf)
         assert report.state == RotState.HEALTHY
@@ -408,14 +385,8 @@ class TestRotScorer:
         # Phase 1: constraint violations (dep edits + forbidden paths)
         for i in range(5):
             actions.append(_act(outgoing_data=f"Turn {i}", offset_s=i * 10))
-            actions.append(_act(
-                tool="Edit", tool_type=ToolType.EDIT,
-                file_path="/proj/package.json", offset_s=i * 10 + 1,
-            ))
-            actions.append(_act(
-                tool="Edit", tool_type=ToolType.EDIT,
-                file_path="/proj/yarn.lock", offset_s=i * 10 + 2,
-            ))
+            actions.append(_act(tool="Edit", tool_type=ToolType.EDIT, file_path="/proj/package.json", offset_s=i * 10 + 1))
+            actions.append(_act(tool="Edit", tool_type=ToolType.EDIT, file_path="/proj/yarn.lock", offset_s=i * 10 + 2))
             actions.append(_act(tool="Read", file_path="/secrets/key.pem", offset_s=i * 10 + 3))
             actions.append(_act(tool="Read", file_path="/secrets/db.env", offset_s=i * 10 + 4))
             actions.append(_act(tool="Read", file_path="/private/config.json", offset_s=i * 10 + 5))
@@ -431,10 +402,8 @@ class TestRotScorer:
         report = scorer.update(buf)
         report = scorer.update(buf)  # 2nd update for state transitions
         # With constraint >= 0.7 AND thrash >= 0.7, should be Critical
-        constraint_value = report.modules["constraint"].value
-        thrash_value = report.modules["thrash"].value
-        assert constraint_value >= 0.7, f"constraint={constraint_value}"
-        assert thrash_value >= 0.7, f"thrash={thrash_value}"
+        assert report.modules["constraint"].value >= 0.7, f"constraint={report.modules['constraint'].value}"
+        assert report.modules["thrash"].value >= 0.7, f"thrash={report.modules['thrash'].value}"
         assert report.state == RotState.CRITICAL
 
     def test_report_has_top_reasons(self):
@@ -464,17 +433,12 @@ class TestRotScorer:
         healthy_actions: list[Action] = []
         for i in range(8):
             healthy_actions.append(_act(outgoing_data=f"Turn {i}", offset_s=i * 10))
-            healthy_actions.append(_act(
-                tool="Edit", tool_type=ToolType.EDIT, file_path=f"g{i}.py", offset_s=i * 10 + 1
-            ))
-            healthy_actions.append(_act(
-                tool="Bash", tool_type=ToolType.BASH, command="pytest",
-                success=True, offset_s=i * 10 + 2,
-            ))
+            healthy_actions.append(_act(tool="Edit", tool_type=ToolType.EDIT, file_path=f"g{i}.py", offset_s=i * 10 + 1))
+            healthy_actions.append(_act(tool="Bash", tool_type=ToolType.BASH, command="pytest", success=True, offset_s=i * 10 + 2))
         buf2 = _buffer_from(healthy_actions)
         r2 = scorer.update(buf2)
 
-        # Smoothed score should be between raw values — lower than r1 if r2.raw < r1.raw
+        # Smoothed score should be between raw values — specifically lower than r1 if r2.raw < r1.raw
         if r2.raw_score < r1.raw_score:
             assert r2.smoothed_score < r1.smoothed_score
 

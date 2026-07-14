@@ -11,13 +11,12 @@ if TYPE_CHECKING:
 
 from agentwatch.detectors.base import Category, Severity
 from agentwatch.themes import (
+    get_theme,
+    status_from_score as _theme_status_from_score,
     get_status_emojis,
     get_status_labels,
-    get_theme,
 )
-from agentwatch.themes import (
-    status_from_score as _theme_status_from_score,
-)
+
 
 # ---------------------------------------------------------------------------
 # Unified status thresholds — shared by health, efficiency, and rot display
@@ -26,19 +25,12 @@ from agentwatch.themes import (
 STATUS_THRESHOLDS = (80, 60, 40)  # level_0 / level_1 / level_2 / level_3
 
 
-# Intentionally constant-style-named (not accidental camelCase drift):
-# STATUS_LABELS is re-exported as a public API constant in
-# health/__init__.py's __all__ -- historically a plain tuple, kept
-# SCREAMING_CASE after becoming theme-dependent to avoid a breaking
-# rename for any caller already doing `from agentwatch.health import
-# STATUS_LABELS`. _STATUS_EMOJI is its private, unexported counterpart,
-# kept in the same casing style for consistency with its public sibling.
-def STATUS_LABELS() -> tuple[str, str, str, str]:  # noqa: N802
+def STATUS_LABELS() -> tuple[str, str, str, str]:
     """Get status labels from current theme."""
     return get_status_labels()
 
 
-def _STATUS_EMOJI() -> dict[str, str]:  # noqa: N802
+def _STATUS_EMOJI() -> dict[str, str]:
     """Get status emojis from current theme."""
     return get_status_emojis()
 
@@ -51,11 +43,11 @@ def _score_to_status(score: int) -> str:
 @dataclass
 class CategoryScore:
     """Score for a single category."""
-
+    
     category: Category
     score: int  # 0-100
     warnings: list["Warning"] = field(default_factory=list)
-
+    
     @property
     def status(self) -> str:
         return _score_to_status(self.score)
@@ -80,17 +72,17 @@ class HealthReport:
     @property
     def emoji(self) -> str:
         return _STATUS_EMOJI().get(self.status, "❓")
-
+    
     @property
     def health_warnings(self) -> list["Warning"]:
         """Get only health-related warnings."""
         return [w for w in self.warnings if w.is_health]
-
+    
     @property
     def security_warnings(self) -> list["Warning"]:
         """Get only security-related warnings."""
         return [w for w in self.warnings if w.is_security]
-
+    
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -279,11 +271,13 @@ _W_CACHE_HIT = 0.15
 _W_ACTIONS_TURN = 0.10
 _W_DURATION = 0.15
 
-# Session budget estimate (tokens).
-# The budget is the total throughput (input+cache+output summed across
-# all turns) at which we consider the session fully pressured — roughly
-# 10× a 200k-token context window, to account for cache-heavy workloads
-# where the same window is refilled on every turn.
+# Context window and session budget estimates (tokens).
+# The window is the model's context limit.  The budget is the total
+# throughput (input+cache+output summed across all turns) at which we
+# consider the session fully pressured — roughly 10× the window to
+# account for cache-heavy workloads where the same ~200k window is
+# refilled on every turn.
+_CONTEXT_WINDOW = 200_000
 _SESSION_BUDGET = 2_000_000
 
 
@@ -342,10 +336,10 @@ def calculate_efficiency(
     else:
         io_penalty = 0.0
 
-    # --- 4. Cost velocity (informational only — see _W_* comment above;
-    #        not converted to a penalty since cost is excluded from scoring) ---
+    # --- 4. Cost velocity (0 at ≤$0.05/min, 1.0 at ≥$0.30/min) ---
     cost_total = stats.estimated_cost
     cost_vel = cost_total / duration if duration > 0 else 0.0
+    cost_penalty = _clamp01((cost_vel - 0.05) / (0.30 - 0.05))
 
     # --- 5. Cache hit rate (penalty = 1 - hit_rate; 0 if no cache data) ---
     total_cache = stats.total_cache_creation + stats.total_cache_read
@@ -451,8 +445,7 @@ def calculate_team_health(
     sub-agents split the remaining 50% equally.  If multiple sub-agents
     are struggling, a cross-agent warning is emitted.
     """
-    from agentwatch.detectors.base import Category, Severity
-    from agentwatch.detectors.base import Warning as Warn
+    from agentwatch.detectors.base import Warning as Warn, Category, Severity
 
     if not member_reports:
         return TeamHealthReport(
@@ -493,9 +486,7 @@ def calculate_team_health(
                     severity=Severity.HIGH,
                     signal="team_cascade_failure",
                     message=f"{struggling}/{len(subagent_pids)} sub-agents are struggling",
-                    suggestion=(
-                        "Root agent may be issuing unclear instructions or an impossible task"
-                    ),
+                    suggestion="Root agent may be issuing unclear instructions or an impossible task",
                     details={"struggling_count": struggling, "total_subagents": len(subagent_pids)},
                 )
             )
@@ -534,23 +525,23 @@ def calculate_team_health(
 def calculate_security_score(warnings: list["Warning"]) -> int:
     """
     Calculate a security-specific score.
-
+    
     Returns:
         Score from 0-100 (100 = secure, 0 = compromised)
     """
     security_warnings = [w for w in warnings if w.is_security]
-
+    
     if not security_warnings:
         return 100
-
+    
     # Security is more strict - critical = immediate 0
     for w in security_warnings:
         if w.severity == Severity.CRITICAL:
             return 0
-
+    
     # Otherwise deduct based on severity
     score = 100
     for w in security_warnings:
         score -= w.severity.score_impact
-
+    
     return max(0, score)

@@ -24,8 +24,7 @@ def ts(dt: datetime) -> str:
 def emit(f, entry: dict):
     f.write(json.dumps(entry) + "\n")
     f.flush()
-    detail = entry.get("error", entry.get("file", entry.get("command", "")))
-    print(f"  -> {entry.get('tool', '?'):6}  success={entry.get('success')}  {detail}")
+    print(f"  -> {entry.get('tool', '?'):6}  success={entry.get('success')}  {entry.get('error', entry.get('file', entry.get('command', '')))}")
 
 
 def main():
@@ -40,32 +39,13 @@ def main():
         print("== Phase 1: Normal healthy work ==")
         for i in range(5):
             t = now + timedelta(seconds=i * 5)
-            emit(
-                f,
-                {"timestamp": ts(t), "tool": "read", "file": f"src/module_{i}.py", "success": True},
-            )
+            emit(f, {"timestamp": ts(t), "tool": "read", "file": f"src/module_{i}.py", "success": True})
             time.sleep(1)
 
-        emit(
-            f,
-            {
-                "timestamp": ts(now + timedelta(seconds=25)),
-                "tool": "edit",
-                "file": "src/module_0.py",
-                "success": True,
-            },
-        )
+        emit(f, {"timestamp": ts(now + timedelta(seconds=25)), "tool": "edit", "file": "src/module_0.py", "success": True})
         time.sleep(1)
 
-        emit(
-            f,
-            {
-                "timestamp": ts(now + timedelta(seconds=30)),
-                "tool": "bash",
-                "command": "python -m pytest tests/",
-                "success": True,
-            },
-        )
+        emit(f, {"timestamp": ts(now + timedelta(seconds=30)), "tool": "bash", "command": "python -m pytest tests/", "success": True})
         time.sleep(1)
 
         print()
@@ -73,10 +53,7 @@ def main():
         # Phase 2: Re-reading same file (reread detector should trigger)
         for i in range(6):
             t = now + timedelta(seconds=35 + i * 5)
-            emit(
-                f,
-                {"timestamp": ts(t), "tool": "read", "file": "src/app.py", "success": True},
-            )
+            emit(f, {"timestamp": ts(t), "tool": "read", "file": "src/app.py", "success": True})
             time.sleep(1.5)
 
         print()
@@ -84,21 +61,9 @@ def main():
         # Phase 3: Edit -> bash fail -> edit -> bash fail (thrash detector)
         for i in range(5):
             t = now + timedelta(seconds=65 + i * 10)
-            emit(
-                f,
-                {"timestamp": ts(t), "tool": "edit", "file": "src/app.py", "success": True},
-            )
+            emit(f, {"timestamp": ts(t), "tool": "edit", "file": "src/app.py", "success": True})
             time.sleep(1)
-            emit(
-                f,
-                {
-                    "timestamp": ts(t + timedelta(seconds=5)),
-                    "tool": "bash",
-                    "command": "python test.py",
-                    "success": False,
-                    "error": "SyntaxError: unexpected indent",
-                },
-            )
+            emit(f, {"timestamp": ts(t + timedelta(seconds=5)), "tool": "bash", "command": "python test.py", "success": False, "error": "SyntaxError: unexpected indent"})
             time.sleep(1.5)
 
         print()
@@ -106,16 +71,7 @@ def main():
         # Phase 4: Exact same bash command repeated (loop detector)
         for i in range(8):
             t = now + timedelta(seconds=115 + i * 5)
-            emit(
-                f,
-                {
-                    "timestamp": ts(t),
-                    "tool": "bash",
-                    "command": "npm run build",
-                    "success": False,
-                    "error": "Error: Cannot find module './config'",
-                },
-            )
+            emit(f, {"timestamp": ts(t), "tool": "bash", "command": "npm run build", "success": False, "error": "Error: Cannot find module './config'"})
             time.sleep(1.5)
 
         print()
@@ -131,16 +87,7 @@ def main():
         ]
         for i, err in enumerate(errors):
             t = now + timedelta(seconds=155 + i * 5)
-            emit(
-                f,
-                {
-                    "timestamp": ts(t),
-                    "tool": "bash",
-                    "command": "python main.py",
-                    "success": False,
-                    "error": err,
-                },
-            )
+            emit(f, {"timestamp": ts(t), "tool": "bash", "command": "python main.py", "success": False, "error": err})
             time.sleep(1.5)
 
         print()
