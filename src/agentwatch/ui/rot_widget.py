@@ -40,7 +40,8 @@ class ContextHealthWidget(Static):
         score_pct = int(round((1.0 - r.smoothed_score) * 100))
 
         lines: list[str] = []
-        lines.append(f"  {emoji} Context Health: [{_mini_bar(1.0 - r.smoothed_score, 20)}] {score_pct}%")
+        mini_bar = _mini_bar(1.0 - r.smoothed_score, 20)
+        lines.append(f"  {emoji} Context Health: [{mini_bar}] {score_pct}%")
         lines.append(f"  State: {state_label.upper()}")
         lines.append("")
 

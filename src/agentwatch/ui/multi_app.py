@@ -520,7 +520,10 @@ class MultiAgentWatchApp(App):
             if w.signal != "secret_leak":
                 continue
             d = w.details
-            key = f"secret_leak:{d.get('secret_type', '')}:{d.get('channel', '')}:{d.get('file_path', '')}:{agent_label}"
+            key = (
+                f"secret_leak:{d.get('secret_type', '')}:"
+                f"{d.get('channel', '')}:{d.get('file_path', '')}:{agent_label}"
+            )
             if key in self._alerted_signals:
                 continue
             self._alerted_signals.add(key)

@@ -71,7 +71,11 @@ class EfficiencyBar(Static):
 
     def __init__(self, **kwargs):
         theme = get_theme()
-        super().__init__(f"  Efficiency: [████████████████████] 100%  Status: {theme.level_0.upper()}\n  Session is {theme.level_0}", **kwargs)
+        super().__init__(
+            f"  Efficiency: [████████████████████] 100%  Status: {theme.level_0.upper()}\n"
+            f"  Session is {theme.level_0}",
+            **kwargs,
+        )
         self._report: EfficiencyReport | None = None
 
     def update_efficiency(self, report: "EfficiencyReport") -> None:
@@ -98,9 +102,17 @@ class EfficiencyBar(Static):
         # Per-category mini bars with detail
         burn_k = r.token_burn_rate / 1000
         categories = [
-            ("Pressure", r.penalty_context, f"{r.context_usage_pct:.0f}% ctx, {burn_k:.1f}k tok/min"),
+            (
+                "Pressure",
+                r.penalty_context,
+                f"{r.context_usage_pct:.0f}% ctx, {burn_k:.1f}k tok/min",
+            ),
             ("Cache", r.penalty_cache, f"{r.cache_hit_rate * 100:.0f}% hit rate"),
-            ("Pacing", r.penalty_pacing, f"{r.duration_minutes:.0f}min, {r.actions_per_turn:.1f} act/turn"),
+            (
+                "Pacing",
+                r.penalty_pacing,
+                f"{r.duration_minutes:.0f}min, {r.actions_per_turn:.1f} act/turn",
+            ),
         ]
         for label, penalty, detail in categories:
             mini = _mini_bar(penalty)
@@ -203,7 +215,8 @@ class WarningsList(Static):
         if "file" in d:
             return f"File: {d['file']}"
         if "error_class" in d:
-            return f"Error type: {d['error_class']} ({d.get('occurrences', d.get('failure_count', '?'))}x)"
+            occurrences = d.get("occurrences", d.get("failure_count", "?"))
+            return f"Error type: {d['error_class']} ({occurrences}x)"
 
         return ""
 
@@ -227,7 +240,10 @@ class StatsPanel(Static):
         self.update(self._build_content())
 
     def _build_content(self) -> str:
-        return f"  Actions: {self._action_count}  Errors: {self._error_count}  Duration: {int(self._duration)}m"
+        return (
+            f"  Actions: {self._action_count}  Errors: {self._error_count}  "
+            f"Duration: {int(self._duration)}m"
+        )
 
 
 class AgentWatchApp(App):
@@ -457,7 +473,10 @@ class AgentWatchApp(App):
             if w.signal != "secret_leak":
                 continue
             d = w.details
-            key = f"secret_leak:{d.get('secret_type', '')}:{d.get('channel', '')}:{d.get('file_path', '')}"
+            key = (
+                f"secret_leak:{d.get('secret_type', '')}:"
+                f"{d.get('channel', '')}:{d.get('file_path', '')}"
+            )
             if key in self._alerted_signals:
                 continue
             self._alerted_signals.add(key)
