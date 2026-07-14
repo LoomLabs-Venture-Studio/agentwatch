@@ -4,8 +4,12 @@
 
 ## What This Is
 AgentWatch (package name `agentwatch-monitor`) is a real-time health and
-security monitor for AI coding agents (Claude Code, Moltbot today; Cursor,
-Aider, and Codex CLI planned). It watches an agent's session logs as they
+security monitor for AI coding agents: full support for Claude Code and
+Moltbot; Aider (Markdown chat-history, including live tailing) and Cursor
+(SQLite composer store, process-gated discovery + live tailing) are also
+wired end-to-end and live-tested against real installs; Codex CLI support
+is fixture-verified only (no live install exists to confirm against — see
+Known Issues). It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
 result as a CLI report, a CI-friendly exit code, or a live Textual TUI. Built
@@ -35,7 +39,14 @@ src/agentwatch/
                        (security-first alias), both -> agentwatch.cli
   __init__.py          Public package API re-exporting detectors/health/parser/etc.
   discovery.py         Finds running agent OS processes via regex process
-                       matching; builds process/team trees (PPID chains)
+                       matching (Claude Code/Aider/Codex); builds process/
+                       team trees (PPID chains); merges in cursor_discovery's
+                       synthetic entries
+  cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
+                       running -> resolve state.vscdb -> qualifying
+                       agent-mode composers as synthetic AgentProcess
+                       entries); no OS process per composer, so pid/log_file
+                       are synthetic (see module docstring)
   cc_stats.py          Parses ~/.claude/projects/*.jsonl for token-usage /
                        burn-rate stats
   themes.py             Pluggable status-label/emoji/color themes shared by
@@ -45,9 +56,26 @@ src/agentwatch/
     models.py           Action / ActionBuffer / SessionStats / ToolType /
                        MetricResult data models
     logs.py              JSONL parsers per agent log format (Claude Code,
-                       Moltbot), sensitive-path pattern matching
-    watcher.py           LogWatcher (single file, tail + watchfiles) and
-                       MultiLogWatcher (multi-file, process/team-aware)
+                       Moltbot, Codex), sensitive-path pattern matching,
+                       parse_file() extension-based dispatch (.md -> aider,
+                       .vscdb -> cursor_source, else JSONL auto-detect)
+    aider.py             Aider Markdown chat-history + --analytics-log JSONL
+                       parsing; resumed-session splitting; diff/udiff/whole
+                       edit-format coverage
+    codex.py             Codex CLI rollout JSONL parsing (CodexParser,
+                       call_id-based buffering, era detection) --
+                       fixture-verified only, no live install exists
+    cursor_source.py     Read-only state.vscdb access (composerHeaders,
+                       cursorDiskKV bubbleId:*/checkpointId:* rows) +
+                       bubble-to-Action mapping
+    watcher.py           LogWatcher (JSONL, tail + watchfiles),
+                       AiderLogWatcher (Markdown, whole-file reparse +
+                       per-session emitted-count cursor on the same
+                       watchfiles trigger), CursorWatcher (state.vscdb,
+                       timer poll + lastUpdatedAt watermark, optional
+                       composer_id_filter), and MultiLogWatcher
+                       (multi-file/DB, process/team-aware, dispatches to
+                       whichever of the three a given AgentProcess needs)
 
   detectors/
     base.py              Detector / SecurityDetector ABCs, Category,
@@ -171,6 +199,37 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   (`themes.py`, `--theme ascii`) using bracketed labels (`[OK]`/`[WARN]`/
   `[ALERT]`/`[FAIL]`) as a real escape hatch for anyone stuck on legacy
   conhost; otherwise switch to Windows Terminal or VS Code's terminal.
+- **Cursor + Aider Phase 2/3 landed and live-tested (Sprint 7, 2026-07-14)**:
+  `agentwatch ps`/`watch-all`/`check`/`security-scan` all now surface real
+  Cursor conversations (process-gated on `Cursor.exe` running, confirmed
+  live both closed and open on this machine), and `agentwatch watch`/
+  `watch-all` now live-tail a growing `.aider.chat.history.md` (confirmed
+  live against a real appended file). Single-agent `agentwatch watch --log
+  <state.vscdb>` and `--all-logs` directory-scan mode remain explicitly out
+  of scope for Cursor (see PLAYBOOK Sprint 7). Known, documented, not-fixed
+  gap found live: Cursor's `tool_name` is always the literal constant
+  `"user_message"`/`"assistant_message"`, which trips
+  `detectors/health/loops.py::LoopDetector`'s repetition check as a false
+  positive on any Cursor conversation with >=4 turns in its window — needs
+  either richer per-turn `tool_name` (blocked on `toolResults`' populated
+  shape still being unconfirmed) or a detector-side carve-out.
+- **Codex CLI hardened against the real, current `openai/codex` source, still
+  not live-install-verified** (Sprint 8, 2026-07-14): fetched
+  `codex-rs/protocol/src/{protocol,models}.rs` directly from the public repo
+  and confirmed the payload-nesting assumption (Open Question #1) and
+  token-usage shape (Open Question #6) with direct evidence, fixing two
+  real bugs in the process — `_extract_function_call_output` was checking a
+  `{"success": ...}` dict shape that cannot occur on the wire (every real
+  tool call was silently classified as successful), and `_extract_token_count`
+  was reading a flat shape one level too shallow (always read 0/0). Both
+  fixed and covered by corrected fixture tests. **Major follow-up found but
+  not implemented**: the real success/failure signal for exec-type calls is
+  a separate `event_msg` (`ExecCommandEnd`, real `exit_code`/`status`,
+  correlatable by the same `call_id`) — wiring it in is a real architectural
+  change (a second event family to correlate), scoped as a clear next
+  sprint rather than rushed. `CODEX_HOME` multi-root support, real tool
+  names beyond `apply_patch`, and PID-based log resolution remain
+  unconfirmed.
 
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.

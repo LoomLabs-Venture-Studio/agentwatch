@@ -1593,3 +1593,332 @@ the `═` divider lines render as actual horizontal double-lines, not tofu/
 `?`. Task #9's actual, correctly-scoped claim is: **zero emoji/dingbat
 characters** render under `--theme ascii` — not "zero non-ASCII
 characters" — and that narrower claim holds, live-verified.
+
+---
+
+### Sprint: Sprint 7 — Cursor Support, Phase 2 (discovery + CLI/TUI wiring)
+**Type:** feature
+**Priority:** unblocks Cursor end-to-end — Phase 1 (`CursorWatcher` +
+`cursor_source.py`, Sprint 5) built the read/poll layer but nothing ever
+called it: no discovery mechanism existed, so `agentwatch ps`/`watch-all`/
+`check` never surfaced a Cursor conversation even on a machine with a real,
+active one.
+**PRD Status:** no separate PRD; scoped directly from Sprint 5's own
+explicit "out of scope, Phase 2" callout and this section's acceptance
+criteria.
+**Board decision (2026-07-14):** user authorized implementing all
+remaining roadmap items (Cursor Phase 2, Aider live-tailing, Codex
+hardening) in one continuous pass, testing each live as it lands. Two
+product decisions Sprint 5 had explicitly deferred were resolved directly
+with the user rather than picked unilaterally: (1) gate Cursor discovery on
+`Cursor.exe` actually running (matches every other agent type, rather than
+surfacing stale composer data from a closed IDE); (2) for Codex/Aider items
+explicitly gated on a live install that still doesn't exist, do best-effort
+work against real primary sources and flag clearly rather than skip
+entirely.
+
+### Acceptance Criteria
+- [x] New `src/agentwatch/cursor_discovery.py`: `is_cursor_running()`
+      (psutil name match, mirrors every other agent's process-gate
+      philosophy), `default_cursor_user_dir()` (Windows path verified
+      against this machine's real install; macOS/Linux follow the standard
+      VS Code fork convention but are unverified), `build_workspace_map()`
+      (decodes `workspaceStorage/<id>/workspace.json`'s `folder` file URI —
+      verified against this machine's 2 real populated workspace entries),
+      `find_cursor_agents()` returning synthetic `AgentProcess` entries for
+      qualifying composers
+- [x] `AgentProcess` gains a `cursor_db_path` field; `log_file` becomes a
+      synthetic, never-created-on-disk per-composer identity key for Cursor
+      entries (`cursor_discovery.py::_cursor_synthetic_log_key`) since
+      `MultiLogWatcher` keys its tracking dicts by `log_file` and every
+      composer in one install shares one real `state.vscdb`
+- [x] `CursorWatcher` gains `composer_id_filter` so multiple independent
+      watcher instances (one per composer, sharing one DB) don't duplicate
+      each other's actions
+- [x] `discovery.py::find_running_agents()` merges in
+      `cursor_discovery.find_cursor_agents()` after the real-process scan
+      (lazy import, mirrors the `logs.py`↔`codex.py` circular-import
+      pattern), wrapped so a Cursor-specific failure never breaks discovery
+      of real Claude Code/Aider/Codex processes
+- [x] `MultiLogWatcher` (`_find_all_logs`/`from_processes`/
+      `refresh_processes`/`watch()`) recognizes cursor entries by
+      `agent_type` (not suffix) and constructs a real `CursorWatcher`
+      against `cursor_db_path`, filtered to that entry's composer —
+      exercised by both `agentwatch ps` and `agentwatch watch-all`
+- [x] `parser/logs.py::parse_file()` dispatches `.vscdb` paths to a new
+      `cursor_source.parse_cursor_session()` (auto-picks the most-recently-
+      active agent-mode composer when no `session_id` filter is given,
+      mirroring `find_latest_session()`'s auto-detect semantics) — wires
+      `agentwatch check`/`security-scan --log <state.vscdb>` end to end
+- [x] New tests: `test_cursor_discovery.py`, extended
+      `test_cursor_source.py`/`test_cursor_watcher.py`, new
+      `test_multi_log_watcher_cursor.py`, new `TestFindRunningAgentsCursorMerge`
+      in `test_discovery.py`, new `.vscdb` cases in
+      `test_aider_parser.py::TestParseFileDispatch`
+- [x] `python -m pytest tests/ -v` fully green, `ruff check` clean on all
+      new/touched files
+- [x] **Live smoke test against this machine's real Cursor install** (not
+      just fixtures) — see Status below
+
+### Implementation Plan
+Engineer builds `cursor_discovery.py` against the real
+`workspaceStorage`/`composerHeaders` schema (already confirmed in Sprint
+5's investigation rounds), wires it into `find_running_agents()`,
+`MultiLogWatcher`, and `parse_file()`, adds fixture-based tests, then runs
+the actual CLI against this machine's real, populated Cursor install
+(the same one every prior Cursor investigation round used) for a genuine
+end-to-end check, not just unit tests.
+
+**Status: complete, live-tested (2026-07-14).**
+
+**Real bug found and fixed via live testing, not just research**: Cursor
+creates a placeholder composer (literal id `"empty-state-draft"`,
+`isDraft: true`) with a real `lastUpdatedAt` newer than an actual
+conversation but zero bubbles. Without filtering it out, both
+`find_cursor_agents()` and `cursor_source.select_latest_agent_composer()`
+would surface/auto-pick this phantom empty "agent" ahead of the real one —
+caught because `agentwatch check --log <real state.vscdb>` returned 0
+actions on the first live run, not because it was anticipated. Fixed by
+excluding `isDraft` composers in both places, covered by new regression
+tests in each.
+
+**Full live verification, both with Cursor closed and running**:
+- `check`/`security-scan --log <real state.vscdb>` (Cursor closed, no
+  process gate needed for the one-shot path): correctly parsed a real
+  58-bubble agentwatch-main conversation, produced a real health report
+  (89% PRODUCTIVE) and a real security scan (100%, 0 issues)
+- `agentwatch ps` with Cursor closed: 0 cursor entries (gate correctly
+  excludes it), no crash
+- With Cursor opened live on this machine: `is_cursor_running()` correctly
+  flips to `True`; `find_cursor_agents()` and `agentwatch ps --json` both
+  correctly surface the one real agent-mode composer with correct
+  workspace/session/uptime; a direct drive of
+  `MultiLogWatcher.from_processes(find_running_agents())` (the same
+  machinery `watch-all` uses) confirmed a real `CursorWatcher` instance
+  gets constructed for it alongside the real Claude Code session watcher
+
+**Known limitation found live, documented not fixed (real scope
+boundary)**: `detectors/health/loops.py::LoopDetector` keys repetition on
+`f"{tool_name}:{file_path}"`. Every Cursor turn's `tool_name` is the
+literal constant `"user_message"`/`"assistant_message"` (unlike Claude
+Code/Aider/Codex, where it reflects the actual tool invoked) — so any
+Cursor conversation with >=4 turns in the detector's 10-action window
+trips a "loop" false positive purely from the constant role label. Real
+example seen live in the 89% report above. Documented in
+`cursor_source.py::bubble_to_action`'s docstring as a follow-up (needs
+either richer per-turn `tool_name` from `toolResults`, whose populated
+shape is still unconfirmed, or a detector-side carve-out) — not fixed this
+sprint, out of scope for discovery/wiring.
+
+**Explicitly out of scope, not attempted**: single-agent `agentwatch watch
+--log <state.vscdb>` (live TUI) — Cursor's poll-based, composer-picking
+data model doesn't fit `AgentWatchApp`'s current single-`LogWatcher`
+assumption the way it fits `MultiLogWatcher`'s per-agent-process model;
+`--all-logs` directory-scan mode (Cursor has no fixed discoverable
+directory of per-session files to glob).
+
+`python -m pytest tests/ -v` — **530/530 pass** after this sprint's Cursor
+work (up from 483 baseline); `ruff check` clean on all new/touched files;
+repo-wide `ruff check .` **589 errors, down from 590** — zero new
+warnings, one pre-existing one incidentally fixed.
+
+---
+
+### Sprint: Sprint 7 (cont'd) — Aider Phase 3 (live watch/TUI tailing)
+**Type:** feature
+**Priority:** closes PLAYBOOK Sprint 6 item 6, the one item explicitly
+deferred as "confirmed real, separate feature work" rather than resolved —
+`agentwatch watch`/`watch-all` silently produced zero actions for a live
+Aider session because `LogWatcher`'s byte-offset JSONL tailing can't parse
+Markdown, and `MultiLogWatcher._find_all_logs()` hardcoded a `.jsonl`-only
+filter that excluded `.aider.chat.history.md` from process-mode discovery
+entirely.
+**PRD Status:** no separate PRD; scope is exactly Sprint 6 item 6's own
+description (`C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md`'s
+lineage).
+**Board decision:** same continuous-pass authorization as Sprint 7's Cursor
+half above.
+
+### Acceptance Criteria
+- [x] New `AiderLogWatcher` (`parser/watcher.py`): reparses the whole file
+      via `aider.py`'s existing `parse_aider_sessions()` (renamed from
+      `_parse_aider_sessions` — the same code already used by
+      `parse_aider_markdown()`/`parse_aider_log()`, not new parsing logic)
+      on every `watchfiles.awatch` file-change trigger (same signal
+      `LogWatcher` uses — Aider's Markdown file is a real append-only file,
+      unlike Cursor's rewritten-in-place SQLite DB), emitting only each
+      session's new action-count tail — the same "count, not content-diff"
+      cursor idiom `CursorWatcher._bubble_cursor` already established
+- [x] `MultiLogWatcher._find_all_logs()` recognizes `.md` alongside
+      `.jsonl` in process mode; `watch()` constructs an `AiderLogWatcher`
+      (not a `LogWatcher`, which would silently produce zero actions) for
+      `.md` entries
+- [x] Single-agent `ui/app.py::AgentWatchApp` also dispatches `.md` to
+      `AiderLogWatcher` — Sprint 6 item 6's own wording named both
+      `agentwatch watch` and `watch-all`/TUI, not just the multi-agent path
+- [x] `cli.py`'s `watch` command `--log` help text updated to mention Aider
+      Markdown (matches `check`/`security-scan`'s existing wording)
+- [x] New tests: `test_aider_watcher.py` (incremental-cursor behavior
+      driven directly, plus one real async test growing a real file on
+      disk), `test_multi_log_watcher_aider.py` (dispatch wiring)
+- [x] `python -m pytest tests/ -v` fully green, `ruff check` clean on all
+      new/touched files
+- [x] **Live smoke test against a real growing file** — see Status below
+
+### Implementation Plan
+Engineer renames `aider.py`'s private `_parse_aider_sessions`/`_Session` to
+public `parse_aider_sessions`/`AiderSession` (needed for cross-module reuse
+from `watcher.py`, zero behavior change), builds `AiderLogWatcher` against
+it, wires `MultiLogWatcher` and `AgentWatchApp`, adds tests, then drives a
+real file being appended to on disk while a live watcher is running against
+it.
+
+**Status: complete, live-tested (2026-07-14).**
+
+Live smoke test: wrote a real `.aider.chat.history.md` fixture to disk,
+started `AiderLogWatcher.watch()` against it, confirmed the 2 existing
+actions (prompt + edit) were emitted immediately, then appended a brand
+new `#### ` turn to the file mid-run and confirmed the watcher picked it up
+via the real `watchfiles.awatch` file-change signal and emitted exactly the
+one new action — no duplicates, no missed content. Separately confirmed
+(via a headless Textual pilot run of the real `AgentWatchApp`) that a
+`.md` log path correctly constructs an `AiderLogWatcher` (not a
+`LogWatcher`) and the app renders without crashing.
+
+**Known limitation, documented not fixed (matches the same bar as Sprint 6
+item 5's `zip()`-shortest-wins caveat)**: an `aider_prompt` action is
+emitted as soon as its `#### ` header line appears, using whatever body
+content has been written so far — a poll mid-write could see an
+incomplete snapshot that is never re-emitted once counted. Edit-block
+actions are unaffected (their regexes require a closing marker, so an
+in-progress block simply doesn't match yet and appears complete once it
+does). Analytics-log (`--analytics-log`) backfill is deliberately not
+wired into live tailing — it's a whole-file/whole-session operation with
+no obvious incremental equivalent; live-tailed actions keep
+`tokens_in`/`tokens_out`/`cost_usd` at their Markdown-only 0/0/0.0
+defaults.
+
+**Known pre-existing harness quirk, not a regression**: a headless Textual
+`run_test()` pilot's background `run_worker()` task doesn't populate
+`app._buffer` within the test even after several seconds of `pilot.pause()`
++ `asyncio.sleep()` — confirmed this is identical for the pre-existing
+JSONL/`LogWatcher` path too (not something this sprint introduced), so the
+live-tailing correctness claim above rests on the direct
+`AiderLogWatcher.watch()` drive, not the pilot-buffer assertion.
+
+`python -m pytest tests/ -v` — **530/530 pass**; `ruff check` clean on all
+new/touched files (`ui/app.py`'s pre-existing 37-error baseline actually
+*decreased* to 36, one incidental whitespace fix); repo-wide unchanged.
+
+---
+
+### Sprint 8 — Codex CLI: primary-source hardening (no live install)
+**Type:** hardening / research
+**Priority:** Codex CLI support (Sprint 4) has been fixture-verified-only
+since it shipped, with 7 open questions explicitly gated on a live install
+that still doesn't exist on this or any available machine. Rather than
+leave it untouched again, this sprint tried a different evidentiary path:
+the real `openai/codex` source is a public GitHub repo and can be read
+directly, even without installing/running the CLI itself.
+**PRD Status:** no new PRD; scoped directly against
+`codex-cli-support-prd.md`'s existing "Open Questions / Requires Live
+Install to Confirm" list.
+**Board decision:** user explicitly authorized "best-effort fixture work,
+clearly flagged" for exactly this kind of live-install-gated item, same
+continuous-pass authorization as the rest of this batch.
+
+### What this sprint actually did
+Fetched `codex-rs/protocol/src/protocol.rs` and `models.rs` directly from
+`github.com/openai/codex` @ `main` (public repo, no auth, no install
+needed) and read the real struct/enum definitions rather than relying on
+secondary sources (issue trackers, community viewer tools) the way the
+original Sprint 4 research had to. This is still **not** a live-captured
+real rollout file — it's the current source, which the project's own prior
+research already flagged as having changed shape multiple times across
+versions — but it's a direct, primary-source upgrade over guessing for
+several specific open questions.
+
+**Open Question #1 (payload nesting) — RESOLVED, high confidence.**
+`RolloutLine { timestamp, ordinal, #[serde(flatten)] item: RolloutItem }`,
+`RolloutItem` is `#[serde(tag = "type", content = "payload")]`. Confirms
+the two-level `{"type": ..., "payload": {...}}` nesting this parser always
+assumed, read directly from the struct definition, not inferred. Bonus
+finding: every rollout line also carries a real `ordinal: Option<u64>`
+field, not previously documented anywhere in this project's research
+(not extracted — low priority, timestamps already order actions).
+
+**`_CODEX_EVENT_TYPES` (`logs.py`) — extended with real evidence.** The
+real `RolloutItem` enum has 8 variants, not the originally-researched 4:
+added `compacted`, `world_state`, `inter_agent_communication`,
+`inter_agent_communication_metadata` (the latter two: a multi-agent
+feature not previously known about at all).
+
+**`_extract_function_call_output` (`codex.py`) — corrected, real bug
+fixed.** `FunctionCallOutputPayload`'s actual `Deserialize` impl hardcodes
+`success: None` and its wire shape is only ever a plain string or a
+content-item array — never an object with `success`/`error` keys. The
+previous `isinstance(output, dict)` check was checking a shape that cannot
+occur on the wire — **confirmed dead code, not just unconfirmed** — meaning
+every real Codex tool call was being classified as successful regardless
+of actual outcome. Now honestly returns `is_error=False` (there is nothing
+on this event to detect failure from) rather than a guessed heuristic.
+
+**`_extract_token_count` (`codex.py`) — corrected, real bug fixed, Open
+Question #6 resolved.** Real shape is `{"type": "token_count", "info":
+{"total_token_usage": {...}, "last_token_usage": {...},
+"model_context_window": ...}}` — token fields are nested two levels
+deeper than the old flat `payload.get("input_tokens")` guess (which always
+fell through to 0), and real field names are `input_tokens`/
+`cached_input_tokens`/`output_tokens`/`reasoning_output_tokens`/
+`total_tokens`, not `prompt_tokens`/`completion_tokens`. Open Question #6
+("delta vs. cumulative?") turned out not to be ambiguous at all — both
+exist as separate fields (`last_token_usage` = delta, `total_token_usage`
+= cumulative). Now reads `last_token_usage` into `Action.tokens_in`/
+`tokens_out`, matching every other parser's per-action-delta semantics.
+
+**Major new finding, NOT implemented (documented, not silently
+dropped)**: the real success/failure signal for exec-type tool calls is a
+separate `event_msg` event, `ExecCommandEnd` — correlatable by the same
+`call_id` as the `FunctionCall`, carrying real `exit_code: i32` and
+`status: Completed | Failed | Declined`, plus real `stdout`/`stderr`/
+`formatted_output`. Wiring this in means correlating a SECOND independent
+event family into `CodexParser`'s existing single-pending-dict model — a
+real architectural change, and genuine open questions remain even with
+source access (does `exec_command_end` always co-occur with
+`function_call_output` for the same call; what carries success for
+`apply_patch`/MCP tool calls). Recommended as a well-scoped next sprint.
+
+**Still genuinely unconfirmed, unchanged from Sprint 4**: Open Question #2
+(`CODEX_HOME` comma-separated multi-root), #3 (real tool names beyond
+`apply_patch` for `classify_codex_tool`), #5 (no PID-based log resolution
+equivalent to `lsof`).
+
+### Acceptance Criteria
+- [x] Every corrected assumption cites the specific source file/struct
+      read, not a re-guess — see docstrings in `codex.py`/`logs.py`
+- [x] Existing fixture-based tests updated to the corrected real shapes
+      (not just made to pass) — `test_codex_parser.py`'s
+      `function_call_output`/`token_count` fixture lines rebuilt to match
+      the real wire shape; the test that asserted the old (now-confirmed-
+      impossible) `{"success": false}` shape was replaced with one
+      asserting the corrected, honest behavior
+- [x] New regression tests for the `_CODEX_EVENT_TYPES` extension and
+      `_extract_token_count`'s defensive handling of a missing `info` key
+- [x] `python -m pytest tests/ -v` fully green, `ruff check` clean on all
+      touched files
+- [x] Still explicitly NOT claimed production-ready: module docstring
+      updated to state plainly that this remains fixture-based, and that 3
+      of the original 7 open questions plus 1 new one (ExecCommandEnd
+      correlation) remain open
+
+### Implementation Plan
+Fetch real source directly (`curl` against `raw.githubusercontent.com`,
+public repo, no auth), grep for the relevant struct/enum definitions,
+cross-check every extraction function in `codex.py` against what was
+actually found, fix what's confirmed wrong, document what's confirmed
+right, and clearly scope what's newly discovered but not yet implemented.
+
+**Status: complete (2026-07-14).** `python -m pytest tests/ -v` —
+**532/532 pass**; `ruff check` clean on `codex.py`/`logs.py`/
+`test_codex_parser.py`; repo-wide `ruff check .` **589 errors — unchanged**
+from the post-Sprint-7 baseline, zero new warnings anywhere.
