@@ -130,7 +130,9 @@ def _must_touch(
         return 0.0, []
 
     score = min(len(missing) / max(len(required_paths), 1), 1.0)
-    evidence = [f"required path not yet touched after {after_turns} turns: {p}" for p in missing[:3]]
+    evidence = [
+        f"required path not yet touched after {after_turns} turns: {p}" for p in missing[:3]
+    ]
     return round(score, 4), evidence
 
 

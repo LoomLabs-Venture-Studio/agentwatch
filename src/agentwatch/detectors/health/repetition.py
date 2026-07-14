@@ -79,7 +79,9 @@ def _repeated_sentences(outputs: list[str]) -> float:
         return 0.0
 
     current_text = outputs[-1]
-    current_sentences = [s.strip().lower() for s in _SENTENCE_RE.findall(current_text) if len(s.strip()) > 20]
+    current_sentences = [
+        s.strip().lower() for s in _SENTENCE_RE.findall(current_text) if len(s.strip()) > 20
+    ]
     if not current_sentences:
         return 0.0
 
@@ -129,7 +131,9 @@ def compute_repetition(
     jaccard_result = MetricResult(
         name="cross_turn_overlap",
         value=round(jaccard, 4),
-        evidence=[f"Jaccard overlap with prior {k} outputs: {jaccard:.2f}"] if jaccard > 0.2 else [],
+        evidence=(
+            [f"Jaccard overlap with prior {k} outputs: {jaccard:.2f}"] if jaccard > 0.2 else []
+        ),
     )
 
     # Sub-metric: repeated sentences

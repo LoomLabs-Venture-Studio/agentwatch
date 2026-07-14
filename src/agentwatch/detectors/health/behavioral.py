@@ -125,7 +125,11 @@ def compute_behavioral(
     inflation_result = MetricResult(
         name="length_inflation",
         value=round(inflation, 4),
-        evidence=[f"word counts over last {len(lengths)} turns: {lengths}"] if inflation > 0.1 else [],
+        evidence=(
+            [f"word counts over last {len(lengths)} turns: {lengths}"]
+            if inflation > 0.1
+            else []
+        ),
     )
 
     # Sub-metric: hedge density (average over recent outputs)

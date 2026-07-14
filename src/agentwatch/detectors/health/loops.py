@@ -60,9 +60,18 @@ class LoopDetector(Detector):
                 category=self.category,
                 severity=Severity.MEDIUM if count < 6 else Severity.HIGH,
                 signal="loop",
-                message=f"Repeated action: {tool}" + (f" on {path}" if path else "") + f" ({count}x)",
+                message=(
+                    f"Repeated action: {tool}"
+                    + (f" on {path}" if path else "")
+                    + f" ({count}x)"
+                ),
                 suggestion="The exact same action is being repeated. "
-                + (f"The command \"{last_cmd[:80]}\" keeps failing — try a fundamentally different approach." if last_cmd and last_err else "Consider whether a different strategy is needed."),
+                + (
+                    f"The command \"{last_cmd[:80]}\" keeps failing — "
+                    "try a fundamentally different approach."
+                    if last_cmd and last_err
+                    else "Consider whether a different strategy is needed."
+                ),
                 details={
                     "tool": tool,
                     "path": path or None,
@@ -106,7 +115,11 @@ class RereadDetector(Detector):
                     severity=Severity.LOW if count < 5 else Severity.MEDIUM,
                     signal="reread",
                     message=f"Re-reading file: {path} ({count}x)",
-                    suggestion=f"Reading the same file {count} times suggests the agent isn't retaining what it reads. The file content may be too long, or the agent is losing context.",
+                    suggestion=(
+                        f"Reading the same file {count} times suggests the agent isn't "
+                        "retaining what it reads. The file content may be too long, or "
+                        "the agent is losing context."
+                    ),
                     details={"path": path, "count": count},
                 )
 
@@ -196,13 +209,19 @@ class StallDetector(Detector):
 
         # If lots of reads but no edits, might be stuck
         if reads > 8 and edits < self.min_edits and successful_bash < 2:
-            stalled_files = sorted({a.file_path for a in recent if a.is_file_read and a.file_path})[:5]
+            stalled_files = sorted(
+                {a.file_path for a in recent if a.is_file_read and a.file_path}
+            )[:5]
             return Warning(
                 category=self.category,
                 severity=Severity.MEDIUM,
                 signal="stall",
                 message=f"Lots of reading ({reads}), minimal writing ({edits})",
-                suggestion=f"The agent is reading but not acting. Files being read: {', '.join(stalled_files)}. It may be stuck deciding what to do.",
+                suggestion=(
+                    f"The agent is reading but not acting. "
+                    f"Files being read: {', '.join(stalled_files)}. "
+                    "It may be stuck deciding what to do."
+                ),
                 details={
                     "reads": reads,
                     "edits": edits,

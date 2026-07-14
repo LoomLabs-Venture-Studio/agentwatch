@@ -68,7 +68,10 @@ def _file_churn(turns: list[Turn], n: int = 8) -> tuple[float, list[str]]:
     # Score: 1 churning file = 0.4, 2 = 0.7, 3+ = 1.0
     score = min(len(churning) * 0.35, 1.0)
 
-    evidence = [f"file churning without success: {', '.join(churning[:3])} ({max(file_edit_counts[f] for f in churning)}+ edits)"]
+    evidence = [
+        f"file churning without success: {', '.join(churning[:3])} "
+        f"({max(file_edit_counts[f] for f in churning)}+ edits)"
+    ]
 
     return round(score, 4), evidence
 
