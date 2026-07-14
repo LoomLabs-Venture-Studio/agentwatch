@@ -10,12 +10,7 @@ import click
 
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Warning
-from agentwatch.discovery import (
-    AgentProcess,
-    build_agent_tree,
-    build_teams,
-    find_running_agents,
-)
+from agentwatch.discovery import AgentProcess, AgentTeam, find_running_agents, build_agent_tree, build_teams
 from agentwatch.health import calculate_health, calculate_security_score
 from agentwatch.llm import (
     DEFAULT_OLLAMA_MODEL,
@@ -23,7 +18,7 @@ from agentwatch.llm import (
     LlmUnavailableError,
     OllamaAnalyzer,
 )
-from agentwatch.parser import ActionBuffer, find_latest_session, parse_file
+from agentwatch.parser import ActionBuffer, find_latest_session, parse_file, find_log_files
 from agentwatch.siem import SiemExportError, SiemLogger
 from agentwatch.themes import (
     ascii_safe,
@@ -135,14 +130,14 @@ def print_health_report(report, security_mode: bool = False) -> None:
         )
     )
     click.echo()
-
+    
     # Category breakdown
     for cat, score in report.category_scores.items():
         if score.warnings or score.score < 100:
             click.echo(f"  {cat.value.title():12} {score.emoji} {score.score}%")
-
+    
     click.echo()
-
+    
     # Warnings
     if report.warnings:
         click.echo(f"  {theme.emoji_for(theme.level_2)} {len(report.warnings)} warning(s):")
@@ -178,7 +173,7 @@ def print_health_report(report, security_mode: bool = False) -> None:
             click.echo(f"     ... and {len(report.warnings) - 10} more")
     else:
         click.echo(f"  {theme.emoji_for(theme.level_0)} No issues detected")
-
+    
     click.echo()
 
 
@@ -359,14 +354,14 @@ def watch(log: Path | None, security: bool):
     """Watch agent logs in real-time with a TUI dashboard."""
     # Import here to avoid slow startup for non-watch commands
     from agentwatch.ui.app import AgentWatchApp
-
+    
     # Find log file
     if log is None:
         log = find_latest_session()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
-
+    
     app = AgentWatchApp(log_path=log, security_mode=security)
     app.run()
 
@@ -467,8 +462,7 @@ def _print_agents_view(agents: list[AgentProcess]) -> None:
         status = click.style("active", fg="green")
 
         click.echo(
-            f"  {a.pid:<8}{a.agent_type:<14}{project:<18}{session:<10}"
-            f"{cpu_str:>6}{mem_str:>8}   {status}"
+            f"  {a.pid:<8}{a.agent_type:<14}{project:<18}{session:<10}{cpu_str:>6}{mem_str:>8}   {status}"
         )
 
     click.echo()
@@ -489,8 +483,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
 
         # Table header
         click.echo(
-            f"    {'PID':<8}{'TYPE':<14}{'PROJECT':<16}{'SESSION':<10}"
-            f"{'CPU':>6}{'MEM':>8}{'ROLE':>8}"
+            f"    {'PID':<8}{'TYPE':<14}{'PROJECT':<16}{'SESSION':<10}{'CPU':>6}{'MEM':>8}{'ROLE':>8}"
         )
 
         for a in team.members:
@@ -512,8 +505,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
             proj_col = f"{prefix}{project}"
 
             click.echo(
-                f"    {a.pid:<8}{a.agent_type:<14}{proj_col:<16}{session:<10}"
-                f"{cpu_str:>6}{mem_str:>8}   {role}"
+                f"    {a.pid:<8}{a.agent_type:<14}{proj_col:<16}{session:<10}{cpu_str:>6}{mem_str:>8}   {role}"
             )
 
         click.echo()
@@ -546,8 +538,8 @@ def watch_all(security: bool, all_logs: bool):
     By default, auto-discovers active agent processes and monitors only their
     log files. Use --all-logs to scan all known log directories instead.
     """
-    from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
     from agentwatch.ui.multi_app import MultiAgentWatchApp
+    from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
 
     if all_logs:
         # Legacy behavior: scan all log directories
@@ -578,20 +570,20 @@ def list_detectors(security: bool):
     """List all available detectors."""
     mode = "all" if security else "health"
     registry = create_registry(mode=mode)
-
+    
     click.echo()
     click.echo("Available Detectors:")
     click.echo("=" * 50)
-
+    
     detectors_by_cat = registry.list_detectors()
-
+    
     for cat, detectors in sorted(detectors_by_cat.items()):
         click.echo()
         click.echo(click.style(f"  {cat.upper()}", bold=True))
         bullet = ascii_safe("•", "*")
         for d in detectors:
             click.echo(f"    {bullet} {d}")
-
+    
     click.echo()
     click.echo(f"Total: {len(registry.detectors)} detectors")
     click.echo()
@@ -676,11 +668,7 @@ def security_scan(
     if json_output:
         output = {
             "security_score": security_score,
-            "status": (
-                "secure" if security_score == 100
-                else "at_risk" if security_score > 50
-                else "compromised"
-            ),
+            "status": "secure" if security_score == 100 else "at_risk" if security_score > 50 else "compromised",
             "warnings": [w.to_dict() for w in warnings],
             "action_count": len(buffer),
         }
@@ -691,7 +679,7 @@ def security_scan(
         click.echo("  SECURITY SCAN RESULTS")
         click.echo("═" * 50)
         click.echo()
-
+        
         # Theme-driven, sharing security_status_from_score() with
         # ui/app.py's SecurityStatus widget rather than hand-copying the
         # same SECURE/AT-RISK/COMPROMISED thresholds a second time (that
@@ -704,12 +692,12 @@ def security_scan(
         click.echo(
             click.style(f"  {emoji} {status.upper()} ({security_score}%)", fg=color, bold=True)
         )
-
+        
         click.echo()
         click.echo(f"  Analyzed {len(buffer)} actions")
         click.echo(f"  Found {len(warnings)} security issue(s)")
         click.echo()
-
+        
         if warnings:
             print_security_alert(warnings)
 
@@ -1124,14 +1112,7 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
     is_flag=True,
     help="Allow redacting active session logs (default: skip them)",
 )
-def audit(
-    all_projects: bool,
-    session_id: str | None,
-    json_output: bool,
-    redact: bool,
-    dry_run: bool,
-    force: bool,
-):
+def audit(all_projects: bool, session_id: str | None, json_output: bool, redact: bool, dry_run: bool, force: bool):
     """Scan log history for leaked secrets and credentials.
 
     Performs a passive forensic audit of existing JSONL session logs,
@@ -1149,8 +1130,8 @@ def audit(
     )
     from agentwatch.detectors.security.secret_scanner import (
         AuditFinding,
-        assess_impact,
         audit_log_file,
+        assess_impact,
         redact_log_file,
     )
 
@@ -1334,9 +1315,7 @@ def _print_audit_report(
     ]:
         if not group:
             continue
-        emoji = {
-            "CRITICAL": "\U0001f6a8", "HIGH": "\u26a0\ufe0f ", "MEDIUM": "\u2139\ufe0f ",
-        }[label]
+        emoji = {"CRITICAL": "\U0001f6a8", "HIGH": "\u26a0\ufe0f ", "MEDIUM": "\u2139\ufe0f "}[label]
         click.echo(
             f"  {emoji} "
             + click.style(f"{label} ({len(group)})", fg=color, bold=True)
@@ -1426,7 +1405,7 @@ def security_main():
     def guard_cli():
         """AgentGuard - Security monitoring for AI agents."""
         pass
-
+    
     @guard_cli.command(name="scan")
     @click.option("--log", "-l", type=click.Path(exists=True, path_type=Path))
     @click.option("--json", "json_output", is_flag=True)
@@ -1434,14 +1413,14 @@ def security_main():
         """Run security scan."""
         ctx = click.Context(security_scan)
         ctx.invoke(security_scan, log=log, json_output=json_output)
-
+    
     @guard_cli.command(name="watch")
     @click.option("--log", "-l", type=click.Path(exists=True, path_type=Path))
     def guard_watch(log):
         """Watch for security issues in real-time."""
         ctx = click.Context(watch)
         ctx.invoke(watch, log=log, security=True)
-
+    
     @guard_cli.command(name="check")
     @click.option("--log", "-l", type=click.Path(exists=True, path_type=Path))
     @click.option("--json", "json_output", is_flag=True)
@@ -1449,7 +1428,7 @@ def security_main():
         """Run full check with security enabled."""
         ctx = click.Context(check)
         ctx.invoke(check, log=log, security=True, json_output=json_output)
-
+    
     @guard_cli.command(name="watch-all")
     @click.option("--all-logs", is_flag=True, help="Scan all log directories")
     def guard_watch_all(all_logs):
@@ -1467,15 +1446,7 @@ def security_main():
     def guard_audit(all_projects, session_id, json_output, redact, dry_run, force):
         """Audit log history for leaked secrets."""
         ctx = click.Context(audit)
-        ctx.invoke(
-            audit,
-            all_projects=all_projects,
-            session_id=session_id,
-            json_output=json_output,
-            redact=redact,
-            dry_run=dry_run,
-            force=force,
-        )
+        ctx.invoke(audit, all_projects=all_projects, session_id=session_id, json_output=json_output, redact=redact, dry_run=dry_run, force=force)
 
     guard_cli()
 

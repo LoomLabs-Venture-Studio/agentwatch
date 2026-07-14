@@ -11,19 +11,19 @@ from ..base import Category, Detector, Severity, Warning
 
 class LoopDetector(Detector):
     """Detects when agent is stuck in a loop."""
-
+    
     category = Category.PROGRESS
     name = "loop"
     description = "Agent performing same action repeatedly"
-
+    
     def __init__(self, threshold: int = 4, window: int = 10):
         self.threshold = threshold
         self.window = window
-
+    
     def check(self, buffer: ActionBuffer) -> Warning | None:
         if len(buffer) < self.window:
             return None
-
+        
         recent = buffer.last(self.window)
 
         # Check for repeated identical tool calls. Exclude parsers' role-label
@@ -41,7 +41,7 @@ class LoopDetector(Detector):
         counts = Counter(tool_sequence)
 
         most_common, count = counts.most_common(1)[0]
-
+        
         if count >= self.threshold:
             tool, path = most_common.split(":", 1) if ":" in most_common else (most_common, "")
 
@@ -60,18 +60,9 @@ class LoopDetector(Detector):
                 category=self.category,
                 severity=Severity.MEDIUM if count < 6 else Severity.HIGH,
                 signal="loop",
-                message=(
-                    f"Repeated action: {tool}"
-                    + (f" on {path}" if path else "")
-                    + f" ({count}x)"
-                ),
-                suggestion="The exact same action is being repeated. "
-                + (
-                    f"The command \"{last_cmd[:80]}\" keeps failing — "
-                    "try a fundamentally different approach."
-                    if last_cmd and last_err
-                    else "Consider whether a different strategy is needed."
-                ),
+                message=f"Repeated action: {tool}" + (f" on {path}" if path else "") + f" ({count}x)",
+                suggestion=f"The exact same action is being repeated. "
+                + (f"The command \"{last_cmd[:80]}\" keeps failing — try a fundamentally different approach." if last_cmd and last_err else "Consider whether a different strategy is needed."),
                 details={
                     "tool": tool,
                     "path": path or None,
@@ -80,33 +71,33 @@ class LoopDetector(Detector):
                     "last_error": last_err,
                 },
             )
-
+        
         return None
 
 
 class RereadDetector(Detector):
     """Detects when agent keeps re-reading the same file."""
-
+    
     category = Category.PROGRESS
     name = "reread"
     description = "Agent re-reading same file multiple times"
-
+    
     def __init__(self, threshold: int = 3, window: int = 15):
         self.threshold = threshold
         self.window = window
-
+    
     def check(self, buffer: ActionBuffer) -> Warning | None:
         if len(buffer) < self.window:
             return None
-
+        
         recent = buffer.last(self.window)
-
+        
         # Count reads per file
         read_counts: dict[str, int] = {}
         for action in recent:
             if action.is_file_read and action.file_path:
                 read_counts[action.file_path] = read_counts.get(action.file_path, 0) + 1
-
+        
         # Find worst offender
         for path, count in read_counts.items():
             if count >= self.threshold:
@@ -115,41 +106,37 @@ class RereadDetector(Detector):
                     severity=Severity.LOW if count < 5 else Severity.MEDIUM,
                     signal="reread",
                     message=f"Re-reading file: {path} ({count}x)",
-                    suggestion=(
-                        f"Reading the same file {count} times suggests the agent isn't "
-                        "retaining what it reads. The file content may be too long, or "
-                        "the agent is losing context."
-                    ),
+                    suggestion=f"Reading the same file {count} times suggests the agent isn't retaining what it reads. The file content may be too long, or the agent is losing context.",
                     details={"path": path, "count": count},
                 )
-
+        
         return None
 
 
 class ThrashDetector(Detector):
     """Detects edit→test→fail cycles on the same file."""
-
+    
     category = Category.PROGRESS
     name = "thrash"
     description = "Repeated edit→test→fail cycle"
-
+    
     def __init__(self, threshold: int = 3, window: int = 20):
         self.threshold = threshold
         self.window = window
-
+    
     def check(self, buffer: ActionBuffer) -> Warning | None:
         if len(buffer) < self.window:
             return None
-
+        
         recent = buffer.last(self.window)
-
+        
         # Track edit→bash→fail patterns per file
         file_thrash_counts: dict[str, int] = {}
-
+        
         i = 0
         while i < len(recent) - 2:
             action = recent[i]
-
+            
             # Look for: edit file → bash command → failure
             if action.is_file_edit and action.file_path:
                 # Check next few actions for bash + failure
@@ -158,9 +145,9 @@ class ThrashDetector(Detector):
                         path = action.file_path
                         file_thrash_counts[path] = file_thrash_counts.get(path, 0) + 1
                         break
-
+            
             i += 1
-
+        
         # Check for threshold
         for path, count in file_thrash_counts.items():
             if count >= self.threshold:
@@ -181,47 +168,41 @@ class ThrashDetector(Detector):
                     + "Stop editing and re-examine the approach.",
                     details={"path": path, "count": count, "last_error": last_err},
                 )
-
+        
         return None
 
 
 class StallDetector(Detector):
     """Detects when agent has stopped making progress."""
-
+    
     category = Category.PROGRESS
     name = "stall"
     description = "No meaningful progress detected"
-
+    
     def __init__(self, window: int = 15, min_edits: int = 1):
         self.window = window
         self.min_edits = min_edits
-
+    
     def check(self, buffer: ActionBuffer) -> Warning | None:
         if len(buffer) < self.window:
             return None
-
+        
         recent = buffer.last(self.window)
-
+        
         # Count productive actions
         edits = sum(1 for a in recent if a.is_file_edit)
         reads = sum(1 for a in recent if a.is_file_read)
         successful_bash = sum(1 for a in recent if a.is_bash and a.success)
-
+        
         # If lots of reads but no edits, might be stuck
         if reads > 8 and edits < self.min_edits and successful_bash < 2:
-            stalled_files = sorted(
-                {a.file_path for a in recent if a.is_file_read and a.file_path}
-            )[:5]
+            stalled_files = sorted({a.file_path for a in recent if a.is_file_read and a.file_path})[:5]
             return Warning(
                 category=self.category,
                 severity=Severity.MEDIUM,
                 signal="stall",
                 message=f"Lots of reading ({reads}), minimal writing ({edits})",
-                suggestion=(
-                    f"The agent is reading but not acting. "
-                    f"Files being read: {', '.join(stalled_files)}. "
-                    "It may be stuck deciding what to do."
-                ),
+                suggestion=f"The agent is reading but not acting. Files being read: {', '.join(stalled_files)}. It may be stuck deciding what to do.",
                 details={
                     "reads": reads,
                     "edits": edits,
@@ -229,5 +210,5 @@ class StallDetector(Detector):
                     "files_being_read": stalled_files,
                 },
             )
-
+        
         return None

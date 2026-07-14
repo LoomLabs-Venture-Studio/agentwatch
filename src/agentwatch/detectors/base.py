@@ -18,7 +18,7 @@ class Category(Enum):
     ERRORS = "errors"
     CONTEXT = "context"
     GOAL = "goal"
-
+    
     # Security categories
     CREDENTIAL = "credential"
     INJECTION = "injection"
@@ -108,11 +108,11 @@ class Warning:
     suggestion: str | None = None  # Actionable recommendation
     details: dict[str, Any] = field(default_factory=dict)
     timestamp: str | None = None
-
+    
     @property
     def emoji(self) -> str:
         return self.severity.emoji
-
+    
     @property
     def is_security(self) -> bool:
         """Check if this is a security-related warning."""
@@ -124,7 +124,7 @@ class Warning:
             Category.NETWORK,
             Category.SUPPLY_CHAIN,
         )
-
+    
     @property
     def is_health(self) -> bool:
         """Check if this is a health-related warning."""
@@ -134,7 +134,7 @@ class Warning:
             Category.CONTEXT,
             Category.GOAL,
         )
-
+    
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         d = {
@@ -153,49 +153,49 @@ class Warning:
 
 class Detector(ABC):
     """Abstract base class for all detectors."""
-
+    
     category: Category
     name: str
     description: str
-
+    
     # Whether this detector is security-focused
     is_security_detector: bool = False
-
+    
     @abstractmethod
     def check(self, buffer: ActionBuffer) -> Warning | None:
         """
         Check the action buffer for issues.
-
+        
         Returns a Warning if an issue is detected, None otherwise.
         """
         pass
-
+    
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} ({self.category.value}/{self.name})>"
 
 
 class SecurityDetector(Detector):
     """Base class for security-focused detectors."""
-
+    
     is_security_detector: bool = True
-
+    
     # Audit logging for security detectors
     def check_with_audit(self, buffer: ActionBuffer) -> tuple[Warning | None, dict[str, Any]]:
         """
         Check and return audit information.
-
+        
         Returns (warning, audit_log) tuple.
         """
         warning = self.check(buffer)
-
+        
         audit_log = {
             "detector": self.name,
             "category": self.category.value,
             "triggered": warning is not None,
             "action_count": len(buffer),
         }
-
+        
         if warning:
             audit_log["warning"] = warning.to_dict()
-
+        
         return warning, audit_log

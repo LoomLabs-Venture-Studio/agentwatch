@@ -11,11 +11,8 @@ import hashlib
 import re
 from typing import TYPE_CHECKING
 
-from agentwatch.detectors.health._window import (
-    scaled_action_window,
-    session_maturity_factor,
-)
 from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
+from agentwatch.detectors.health._window import scaled_action_window, scaled_turn_window, session_maturity_factor
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -145,13 +142,9 @@ def compute_tool_thrash(
     maturity = session_maturity_factor(turns)
     stall_score = stall_score * maturity
 
-    tool_result = MetricResult(
-        name="repeated_tool_calls", value=round(tool_score, 4), evidence=tool_ev
-    )
+    tool_result = MetricResult(name="repeated_tool_calls", value=round(tool_score, 4), evidence=tool_ev)
     err_result = MetricResult(name="repeated_errors", value=round(err_score, 4), evidence=err_ev)
-    stall_result = MetricResult(
-        name="turns_since_progress", value=round(stall_score, 4), evidence=stall_ev
-    )
+    stall_result = MetricResult(name="turns_since_progress", value=round(stall_score, 4), evidence=stall_ev)
 
     # Weighted combination
     combined = 0.35 * tool_score + 0.35 * err_score + 0.30 * stall_score
