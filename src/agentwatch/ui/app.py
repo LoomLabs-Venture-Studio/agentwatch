@@ -344,15 +344,21 @@ class AgentWatchApp(App):
         # Initialize components
         from agentwatch.detectors import create_registry
         from agentwatch.health.rot import RotScorer
-        from agentwatch.parser import ActionBuffer, LogWatcher
+        from agentwatch.parser import ActionBuffer, AiderLogWatcher, LogWatcher
 
         self._buffer = ActionBuffer()
         mode = "all" if self.security_mode else "health"
         self._detector_registry = create_registry(mode=mode)
         self._rot_scorer = RotScorer()
-        
-        # Set up log watcher
-        self.watcher = LogWatcher(self.log_path)
+
+        # Set up log watcher. .md is an Aider Markdown chat-history transcript
+        # (PLAYBOOK Sprint 6 item 6 / Sprint 7 -- live tailing); everything
+        # else is JSONL (Claude Code/Moltbot/Codex), handled by LogWatcher's
+        # own format auto-detection.
+        if self.log_path.suffix == ".md":
+            self.watcher = AiderLogWatcher(self.log_path)
+        else:
+            self.watcher = LogWatcher(self.log_path)
         self.watcher.on_action(self._on_action)
         
         # Start watching in background

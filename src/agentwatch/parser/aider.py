@@ -6,7 +6,7 @@ PLAYBOOK.md "Sprint 6 -- Aider Log Parser, Phase 2"):
     ``# aider chat started at`` headers is split into independent
     per-resume segments, each with its own ``session_id`` and its own
     ordinal turn numbering restarting at 0 (see `_split_sessions`,
-    `_parse_aider_sessions`).
+    `parse_aider_sessions`).
   - Analytics session-boundary detection: `parse_aider_log()` no longer
     pairs ``message_send`` events to turns by blind whole-file ordinal
     position. Events are first partitioned into the Markdown session whose
@@ -141,7 +141,7 @@ class _Turn:
 
 
 @dataclass
-class _Session:
+class AiderSession:
     """One resumed-session segment of a `.aider.chat.history.md` file.
 
     A file can contain multiple `# aider chat started at` headers if the
@@ -295,15 +295,15 @@ def _extract_edit_blocks(body: str) -> list[dict]:
     return blocks
 
 
-def _parse_aider_sessions(path: Path) -> list[_Session]:
+def parse_aider_sessions(path: Path) -> list[AiderSession]:
     """Parse a `.aider.chat.history.md` transcript into per-resume
-    `_Session` segments (see `_split_sessions`), each with its own
+    `AiderSession` segments (see `_split_sessions`), each with its own
     `session_id` and ordinal turn numbering that restarts at 0.
     """
     text = path.read_text(encoding="utf-8", errors="ignore")
     file_mtime = datetime.fromtimestamp(path.stat().st_mtime)
 
-    sessions: list[_Session] = []
+    sessions: list[AiderSession] = []
     for segment in _split_sessions(text):
         session_start = _parse_session_start(segment) or file_mtime
         session_id = f"aider:{path.name}:{session_start.isoformat()}"
@@ -354,7 +354,7 @@ def _parse_aider_sessions(path: Path) -> list[_Session]:
                 ))
 
         sessions.append(
-            _Session(session_id=session_id, session_start=session_start, actions=actions)
+            AiderSession(session_id=session_id, session_start=session_start, actions=actions)
         )
 
     return sessions
@@ -374,7 +374,7 @@ def parse_aider_markdown(path: Path) -> list[Action]:
     A single-header (or headerless) file produces exactly one segment, so
     this is a strict superset of the original single-session behavior.
     """
-    return [action for session in _parse_aider_sessions(path) for action in session.actions]
+    return [action for session in parse_aider_sessions(path) for action in session.actions]
 
 
 def _read_analytics_entries(path: Path) -> list[dict]:
@@ -406,7 +406,7 @@ def parse_aider_analytics(path: Path) -> list[dict]:
 
 
 def _session_time_windows(
-    sessions: list[_Session], exit_times: list[float]
+    sessions: list[AiderSession], exit_times: list[float]
 ) -> list[tuple[float, float]]:
     """Compute a (lower, upper) Unix-epoch-seconds window for each session,
     used to partition analytics `message_send` events by which Markdown
@@ -465,7 +465,7 @@ def parse_aider_log(markdown_path: Path, analytics_path: Path | None = None) -> 
     shortest-wins behavior, same as before, but now also emit a
     `WARNING`-level log line so the mismatch is visible instead of silent.
     """
-    sessions = _parse_aider_sessions(markdown_path)
+    sessions = parse_aider_sessions(markdown_path)
     all_actions = [action for session in sessions for action in session.actions]
     if analytics_path is None or not analytics_path.exists():
         return all_actions
