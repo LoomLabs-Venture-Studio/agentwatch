@@ -567,15 +567,23 @@ def redact_log_file(log_path: Path) -> int:
     for line in lines:
         new_line = line
         for pattern, _label in _SECRET_PATTERNS:
-            # Replace all occurrences of each pattern in this line
+            # Replace all occurrences of each pattern in this line. Track the
+            # actual redaction count ourselves rather than relying on
+            # re.subn()'s return value, which counts every regex match --
+            # including ones where _redact() recognized a false positive and
+            # returned the text unchanged.
+            actual_count = 0
+
             def _redact(m: re.Match) -> str:
+                nonlocal actual_count
                 matched = m.group(0)
                 if _is_false_positive(matched):
                     return matched  # leave placeholders/test data alone
+                actual_count += 1
                 return "[REDACTED]"
 
-            new_line, count = pattern.subn(_redact, new_line)
-            total_replacements += count
+            new_line = pattern.sub(_redact, new_line)
+            total_replacements += actual_count
         new_lines.append(new_line)
 
     if total_replacements > 0:
