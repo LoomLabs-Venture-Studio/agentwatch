@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,7 @@ from agentwatch.cursor_discovery import (
     _file_uri_to_path,
     _synthetic_pid,
     build_workspace_map,
+    default_cursor_user_dir,
     find_cursor_agents,
 )
 
@@ -107,6 +109,54 @@ class TestFileUriToPath:
 
     def test_non_file_uri_returns_none(self):
         assert _file_uri_to_path("https://example.com") is None
+
+
+# ---------------------------------------------------------------------------
+# default_cursor_user_dir -- per-OS path resolution.
+#
+# Sprint 9 (2026-07-14): fetched VS Code's own real getDefaultUserDataPath
+# (src/vs/platform/environment/node/userDataPath.ts, microsoft/vscode @
+# main) to check this function against, rather than leaving macOS/Linux as
+# an unverified "same convention" guess. macOS matched exactly. Linux did
+# not: the real source respects XDG_CONFIG_HOME before falling back to
+# ~/.config, which this function previously ignored.
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultCursorUserDir:
+    def test_windows_uses_appdata_env_var(self, monkeypatch):
+        monkeypatch.setattr(cursor_discovery.sys, "platform", "win32")
+        monkeypatch.setenv("APPDATA", r"C:\Users\zaid\AppData\Roaming")
+        result = default_cursor_user_dir()
+        assert result == Path(r"C:\Users\zaid\AppData\Roaming") / "Cursor" / "User"
+
+    def test_windows_falls_back_when_appdata_unset(self, monkeypatch):
+        monkeypatch.setattr(cursor_discovery.sys, "platform", "win32")
+        monkeypatch.delenv("APPDATA", raising=False)
+        result = default_cursor_user_dir()
+        assert result == Path.home() / "AppData" / "Roaming" / "Cursor" / "User"
+
+    def test_macos_matches_real_vscode_getdefaultuserdatapath(self, monkeypatch):
+        """join(homedir(), 'Library', 'Application Support') + productName,
+        confirmed directly against the real VS Code source (see class
+        docstring) -- not just "same convention as other forks"."""
+        monkeypatch.setattr(cursor_discovery.sys, "platform", "darwin")
+        result = default_cursor_user_dir()
+        assert result == Path.home() / "Library" / "Application Support" / "Cursor" / "User"
+
+    def test_linux_respects_xdg_config_home_when_set(self, monkeypatch):
+        """The real bug this sprint fixed: XDG_CONFIG_HOME was previously
+        ignored entirely on Linux."""
+        monkeypatch.setattr(cursor_discovery.sys, "platform", "linux")
+        monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg/config")
+        result = default_cursor_user_dir()
+        assert result == Path("/custom/xdg/config") / "Cursor" / "User"
+
+    def test_linux_falls_back_to_dot_config_when_xdg_unset(self, monkeypatch):
+        monkeypatch.setattr(cursor_discovery.sys, "platform", "linux")
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        result = default_cursor_user_dir()
+        assert result == Path.home() / ".config" / "Cursor" / "User"
 
     def test_posix_style_uri_keeps_leading_slash(self):
         result = _file_uri_to_path("file:///home/zaid/project")

@@ -62,9 +62,27 @@ def default_cursor_user_dir() -> Path:
     """Resolve Cursor's per-OS ``User`` storage directory.
 
     Only the Windows path (``%APPDATA%\\Cursor\\User``) has been verified
-    against a real install (this machine) -- the macOS/Linux paths follow
-    the same convention every other VS Code fork uses (Cursor is one), but
-    are not independently confirmed the way the Windows path is.
+    against a real install (this machine). The macOS/Linux paths are not
+    independently confirmed against a live Cursor install the way the
+    Windows path is, but as of Sprint 9 (2026-07-14) they're no longer a
+    same-convention guess either: fetched VS Code's own real
+    ``getDefaultUserDataPath`` (``src/vs/platform/environment/node/
+    userDataPath.ts``, github.com/microsoft/vscode @ main -- Cursor is a
+    VS Code fork and, absent evidence it stripped this generic per-OS
+    switch, inherits it) and matched this function against it exactly:
+
+    - macOS: ``join(homedir(), 'Library', 'Application Support')`` --
+      confirmed identical to what this function already returned.
+    - Linux: ``process.env['XDG_CONFIG_HOME'] || join(homedir(), '.config')``
+      -- this function previously hardcoded ``~/.config`` unconditionally,
+      ignoring ``XDG_CONFIG_HOME``. Fixed to match the real source.
+
+    Deliberately NOT implemented (real features of the source read above,
+    but Cursor-specific env var names/behavior are unconfirmed, so
+    replicating them would be guessing, not confirming): VS Code's
+    ``VSCODE_PORTABLE``/``VSCODE_APPDATA`` overrides and portable-mode
+    support. If Cursor forks these under different env var names (e.g.
+    ``CURSOR_PORTABLE``), that's unconfirmed and out of scope here.
     """
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA")
@@ -72,7 +90,9 @@ def default_cursor_user_dir() -> Path:
         return base / "Cursor" / "User"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "Cursor" / "User"
-    return Path.home() / ".config" / "Cursor" / "User"
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg_config_home) if xdg_config_home else Path.home() / ".config"
+    return base / "Cursor" / "User"
 
 
 def _file_uri_to_path(uri: str) -> Path | None:
