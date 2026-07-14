@@ -9,9 +9,17 @@ from pathlib import Path
 import click
 
 from agentwatch.detectors import create_registry
+from agentwatch.detectors.base import Warning
 from agentwatch.discovery import AgentProcess, AgentTeam, find_running_agents, build_agent_tree, build_teams
 from agentwatch.health import calculate_health, calculate_security_score
+from agentwatch.llm import (
+    DEFAULT_OLLAMA_MODEL,
+    MAX_WARNINGS_TO_ASSESS,
+    LlmUnavailableError,
+    OllamaAnalyzer,
+)
 from agentwatch.parser import ActionBuffer, find_latest_session, parse_file, find_log_files
+from agentwatch.siem import SiemExportError, SiemLogger
 from agentwatch.themes import (
     ascii_safe,
     get_theme,
@@ -19,6 +27,84 @@ from agentwatch.themes import (
     security_status_from_score,
     set_theme,
 )
+
+
+def _export_siem_log(
+    siem_log: Path,
+    warnings: list[Warning],
+    buffer: ActionBuffer,
+    *,
+    report_type: str,
+    score: float,
+) -> None:
+    """Append *warnings* + a run summary to *siem_log* as JSON-lines.
+
+    Exits the process with a clear error if the `siem` extra isn't
+    installed, rather than silently skipping export the caller explicitly
+    asked for.
+    """
+    session_id = buffer.actions[0].session_id if buffer.actions else None
+    try:
+        with SiemLogger(siem_log, session_id=session_id) as siem:
+            for warning in warnings:
+                siem.log_warning(warning)
+            siem.log_report_summary(report_type, score, len(warnings))
+    except SiemExportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+def _run_llm_assessment(warnings: list[Warning], llm_model: str) -> None:
+    """Best-effort Tier-2 triage of up to the first `MAX_WARNINGS_TO_ASSESS`
+    *warnings*, mutating `warning.details["llm_assessment"]` in place.
+
+    Deliberately never raises out to the caller: Tier 2 being unavailable
+    (Ollama not running, model not pulled) or a single assessment call
+    failing must never fail the surrounding `check`/`security-scan` run --
+    it degrades to a printed warning and Tier-1-only results, matching this
+    feature's "opt-in enrichment, not a dependency" design (see
+    `llm.py`'s module docstring).
+    """
+    try:
+        analyzer = OllamaAnalyzer(model=llm_model)
+        analyzer.check_available()
+    except LlmUnavailableError as exc:
+        click.echo(f"  (Tier-2 LLM analysis skipped: {exc})", err=True)
+        return
+
+    assessed = 0
+    for warning in warnings:
+        if assessed >= MAX_WARNINGS_TO_ASSESS:
+            break
+        try:
+            assessment = analyzer.assess_warning(warning)
+        except Exception as exc:
+            click.echo(f"  (Tier-2 LLM assessment failed for one warning: {exc})", err=True)
+            continue
+        warning.details["llm_assessment"] = assessment.to_dict()
+        assessed += 1
+
+
+def _print_llm_assessments(warnings: list[Warning]) -> None:
+    """Print a dedicated section for any warnings carrying a Tier-2
+    `llm_assessment` (set by `_run_llm_assessment`)."""
+    assessed = [w for w in warnings if "llm_assessment" in w.details]
+    if not assessed:
+        return
+
+    click.echo()
+    click.echo(click.style("  TIER-2 LLM ASSESSMENT (local Ollama, advisory only)", bold=True))
+    click.echo("  " + "-" * 48)
+    for w in assessed:
+        verdict = w.details["llm_assessment"]
+        ltp = verdict["likely_true_positive"]
+        verdict_label = (
+            "likely real" if ltp is True else "likely false positive" if ltp is False else "unclear"
+        )
+        click.echo(f"  [{w.signal}] {verdict_label} ({verdict['confidence']} confidence)")
+        if verdict["rationale"]:
+            click.echo(f"      {verdict['rationale']}")
+    click.echo()
 
 
 def print_health_report(report, security_mode: bool = False) -> None:
@@ -165,7 +251,35 @@ def cli(theme: str):
     is_flag=True,
     help="Output as JSON",
 )
-def check(log: Path | None, analytics_log: Path | None, security: bool, json_output: bool):
+@click.option(
+    "--siem-log",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Append findings as JSON-lines to this file for SIEM ingestion "
+         "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
+)
+@click.option(
+    "--llm",
+    is_flag=True,
+    help="Enable Tier-2 semantic triage of warnings via a local Ollama model "
+         "(requires the 'llm' extra and a running `ollama serve`; degrades "
+         "to Tier-1-only if unavailable)",
+)
+@click.option(
+    "--llm-model",
+    default=DEFAULT_OLLAMA_MODEL,
+    show_default=True,
+    help="Local Ollama model to use for --llm",
+)
+def check(
+    log: Path | None,
+    analytics_log: Path | None,
+    security: bool,
+    json_output: bool,
+    siem_log: Path | None,
+    llm: bool,
+    llm_model: str,
+):
     """Run a one-time health check on agent logs."""
     # Find log file
     if log is None:
@@ -179,28 +293,40 @@ def check(log: Path | None, analytics_log: Path | None, security: bool, json_out
     buffer = ActionBuffer()
     for action in parse_file(log, analytics_log=analytics_log):
         buffer.add(action)
-    
+
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
         sys.exit(1)
-    
+
     # Create registry and run checks
     mode = "all" if security else "health"
     registry = create_registry(mode=mode)
     warnings = registry.check_all(buffer)
-    
-    # Calculate scores
+
+    # Calculate scores (Tier-1 only -- LLM assessment below is advisory
+    # enrichment applied to warning.details after scoring, never before)
     report = calculate_health(warnings, include_security=security)
-    
+
+    if llm:
+        _run_llm_assessment(warnings, llm_model)
+
+    if siem_log is not None:
+        _export_siem_log(
+            siem_log, warnings, buffer, report_type="health", score=report.overall_score
+        )
+
     if json_output:
         click.echo(json.dumps(report.to_dict(), indent=2))
     else:
         print_health_report(report, security_mode=security)
-        
+
         # Extra security output
         if security and report.security_warnings:
             print_security_alert(report.security_warnings)
-    
+
+        if llm:
+            _print_llm_assessments(warnings)
+
     # Exit code based on score thresholds (theme-independent)
     # < 40 = level_3 (critical/stuck) -> exit 2
     # < 60 = level_2 (warning/spinning) -> exit 1
@@ -482,7 +608,34 @@ def list_detectors(security: bool):
     is_flag=True,
     help="Output as JSON",
 )
-def security_scan(log: Path | None, analytics_log: Path | None, json_output: bool):
+@click.option(
+    "--siem-log",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Append findings as JSON-lines to this file for SIEM ingestion "
+         "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
+)
+@click.option(
+    "--llm",
+    is_flag=True,
+    help="Enable Tier-2 semantic triage of warnings via a local Ollama model "
+         "(requires the 'llm' extra and a running `ollama serve`; degrades "
+         "to Tier-1-only if unavailable)",
+)
+@click.option(
+    "--llm-model",
+    default=DEFAULT_OLLAMA_MODEL,
+    show_default=True,
+    help="Local Ollama model to use for --llm",
+)
+def security_scan(
+    log: Path | None,
+    analytics_log: Path | None,
+    json_output: bool,
+    siem_log: Path | None,
+    llm: bool,
+    llm_model: str,
+):
     """Run a security-focused scan on agent logs."""
     if log is None:
         log = find_latest_session()
@@ -495,17 +648,23 @@ def security_scan(log: Path | None, analytics_log: Path | None, json_output: boo
     buffer = ActionBuffer()
     for action in parse_file(log, analytics_log=analytics_log):
         buffer.add(action)
-    
+
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
         sys.exit(1)
-    
+
     # Run only security detectors
     registry = create_registry(mode="security")
     warnings = registry.check_all(buffer)
-    
+
     security_score = calculate_security_score(warnings)
-    
+
+    if llm:
+        _run_llm_assessment(warnings, llm_model)
+
+    if siem_log is not None:
+        _export_siem_log(siem_log, warnings, buffer, report_type="security", score=security_score)
+
     if json_output:
         output = {
             "security_score": security_score,
@@ -541,7 +700,10 @@ def security_scan(log: Path | None, analytics_log: Path | None, json_output: boo
         
         if warnings:
             print_security_alert(warnings)
-    
+
+        if llm:
+            _print_llm_assessments(warnings)
+
     # Exit code
     if security_score < 50:
         sys.exit(2)
