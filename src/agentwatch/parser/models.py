@@ -263,14 +263,6 @@ class Turn:
     def edited_files(self) -> set[str]:
         return {a.file_path for a in self.actions if a.is_file_edit and a.file_path}
 
-    @property
-    def touched_files(self) -> set[str]:
-        return {a.file_path for a in self.actions if a.file_path}
-
-    @property
-    def failed_actions(self) -> list[Action]:
-        return [a for a in self.actions if not a.success]
-
 
 def turns_from_actions(actions: list[Action]) -> list[Turn]:
     """Build a list of Turns from a flat action sequence.
