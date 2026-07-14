@@ -163,7 +163,7 @@ class FileChurnDetector(Detector):
             severity=Severity.HIGH if worst_count >= 6 else Severity.MEDIUM,
             signal="file_churn",
             message=f"Edited {worst_file} {worst_count}x with no successful test in between",
-            suggestion=f"Stop editing and re-read the file from scratch. The repeated edits suggest a misunderstanding of the code."
+            suggestion="Stop editing and re-read the file from scratch. The repeated edits suggest a misunderstanding of the code."
             + (f" Last error: \"{last_error}\"" if last_error else ""),
             details={
                 "file": worst_file,

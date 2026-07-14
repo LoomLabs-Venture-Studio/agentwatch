@@ -59,7 +59,7 @@ class PrivilegeEscalationDetector(SecurityDetector):
                     category=self.category,
                     severity=Severity.CRITICAL,
                     signal="privilege_escalation",
-                    message=f"Privilege escalation command detected",
+                    message="Privilege escalation command detected",
                     details={
                         "command": action.command[:100],  # Truncate for safety
                         "tool": action.tool_name,
