@@ -26,12 +26,19 @@ from agentwatch.themes import (
 STATUS_THRESHOLDS = (80, 60, 40)  # level_0 / level_1 / level_2 / level_3
 
 
-def STATUS_LABELS() -> tuple[str, str, str, str]:
+# Intentionally constant-style-named (not accidental camelCase drift):
+# STATUS_LABELS is re-exported as a public API constant in
+# health/__init__.py's __all__ -- historically a plain tuple, kept
+# SCREAMING_CASE after becoming theme-dependent to avoid a breaking
+# rename for any caller already doing `from agentwatch.health import
+# STATUS_LABELS`. _STATUS_EMOJI is its private, unexported counterpart,
+# kept in the same casing style for consistency with its public sibling.
+def STATUS_LABELS() -> tuple[str, str, str, str]:  # noqa: N802
     """Get status labels from current theme."""
     return get_status_labels()
 
 
-def _STATUS_EMOJI() -> dict[str, str]:
+def _STATUS_EMOJI() -> dict[str, str]:  # noqa: N802
     """Get status emojis from current theme."""
     return get_status_emojis()
 
