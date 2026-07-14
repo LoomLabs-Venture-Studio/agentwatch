@@ -45,25 +45,45 @@ extraction exactly: ``id: Option``, ``name: String``,
 ``arguments: String`` (JSON-encoded — confirms ``_coerce_json``'s
 string-or-already-parsed handling), ``call_id: String``.
 
-**New, well-evidenced follow-up found in the same pass, NOT implemented
-here (documented, not silently dropped)**: ``FunctionCallOutputPayload``'s
-real ``Deserialize`` impl hardcodes ``success: None`` and its wire shape is
-only ever a plain string or a content-item array — never an object with
+**Sprint 9 (2026-07-14) implemented the ExecCommandEnd/PatchApplyEnd
+correlation Sprint 8 scoped out.** ``FunctionCallOutputPayload``'s real
+``Deserialize`` impl hardcodes ``success: None`` and its wire shape is only
+ever a plain string or a content-item array — never an object with
 ``success``/``error`` keys, so ``function_call_output`` carries no error
-signal at all (see ``_extract_function_call_output``'s docstring for the
-correction this caused). The REAL success/failure signal for exec-type
-calls is a separate ``event_msg`` event, ``ExecCommandEnd`` — real fields
-``call_id`` (same correlation id as the ``FunctionCall``), ``exit_code:
-i32``, ``status: Completed | Failed | Declined``, plus real ``stdout``/
-``stderr``/``formatted_output``. Wiring this in would mean correlating a
-SECOND independent event family by ``call_id`` into ``CodexParser``'s
-existing single-pending-dict model — a real architectural change, not a
-one-line fix, and genuine open questions remain even with this source
-access (does ``exec_command_end`` always co-occur with
-``function_call_output`` for the same call, or only for shell-type calls;
-what carries success for ``apply_patch``/``PatchApplyEnd``, MCP tool calls,
-etc.). Recommended as a well-scoped next sprint, not attempted here per
-this sprint's "best-effort hardening, no live install" instructions.
+signal at all (see ``_extract_function_call_output``'s docstring). The REAL
+success/failure signal for exec-type calls is a separate ``event_msg``
+event, ``ExecCommandEnd`` (``codex-rs/protocol/src/protocol.rs``,
+re-fetched and re-confirmed for this sprint: ``EventMsg`` is
+``#[serde(tag = "type", rename_all = "snake_case")]``, so a rollout line
+carrying it looks like ``{"type": "event_msg", "payload": {"type":
+"exec_command_end", "call_id": ..., "exit_code": ..., "status": ...}}``) —
+real fields ``call_id: String`` (same correlation id as the
+``FunctionCall``), ``exit_code: i32``, ``status: ExecCommandStatus``
+(``Completed | Failed | Declined``, ``rename_all = "snake_case"`` so wire
+values are ``"completed"``/``"failed"``/``"declined"``), plus real
+``stdout``/``stderr``/``formatted_output``. The parallel signal for
+``apply_patch``-type calls, also newly confirmed this sprint, is
+``PatchApplyEnd``: ``PatchApplyEndEvent { call_id: String, success: bool,
+stdout: String, stderr: String, ... }`` — directly answers Sprint 8's open
+question of "what carries success for apply_patch" (a plain, non-optional
+``success: bool``, not a status enum).
+
+``CodexParser`` now correlates this second event family by ``call_id``
+into the same ``_pending`` dict ``function_call``/``function_call_output``
+already use (see ``_extract_exec_command_end``/``_extract_patch_apply_end``
+and ``_PendingCall.resolved_by_event_msg`` below for how the two signals
+are reconciled without either duplicating or clobbering each other).
+
+**Still genuinely open, even with this source access**: whether
+``exec_command_end``/``patch_apply_end`` always co-occurs with a
+``function_call_output`` for the same call, or can arrive alone with no
+``function_call_output`` ever following, is not confirmed without a live
+capture. The implementation handles both cases without guessing which is
+real (see docstrings below), but that's a defensive design choice, not a
+confirmed fact about the wire protocol. MCP tool call success/failure
+(``McpToolCallEnd``, seen in the ``EventMsg`` enum but not extracted here)
+remains unaddressed — out of scope for this sprint, flagged for a future
+one alongside Open Questions #2/#3/#5.
 """
 
 from __future__ import annotations
@@ -102,11 +122,27 @@ class _FunctionCallOutput:
 
 
 @dataclass
+class _ExecResult:
+    """Extracted fields from an ExecCommandEnd or PatchApplyEnd event_msg
+    payload -- the real success/failure signal for exec-type and
+    apply_patch-type calls (see module docstring)."""
+
+    call_id: str | None
+    is_error: bool
+    error_text: str | None
+
+
+@dataclass
 class _PendingCall:
     """A function_call seen but not yet matched to its output."""
 
     action: Action
     call_id: str
+    # Set once an ExecCommandEnd/PatchApplyEnd event_msg has supplied a real
+    # success/failure signal for this call, so the later (and strictly
+    # weaker -- see _extract_function_call_output) function_call_output
+    # signal doesn't clobber it back to a guessed success=True.
+    resolved_by_event_msg: bool = False
 
 
 def classify_codex_tool(name: str) -> ToolType:
@@ -233,9 +269,11 @@ def _extract_function_call_output(payload: dict, era: str) -> _FunctionCallOutpu
     to read from *this* event) rather than a guessed heuristic on a string/
     list body. The REAL success/failure signal for exec-type calls is a
     separate, correlatable-by-``call_id`` ``event_msg`` (``ExecCommandEnd``,
-    carrying ``exit_code``/``status: Completed|Failed|Declined``) not yet
-    wired into this parser — see module docstring's Open Questions section
-    for the follow-up this unblocks.
+    carrying ``exit_code``/``status: Completed|Failed|Declined``) — wired in
+    as of Sprint 9 via ``_extract_exec_command_end``/``CodexParser``'s
+    ``resolved_by_event_msg`` tracking, which is why this function's
+    always-``False`` guess is safe: it only wins when nothing better showed
+    up first.
     """
     del era  # reserved for future per-era divergence
     if not isinstance(payload, dict) or payload.get("type") != "function_call_output":
@@ -243,6 +281,75 @@ def _extract_function_call_output(payload: dict, era: str) -> _FunctionCallOutpu
 
     call_id = payload.get("call_id") or payload.get("id")
     return _FunctionCallOutput(call_id=call_id, is_error=False, error_text=None)
+
+
+def _extract_exec_command_end(payload: dict) -> _ExecResult | None:
+    """Extract an ``ExecCommandEnd`` ``event_msg`` payload's real
+    success/failure signal for exec-type (``shell``) calls.
+
+    **Sprint 9 (2026-07-14), direct primary-source evidence**: fetched the
+    real, current ``codex-rs/protocol/src/protocol.rs`` from
+    github.com/openai/codex @ main. ``ExecCommandEndEvent`` has non-optional
+    ``call_id: String``, ``exit_code: i32``, ``status: ExecCommandStatus``
+    (``Completed | Failed | Declined``, wire values ``"completed"``/
+    ``"failed"``/``"declined"`` per its ``rename_all = "snake_case"``), plus
+    ``stdout``/``stderr``/``formatted_output``. ``status`` is the primary
+    signal; a numeric ``exit_code`` fallback covers a malformed/missing
+    ``status`` defensively without guessing when both are absent (real wire
+    data always has both, per the non-optional Rust fields).
+    """
+    if not isinstance(payload, dict) or payload.get("type") != "exec_command_end":
+        return None
+
+    call_id = payload.get("call_id")
+    status = payload.get("status")
+    exit_code = payload.get("exit_code")
+    if status in ("failed", "declined"):
+        is_error = True
+    elif status == "completed":
+        is_error = False
+    elif isinstance(exit_code, int):
+        is_error = exit_code != 0
+    else:
+        # No real signal at all (malformed/test data) -- don't guess failure.
+        is_error = False
+
+    error_text = None
+    if is_error:
+        detail = (payload.get("stderr") or payload.get("formatted_output") or "").strip()
+        prefix = f"exit {exit_code}: " if isinstance(exit_code, int) else ""
+        error_text = (prefix + detail[:200]) or None
+
+    return _ExecResult(call_id=call_id, is_error=is_error, error_text=error_text)
+
+
+def _extract_patch_apply_end(payload: dict) -> _ExecResult | None:
+    """Extract a ``PatchApplyEnd`` ``event_msg`` payload's real
+    success/failure signal for ``apply_patch``-type calls.
+
+    **Sprint 9 (2026-07-14), direct primary-source evidence**: fetched the
+    real, current ``codex-rs/protocol/src/protocol.rs`` from
+    github.com/openai/codex @ main. ``PatchApplyEndEvent`` has a
+    non-optional ``call_id: String``, plain ``success: bool`` (not a status
+    enum like ``ExecCommandEnd``), plus ``stdout``/``stderr``. This directly
+    answers the open question Sprint 8 flagged ("what carries success for
+    apply_patch") -- it's a plain boolean, no status-enum branching needed.
+    """
+    if not isinstance(payload, dict) or payload.get("type") != "patch_apply_end":
+        return None
+
+    call_id = payload.get("call_id")
+    success = payload.get("success")
+    # Real wire data always has this field (non-optional in the Rust
+    # struct); missing/non-bool is malformed/test data -- don't guess failure.
+    is_error = success is False
+
+    error_text = None
+    if is_error:
+        detail = (payload.get("stderr") or "").strip()
+        error_text = detail[:200] or None
+
+    return _ExecResult(call_id=call_id, is_error=is_error, error_text=error_text)
 
 
 def _extract_token_count(payload: dict, session_id: str | None, entry: dict) -> Action | None:
@@ -394,9 +501,31 @@ class CodexParser:
                         raw=entry,
                     )
                 ]
-            pending.action.success = not output.is_error
-            pending.action.error_message = output.error_text
+            if not pending.resolved_by_event_msg:
+                pending.action.success = not output.is_error
+                pending.action.error_message = output.error_text
             return [pending.action]
+
+        exec_result = _extract_exec_command_end(payload) or _extract_patch_apply_end(payload)
+        if exec_result is not None:
+            pending = self._pending.get(exec_result.call_id) if exec_result.call_id else None
+            if pending is not None:
+                # Update in place, don't pop/yield yet: function_call_output
+                # (or flush() at end-of-stream, if that never arrives) is
+                # still the actual yield point -- see module docstring's
+                # open question on whether function_call_output always
+                # follows. Marking resolved_by_event_msg protects this real
+                # signal from being overwritten by function_call_output's
+                # always-False guess when it does arrive later.
+                pending.action.success = not exec_result.is_error
+                pending.action.error_message = exec_result.error_text
+                pending.resolved_by_event_msg = True
+            # No matching pending call: already resolved and popped by an
+            # earlier function_call_output, or this call started before the
+            # watched stream began. Nothing to correlate -- don't synthesize
+            # a standalone Action the way the function_call_output-orphan
+            # case does, since this event alone carries no tool name.
+            return []
 
         token_action = _extract_token_count(payload, self.session_id, entry)
         if token_action is not None:

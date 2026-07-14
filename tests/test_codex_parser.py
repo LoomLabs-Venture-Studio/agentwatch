@@ -343,6 +343,209 @@ class TestCodexParser:
 
 
 # ---------------------------------------------------------------------------
+# Sprint 9: ExecCommandEnd / PatchApplyEnd correlation.
+#
+# codex-rs/protocol/src/protocol.rs (re-fetched and confirmed 2026-07-14):
+# EventMsg is #[serde(tag = "type", rename_all = "snake_case")], so a
+# rollout line carrying one looks like {"type": "event_msg", "payload":
+# {"type": "exec_command_end", "call_id": ..., "exit_code": ..., "status":
+# ...}} -- same nesting shape as the already-tested token_count event_msg.
+# ---------------------------------------------------------------------------
+
+
+def _shell_call_setup(parser: CodexParser) -> None:
+    """session_meta -> function_call call_1 ("shell"), buffered/pending."""
+    parser.parse_line(CODEX_FIXTURE_LINES[0])  # session_meta
+    parser.parse_line(CODEX_FIXTURE_LINES[2])  # function_call call_1
+
+
+def _exec_command_end(call_id: str, status: str, exit_code: int, **extra) -> dict:
+    return {
+        "timestamp": "2026-07-12T10:00:03Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "exec_command_end",
+            "call_id": call_id,
+            "exit_code": exit_code,
+            "status": status,
+            "stdout": "",
+            "stderr": "",
+            "formatted_output": "",
+            **extra,
+        },
+    }
+
+
+def _patch_apply_end(call_id: str, success: bool, **extra) -> dict:
+    return {
+        "timestamp": "2026-07-12T10:00:03Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "patch_apply_end",
+            "call_id": call_id,
+            "success": success,
+            "stdout": "",
+            "stderr": "",
+            **extra,
+        },
+    }
+
+
+class TestExecCommandEndCorrelation:
+    def test_completed_status_marks_pending_call_success_not_yielded_yet(self):
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        result = parser.parse_line(_exec_command_end("call_1", "completed", 0))
+        assert result == []  # ExecCommandEnd updates in place, doesn't yield
+        assert parser._pending["call_1"].action.success is True
+        assert parser._pending["call_1"].resolved_by_event_msg is True
+
+    def test_failed_status_marks_pending_call_failed_with_error_message(self):
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        parser.parse_line(
+            _exec_command_end("call_1", "failed", 1, stderr="permission denied")
+        )
+        pending = parser._pending["call_1"]
+        assert pending.action.success is False
+        assert "permission denied" in pending.action.error_message
+        assert "exit 1" in pending.action.error_message
+
+    def test_declined_status_marks_pending_call_failed(self):
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        parser.parse_line(_exec_command_end("call_1", "declined", 0))
+        assert parser._pending["call_1"].action.success is False
+
+    def test_missing_status_falls_back_to_exit_code(self):
+        entry = _exec_command_end("call_1", "completed", 7)
+        del entry["payload"]["status"]
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        parser.parse_line(entry)
+        assert parser._pending["call_1"].action.success is False
+
+    def test_function_call_output_does_not_clobber_exec_command_end_failure(self):
+        """The real bug this sprint fixes: function_call_output's honest-
+        but-uninformative is_error=False must not overwrite a real failure
+        signal that already arrived via ExecCommandEnd."""
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        parser.parse_line(_exec_command_end("call_1", "failed", 1, stderr="boom"))
+
+        output_line = {
+            "timestamp": "2026-07-12T10:00:04Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "some output text",
+            },
+        }
+        result = parser.parse_line(output_line)
+        assert len(result) == 1
+        assert result[0].success is False
+        assert "boom" in result[0].error_message
+        assert "call_1" not in parser._pending
+
+    def test_function_call_output_still_applies_when_no_event_msg_arrived(self):
+        """Regression: calls with no ExecCommandEnd at all (e.g. non-exec
+        tools) must keep the pre-Sprint-9 function_call_output behavior."""
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        output_line = {
+            "timestamp": "2026-07-12T10:00:04Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "file1\nfile2",
+            },
+        }
+        result = parser.parse_line(output_line)
+        assert result[0].success is True
+        assert result[0].error_message is None
+
+    def test_no_matching_pending_call_yields_nothing(self):
+        parser = CodexParser()
+        parser.parse_line(CODEX_FIXTURE_LINES[0])  # session_meta only
+        result = parser.parse_line(_exec_command_end("call_never_seen", "failed", 1))
+        assert result == []
+        assert parser._pending == {}
+
+    def test_flush_yields_call_resolved_only_by_exec_command_end(self):
+        """Open question flagged in the module docstring: exec_command_end
+        may arrive with no function_call_output ever following. The call
+        must still flush out at end-of-stream with the correct signal."""
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        parser.parse_line(_exec_command_end("call_1", "failed", 2, stderr="oops"))
+        flushed = parser.flush()
+        assert len(flushed) == 1
+        assert flushed[0].success is False
+        assert "oops" in flushed[0].error_message
+
+
+class TestPatchApplyEndCorrelation:
+    def test_success_true_marks_pending_call_success(self):
+        parser = CodexParser()
+        parser.parse_line(CODEX_FIXTURE_LINES[0])  # session_meta
+        parser.parse_line(CODEX_FIXTURE_LINES[5])  # function_call call_2 apply_patch
+        parser.parse_line(_patch_apply_end("call_2", True))
+        assert parser._pending["call_2"].action.success is True
+        assert parser._pending["call_2"].resolved_by_event_msg is True
+
+    def test_success_false_marks_pending_call_failed_with_stderr(self):
+        parser = CodexParser()
+        parser.parse_line(CODEX_FIXTURE_LINES[0])
+        parser.parse_line(CODEX_FIXTURE_LINES[5])  # function_call call_2 apply_patch
+        parser.parse_line(_patch_apply_end("call_2", False, stderr="hunk mismatch"))
+        pending = parser._pending["call_2"]
+        assert pending.action.success is False
+        assert "hunk mismatch" in pending.action.error_message
+
+    def test_this_is_the_open_question_sprint_8_flagged_now_answered(self):
+        """Sprint 8 explicitly flagged 'what carries success for apply_patch'
+        as unresolved. PatchApplyEndEvent.success: bool answers it directly
+        -- a plain bool, not a status enum like ExecCommandEnd."""
+        result = _patch_apply_end("call_x", False)["payload"]
+        assert result["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# _extract_exec_command_end / _extract_patch_apply_end unit coverage
+# ---------------------------------------------------------------------------
+
+
+class TestExtractExecResultHelpers:
+    def test_extract_exec_command_end_wrong_type_returns_none(self):
+        from agentwatch.parser.codex import _extract_exec_command_end
+
+        assert _extract_exec_command_end({"type": "token_count"}) is None
+
+    def test_extract_exec_command_end_no_signal_defaults_to_not_error(self):
+        """Malformed/test data with neither status nor exit_code must not
+        guess failure -- matches this module's established philosophy
+        (see _extract_function_call_output's is_error=False precedent)."""
+        from agentwatch.parser.codex import _extract_exec_command_end
+
+        result = _extract_exec_command_end({"type": "exec_command_end", "call_id": "c1"})
+        assert result.is_error is False
+        assert result.error_text is None
+
+    def test_extract_patch_apply_end_wrong_type_returns_none(self):
+        from agentwatch.parser.codex import _extract_patch_apply_end
+
+        assert _extract_patch_apply_end({"type": "exec_command_end"}) is None
+
+    def test_extract_patch_apply_end_missing_success_defaults_to_not_error(self):
+        from agentwatch.parser.codex import _extract_patch_apply_end
+
+        result = _extract_patch_apply_end({"type": "patch_apply_end", "call_id": "c1"})
+        assert result.is_error is False
+
+
+# ---------------------------------------------------------------------------
 # detect_log_format: Codex detection + regression on existing formats
 # ---------------------------------------------------------------------------
 
