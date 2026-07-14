@@ -61,7 +61,7 @@ class LoopDetector(Detector):
                 severity=Severity.MEDIUM if count < 6 else Severity.HIGH,
                 signal="loop",
                 message=f"Repeated action: {tool}" + (f" on {path}" if path else "") + f" ({count}x)",
-                suggestion=f"The exact same action is being repeated. "
+                suggestion="The exact same action is being repeated. "
                 + (f"The command \"{last_cmd[:80]}\" keeps failing — try a fundamentally different approach." if last_cmd and last_err else "Consider whether a different strategy is needed."),
                 details={
                     "tool": tool,

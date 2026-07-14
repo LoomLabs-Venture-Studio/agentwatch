@@ -486,8 +486,8 @@ def main():
         threading.Thread(target=fn, args=(info["log"], f"demo-{name}"), daemon=True).start()
         print(f"  Started '{info['scenario']}' for {name}")
 
-    print(f"\n  Launching TUI... press 'q' to quit")
-    print(f"  Use ↑/↓ to browse agents & teams\n")
+    print("\n  Launching TUI... press 'q' to quit")
+    print("  Use ↑/↓ to browse agents & teams\n")
 
     class DemoApp(MultiAgentWatchApp):
         def _refresh_processes(self):
