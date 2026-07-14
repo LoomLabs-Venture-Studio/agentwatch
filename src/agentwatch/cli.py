@@ -112,8 +112,14 @@ def _print_llm_assessments(warnings: list[Warning]) -> None:
     click.echo()
 
 
-def print_health_report(report, security_mode: bool = False) -> None:
-    """Print a formatted health report to stdout."""
+def print_health_report(report, security_mode: bool = False, stats=None) -> None:
+    """Print a formatted health report to stdout.
+
+    `stats` (a `SessionStats`, optional) surfaces `peak_context_tokens` --
+    the high-water mark of any single action's context size, which survives
+    compaction and so is a more durable signal than the current window fill.
+    Purely informational: not folded into `report.overall_score`.
+    """
     click.echo()
     click.echo("═" * 50)
     if security_mode:
@@ -142,6 +148,10 @@ def print_health_report(report, security_mode: bool = False) -> None:
             click.echo(f"  {cat.value.title():12} {score.emoji} {score.score}%")
 
     click.echo()
+
+    if stats is not None and stats.peak_context_tokens:
+        click.echo(f"  Peak context: {stats.peak_context_tokens:,} tokens (single action)")
+        click.echo()
 
     # Warnings
     if report.warnings:
@@ -323,7 +333,7 @@ def check(
     if json_output:
         click.echo(json.dumps(report.to_dict(), indent=2))
     else:
-        print_health_report(report, security_mode=security)
+        print_health_report(report, security_mode=security, stats=buffer.stats)
 
         # Extra security output
         if security and report.security_warnings:

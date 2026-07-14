@@ -453,7 +453,9 @@ class AgentWatchApp(App):
 
         # Update context health
         if rot_report is not None:
-            self.query_one("#context-health", ContextHealthWidget).update_report(rot_report)
+            self.query_one("#context-health", ContextHealthWidget).update_report(
+                rot_report, peak_context_tokens=self._buffer.stats.peak_context_tokens
+            )
 
         # Update warnings list
         warnings_list = self.query_one("#warnings-list", WarningsList)
