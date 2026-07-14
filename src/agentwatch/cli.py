@@ -467,7 +467,8 @@ def _print_agents_view(agents: list[AgentProcess]) -> None:
         status = click.style("active", fg="green")
 
         click.echo(
-            f"  {a.pid:<8}{a.agent_type:<14}{project:<18}{session:<10}{cpu_str:>6}{mem_str:>8}   {status}"
+            f"  {a.pid:<8}{a.agent_type:<14}{project:<18}{session:<10}"
+            f"{cpu_str:>6}{mem_str:>8}   {status}"
         )
 
     click.echo()
@@ -488,7 +489,8 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
 
         # Table header
         click.echo(
-            f"    {'PID':<8}{'TYPE':<14}{'PROJECT':<16}{'SESSION':<10}{'CPU':>6}{'MEM':>8}{'ROLE':>8}"
+            f"    {'PID':<8}{'TYPE':<14}{'PROJECT':<16}{'SESSION':<10}"
+            f"{'CPU':>6}{'MEM':>8}{'ROLE':>8}"
         )
 
         for a in team.members:
@@ -510,7 +512,8 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
             proj_col = f"{prefix}{project}"
 
             click.echo(
-                f"    {a.pid:<8}{a.agent_type:<14}{proj_col:<16}{session:<10}{cpu_str:>6}{mem_str:>8}   {role}"
+                f"    {a.pid:<8}{a.agent_type:<14}{proj_col:<16}{session:<10}"
+                f"{cpu_str:>6}{mem_str:>8}   {role}"
             )
 
         click.echo()
@@ -673,7 +676,11 @@ def security_scan(
     if json_output:
         output = {
             "security_score": security_score,
-            "status": "secure" if security_score == 100 else "at_risk" if security_score > 50 else "compromised",
+            "status": (
+                "secure" if security_score == 100
+                else "at_risk" if security_score > 50
+                else "compromised"
+            ),
             "warnings": [w.to_dict() for w in warnings],
             "action_count": len(buffer),
         }
@@ -1117,7 +1124,14 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
     is_flag=True,
     help="Allow redacting active session logs (default: skip them)",
 )
-def audit(all_projects: bool, session_id: str | None, json_output: bool, redact: bool, dry_run: bool, force: bool):
+def audit(
+    all_projects: bool,
+    session_id: str | None,
+    json_output: bool,
+    redact: bool,
+    dry_run: bool,
+    force: bool,
+):
     """Scan log history for leaked secrets and credentials.
 
     Performs a passive forensic audit of existing JSONL session logs,
@@ -1320,7 +1334,9 @@ def _print_audit_report(
     ]:
         if not group:
             continue
-        emoji = {"CRITICAL": "\U0001f6a8", "HIGH": "\u26a0\ufe0f ", "MEDIUM": "\u2139\ufe0f "}[label]
+        emoji = {
+            "CRITICAL": "\U0001f6a8", "HIGH": "\u26a0\ufe0f ", "MEDIUM": "\u2139\ufe0f ",
+        }[label]
         click.echo(
             f"  {emoji} "
             + click.style(f"{label} ({len(group)})", fg=color, bold=True)
@@ -1451,7 +1467,15 @@ def security_main():
     def guard_audit(all_projects, session_id, json_output, redact, dry_run, force):
         """Audit log history for leaked secrets."""
         ctx = click.Context(audit)
-        ctx.invoke(audit, all_projects=all_projects, session_id=session_id, json_output=json_output, redact=redact, dry_run=dry_run, force=force)
+        ctx.invoke(
+            audit,
+            all_projects=all_projects,
+            session_id=session_id,
+            json_output=json_output,
+            redact=redact,
+            dry_run=dry_run,
+            force=force,
+        )
 
     guard_cli()
 
