@@ -455,8 +455,8 @@ def check(
 @click.option(
     "--log", "-l",
     type=click.Path(exists=True, path_type=Path),
-    help="Path to agent log file (JSONL, or Aider Markdown chat history); "
-         "auto-detects if not specified",
+    help="Path to agent log file (JSONL, Aider Markdown chat history, or "
+         "Cursor's state.vscdb); auto-detects if not specified",
 )
 @click.option(
     "--security", "-s",
