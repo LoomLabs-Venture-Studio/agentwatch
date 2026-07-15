@@ -625,10 +625,28 @@ def _resolve_codex_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, 
     ``session_meta`` line is readable or matches.
 
     NOTE: honors ``CODEX_HOME`` if set (root becomes ``$CODEX_HOME``
-    instead of ``~/.codex``). Whether ``CODEX_HOME`` supports a
-    comma-separated list of multiple roots is NOT confirmed (PRD Open
-    Question #2) — this implementation only supports a single root, the
-    confirmed-safe subset.
+    instead of ``~/.codex``). **PRD Open Question #2 — RESOLVED, comma-
+    separated multi-root support does NOT exist.** Checked two primary
+    sources directly (2026-07-15):
+      - ``developers.openai.com/codex/environment-variables`` (redirects to
+        ``learn.chatgpt.com/docs/config-file/environment-variables``)
+        documents ``CODEX_HOME`` as: "Sets the root for Codex state,
+        including config, auth, logs, sessions, skills, and standalone
+        package metadata. If you set it, the directory must already
+        exist." — singular "the directory", no mention of a list or
+        multiple roots.
+      - ``codex-rs/utils/home-dir/src/lib.rs`` (github.com/openai/codex
+        @ main, ``find_codex_home_from_env``) reads ``CODEX_HOME`` via a
+        single ``std::env::var("CODEX_HOME")`` call, wraps the raw value in
+        one ``PathBuf::from(val)`` with no delimiter-splitting anywhere,
+        and ``std::fs::metadata`` + ``is_dir()``-checks that *one* path,
+        erroring (``NotFound``/``InvalidInput``) if it isn't a single
+        existing directory. There is no code path that could parse a
+        comma-separated (or any other multi-value) string.
+    This implementation's single-root handling is therefore not a
+    conservative subset of a richer real feature — it now matches Codex's
+    actual, confirmed behavior exactly. No multi-root implementation is
+    needed here.
 
     NOTE: per openai/codex issue #21660, rollout files are created
     world-readable (``0o666 & ~umask``) on Unix rather than the tighter
