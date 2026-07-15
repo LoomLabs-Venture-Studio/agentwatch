@@ -14,7 +14,12 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from agentwatch.discovery import _read_codex_session_meta, _resolve_codex_log
+import agentwatch.discovery as discovery
+from agentwatch.discovery import (
+    _find_open_codex_rollout,
+    _read_codex_session_meta,
+    _resolve_codex_log,
+)
 
 
 def _session_meta_line(session_id: str, cwd: str, cli_version: str = "0.45.0") -> dict:
@@ -209,3 +214,243 @@ class TestResolveCodexLog:
 
         assert log_file == rollout
         assert session_id == "sess-yesterday"
+
+
+# ---------------------------------------------------------------------------
+# _find_open_codex_rollout (PRD Open Question #5, PID-based resolution)
+# ---------------------------------------------------------------------------
+
+
+class _FakeOpenFile:
+    def __init__(self, path):
+        self.path = path
+
+
+class TestFindOpenCodexRollout:
+    """Mirrors ``TestFindOpenJsonl`` (discovery.py's Claude Code case) --
+    uses psutil.Process.open_files() (cross-platform) instead of lsof."""
+
+    def test_finds_matching_rollout_under_sessions_root(self, tmp_path, monkeypatch):
+        sessions_root = tmp_path / "sessions"
+        bucket = sessions_root / "2026" / "07" / "15"
+        bucket.mkdir(parents=True)
+        target = bucket / "rollout-2026-07-15-abc.jsonl"
+        target.write_text("")
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(target))]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_codex_rollout(pid=123, sessions_root=sessions_root) == target
+
+    def test_ignores_files_outside_sessions_root(self, tmp_path, monkeypatch):
+        sessions_root = tmp_path / "sessions"
+        sessions_root.mkdir()
+        outside = tmp_path / "other" / "rollout-x.jsonl"
+        outside.parent.mkdir()
+        outside.write_text("")
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(outside))]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_codex_rollout(pid=123, sessions_root=sessions_root) is None
+
+    def test_ignores_non_rollout_jsonl_files(self, tmp_path, monkeypatch):
+        sessions_root = tmp_path / "sessions"
+        bucket = sessions_root / "2026" / "07" / "15"
+        bucket.mkdir(parents=True)
+        other = bucket / "notes.jsonl"  # .jsonl suffix but not rollout- prefixed
+        other.write_text("")
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(other))]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_codex_rollout(pid=123, sessions_root=sessions_root) is None
+
+    def test_ignores_non_jsonl_files(self, tmp_path, monkeypatch):
+        sessions_root = tmp_path / "sessions"
+        bucket = sessions_root / "2026" / "07" / "15"
+        bucket.mkdir(parents=True)
+        notes = bucket / "rollout-notes.txt"
+        notes.write_text("")
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(notes))]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_codex_rollout(pid=123, sessions_root=sessions_root) is None
+
+    def test_returns_none_on_access_denied(self, tmp_path, monkeypatch):
+        sessions_root = tmp_path / "sessions"
+        sessions_root.mkdir()
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                raise discovery.psutil.AccessDenied(pid)
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_codex_rollout(pid=123, sessions_root=sessions_root) is None
+
+    def test_returns_none_on_no_such_process(self, tmp_path, monkeypatch):
+        sessions_root = tmp_path / "sessions"
+        sessions_root.mkdir()
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                raise discovery.psutil.NoSuchProcess(pid)
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_codex_rollout(pid=123, sessions_root=sessions_root) is None
+
+    def test_returns_none_when_file_no_longer_exists(self, tmp_path, monkeypatch):
+        sessions_root = tmp_path / "sessions"
+        bucket = sessions_root / "2026" / "07" / "15"
+        bucket.mkdir(parents=True)
+        gone = bucket / "rollout-gone.jsonl"  # never created on disk
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(gone))]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_codex_rollout(pid=123, sessions_root=sessions_root) is None
+
+
+# ---------------------------------------------------------------------------
+# _resolve_codex_log -- PID-based resolution preferred over cwd heuristic
+# ---------------------------------------------------------------------------
+
+
+class TestResolveCodexLogPidResolution:
+    def test_pid_match_found_is_preferred_over_cwd_heuristic(self, tmp_path, monkeypatch):
+        """A PID-based open-file match should win even when a *different*
+        file would otherwise match on cwd via the session_meta heuristic --
+        it's authoritative, so it bypasses that heuristic entirely."""
+        codex_home = tmp_path / ".codex"
+        target_cwd = tmp_path / "myproject"
+        target_cwd.mkdir()
+
+        bucket = _day_bucket(codex_home)
+        cwd_matching = bucket / "rollout-2026-07-15-cwdmatch.jsonl"
+        pid_matching = bucket / "rollout-2026-07-15-pidmatch.jsonl"
+        _write_jsonl(cwd_matching, [_session_meta_line("sess-cwd", str(target_cwd))])
+        _write_jsonl(pid_matching, [_session_meta_line("sess-pid", str(target_cwd))])
+
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(pid_matching))]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        log_file, session_id = _resolve_codex_log(cwd=target_cwd, pid=123)
+
+        assert log_file == pid_matching
+        assert session_id == "sess-pid"
+
+    def test_pid_match_not_found_falls_through_to_existing_heuristic(self, tmp_path, monkeypatch):
+        """When the PID has no matching open rollout file, behavior is
+        unchanged from the pre-existing cwd-match/mtime-fallback path."""
+        codex_home = tmp_path / ".codex"
+        target_cwd = tmp_path / "myproject"
+        target_cwd.mkdir()
+
+        bucket = _day_bucket(codex_home)
+        matching = bucket / "rollout-2026-07-15-cwdmatch.jsonl"
+        _write_jsonl(matching, [_session_meta_line("sess-match", str(target_cwd))])
+
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return []  # nothing open matching the rollout pattern
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        log_file, session_id = _resolve_codex_log(cwd=target_cwd, pid=123)
+
+        assert log_file == matching
+        assert session_id == "sess-match"
+
+    def test_access_denied_on_pid_lookup_falls_through_gracefully(self, tmp_path, monkeypatch):
+        """AccessDenied/NoSuchProcess during the PID-based lookup must not
+        raise -- it should fall through to the existing heuristic, the same
+        graceful handling _get_process_cwd already has."""
+        codex_home = tmp_path / ".codex"
+        target_cwd = tmp_path / "myproject"
+        target_cwd.mkdir()
+
+        bucket = _day_bucket(codex_home)
+        matching = bucket / "rollout-2026-07-15-cwdmatch.jsonl"
+        _write_jsonl(matching, [_session_meta_line("sess-match", str(target_cwd))])
+
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                raise discovery.psutil.AccessDenied(pid)
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        log_file, session_id = _resolve_codex_log(cwd=target_cwd, pid=123)
+
+        assert log_file == matching
+        assert session_id == "sess-match"
+
+    def test_no_pid_given_behaves_exactly_as_before(self, tmp_path, monkeypatch):
+        """pid=None (the default) must skip PID-based resolution entirely
+        and never touch psutil.Process, matching pre-existing callers."""
+        codex_home = tmp_path / ".codex"
+        target_cwd = tmp_path / "myproject"
+        target_cwd.mkdir()
+
+        bucket = _day_bucket(codex_home)
+        matching = bucket / "rollout-2026-07-15-cwdmatch.jsonl"
+        _write_jsonl(matching, [_session_meta_line("sess-match", str(target_cwd))])
+
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+        def _explode(pid):
+            raise AssertionError("psutil.Process should not be called when pid is None")
+
+        monkeypatch.setattr(discovery.psutil, "Process", _explode)
+
+        log_file, session_id = _resolve_codex_log(cwd=target_cwd)
+
+        assert log_file == matching
+        assert session_id == "sess-match"

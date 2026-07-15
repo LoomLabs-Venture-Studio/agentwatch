@@ -218,7 +218,7 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                 elif agent_type == "aider":
                     log_file, session_id = _resolve_aider_log(cwd)
                 elif agent_type == "codex":
-                    log_file, session_id = _resolve_codex_log(cwd)
+                    log_file, session_id = _resolve_codex_log(cwd, pid=pid)
                 if cache is not None:
                     cache.log_by_pid[pid] = (log_file, session_id)
 
@@ -573,6 +573,37 @@ def _read_codex_session_meta(path: Path, max_lines: int = 5) -> dict | None:
     return None
 
 
+def _find_open_codex_rollout(pid: int, sessions_root: Path) -> Path | None:
+    """Find which ``rollout-*.jsonl`` file under *sessions_root* a specific
+    Codex PID has open.
+
+    Mirrors ``_find_open_jsonl``'s exact approach (``psutil.Process.
+    open_files()``, cross-platform, no ``lsof`` dependency) but matches
+    against the whole date-bucketed ``sessions/`` tree rather than a single
+    cwd-keyed directory, and requires the ``rollout-`` filename prefix
+    (Codex's real rollout naming convention — see module docstring) rather
+    than just a ``.jsonl`` suffix, since arbitrary other ``.jsonl`` files
+    could in principle live under the same root.
+    """
+    try:
+        open_files = psutil.Process(pid).open_files()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return None
+
+    sessions_root = sessions_root.resolve()
+    for f in open_files:
+        path = Path(f.path)
+        if path.suffix != ".jsonl" or not path.name.startswith("rollout-"):
+            continue
+        try:
+            path.resolve().relative_to(sessions_root)
+        except ValueError:
+            continue
+        if path.exists():
+            return path
+    return None
+
+
 def _resolve_codex_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, str | None]:
     """Resolve the active Codex CLI session log for a working directory.
 
@@ -580,9 +611,17 @@ def _resolve_codex_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, 
     (``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl``), not a cwd-keyed
     directory the way Claude Code's are — so unlike
     ``_resolve_claude_code_log``, there is no free directory-name match.
-    Reads each candidate file's leading ``session_meta`` line (bounded to
-    the day-window most likely to contain a live session) to match on
-    ``payload.cwd``, falling back to most-recently-modified when no
+
+    When *pid* is provided, first tries ``_find_open_codex_rollout`` —
+    ``psutil.Process(pid).open_files()`` matched against the live process's
+    actually-open file handles, mirroring ``_find_open_jsonl``'s approach
+    for Claude Code (PRD Open Question #5, implemented). This is
+    authoritative: if a real Codex process has a specific rollout file
+    open, that's the session, full stop — it bypasses the heuristics below
+    entirely. Falls back to reading each candidate file's leading
+    ``session_meta`` line (bounded to the day-window most likely to contain
+    a live session) to match on ``payload.cwd`` when no PID match is found
+    (or no PID was given), and finally to most-recently-modified when no
     ``session_meta`` line is readable or matches.
 
     NOTE: honors ``CODEX_HOME`` if set (root becomes ``$CODEX_HOME``
@@ -596,17 +635,22 @@ def _resolve_codex_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, 
     ``0o600`` one might expect for a file containing full conversation
     content — this is Codex's own permission looseness, not something
     AgentWatch introduces or needs to work around.
-
-    ``pid`` is accepted for signature symmetry with
-    ``_resolve_claude_code_log`` but currently unused — Codex has no
-    ``lsof``/open-files equivalent check planned for v1 (PRD Open
-    Question #5).
     """
     codex_home_env = os.environ.get("CODEX_HOME")
     codex_home = Path(codex_home_env) if codex_home_env else (Path.home() / ".codex")
     sessions_root = codex_home / "sessions"
     if not sessions_root.is_dir():
         return None, None
+
+    # Prefer PID-based resolution: authoritative if the live process has a
+    # specific rollout file open, bypassing the cwd-matching/mtime fallback
+    # heuristics below entirely.
+    if pid is not None:
+        open_log = _find_open_codex_rollout(pid, sessions_root)
+        if open_log is not None:
+            meta = _read_codex_session_meta(open_log)
+            session_id = (meta or {}).get("session_id") or (meta or {}).get("id")
+            return open_log, session_id
 
     # Bound the scan: check today and yesterday's date buckets only (a
     # session spanning midnight still opens its file in one bucket).
