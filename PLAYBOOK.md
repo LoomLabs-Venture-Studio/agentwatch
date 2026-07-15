@@ -2577,6 +2577,20 @@ intent), not a quick wire-up like the other 4 items. Board chose to leave
 this untouched for now -- do not remove the category, do not build a
 detector for it, do not change its weight.
 
+**CORRECTION (2026-07-15, Sprint 15 scoping):** the "renormalizes to fill
+the gap automatically" claim above is wrong -- checked empirically, not
+just re-read. `calculate_health()`'s `for cat in Category: category_scores
+[cat] = CategoryScore(...)` populates *every* category unconditionally,
+GOAL included, defaulting to a score of 100 when no warnings exist for it.
+GOAL isn't renormalized away -- it's silently included at a locked-in 100,
+permanently contributing +15 points to every score today (verified: one
+CRITICAL PROGRESS-category warning yields `overall_score` 82, i.e.
+`0.35x50 + 0.30x100 + 0.20x100 + 0.15x100`, not the ~72 a true
+renormalization across PROGRESS/ERRORS/CONTEXT only would produce). Left
+unfixed per board decision (see Sprint 15 below) -- flagged here so this
+section stops misleading whoever reads it next about what "leave GOAL
+untouched" is actually preserving.
+
 **5. `SecurityDetector.check_with_audit` (`detectors/base.py:183`) --
 finish.** Fully implemented (returns `(warning, audit_log)` with
 detector name/category/triggered/action_count), zero call sites --
@@ -2593,29 +2607,29 @@ records positive findings; this is a "prove you checked" compliance
 trail.
 
 ### Acceptance Criteria
-- [ ] `peak_context_tokens` surfaced somewhere a user actually sees it
+- [x] `peak_context_tokens` surfaced somewhere a user actually sees it
       (health report, TUI context widget, or rot scoring -- engineer's
       call on exact placement, justified in the PR body)
-- [ ] All 4 security-stat counters actually increment during real
+- [x] All 4 security-stat counters actually increment during real
       detector runs, with the raw-vs-detector-fired design choice
       explicitly documented and justified in code comments
-- [ ] `security-scan` prints a summary line for the 4 counters
-- [ ] `Action.user_id` either removed (if the engineer's independent
+- [x] `security-scan` prints a summary line for the 4 counters
+- [x] `Action.user_id` either removed (if the engineer's independent
       safety check confirms zero usage) or left in place with a written
       explanation of what usage was found -- either outcome is
       acceptable, a silent guess is not
-- [ ] `Category.GOAL` completely untouched -- no code changes referencing
+- [x] `Category.GOAL` completely untouched -- no code changes referencing
       it anywhere in this sprint's diff
-- [ ] New `DetectorRegistry.check_security_with_audit()` method,
+- [x] New `DetectorRegistry.check_security_with_audit()` method,
       exception-isolated per detector matching `check_security()`'s
       existing pattern
-- [ ] `security-scan --audit-log <path>` writes JSON-lines covering every
+- [x] `security-scan --audit-log <path>` writes JSON-lines covering every
       security detector's run (triggered or not), distinct from
       `--siem-log`'s warnings-only export
-- [ ] New tests for all of the above; `python -m pytest tests/ -v` fully
+- [x] New tests for all of the above; `python -m pytest tests/ -v` fully
       green, `ruff check .` clean (repo is at 0 errors on `develop`, must
       not regress)
-- [ ] New branch off `develop` (not `main`), draft PR targeting `develop`
+- [x] New branch off `develop` (not `main`), draft PR targeting `develop`
 
 ### Implementation Plan
 Single engineer (files are related enough -- `parser/models.py` touched
@@ -2624,3 +2638,209 @@ by items 1/2/3, `detectors/security/*.py` by item 2, `detectors/base.py`/
 splitting). CTO reviews the raw-vs-detector-fired design choice for item
 2 and the `user_id` safety-check evidence for item 3 specifically before
 QA verification.
+
+**Status: implementation complete, CTO-reviewed (2026-07-15).** Delivered
+as PR #8 (`feature/sprint14-scaffolding-wireup` -> `develop`, draft), 3
+commits covering all 5 items. CTO review (fresh worktree, not trusting the
+PR body's own numbers): `parser/security_patterns.py` centralizes the
+credential/privilege/injection regexes so the raw counters and their
+corresponding detectors provably share one definition each (diffed every
+touched detector file to confirm zero behavior change beyond the import
+swap); independently re-ran the `Action.user_id` repo-wide grep myself
+(not just re-reading the engineer's) -- same 3 hits, same conclusion (2
+non-references + the declaration); confirmed `Category.GOAL`/
+`HEALTH_CATEGORY_WEIGHTS` untouched in the diff; `check_security_with_audit()`
+mirrors `check_security()`'s exception-isolation and runs as a deliberate
+second pass so the no-`--audit-log` path is provably unaffected;
+`peak_context_tokens` confirmed display-only (TUI `ContextHealthWidget` +
+`check`'s CLI report), not folded into `report.overall_score` or the rot
+state machine. Re-ran everything fresh rather than trusting CI: **636/636
+pytest pass**, **`ruff check .` clean (0 errors)**, both matching the PR's
+own claimed numbers. No issues found. Handed off to QA for independent
+verification next.
+
+**QA verification: complete, independently re-derived twice (2026-07-15).**
+Two independent passes (a background QA agent against its own throwaway
+worktree, and a second from-scratch re-verification run directly by the
+CTO per explicit board instruction not to trust recorded numbers) both
+reproduced the same result from clean state: fresh `pip install -e
+".[dev,siem,llm]"`, **636/636 pytest pass**, **`ruff check .` clean**.
+QA additionally read `--audit-log` output directly (20 JSON-lines, one per
+registered security detector, 17 correctly showing `triggered: false` with
+no warning key) rather than trusting exit codes, confirmed
+`SiemLogger.log_report_summary()` backward-compatibility when
+`security_stats` is omitted, confirmed `Action(user_id=...)` now raises
+`TypeError`, confirmed zero `GOAL` references anywhere in the diff, and
+confirmed `peak_context_tokens` doesn't leak into `overall_score` via a
+live run with a 50k-token fixture action. **Zero discrepancies found.**
+Sprint 14 (PR #8) is CTO-reviewed and QA-verified, ready for board
+merge decision -- not merged, not pushed further, pending explicit
+go-ahead.
+
+---
+
+### Sprint 15 -- Tier-2 Goal-Alignment Advisory (opt-in, not scored)
+**Type:** feature
+**Priority:** closes the "what should `Category.GOAL` actually do" question
+Sprint 12/14 both correctly declined to resolve unilaterally ("a genuine
+new-feature design exercise... not a quick wire-up").
+**PRD Status:** not needed -- CTO read `detectors/base.py`, `health/
+score.py`, `parser/models.py`, every parser's `incoming_message` population
+site, and `llm.py` directly before scoping below; board picked the
+approach via `AskUserQuestion` (2026-07-15).
+**Board decision (2026-07-15):** of four concrete options (deterministic
+Tier-1 heuristic detector; Tier-2 LLM feeding a real scored
+`Category.GOAL` `Warning`; park it and fix the weight bug instead; Tier-2
+LLM advisory only, never scored), board chose **Tier-2 LLM advisory
+only, not scored** -- the CTO's recommended option. This explicitly means
+`Category.GOAL` and `HEALTH_CATEGORY_WEIGHTS` stay **completely untouched**
+by this sprint, same as Sprint 14 left them; the corrected finding above
+(GOAL silently contributing a locked +15 points to every score) is
+deliberately **not** fixed here either -- flagged, not actioned, per this
+board decision. This is also **not** a `Detector`/`SecurityDetector`
+plugin and is **not** wired into `DetectorRegistry` -- it never produces a
+`Warning`, so the existing plugin pattern doesn't apply; it follows the
+same direct `llm.py`-method + `cli.py`-wiring shape SIEM export and
+per-warning LLM triage already use.
+
+### What this sprint builds
+A new, independent Tier-2 capability alongside the existing per-warning
+`assess_warning()` triage (Sprint 10): given a session's buffer, ask the
+local Ollama model whether the agent's recent actions still look aligned
+with what the user actually asked for, and print the answer as an
+advisory line. Never a `Warning`, never a score input -- purely
+informational, matching `llm.py`'s own documented Tier-1/Tier-2 boundary
+("Tier 1... the sole driver of the score") exactly, not an exception to
+it.
+
+**Data grounding (confirmed by reading the parsers directly, not
+assumed):** `Action.incoming_message` is populated on every user-turn
+action by the Claude Code/Moltbot (`logs.py`), Aider (`aider.py`), and
+Cursor (`cursor_source.py`) parsers -- confirmed via direct grep + code
+read, not inferred. **Codex (`codex.py`) never sets it** -- confirmed via
+the same grep, zero matches. This is a real, current coverage gap that
+must be documented, not silently papered over: goal-alignment assessment
+will honestly return "can't assess" for any Codex session, consistent
+with Codex's existing fixture-only/no-live-install status elsewhere in
+this file.
+
+### Acceptance Criteria
+- [x] New `GoalAlignmentAssessment` dataclass (`llm.py`, alongside
+      `LlmAssessment`): `aligned: bool | None`, `confidence: str`,
+      `drift_summary: str`, `raw_response: str`, `to_dict()`
+- [x] New `OllamaAnalyzer.assess_goal_alignment(buffer: ActionBuffer) ->
+      GoalAlignmentAssessment | None`. Returns `None` (no model call made)
+      when zero actions in the buffer carry a non-empty `incoming_message`
+      -- an honest "nothing to assess" short-circuit, not a guess, and the
+      documented behavior for any current Codex session
+- [x] Stated task = the first chronological action with a non-empty
+      `incoming_message`; subsequent `incoming_message`-bearing actions
+      (real user follow-ups/redirects mid-session) included as additional
+      context so a legitimate task change isn't misjudged as drift --
+      capped at a small fixed count to bound local-model prompt size,
+      exact cap chosen and justified in code comments (precedent:
+      `MAX_WARNINGS_TO_ASSESS = 10` in the same file)
+- [x] Recent-action synopsis (tool_type + file_path/command, truncated)
+      drawn from a bounded window (precedent: existing detectors' `buffer.
+      last(10)`-style windows) -- exact size chosen and justified, not
+      arbitrary
+- [x] Prompt/response follow the exact same JSON-with-salvage-fallback
+      pattern `assess_warning`/`_parse_response` already use, reusing the
+      existing `_JSON_OBJECT_RE` helper rather than duplicating it
+- [x] `check`/`security-scan --llm` calls `assess_goal_alignment()` exactly
+      once per scan (not once per warning), reusing the `check_available()`
+      gate already established for warning triage rather than re-checking
+      Ollama availability a second time
+- [x] Result printed via a new, clearly-labeled advisory-only block (e.g.
+      "Tier-2 Goal Alignment (advisory, not scored)") -- ASCII-only from
+      the start (ties into the wider theme system only if trivially safe;
+      otherwise plain bracketed text, given how many separate sprints
+      (Task #8/#9) it took to fully theme-wire everything else)
+- [x] When `assess_goal_alignment()` returns `None` (no stated task found),
+      nothing prints -- no error, no noisy placeholder line
+- [x] Zero changes anywhere to `Category.GOAL`, `HEALTH_CATEGORY_WEIGHTS`,
+      `calculate_health()`, or any code path that constructs a `Warning` --
+      verified the same way Sprint 14 verified item 4 (`git diff` scoped to
+      `**/base.py`/`**/score.py`, plus a full-diff grep for `GOAL`)
+- [x] `DetectorRegistry` untouched -- this feature has no detector, no
+      registry entry
+- [x] Live TUI (`watch`/`watch_all`) wiring explicitly out of scope this
+      sprint, documented as a follow-up (mirrors Sprint 10's original
+      CLI-first scoping for `--llm`/`--siem-log`, which Sprint 13 wired
+      into the TUI as its own separate sprint later) -- not silently
+      dropped
+- [x] New `tests/test_goal_alignment.py`: stated-task extraction (first
+      `incoming_message` vs. later follow-ups), no-`incoming_message` ->
+      `None` short-circuit (the Codex-shaped case), response parsing incl.
+      the prose-wrapped-JSON salvage path, CLI wiring (`--llm` combined
+      with a fixture that has a stated task and one that doesn't)
+- [x] `python -m pytest tests/ -v` fully green, `ruff check .` clean (must
+      not regress the 0-error `develop` baseline)
+- [ ] New branch off `develop` (not `main`, not stacked on PR #8), draft PR
+      targeting `develop` -- PR body explicitly flags that `cli.py` is also
+      touched by PR #8 (still unmerged as of this sprint), so a rebase may
+      be needed depending on merge order, same honesty standard Sprint 12's
+      Track A/B split used for a similar overlap. **Branch created locally
+      (`feature/goal-alignment-advisory` off `origin/develop`), 4 commits,
+      but deliberately NOT pushed and no PR opened yet** -- per explicit
+      board instruction this sprint ("don't push or merge anything without
+      asking me first"), left unchecked until that go-ahead is given.
+
+### Implementation Plan
+Single engineer: `llm.py` (new dataclass + method, reusing existing
+parsing helpers), `cli.py` (wiring into the existing `--llm` opt-in flag on
+`check`/`security-scan`, new print helper), new test file. CTO reviews the
+stated-task/follow-up extraction logic and the "zero score impact"
+guarantee specifically (grep-verified, not just read) before QA
+verification. Explicitly **not** authorized to push or open the PR without
+a separate go-ahead, per board instruction on this sprint.
+
+**Status: implementation complete, CTO-reviewed (2026-07-15), local-only.**
+Built in a throwaway worktree (`/tmp/goal-alignment-work`) off
+`origin/develop`, branch `feature/goal-alignment-advisory`, 4 commits
+(`1fcca19` llm.py core, `a86c3c0` cli.py wiring, `fe95578` tests, `24da75e`
+a CTO-flagged fix -- see below). CTO independently re-ran everything from
+scratch rather than trusting the engineer's report: fresh venv, `pip
+install -e ".[dev,siem,llm]"`, **613/613 pytest pass**, **`ruff check .`
+clean**; `git diff origin/develop...HEAD -- '**/base.py' '**/score.py'`
+confirmed empty. Read the full `llm.py`/`cli.py` diffs directly: stated
+task = first chronological `incoming_message`, follow-ups capped at
+`MAX_FOLLOWUP_MESSAGES = 5`, action synopsis bounded to
+`GOAL_ALIGNMENT_ACTION_WINDOW = 10`, both justified in code comments
+against real precedent (`MAX_WARNINGS_TO_ASSESS`, existing detectors'
+`buffer.last(10)` windows); JSON-salvage parsing refactored into a shared
+`_extract_json_object()` helper reused by both `assess_warning` and the
+new `_parse_goal_alignment_response` rather than duplicated; `_run_llm_
+assessment` now returns its `OllamaAnalyzer` so goal-alignment reuses the
+same `check_available()` gate instead of re-checking Ollama availability.
+
+**One real gap found in review, sent back and fixed same-session:**
+`--json --llm` was making the real Ollama goal-alignment call (real
+cost/latency) but silently discarding the result -- never surfaced in the
+JSON output, unlike per-warning triage which already flows into
+`warning.details["llm_assessment"]`. Fixed in `24da75e`: both `check` and
+`security-scan`'s JSON output now include a `goal_alignment` key
+(`.to_dict()` when present, explicit `null` when `assess_goal_alignment()`
+found no stated task) -- verified via 4 new tests, re-ran clean (613/613)
+after the fix.
+
+**Confirmed, not just assumed:** the full-diff `grep GOAL` check (per this
+sprint's own acceptance criterion) returns matches, but every one is the
+feature's own `GOAL_ALIGNMENT_ACTION_WINDOW` identifier or the printed
+"TIER-2 GOAL ALIGNMENT" advisory label / its test assertions / one
+docstring line explicitly disclaiming `Category.GOAL` -- none reference
+the real `Category.GOAL` or `HEALTH_CATEGORY_WEIGHTS`, which the CTO
+independently re-checked line-by-line, not just accepted the engineer's
+claim.
+
+**Confirmed overlap risk with PR #8, exactly as predicted when this sprint
+was scoped:** the engineer's fix commit noted `security_stats` (a Sprint
+14/PR #8 addition to `security-scan`'s JSON output) doesn't exist in this
+branch's `cli.py` at all -- expected, since this branch is off `develop`
+and PR #8 hasn't merged there yet. Confirms `cli.py` will need a rebase or
+careful merge depending on which of PR #8 / this branch lands on `develop`
+first, exactly as flagged in this section's own acceptance criteria above.
+
+**Not done, deliberately, per board instruction:** not pushed to origin,
+no PR opened. Local commits only, in a throwaway worktree, awaiting an
+explicit go-ahead before either happens.
