@@ -389,7 +389,9 @@ def check(
         )
 
     if json_output:
-        click.echo(json.dumps(report.to_dict(), indent=2))
+        output = report.to_dict()
+        output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
+        click.echo(json.dumps(output, indent=2))
     else:
         print_health_report(report, security_mode=security)
 
@@ -755,6 +757,7 @@ def security_scan(
             ),
             "warnings": [w.to_dict() for w in warnings],
             "action_count": len(buffer),
+            "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
         }
         click.echo(json.dumps(output, indent=2))
     else:

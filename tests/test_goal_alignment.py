@@ -376,3 +376,128 @@ class TestCliGoalAlignmentWiring:
 
         assert result.exit_code in (0, 1, 2), result.output
         assert "TIER-2 GOAL ALIGNMENT" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI wiring: --json --llm surfaces goal_alignment in JSON output
+#
+# CTO-review gap fix: --llm always ran the goal-alignment model call
+# regardless of --json (matching per-warning Tier-2 triage's own
+# always-run-under-a--llm behavior), but the result was only ever printed
+# in the non-JSON branch -- under --json the call was paid for and then
+# silently dropped. `goal_alignment` must now be a top-level key in both
+# `check --json` and `security-scan --json` output, present (as `null`)
+# even when there's no stated task to assess.
+# ---------------------------------------------------------------------------
+
+
+class TestCliGoalAlignmentJsonOutput:
+    def test_check_json_llm_includes_goal_alignment_when_stated_task_present(
+        self, monkeypatch, tmp_path
+    ):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        fake_client_instance = _FakeOllamaClient()
+
+        def fake_import():
+            return fake_client_instance
+
+        monkeypatch.setattr("agentwatch.llm._import_ollama_client", fake_import)
+
+        log_path = tmp_path / "session.jsonl"
+        _write_moltbot_fixture(log_path, with_stated_task=True)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--log", str(log_path), "--llm", "--json"])
+
+        assert result.exit_code in (0, 1, 2), result.output
+        payload = json.loads(result.output)
+        assert "goal_alignment" in payload
+        assert payload["goal_alignment"] == {
+            "aligned": True,
+            "confidence": "high",
+            "drift_summary": "Still on task.",
+        }
+
+    def test_check_json_llm_goal_alignment_null_when_no_stated_task(self, monkeypatch, tmp_path):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        fake_client_instance = _FakeOllamaClient()
+
+        def fake_import():
+            return fake_client_instance
+
+        monkeypatch.setattr("agentwatch.llm._import_ollama_client", fake_import)
+
+        log_path = tmp_path / "session.jsonl"
+        _write_moltbot_fixture(log_path, with_stated_task=False)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--log", str(log_path), "--llm", "--json"])
+
+        assert result.exit_code in (0, 1, 2), result.output
+        payload = json.loads(result.output)
+        assert "goal_alignment" in payload
+        assert payload["goal_alignment"] is None
+
+    def test_security_scan_json_llm_includes_goal_alignment_when_stated_task_present(
+        self, monkeypatch, tmp_path
+    ):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        fake_client_instance = _FakeOllamaClient()
+
+        def fake_import():
+            return fake_client_instance
+
+        monkeypatch.setattr("agentwatch.llm._import_ollama_client", fake_import)
+
+        log_path = tmp_path / "session.jsonl"
+        _write_moltbot_fixture(log_path, with_stated_task=True)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["security-scan", "--log", str(log_path), "--llm", "--json"]
+        )
+
+        assert result.exit_code in (0, 1, 2), result.output
+        payload = json.loads(result.output)
+        assert "goal_alignment" in payload
+        assert payload["goal_alignment"] == {
+            "aligned": True,
+            "confidence": "high",
+            "drift_summary": "Still on task.",
+        }
+
+    def test_security_scan_json_llm_goal_alignment_null_when_no_stated_task(
+        self, monkeypatch, tmp_path
+    ):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        fake_client_instance = _FakeOllamaClient()
+
+        def fake_import():
+            return fake_client_instance
+
+        monkeypatch.setattr("agentwatch.llm._import_ollama_client", fake_import)
+
+        log_path = tmp_path / "session.jsonl"
+        _write_moltbot_fixture(log_path, with_stated_task=False)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["security-scan", "--log", str(log_path), "--llm", "--json"]
+        )
+
+        assert result.exit_code in (0, 1, 2), result.output
+        payload = json.loads(result.output)
+        assert "goal_alignment" in payload
+        assert payload["goal_alignment"] is None
