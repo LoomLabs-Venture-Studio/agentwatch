@@ -49,14 +49,41 @@ def _export_siem_log(
     asked for.
     """
     session_id = buffer.actions[0].session_id if buffer.actions else None
+    security_stats = {
+        "credential_accesses": buffer.stats.credential_accesses,
+        "privilege_commands": buffer.stats.privilege_commands,
+        "network_connections": buffer.stats.network_connections,
+        "injection_attempts": buffer.stats.injection_attempts,
+    }
     try:
         with SiemLogger(siem_log, session_id=session_id) as siem:
             for warning in warnings:
                 siem.log_warning(warning)
-            siem.log_report_summary(report_type, score, len(warnings))
+            siem.log_report_summary(
+                report_type, score, len(warnings), security_stats=security_stats
+            )
     except SiemExportError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+
+
+def _export_audit_log(path: Path, audit_entries: list[dict], buffer: ActionBuffer) -> None:
+    """Append one JSON-line per security detector's `check_with_audit()`
+    entry to *path* -- a "prove you checked" compliance trail covering
+    every detector that ran this scan, whether it triggered a `Warning` or
+    not. Deliberately distinct from `--siem-log`, which only ever records
+    positive findings; this is a full accounting of what was checked.
+
+    Opens in append mode (like `SiemLogger`) so repeated runs against the
+    same path accumulate rather than clobber each other.
+    """
+    session_id = buffer.actions[0].session_id if buffer.actions else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        for entry in audit_entries:
+            record = dict(entry)
+            record["session_id"] = session_id
+            f.write(json.dumps(record) + "\n")
 
 
 def _run_llm_assessment(warnings: list[Warning], llm_model: str) -> None:
@@ -112,8 +139,14 @@ def _print_llm_assessments(warnings: list[Warning]) -> None:
     click.echo()
 
 
-def print_health_report(report, security_mode: bool = False) -> None:
-    """Print a formatted health report to stdout."""
+def print_health_report(report, security_mode: bool = False, stats=None) -> None:
+    """Print a formatted health report to stdout.
+
+    `stats` (a `SessionStats`, optional) surfaces `peak_context_tokens` --
+    the high-water mark of any single action's context size, which survives
+    compaction and so is a more durable signal than the current window fill.
+    Purely informational: not folded into `report.overall_score`.
+    """
     click.echo()
     click.echo("═" * 50)
     if security_mode:
@@ -142,6 +175,10 @@ def print_health_report(report, security_mode: bool = False) -> None:
             click.echo(f"  {cat.value.title():12} {score.emoji} {score.score}%")
 
     click.echo()
+
+    if stats is not None and stats.peak_context_tokens:
+        click.echo(f"  Peak context: {stats.peak_context_tokens:,} tokens (single action)")
+        click.echo()
 
     # Warnings
     if report.warnings:
@@ -323,7 +360,7 @@ def check(
     if json_output:
         click.echo(json.dumps(report.to_dict(), indent=2))
     else:
-        print_health_report(report, security_mode=security)
+        print_health_report(report, security_mode=security, stats=buffer.stats)
 
         # Extra security output
         if security and report.security_warnings:
@@ -624,6 +661,14 @@ def list_detectors(security: bool):
          "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
 )
 @click.option(
+    "--audit-log",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Append one JSON-lines entry per security detector's run (triggered "
+         "or not) to this file -- a 'prove you checked' compliance trail, "
+         "distinct from --siem-log which only records positive findings.",
+)
+@click.option(
     "--llm",
     is_flag=True,
     help="Enable Tier-2 semantic triage of warnings via a local Ollama model "
@@ -641,6 +686,7 @@ def security_scan(
     analytics_log: Path | None,
     json_output: bool,
     siem_log: Path | None,
+    audit_log: Path | None,
     llm: bool,
     llm_model: str,
 ):
@@ -667,11 +713,29 @@ def security_scan(
 
     security_score = calculate_security_score(warnings)
 
+    if audit_log is not None:
+        # Separate pass via check_with_audit() -- deliberately not reused
+        # for `warnings` above, so the default (no --audit-log) path's
+        # detector-ordering/behavior is provably unchanged.
+        _, audit_entries = registry.check_security_with_audit(buffer)
+        _export_audit_log(audit_log, audit_entries, buffer)
+
     if llm:
         _run_llm_assessment(warnings, llm_model)
 
     if siem_log is not None:
         _export_siem_log(siem_log, warnings, buffer, report_type="security", score=security_score)
+
+    # Raw per-action security-stat counters (SessionStats.credential_accesses
+    # / .privilege_commands / .network_connections / .injection_attempts --
+    # see the design-decision comment on SessionStats in parser/models.py:
+    # these are raw pattern-match counts, not "how many Warnings fired").
+    security_stats = {
+        "credential_accesses": buffer.stats.credential_accesses,
+        "privilege_commands": buffer.stats.privilege_commands,
+        "network_connections": buffer.stats.network_connections,
+        "injection_attempts": buffer.stats.injection_attempts,
+    }
 
     if json_output:
         output = {
@@ -683,6 +747,7 @@ def security_scan(
             ),
             "warnings": [w.to_dict() for w in warnings],
             "action_count": len(buffer),
+            "security_stats": security_stats,
         }
         click.echo(json.dumps(output, indent=2))
     else:
@@ -708,6 +773,13 @@ def security_scan(
         click.echo()
         click.echo(f"  Analyzed {len(buffer)} actions")
         click.echo(f"  Found {len(warnings)} security issue(s)")
+        click.echo(
+            "  Raw signal counts: "
+            f"credential_accesses={security_stats['credential_accesses']}  "
+            f"privilege_commands={security_stats['privilege_commands']}  "
+            f"network_connections={security_stats['network_connections']}  "
+            f"injection_attempts={security_stats['injection_attempts']}"
+        )
         click.echo()
 
         if warnings:
