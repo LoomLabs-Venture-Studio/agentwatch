@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 
 from agentwatch.parser.models import ActionBuffer
+from agentwatch.parser.security_patterns import (
+    PRIVILEGE_COMMAND_PATTERNS,
+    PRIVILEGE_COMMAND_REGEX,
+)
 
 from ..base import Category, SecurityDetector, Severity, Warning
 
@@ -16,39 +20,14 @@ class PrivilegeEscalationDetector(SecurityDetector):
     name = "privilege_escalation"
     description = "Privilege escalation attempt detected"
 
-    PRIVILEGE_PATTERNS = [
-        # Direct privilege escalation
-        r"\bsudo\b",
-        r"\bsu\s+-",
-        r"\bdoas\b",
-        r"\bpkexec\b",
-
-        # Permission changes
-        r"chmod\s+[0-7]*[4567][0-7]*",  # Setuid/setgid bits
-        r"chmod\s+\+s",
-        r"chown\s+root",
-        r"chgrp\s+(?:root|wheel|admin)",
-
-        # Capability manipulation
-        r"setcap\b",
-        r"getcap\b",
-
-        # User/group manipulation
-        r"useradd\b",
-        r"usermod\b",
-        r"groupadd\b",
-        r"visudo\b",
-
-        # System service manipulation
-        r"systemctl\s+(?:enable|start|restart)",
-        r"service\s+\w+\s+(?:start|restart)",
-    ]
+    # Sourced from `agentwatch.parser.security_patterns` (Sprint 14) so this
+    # detector and `SessionStats.privilege_commands`'s raw counter
+    # (`parser/models.py`) share one definition instead of two that could
+    # drift apart.
+    PRIVILEGE_PATTERNS = PRIVILEGE_COMMAND_PATTERNS
 
     def __init__(self):
-        self._pattern = re.compile(
-            "|".join(self.PRIVILEGE_PATTERNS),
-            re.IGNORECASE
-        )
+        self._pattern = PRIVILEGE_COMMAND_REGEX
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
         recent = buffer.last(10)

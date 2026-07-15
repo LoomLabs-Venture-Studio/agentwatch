@@ -422,7 +422,9 @@ class MultiAgentWatchApp(App):
 
         # Update context health
         if rot_report is not None:
-            self.query_one("#context-health", ContextHealthWidget).update_report(rot_report)
+            self.query_one("#context-health", ContextHealthWidget).update_report(
+                rot_report, peak_context_tokens=buffer.stats.peak_context_tokens
+            )
 
         if self.security_mode:
             security_status = self.query_one("#security-status", SecurityStatus)

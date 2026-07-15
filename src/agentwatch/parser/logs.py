@@ -3,34 +3,23 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
 from .models import Action, ToolType
 
-# Sensitive path patterns for security detection
-SENSITIVE_PATHS = [
-    r"\.moltbot/credentials",
-    r"\.moltbot/agents/.*/auth-profiles\.json",
-    r"\.clawdbot/",
-    r"\.aws/credentials",
-    r"\.ssh/",
-    r"\.gnupg/",
-    r"\.env$",
-    r"secrets\.json",
-    r"\.netrc",
-    r"\.npmrc",
-    r"\.pypirc",
-    r"id_rsa",
-    r"id_ed25519",
-    r"\.pem$",
-    r"\.key$",
-]
-
-SENSITIVE_PATH_REGEX = re.compile("|".join(SENSITIVE_PATHS), re.IGNORECASE)
-
+# Sensitive path patterns for security detection -- moved to
+# `security_patterns.py` (Sprint 14) so `parser.models.ActionBuffer.add()`'s
+# raw credential-access counter and `detectors/security/credentials.py` can
+# share the same definitions without an import cycle. Re-exported here for
+# backward compatibility with existing `from agentwatch.parser.logs import
+# is_sensitive_path` call sites.
+from .security_patterns import (
+    SENSITIVE_PATH_REGEX,  # noqa: F401 -- re-exported, see comment above
+    SENSITIVE_PATHS,  # noqa: F401 -- re-exported, see comment above
+    is_sensitive_path,  # noqa: F401 -- re-exported, see comment above
+)
 
 # Common agent log locations
 DEFAULT_SEARCH_PATHS = [
@@ -41,13 +30,6 @@ DEFAULT_SEARCH_PATHS = [
     Path.cwd() / ".logs",
     Path.cwd() / "logs",
 ]
-
-
-def is_sensitive_path(path: str | None) -> bool:
-    """Check if a path matches known sensitive patterns."""
-    if not path:
-        return False
-    return bool(SENSITIVE_PATH_REGEX.search(path))
 
 
 def classify_tool(tool_name: str) -> ToolType:

@@ -131,19 +131,38 @@ class SiemLogger:
         # mapping above (levelname -> severity), set from the log level.
         self._logger.log(_SEVERITY_TO_LOG_LEVEL[warning.severity], warning.message, extra=payload)
 
-    def log_report_summary(self, report_type: str, score: float, warning_count: int) -> None:
-        """Append one summary line for a completed `check`/`security-scan` run."""
+    def log_report_summary(
+        self,
+        report_type: str,
+        score: float,
+        warning_count: int,
+        security_stats: dict[str, int] | None = None,
+    ) -> None:
+        """Append one summary line for a completed `check`/`security-scan` run.
+
+        `security_stats`, when provided, carries the 4 raw per-action
+        security-stat counters (`SessionStats.credential_accesses` /
+        `.privilege_commands` / `.network_connections` /
+        `.injection_attempts` -- see `parser/models.py`'s design-decision
+        comment: raw pattern-match counts, not detector-fired counts).
+        Optional and additive -- omitting it reproduces the exact prior
+        summary line unchanged.
+        """
+        extra = {
+            "event_type": "agentwatch.report_summary",
+            "report_type": report_type,
+            "score": score,
+            "warning_count": warning_count,
+            "agent_type": self._agent_type,
+            "session_id": self._session_id,
+            "source_log": self._source_log,
+        }
+        if security_stats is not None:
+            extra["security_stats"] = security_stats
+
         self._logger.info(
             f"{report_type} report: score={score} warnings={warning_count}",
-            extra={
-                "event_type": "agentwatch.report_summary",
-                "report_type": report_type,
-                "score": score,
-                "warning_count": warning_count,
-                "agent_type": self._agent_type,
-                "session_id": self._session_id,
-                "source_log": self._source_log,
-            },
+            extra=extra,
         )
 
     def close(self) -> None:

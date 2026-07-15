@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import re
 
-from agentwatch.parser.logs import is_sensitive_path
 from agentwatch.parser.models import ActionBuffer
+from agentwatch.parser.security_patterns import (
+    CREDENTIAL_EXTRA_PATTERN,
+    CREDENTIAL_EXTRA_PATTERNS,
+    is_sensitive_path,
+)
 
 from ..base import Category, SecurityDetector, Severity, Warning
 
@@ -17,30 +21,17 @@ class CredentialAccessDetector(SecurityDetector):
     name = "credential_access"
     description = "Agent accessing credential or secret files"
 
-    # Additional patterns beyond the parser's SENSITIVE_PATHS
-    EXTRA_SENSITIVE_PATTERNS = [
-        r"password",
-        r"secret",
-        r"token",
-        r"api[_-]?key",
-        r"credentials?\.json",
-        r"auth.*\.json",
-        r"\.vault",
-        r"keychain",
-        r"\.kdbx?$",  # KeePass
-    ]
-
-    def __init__(self):
-        self._extra_pattern = re.compile(
-            "|".join(self.EXTRA_SENSITIVE_PATTERNS),
-            re.IGNORECASE
-        )
+    # Additional patterns beyond the parser's SENSITIVE_PATHS. Sourced from
+    # `agentwatch.parser.security_patterns` (Sprint 14) so this detector and
+    # `SessionStats.credential_accesses`'s raw counter (`parser/models.py`)
+    # share one definition instead of two that could drift apart.
+    EXTRA_SENSITIVE_PATTERNS = CREDENTIAL_EXTRA_PATTERNS
 
     def _is_sensitive(self, path: str) -> bool:
         """Check if path is sensitive."""
         if is_sensitive_path(path):
             return True
-        if self._extra_pattern.search(path):
+        if CREDENTIAL_EXTRA_PATTERN.search(path):
             return True
         return False
 
