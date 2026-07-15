@@ -83,7 +83,28 @@ real (see docstrings below), but that's a defensive design choice, not a
 confirmed fact about the wire protocol. MCP tool call success/failure
 (``McpToolCallEnd``, seen in the ``EventMsg`` enum but not extracted here)
 remains unaddressed — out of scope for this sprint, flagged for a future
-one alongside Open Questions #2/#3/#5.
+one alongside Open Questions #2/#5.
+
+**Open Question #3 — PARTIALLY RESOLVED (2026-07-15)**, after Sprints 4, 8,
+and 10 each attempted and found nothing: a real tool/function registry
+exists in ``codex-rs`` (``codex-rs/core/src/tools/handlers/*_spec.rs``,
+each building a ``ToolSpec`` with a literal ``name: "..."`` field — the
+exact wire value the model calls). ``classify_codex_tool`` now hardcodes
+the general-purpose subset confirmed there (``exec_command``,
+``write_stdin``, ``shell_command``, ``view_image``, ``list_mcp_resources``,
+``list_mcp_resource_templates``, ``read_mcp_resource``, ``tool_search``,
+plus the pre-existing ``apply_patch``) — see
+``_CONFIRMED_CODEX_TOOL_TYPES``'s docstring for exact file/line citations.
+A much larger multi-agent-orchestration/plugin-management tool surface was
+also found in the same registry (``spawn_agent``, ``send_input``,
+``update_plan``, ``request_permissions``, etc.) but deliberately left
+unmapped — a different feature (Codex coordinating its own sub-agents),
+not this classifier's single-session file/exec/read vocabulary. Still
+open: whether any of these real names actually appear in the specific
+Codex CLI version an end user has installed (this registry is read from
+``codex-rs`` @ ``main``, not a version-pinned release, and still no live
+install exists to cross-check against — see module-level "not verified
+against a live Codex CLI install" note above).
 """
 
 from __future__ import annotations
@@ -145,22 +166,83 @@ class _PendingCall:
     resolved_by_event_msg: bool = False
 
 
+#: Real Codex tool names confirmed directly against ``codex-rs``'s tool
+#: registry (github.com/openai/codex @ main, fetched 2026-07-15 -- PRD Open
+#: Question #3, partially resolved after Sprints 4/8/10 all attempted and
+#: found nothing). Each ``ToolSpec`` literal ``name: "..."`` field below is
+#: the exact wire value the model calls and that shows up in a real
+#: ``function_call.name`` -- not inferred, read straight off the struct
+#: construction:
+#:   - ``codex-rs/core/src/tools/handlers/shell_spec.rs``: line 92
+#:     (``exec_command``), line 142 (``write_stdin``), line 214
+#:     (``shell_command``)
+#:   - ``codex-rs/core/src/tools/handlers/apply_patch_spec.rs``: line 19
+#:     (``apply_patch`` -- re-confirmed via the registry, already handled
+#:     as a special case below since it predates this table)
+#:   - ``codex-rs/protocol/src/models.rs``: line 1350,
+#:     ``pub const VIEW_IMAGE_TOOL_NAME: &str = "view_image"`` -- the same
+#:     file Sprint 8 already fetched and confirmed ``FunctionCall``'s wire
+#:     shape from
+#:   - ``codex-rs/core/src/tools/handlers/mcp_resource_spec.rs``: line 24
+#:     (``list_mcp_resources``), line 52 (``list_mcp_resource_templates``),
+#:     line 80 (``read_mcp_resource``)
+#:   - ``codex-rs/tools/src/tool_discovery.rs``: line 6,
+#:     ``pub const TOOL_SEARCH_TOOL_NAME: &str = "tool_search"``
+#:
+#: ``write_stdin`` is deliberately listed under BASH rather than left to
+#: ``classify_tool``'s generic substring rules: it feeds input to an
+#: already-running shell command (``unified_exec``), not a file write, so
+#: the substring-based "write" -> WRITE guess it would otherwise hit is
+#: wrong now that the real semantics are known.
+#:
+#: The registry also confirmed a large surface of real tool names this
+#: table deliberately does NOT map: meta/control-flow tools with no
+#: fitting ``ToolType`` (``request_permissions``, ``update_plan``,
+#: ``new_context`` [``NEW_CONTEXT_WINDOW_TOOL_NAME``, ``new_context_window_
+#: spec.rs`` line 6], ``request_user_input``, ``get_context_remaining``,
+#: ``list_available_plugins_to_install``, ``request_plugin_install``), and
+#: an entire separate multi-agent-orchestration tool family
+#: (``spawn_agent``/``send_input``/``send_message``/``followup_task``/
+#: ``resume_agent``/``wait_agent``/``list_agents``/``close_agent``/
+#: ``interrupt_agent``, per ``multi_agents_spec.rs``, plus ``agent_jobs_
+#: spec.rs``'s ``spawn_agents_on_csv``/``report_agent_job_result``) that
+#: belongs to a genuinely different feature (Codex spawning/coordinating
+#: its own sub-agents) outside this classifier's single-session file/exec/
+#: read vocabulary. Forcing any of these into an existing ``ToolType``
+#: would be a guess, not a confirmed mapping -- they fall through to
+#: ``classify_tool``'s substring rules (mostly UNKNOWN) unchanged, same as
+#: any other not-yet-confirmed name.
+_CONFIRMED_CODEX_TOOL_TYPES: dict[str, ToolType] = {
+    "exec_command": ToolType.BASH,
+    "write_stdin": ToolType.BASH,
+    "shell_command": ToolType.BASH,
+    "view_image": ToolType.READ,
+    "list_mcp_resources": ToolType.MCP,
+    "list_mcp_resource_templates": ToolType.MCP,
+    "read_mcp_resource": ToolType.MCP,
+    "tool_search": ToolType.SEARCH,
+}
+
+
 def classify_codex_tool(name: str) -> ToolType:
     """Classify a Codex function-call name into a ToolType.
 
-    Reuses ``logs.classify_tool``'s substring rules as the base case —
-    Codex's real tool names are unconfirmed (PRD Open Question #3), but
-    likely follow similar shell/exec/read/write vocabulary based on
-    OpenAI's public function-calling conventions. Adds one Codex-specific
-    name pattern (``apply_patch``, Codex's documented file-edit mechanism)
-    -> EDIT.
+    Checks ``_CONFIRMED_CODEX_TOOL_TYPES`` (real names read directly off
+    ``codex-rs``'s tool registry, see that table's docstring for citations)
+    first, then ``apply_patch``/``apply-patch`` (Codex's documented
+    file-edit mechanism) -> EDIT, then falls back to ``logs.classify_tool``
+    's generic substring rules for anything not yet confirmed.
 
-    Treat this as a conservative stub, not a finished mapping: until real
-    tool names are captured and confirmed, expect most/all Codex actions
-    to classify as ``ToolType.UNKNOWN`` — that is documented, expected
-    behavior for this sprint, not a bug.
+    Real tool names beyond what ``_CONFIRMED_CODEX_TOOL_TYPES`` covers do
+    exist (a large multi-agent-orchestration/plugin-management surface --
+    see that table's docstring) but are deliberately left unmapped rather
+    than guessed into a ``ToolType`` that doesn't fit. Expect Codex actions
+    using those still-unmapped names to classify as ``ToolType.UNKNOWN`` --
+    documented, expected behavior, not a bug.
     """
     name_lower = name.lower()
+    if name_lower in _CONFIRMED_CODEX_TOOL_TYPES:
+        return _CONFIRMED_CODEX_TOOL_TYPES[name_lower]
     if "apply_patch" in name_lower or "apply-patch" in name_lower:
         return ToolType.EDIT
     return classify_tool(name)

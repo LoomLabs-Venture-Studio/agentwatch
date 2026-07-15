@@ -215,6 +215,50 @@ class TestClassifyCodexTool:
     def test_unrecognized_name_is_unknown(self):
         assert classify_codex_tool("totally_unrecognized_tool_xyz") == ToolType.UNKNOWN
 
+    # Real tool names confirmed against codex-rs's tool registry
+    # (codex-rs/core/src/tools/handlers/*_spec.rs, 2026-07-15 -- see
+    # _CONFIRMED_CODEX_TOOL_TYPES's docstring in codex.py for citations).
+    def test_exec_command_is_bash(self):
+        assert classify_codex_tool("exec_command") == ToolType.BASH
+
+    def test_write_stdin_is_bash_not_write(self):
+        """write_stdin feeds input to an already-running shell command
+        (unified_exec), not a file write -- must not fall into the
+        generic 'write' substring guess from classify_tool."""
+        assert classify_codex_tool("write_stdin") == ToolType.BASH
+
+    def test_shell_command_is_bash(self):
+        assert classify_codex_tool("shell_command") == ToolType.BASH
+
+    def test_view_image_is_read(self):
+        assert classify_codex_tool("view_image") == ToolType.READ
+
+    def test_list_mcp_resources_is_mcp(self):
+        assert classify_codex_tool("list_mcp_resources") == ToolType.MCP
+
+    def test_list_mcp_resource_templates_is_mcp(self):
+        assert classify_codex_tool("list_mcp_resource_templates") == ToolType.MCP
+
+    def test_read_mcp_resource_is_mcp(self):
+        assert classify_codex_tool("read_mcp_resource") == ToolType.MCP
+
+    def test_tool_search_is_search(self):
+        assert classify_codex_tool("tool_search") == ToolType.SEARCH
+
+    def test_confirmed_names_are_case_insensitive(self):
+        assert classify_codex_tool("EXEC_COMMAND") == ToolType.BASH
+
+    def test_meta_tools_deliberately_unmapped_fall_through(self):
+        """Real, confirmed tool names with no fitting ToolType (meta/
+        control-flow tools) are deliberately left out of
+        _CONFIRMED_CODEX_TOOL_TYPES -- they fall through to classify_tool's
+        generic substring rules like any other unconfirmed name, not
+        forced into a category that doesn't fit."""
+        assert classify_codex_tool("request_permissions") == ToolType.UNKNOWN
+        assert classify_codex_tool("update_plan") == ToolType.UNKNOWN
+        assert classify_codex_tool("new_context") == ToolType.UNKNOWN
+        assert classify_codex_tool("get_context_remaining") == ToolType.UNKNOWN
+
 
 # ---------------------------------------------------------------------------
 # CodexParser
