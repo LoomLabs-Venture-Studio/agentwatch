@@ -20,6 +20,7 @@ from agentwatch.health import calculate_health, calculate_security_score
 from agentwatch.llm import (
     DEFAULT_OLLAMA_MODEL,
     MAX_WARNINGS_TO_ASSESS,
+    GoalAlignmentAssessment,
     LlmUnavailableError,
     OllamaAnalyzer,
 )
@@ -59,7 +60,7 @@ def _export_siem_log(
         sys.exit(1)
 
 
-def _run_llm_assessment(warnings: list[Warning], llm_model: str) -> None:
+def _run_llm_assessment(warnings: list[Warning], llm_model: str) -> OllamaAnalyzer | None:
     """Best-effort Tier-2 triage of up to the first `MAX_WARNINGS_TO_ASSESS`
     *warnings*, mutating `warning.details["llm_assessment"]` in place.
 
@@ -69,13 +70,18 @@ def _run_llm_assessment(warnings: list[Warning], llm_model: str) -> None:
     it degrades to a printed warning and Tier-1-only results, matching this
     feature's "opt-in enrichment, not a dependency" design (see
     `llm.py`'s module docstring).
+
+    Returns the constructed, already-`check_available()`-gated
+    `OllamaAnalyzer` on success (or `None` if Tier 2 is unavailable) so
+    callers can reuse the same instance for other Tier-2 calls -- e.g.
+    goal-alignment assessment -- without re-checking availability.
     """
     try:
         analyzer = OllamaAnalyzer(model=llm_model)
         analyzer.check_available()
     except LlmUnavailableError as exc:
         click.echo(f"  (Tier-2 LLM analysis skipped: {exc})", err=True)
-        return
+        return None
 
     assessed = 0
     for warning in warnings:
@@ -88,6 +94,30 @@ def _run_llm_assessment(warnings: list[Warning], llm_model: str) -> None:
             continue
         warning.details["llm_assessment"] = assessment.to_dict()
         assessed += 1
+
+    return analyzer
+
+
+def _run_goal_alignment(
+    analyzer: OllamaAnalyzer, buffer: ActionBuffer
+) -> GoalAlignmentAssessment | None:
+    """Best-effort Tier-2 goal-alignment advisory for *buffer*, called once
+    per scan (not once per warning). Reuses an already-`check_available()`-
+    gated *analyzer* (from `_run_llm_assessment`) rather than re-checking
+    Ollama availability a second time.
+
+    Like `_run_llm_assessment`, a failed call here must never fail the
+    surrounding `check`/`security-scan` run -- it degrades to no advisory
+    output. Returns `None` both when the assessment call itself fails and
+    when `assess_goal_alignment()` honestly reports "nothing to assess"
+    (no stated task found -- see `llm.py`'s docstring); `_print_goal_
+    alignment` treats both the same way: print nothing.
+    """
+    try:
+        return analyzer.assess_goal_alignment(buffer)
+    except Exception as exc:
+        click.echo(f"  (Tier-2 goal-alignment assessment failed: {exc})", err=True)
+        return None
 
 
 def _print_llm_assessments(warnings: list[Warning]) -> None:
@@ -109,6 +139,41 @@ def _print_llm_assessments(warnings: list[Warning]) -> None:
         click.echo(f"  [{w.signal}] {verdict_label} ({verdict['confidence']} confidence)")
         if verdict["rationale"]:
             click.echo(f"      {verdict['rationale']}")
+    click.echo()
+
+
+def _print_goal_alignment(assessment: GoalAlignmentAssessment | None) -> None:
+    """Print the Tier-2 goal-alignment advisory block, if any.
+
+    Prints nothing when *assessment* is `None` -- covers both
+    `assess_goal_alignment()`'s own "no stated task found in this buffer"
+    short-circuit (the documented Codex-session case) and
+    `_run_goal_alignment`'s failure catch alike; neither is an error worth
+    a placeholder line, matching how a Codex session simply never gets this
+    section at all.
+
+    ASCII-only, plain bracketed labels by design -- this deliberately does
+    not route through `themes.py`. Wiring every new status concept into the
+    theme system has its own multi-sprint history in this repo (see
+    PLAYBOOK.md Task #8/#9); a two-state advisory label isn't worth
+    repeating that here.
+    """
+    if assessment is None:
+        return
+
+    if assessment.aligned is True:
+        label = "[ALIGNED]"
+    elif assessment.aligned is False:
+        label = "[POSSIBLE DRIFT]"
+    else:
+        label = "[UNCLEAR]"
+
+    summary = assessment.drift_summary or "(model response could not be parsed)"
+
+    click.echo()
+    click.echo(click.style("  TIER-2 GOAL ALIGNMENT (advisory, not scored)", bold=True))
+    click.echo("  " + "-" * 48)
+    click.echo(f"  {label} {summary}")
     click.echo()
 
 
@@ -312,8 +377,11 @@ def check(
     # enrichment applied to warning.details after scoring, never before)
     report = calculate_health(warnings, include_security=security)
 
+    goal_alignment: GoalAlignmentAssessment | None = None
     if llm:
-        _run_llm_assessment(warnings, llm_model)
+        analyzer = _run_llm_assessment(warnings, llm_model)
+        if analyzer is not None:
+            goal_alignment = _run_goal_alignment(analyzer, buffer)
 
     if siem_log is not None:
         _export_siem_log(
@@ -331,6 +399,7 @@ def check(
 
         if llm:
             _print_llm_assessments(warnings)
+            _print_goal_alignment(goal_alignment)
 
     # Exit code based on score thresholds (theme-independent)
     # < 40 = level_3 (critical/stuck) -> exit 2
@@ -667,8 +736,11 @@ def security_scan(
 
     security_score = calculate_security_score(warnings)
 
+    goal_alignment: GoalAlignmentAssessment | None = None
     if llm:
-        _run_llm_assessment(warnings, llm_model)
+        analyzer = _run_llm_assessment(warnings, llm_model)
+        if analyzer is not None:
+            goal_alignment = _run_goal_alignment(analyzer, buffer)
 
     if siem_log is not None:
         _export_siem_log(siem_log, warnings, buffer, report_type="security", score=security_score)
@@ -715,6 +787,7 @@ def security_scan(
 
         if llm:
             _print_llm_assessments(warnings)
+            _print_goal_alignment(goal_alignment)
 
     # Exit code
     if security_score < 50:
