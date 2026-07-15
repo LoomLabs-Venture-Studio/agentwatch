@@ -8,7 +8,9 @@ security monitor for AI coding agents: full support for Claude Code and
 Moltbot; Aider (Markdown chat-history, including live tailing) and Cursor
 (SQLite composer store, process-gated discovery + live tailing) are also
 wired end-to-end and live-tested against real installs; Codex CLI support
-is fixture-verified only (no live install exists to confirm against — see
+is fixture-verified only — a genuine `@openai/codex` install has now been
+confirmed reachable (2026-07-15) but no live authenticated session/rollout
+has been captured against it (no credentials in this environment — see
 Known Issues). It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
@@ -64,7 +66,9 @@ src/agentwatch/
                        edit-format coverage
     codex.py             Codex CLI rollout JSONL parsing (CodexParser,
                        call_id-based buffering, era detection) --
-                       fixture-verified only, no live install exists
+                       fixture-verified only; genuine install confirmed
+                       reachable 2026-07-15 but no live session captured
+                       (no credentials -- see Known Issues)
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping
@@ -233,6 +237,46 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   sprint rather than rushed. `CODEX_HOME` multi-root support, real tool
   names beyond `apply_patch`, and PID-based log resolution remain
   unconfirmed.
+- **Genuine `@openai/codex` package confirmed installable and runnable
+  (2026-07-15), but a live-authenticated-session rollout still could not be
+  captured — narrower and more precise than the old "no live install
+  exists" framing.** First checked and correctly rejected a look-alike:
+  `npm view codex@0.2.3` (the *unscoped* `codex` package) resolves to
+  `git://github.com/logicalparadox/codex.git`, an unrelated ~2013-era
+  static-site/doc generator maintained by `jakeluer <jake.luer@incatern.com>`
+  — nothing to do with OpenAI, so it was correctly never installed or run.
+  The real package is the *scoped* `@openai/codex`: `npm view @openai/codex`
+  shows `repository: git+https://github.com/openai/codex.git`, homepage
+  `github.com/openai/codex#readme`, Apache-2.0 license, maintainers all
+  `*-openai@openai.com`/`*-oai@`-style OpenAI addresses, published via
+  GitHub Actions OIDC — genuine, version `0.144.4` at check time. Ran
+  `npx @openai/codex --version`/`--help`/`doctor` (all non-stateful, no
+  session started). `codex doctor`'s own output confirms `CODEX_HOME`
+  defaults to `~/.codex` exactly as `discovery.py::_resolve_codex_log()`
+  already assumes — a real match, no fix needed. It also surfaces a
+  previously-unknown-to-this-codebase architecture layer: `CODEX_HOME` now
+  additionally holds a SQLite state index (`state_N.sqlite`, `logs_N.sqlite`,
+  `goals_N.sqlite`, `memories_N.sqlite`) backing `resume`/`archive`/`delete`,
+  and `doctor` distinguishes "active rollout files" from "archived rollout
+  files" — a distinction neither `parser/codex.py` nor `discovery.py`
+  currently mention. **Not fixed, and deliberately so**: per this task's
+  hard constraint, no API key or ChatGPT login was created, requested, or
+  used, so `codex doctor`'s own auth check reports "no Codex credentials
+  were found" and this machine's `~/.codex` (pre-existing from an earlier,
+  unrelated desktop-app install — not created by this check) has 0 active
+  and 0 archived rollout files. No real rollout JSONL was ever produced to
+  check field-by-field against `parser/codex.py`'s assumptions, and the
+  installed npm wrapper (`@openai/codex`'s `bin/codex.js`) ships no bundled
+  schema docs, fixtures, or CHANGELOG beyond its top-level README — it just
+  shells out to a separately-vendored platform binary. The one new fact
+  found (the SQLite index layer) doesn't contradict the existing
+  directory-scan-based discovery — `doctor`'s own check is literally named
+  "rollout files and state DB thread inventory agree", describing the DB as
+  derived from the JSONL files, not a replacement for them — so
+  `parser/codex.py`/`discovery.py` were left unchanged rather than fixed
+  speculatively. Net position: package existence and authenticity are now
+  confirmed; actual rollout-parsing correctness remains fixture-verified
+  only, blocked specifically on credentials, not on install availability.
 
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
