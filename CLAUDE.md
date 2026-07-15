@@ -247,8 +247,11 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   — nothing to do with OpenAI, so it was correctly never installed or run.
   The real package is the *scoped* `@openai/codex`: `npm view @openai/codex`
   shows `repository: git+https://github.com/openai/codex.git`, homepage
-  `github.com/openai/codex#readme`, Apache-2.0 license, maintainers all
-  `*-openai@openai.com`/`*-oai@`-style OpenAI addresses, published via
+  `github.com/openai/codex#readme`, Apache-2.0 license, 15 of 16
+  maintainers on `*-openai@openai.com`/`*-oai@`-style OpenAI addresses (one,
+  `aibrahim-openai`, lists a personal address under an `-openai`-suffixed
+  username — noted for precision, doesn't change the conclusion given the
+  repository URL, license, and OIDC-signed publish below), published via
   GitHub Actions OIDC — genuine, version `0.144.4` at check time. Ran
   `npx @openai/codex --version`/`--help`/`doctor` (all non-stateful, no
   session started). `codex doctor`'s own output confirms `CODEX_HOME`
