@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentwatch.detectors.base import Warning
+    from agentwatch.parser.models import ActionBuffer
 
 # A local Ollama chat call per warning is a real HTTP round-trip (typically
 # well over a second for a small model). Running that on the 1s
@@ -156,13 +157,38 @@ class LiveSiemExporter:
 
 class LiveLlmAssessor:
     """Throttled, worker-friendly Tier-2 triage for one agent's warning
-    stream.
+    stream, plus the session-level Tier-2 goal-alignment advisory
+    (`llm.py`'s `assess_goal_alignment()`, Sprint 15).
 
     Split into a cheap render-tick half (`due()` / `new_warnings()` /
-    `stamp()`, safe to call every 1s tick) and a blocking half
-    (`run_batch()`, meant to be called via `asyncio.to_thread` from a
-    Textual `run_worker` so the real Ollama HTTP round-trips never run on
-    the render path).
+    `stamp()` for per-warning triage; `goal_alignment_due()` /
+    `stamp_goal_alignment()` for the advisory -- both safe to call every 1s
+    tick) and a blocking half (`run_batch()` / `run_goal_alignment()`, meant
+    to be called via `asyncio.to_thread` from a Textual `run_worker` so the
+    real Ollama HTTP round-trips never run on the render path).
+
+    Per-warning triage and goal-alignment share one `OllamaAnalyzer`
+    instance and one `_available`/`_unavailable_notified` pair -- both talk
+    to the same local Ollama daemon, so establishing availability once and
+    surfacing exactly one "Ollama unavailable" notification for the whole
+    assessor (not one per feature) matches `cli.py`'s own precedent of
+    reusing a single already-`check_available()`-gated analyzer across
+    `_run_llm_assessment` and `_run_goal_alignment` instead of re-checking
+    a second time.
+
+    Goal alignment deliberately does NOT reuse `warning_dedup_key()` /
+    `new_warnings()` / `_assessed_keys` -- that machinery exists because
+    per-warning triage has multiple, individually-identified findings that
+    can each go stale independently. Goal alignment is a single
+    session-level judgment ("does the whole buffer still look aligned with
+    the stated task") -- there is exactly one result at a time, not a set
+    of them, so it needs its own throttle timer (`_last_goal_run`,
+    `goal_alignment_due()`) and its own single cached result
+    (`_goal_alignment_result`), not a dedup set. It reuses the *dispatch*
+    mechanism (asyncio.to_thread from a run_worker, throttled at the same
+    `LLM_ASSESSMENT_INTERVAL_SECONDS` cadence) but not the *dedup* one --
+    forcing dedup-by-key onto a single-result advisory would be dead
+    machinery, not reuse.
     """
 
     def __init__(self, model: str) -> None:
@@ -177,6 +203,19 @@ class LiveLlmAssessor:
         self._last_run: float = -LLM_ASSESSMENT_INTERVAL_SECONDS
         self._unavailable_notified = False
         self._running = False
+
+        # Goal-alignment advisory state -- independent throttle clock and
+        # in-flight flag from per-warning triage above (see class
+        # docstring): a slow triage batch must not block the next
+        # goal-alignment tick from becoming due, and vice versa.
+        self._last_goal_run: float = -LLM_ASSESSMENT_INTERVAL_SECONDS
+        self._goal_running = False
+        # The single cached advisory (`GoalAlignmentAssessment.to_dict()`),
+        # re-shown on every render between dispatches. `None` covers both
+        # "never run yet" and "last run found no stated task" -- both
+        # render as "show nothing", which is the documented, honest
+        # behavior (see `stamp_goal_alignment()`).
+        self._goal_alignment_result: dict | None = None
 
     def due(self, now: float | None = None) -> bool:
         """Whether a new assessment batch should be dispatched now.
@@ -210,6 +249,37 @@ class LiveLlmAssessor:
             if cached is not None:
                 w.details["llm_assessment"] = cached
 
+    def _ensure_analyzer(self) -> str | None:
+        """Establish `self._analyzer`/`self._available` once, shared by
+        `run_batch()` and `run_goal_alignment()` (both talk to the same
+        local Ollama daemon -- see class docstring on why they share one
+        analyzer/availability pair instead of each re-checking).
+
+        Returns an unavailable-error message the FIRST time Ollama can't be
+        reached (so the caller can surface exactly one notification for the
+        whole assessor, not one per feature), `None` otherwise -- including
+        on every later call after already-notified, so an Ollama-down
+        daemon doesn't spam a notification every 30s from either feature.
+        Callers must only treat a non-`None` return as "surface this," and
+        must still check `self._available` before doing assessment work
+        (a `None` return doesn't by itself mean "available," it can also
+        mean "already established, or already notified").
+        """
+        if self._analyzer is not None:
+            return None
+        try:
+            analyzer = OllamaAnalyzer(model=self._model)
+            analyzer.check_available()
+        except LlmUnavailableError as exc:
+            self._available = False
+            if self._unavailable_notified:
+                return None
+            self._unavailable_notified = True
+            return str(exc)
+        self._analyzer = analyzer
+        self._available = True
+        return None
+
     def run_batch(self, warnings: list["Warning"]) -> str | None:
         """Blocking -- call via `asyncio.to_thread`, never directly on the
         event loop / render path.
@@ -223,18 +293,10 @@ class LiveLlmAssessor:
         """
         self._running = True
         try:
-            if self._analyzer is None:
-                try:
-                    analyzer = OllamaAnalyzer(model=self._model)
-                    analyzer.check_available()
-                except LlmUnavailableError as exc:
-                    self._available = False
-                    if self._unavailable_notified:
-                        return None
-                    self._unavailable_notified = True
-                    return str(exc)
-                self._analyzer = analyzer
-                self._available = True
+            error = self._ensure_analyzer()
+            if self._available is False:
+                return error
+            assert self._analyzer is not None
 
             assessed = 0
             for w in warnings:
@@ -253,3 +315,70 @@ class LiveLlmAssessor:
             return None
         finally:
             self._running = False
+
+    def goal_alignment_due(self, now: float | None = None) -> bool:
+        """Whether a new goal-alignment assessment should be dispatched
+        now. Independent throttle window from `due()`'s per-warning triage
+        cadence (see class docstring) -- a session-level goal-alignment
+        check is one result, not a set of per-warning ones competing for
+        the same dispatch slot, so it gets its own clock. Same
+        False-when-unavailable/in-flight rules as `due()`, reusing the
+        shared `_available` gate rather than re-checking it."""
+        if self._available is False or self._goal_running:
+            return False
+        now = _monotonic() if now is None else now
+        return (now - self._last_goal_run) >= LLM_ASSESSMENT_INTERVAL_SECONDS
+
+    def mark_goal_run(self, now: float | None = None) -> None:
+        """Record that a goal-alignment batch was just dispatched,
+        resetting its throttle window. Mirrors `mark_run()`'s
+        dispatch-time-not-completion-time timing for the same reason."""
+        self._last_goal_run = _monotonic() if now is None else now
+
+    def stamp_goal_alignment(self) -> dict | None:
+        """The cached goal-alignment advisory (`GoalAlignmentAssessment.
+        to_dict()`), if any, for this tick's render.
+
+        Unlike per-warning `stamp()`, there's nothing to "re-attach" onto a
+        fresh object -- goal alignment isn't a `Warning`, it's a single
+        session-level judgment -- so the caller just reads this back
+        directly every tick between dispatches. Returns `None` both when no
+        assessment has completed yet and when the last one found no stated
+        task to compare against (`assess_goal_alignment()`'s own honest
+        "nothing to assess" case) -- both render as "show nothing," per
+        this feature's documented silence-is-honest behavior.
+        """
+        return self._goal_alignment_result
+
+    def run_goal_alignment(self, buffer: "ActionBuffer") -> str | None:
+        """Blocking -- call via `asyncio.to_thread`, never directly on the
+        event loop / render path.
+
+        Establishes Ollama availability once (shared with `run_batch()` via
+        `_ensure_analyzer()`) and runs exactly one `assess_goal_alignment()`
+        call against *buffer*, caching the result for `stamp_goal_
+        alignment()`. Returns an unavailable-error message the FIRST time
+        Ollama can't be reached, `None` otherwise -- same one-notification
+        contract as `run_batch()`, and shared state means if triage already
+        surfaced the unavailable notification, this won't surface a second
+        one for the same daemon-down condition.
+
+        A failed or "nothing to assess" call leaves/sets `_goal_alignment_
+        result` to `None` rather than raising -- advisory-only, never
+        allowed to be more disruptive than a per-warning triage failure.
+        """
+        self._goal_running = True
+        try:
+            error = self._ensure_analyzer()
+            if self._available is False:
+                return error
+            assert self._analyzer is not None
+
+            try:
+                assessment = self._analyzer.assess_goal_alignment(buffer)
+            except Exception:
+                return None
+            self._goal_alignment_result = assessment.to_dict() if assessment is not None else None
+            return None
+        finally:
+            self._goal_running = False

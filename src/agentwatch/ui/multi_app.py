@@ -477,7 +477,15 @@ class MultiAgentWatchApp(App):
             agent_label = self._agent_label(agent_data)
             self._fire_secret_alerts(warnings, agent_label)
 
-        self.query_one("#warnings-list", WarningsList).update_warnings(warnings)
+        # Goal-alignment is per-agent (agent_data["llm_assessor"]), but only
+        # the currently-selected agent's cached advisory is ever shown --
+        # mirrors how `warnings` here is already only the selected agent's.
+        warnings_list = self.query_one("#warnings-list", WarningsList)
+        selected_llm_assessor: LiveLlmAssessor | None = agent_data.get("llm_assessor")
+        warnings_list.update_goal_alignment(
+            selected_llm_assessor.stamp_goal_alignment() if selected_llm_assessor else None
+        )
+        warnings_list.update_warnings(warnings)
 
         stats = self.query_one("#stats-display", StatsPanel)
         stats.update_stats(
@@ -580,6 +588,21 @@ class MultiAgentWatchApp(App):
                 label = self._agent_label(agent_data)
                 self.run_worker(self._run_llm_batch(llm_assessor, new_warnings, label))
 
+            # Tier-2 goal-alignment advisory (Sprint 15's assess_goal_
+            # alignment(), wired live here), dispatched per-agent just like
+            # per-warning triage above -- each tracked agent's throttle
+            # clock/cached advisory is independent (LiveLlmAssessor.
+            # goal_alignment_due()/mark_goal_run()), so a background agent's
+            # advisory stays fresh even while a different agent is selected
+            # in the sidebar. Rendering the cached result into the widget is
+            # the caller's job (only the *selected* agent's advisory is
+            # ever shown -- see _do_refresh_ui), not this per-agent helper's.
+            if llm_assessor.goal_alignment_due():
+                llm_assessor.mark_goal_run()
+                buffer = agent_data["buffer"]
+                label = self._agent_label(agent_data)
+                self.run_worker(self._run_goal_alignment_batch(llm_assessor, buffer, label))
+
     async def _run_llm_batch(
         self, assessor: LiveLlmAssessor, new_warnings: list["Warning"], agent_label: str
     ) -> None:
@@ -590,6 +613,23 @@ class MultiAgentWatchApp(App):
         being watched concurrently.
         """
         error = await asyncio.to_thread(assessor.run_batch, new_warnings)
+        if error:
+            self.notify(
+                f"[{agent_label}] {error}", title="Tier-2 LLM unavailable", severity="warning",
+                timeout=10,
+            )
+
+    async def _run_goal_alignment_batch(
+        self, assessor: LiveLlmAssessor, buffer: ActionBuffer, agent_label: str
+    ) -> None:
+        """Run one agent's Tier-2 goal-alignment advisory off the render
+        path. Mirrors `_run_llm_batch` exactly (same `asyncio.to_thread`
+        dispatch, same shared-assessor unavailable-notification dedup via
+        `LiveLlmAssessor._ensure_analyzer`) but for `run_goal_alignment`'s
+        single session-level assessment against *buffer* instead of a batch
+        of per-warning triage calls.
+        """
+        error = await asyncio.to_thread(assessor.run_goal_alignment, buffer)
         if error:
             self.notify(
                 f"[{agent_label}] {error}", title="Tier-2 LLM unavailable", severity="warning",
