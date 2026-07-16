@@ -402,6 +402,7 @@ registry.add_detector(MyDetector())
 ┌─────────────────────────────────────────────────────────┐
 │  TIER 2: LLM Analysis (opt-in, --llm)                    │
 │  - Semantic triage of Tier-1 warnings                   │
+│  - Session-level goal-alignment advisory                │
 │  - Local Ollama only -- no external API, ever            │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -414,8 +415,9 @@ All built-in detectors are deterministic (Tier 1) for:
 - **No meta-injection**: Can't fool a regex
 
 Tier 1 is the sole driver of every health/security score -- Tier 2 never
-changes a score or severity, it only attaches an advisory opinion to
-warnings Tier 1 already found (see [Tier-2 LLM Analysis](#tier-2-llm-analysis-optional)
+changes a score or severity. It either attaches an advisory opinion to a
+warning Tier 1 already found, or (for goal-alignment) prints its own
+session-level advisory block (see [Tier-2 LLM Analysis](#tier-2-llm-analysis-optional)
 below).
 
 ## Tier-2 LLM Analysis (optional)
@@ -449,6 +451,36 @@ keep `--llm` runs bounded against a slow local model; in `watch`/
 `watch-all`, assessment is additionally throttled to a 30-second cadence
 (instead of the 1s health-refresh tick) and runs in a background worker so
 a slow local model can never stall the dashboard.
+
+### Goal-Alignment Advisory (also under `--llm`)
+
+The same `--llm` flag also runs a second, independent Tier-2 capability:
+a session-level judgment of whether the agent's recent actions still look
+aligned with what the user actually asked for. It compares the stated task
+(the first action in the log carrying a non-empty `incoming_message`) — plus
+any later user follow-ups/redirects — against a synopsis of the most recent
+actions, via the same local Ollama model. No separate flag is needed; it
+runs automatically alongside per-warning triage whenever `--llm` is passed:
+
+```bash
+agentwatch check --llm
+agentwatch security-scan --llm
+agentwatch watch --llm        # live TUI, same 30s throttle cadence
+agentwatch watch-all --llm    # same, per agent
+```
+
+Purely advisory, like per-warning triage above: it never produces a
+`Warning` and never affects any score (including the currently-inert
+`Category.GOAL` row — see [Detector Categories](#detector-categories)).
+Printed as its own "TIER-2 GOAL ALIGNMENT (advisory, not scored)" block with
+an `[ALIGNED]` / `[POSSIBLE DRIFT]` / `[UNCLEAR]` label and a one/two
+sentence summary (a top-level `goal_alignment` key in JSON output).
+
+Stays silent — no block, no output — when the log carries no stated task at
+all (no action has a non-empty `incoming_message`). This is the documented,
+expected outcome for any current Codex CLI session: `parser/codex.py`
+doesn't capture `incoming_message`, so there's nothing to judge alignment
+against.
 
 ## SIEM Integration (optional)
 
