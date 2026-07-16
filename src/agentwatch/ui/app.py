@@ -390,7 +390,14 @@ class AgentWatchApp(App):
 
     def _on_action(self, action: Action) -> None:
         """Callback for new actions from watcher."""
-        if self._buffer:
+        # NOTE: must be `is not None`, not a bare truthy check. ActionBuffer
+        # defines __len__ but not __bool__, so a freshly-created *empty*
+        # buffer (len 0, but very much initialized -- see on_mount) is
+        # falsy. A bare `if self._buffer:` here silently drops the first
+        # action delivered after on_mount, which means the buffer never
+        # gains any actions, which means it stays empty (and falsy)
+        # forever -- no action is ever recorded.
+        if self._buffer is not None:
             self._buffer.add(action)
             # The 1s interval timer handles refreshes — don't pile up extra
             # calls via call_after_refresh, which was causing sporadic updates
@@ -398,7 +405,13 @@ class AgentWatchApp(App):
 
     def refresh_display(self) -> None:
         """Update all widgets with current data."""
-        if not self._buffer or not self._detector_registry:
+        # Same ActionBuffer __len__-without-__bool__ pitfall as _on_action
+        # above: this guard means "have _buffer/_detector_registry been
+        # initialized" (they're set together in on_mount), not "is the
+        # buffer non-empty" -- so it must check identity against None
+        # rather than truthiness, or the very first refresh_display() call
+        # in on_mount (before any action has arrived) skips rendering.
+        if self._buffer is None or self._detector_registry is None:
             return
         if self._refreshing:
             return  # prevent overlapping refreshes
