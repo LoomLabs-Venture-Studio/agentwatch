@@ -145,6 +145,28 @@ class TestPerAgentLlmThrottle:
 
         clock = {"t": 0.0}
         monkeypatch.setattr(live_mod, "_monotonic", lambda: clock["t"])
+        # `_export_and_assess` dispatches the Tier-2 goal-alignment advisory
+        # (`_run_goal_alignment_batch`, real/unmocked below) on the exact same
+        # first tick as the per-warning triage this test mocks via
+        # `_run_llm_batch`, because both throttles start at the same
+        # `-LLM_ASSESSMENT_INTERVAL_SECONDS` offset (see `LiveLlmAssessor.
+        # __init__`). Without this mock, that real, unmocked path tries to
+        # reach an actual local Ollama daemon -- confirmed to take ~3s to
+        # fail with `LlmUnavailableError` on a daemon-less machine -- and
+        # sets the *shared* `LiveLlmAssessor._available = False` once it
+        # does. `due()` short-circuits to `False` whenever `_available is
+        # False`, regardless of the mocked throttle clock, so if that real
+        # background failure resolves before this test's final assertion
+        # (a real wall-clock race against `_run_goal_alignment_batch`'s
+        # actual network latency -- confirmed by forcing the interleaving
+        # with a real `asyncio.sleep`), the throttled dispatch this test
+        # asserts on never fires and `call_count` gets stuck, exactly
+        # reproducing CI's `assert 1 == 2` failure. Every other `llm=True`
+        # test in this file (and in `test_app_live_wiring.py`/
+        # `test_app_live_goal_alignment.py`/`test_multi_app_live_goal_
+        # alignment.py`) already mocks `_import_ollama_client` for this
+        # reason -- this test was the sole gap.
+        monkeypatch.setattr("agentwatch.llm._import_ollama_client", lambda: _FakeOllamaClient())
 
         app = MultiAgentWatchApp(watch_paths=[], security_mode=False, llm=True)
 
