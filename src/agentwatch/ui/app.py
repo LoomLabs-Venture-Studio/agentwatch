@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,7 @@ from textual.containers import Container
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 
+from agentwatch.llm import DEFAULT_OLLAMA_MODEL
 from agentwatch.themes import ascii_safe, get_theme, security_status_from_score
 from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
@@ -132,6 +134,7 @@ class WarningsList(Static):
     def __init__(self, **kwargs):
         super().__init__("  No active warnings", **kwargs)
         self._warnings: list[Warning] = []
+        self._goal_alignment: dict | None = None
 
     def on_mount(self) -> None:
         self.update(self._build_content())
@@ -140,11 +143,35 @@ class WarningsList(Static):
         self._warnings = warnings
         self.update(self._build_content())
 
-    def _build_content(self) -> str:
-        if not self._warnings:
-            return "  No active warnings"
+    def update_goal_alignment(self, assessment: dict | None) -> None:
+        """Update the Tier-2 goal-alignment advisory block (`llm.py`'s
+        `assess_goal_alignment()`, Sprint 15; wired live here via
+        `LiveLlmAssessor.stamp_goal_alignment()`).
 
-        lines = ["  Active Warnings:", ""]
+        *assessment* is `None` both when no assessment has completed yet
+        and when the last one found no stated task to compare against --
+        both render as "show nothing," matching `check`/`security-scan
+        --llm`'s `_print_goal_alignment()` silence-is-honest behavior
+        (`cli.py`) exactly rather than a misleading "no drift detected."
+
+        Advisory-only, purely a rendering concern: never reads or writes
+        `self._warnings`, never touches score/health calculation, and
+        `assessment` is a plain `dict` (`GoalAlignmentAssessment.to_dict()`),
+        never a `Warning` -- this widget has no way to feed `Category.GOAL`
+        even by accident.
+        """
+        self._goal_alignment = assessment
+        self.update(self._build_content())
+
+    def _build_content(self) -> str:
+        lines: list[str] = list(self._build_goal_alignment_block())
+
+        if not self._warnings:
+            lines.append("  No active warnings")
+            return "\n".join(lines)
+
+        lines.append("  Active Warnings:")
+        lines.append("")
         for w in self._warnings[:8]:
             lines.append(f"  {w.emoji} [{w.signal:20}] {w.message}")
 
@@ -161,12 +188,64 @@ class WarningsList(Static):
                     suggestion = suggestion[:87] + "..."
                 lines.append(f"     {ascii_safe('💡', '[TIP]')} {suggestion}")
 
+            # Show Tier-2 LLM triage, if --llm assessed this warning
+            # (LiveLlmAssessor.stamp() attaches it before we get here)
+            if "llm_assessment" in w.details:
+                verdict = w.details["llm_assessment"]
+                ltp = verdict.get("likely_true_positive")
+                verdict_label = (
+                    "likely real"
+                    if ltp is True
+                    else "likely false positive"
+                    if ltp is False
+                    else "unclear"
+                )
+                lines.append(
+                    f"     [Tier-2] {verdict_label} ({verdict.get('confidence', '?')} confidence)"
+                )
+
             lines.append("")  # Blank line between warnings
 
         if len(self._warnings) > 8:
             lines.append(f"  ... and {len(self._warnings) - 8} more")
 
         return "\n".join(lines)
+
+    def _build_goal_alignment_block(self) -> list[str]:
+        """Render the Tier-2 goal-alignment advisory, if any.
+
+        Mirrors `cli.py`'s `_print_goal_alignment()` label mapping and
+        header text exactly (`[ALIGNED]` / `[POSSIBLE DRIFT]` / `[UNCLEAR]`,
+        "TIER-2 GOAL ALIGNMENT (advisory, not scored)") so `check`/
+        `security-scan --llm` and live `watch --llm` present this the same
+        way. ASCII-only, plain bracketed labels by design -- same reasoning
+        as `_print_goal_alignment()`'s docstring: this deliberately does not
+        route through `themes.py`.
+
+        Returns `[]` (nothing rendered) when there's no cached assessment,
+        covering both "never run yet" and "last run found no stated task"
+        -- silence, not a placeholder line, matching the CLI's behavior.
+        """
+        a = self._goal_alignment
+        if a is None:
+            return []
+
+        aligned = a.get("aligned")
+        if aligned is True:
+            label = "[ALIGNED]"
+        elif aligned is False:
+            label = "[POSSIBLE DRIFT]"
+        else:
+            label = "[UNCLEAR]"
+
+        summary = a.get("drift_summary") or "(model response could not be parsed)"
+
+        return [
+            "  TIER-2 GOAL ALIGNMENT (advisory, not scored)",
+            "  " + "-" * 48,
+            f"  {label} {summary}",
+            "",
+        ]
 
     @staticmethod
     def _format_details(w: "Warning") -> str:
@@ -307,16 +386,24 @@ class AgentWatchApp(App):
         self,
         log_path: Path,
         security_mode: bool = False,
+        siem_log: Path | None = None,
+        llm: bool = False,
+        llm_model: str = DEFAULT_OLLAMA_MODEL,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.log_path = log_path
         self.security_mode = security_mode
+        self.siem_log = siem_log
+        self.llm = llm
+        self.llm_model = llm_model
         self._buffer = None
         self._detector_registry = None
         self._rot_scorer = None
         self._refreshing = False
         self._alerted_signals: set[str] = set()
+        self._siem_exporter = None
+        self._llm_assessor = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -369,6 +456,16 @@ class AgentWatchApp(App):
         mode = "all" if self.security_mode else "health"
         self._detector_registry = create_registry(mode=mode)
         self._rot_scorer = RotScorer()
+
+        if self.siem_log is not None or self.llm:
+            from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
+
+            if self.siem_log is not None:
+                self._siem_exporter = LiveSiemExporter(
+                    self.siem_log, source_log=str(self.log_path)
+                )
+            if self.llm:
+                self._llm_assessor = LiveLlmAssessor(self.llm_model)
 
         # Set up log watcher. .md is an Aider Markdown chat-history transcript
         # (PLAYBOOK Sprint 6 item 6 / Sprint 7 -- live tailing); .vscdb is a
@@ -493,6 +590,45 @@ class AgentWatchApp(App):
         # Run detectors
         warnings = self._detector_registry.check_all(self._buffer)
 
+        # SIEM export (new warnings only, by content-based dedup key -- see
+        # live_integrations module docstring for why) and throttled Tier-2
+        # LLM triage. Both degrade to a one-time notify() rather than
+        # raising -- neither may ever crash this long-running dashboard.
+        if self._siem_exporter is not None:
+            session_id = self._buffer.actions[0].session_id if self._buffer.actions else None
+            siem_error = self._siem_exporter.export_new(warnings, session_id=session_id)
+            if siem_error:
+                self.notify(siem_error, title="SIEM export failed", severity="error", timeout=10)
+
+        # Populated below only when --llm is on; stays None otherwise, which
+        # WarningsList.update_goal_alignment() already treats as "nothing to
+        # show" (see that method's docstring).
+        goal_alignment_for_render = None
+
+        if self._llm_assessor is not None:
+            # Re-attach any previously-cached verdict before this tick's
+            # warnings render -- check_all() built brand new Warning objects,
+            # so nothing survives from a prior tick without this.
+            self._llm_assessor.stamp(warnings)
+            if self._llm_assessor.due():
+                new_warnings = self._llm_assessor.new_warnings(warnings)
+                self._llm_assessor.mark_run()
+                self.run_worker(self._run_llm_batch(new_warnings))
+
+            # Tier-2 goal-alignment advisory (Sprint 15's assess_goal_
+            # alignment(), wired live here). Advisory-only: never touches
+            # warnings/score, has its own throttle window (independent of
+            # the per-warning triage cadence above -- see LiveLlmAssessor's
+            # class docstring for why a single session-level judgment
+            # doesn't reuse the dedup-key machinery), and is likewise
+            # dispatched off the render path via run_worker. Stashed in
+            # goal_alignment_for_render and applied to the widget down by
+            # update_warnings() below, once query_one() has resolved it.
+            goal_alignment_for_render = self._llm_assessor.stamp_goal_alignment()
+            if self._llm_assessor.goal_alignment_due():
+                self._llm_assessor.mark_goal_run()
+                self.run_worker(self._run_goal_alignment_check())
+
         # Compute efficiency and rot first so they feed into overall health
         eff = calculate_efficiency(warnings, self._buffer)
 
@@ -530,8 +666,12 @@ class AgentWatchApp(App):
                 rot_report, peak_context_tokens=self._buffer.stats.peak_context_tokens
             )
 
-        # Update warnings list
+        # Update warnings list, plus the Tier-2 goal-alignment advisory
+        # (fetched above, `None` -- render nothing -- when --llm is off or
+        # when there's nothing to show yet). Two small, cheap Static.update()
+        # calls; Textual only actually repaints once per tick either way.
         warnings_list = self.query_one("#warnings-list", WarningsList)
+        warnings_list.update_goal_alignment(goal_alignment_for_render)
         warnings_list.update_warnings(warnings)
 
         # Update stats
@@ -541,6 +681,44 @@ class AgentWatchApp(App):
             self._buffer.stats.error_count,
             self._buffer.stats.duration_minutes,
         )
+
+    async def _run_llm_batch(self, new_warnings: list["Warning"]) -> None:
+        """Run Tier-2 assessment for *new_warnings* off the render path.
+
+        `LiveLlmAssessor.run_batch` makes real blocking Ollama HTTP calls;
+        `asyncio.to_thread` keeps that off the event loop so a slow/hanging
+        local model can never stall the TUI's render tick.
+        """
+        assessor = self._llm_assessor
+        if assessor is None:
+            return
+        error = await asyncio.to_thread(assessor.run_batch, new_warnings)
+        if error:
+            self.notify(error, title="Tier-2 LLM unavailable", severity="warning", timeout=10)
+
+    async def _run_goal_alignment_check(self) -> None:
+        """Run the Tier-2 goal-alignment advisory off the render path.
+
+        Mirrors `_run_llm_batch` exactly (`asyncio.to_thread` keeps the real
+        blocking Ollama HTTP call off the event loop), but for
+        `LiveLlmAssessor.run_goal_alignment` -- one session-level assessment
+        against the current buffer, not a batch of per-warning triage
+        calls. Shares the same assessor, so an unavailable-Ollama
+        notification here is deduped against `_run_llm_batch`'s own (see
+        `LiveLlmAssessor._ensure_analyzer`) -- this won't double-notify if
+        both features already established Ollama is unreachable.
+        """
+        assessor = self._llm_assessor
+        if assessor is None:
+            return
+        error = await asyncio.to_thread(assessor.run_goal_alignment, self._buffer)
+        if error:
+            self.notify(error, title="Tier-2 LLM unavailable", severity="warning", timeout=10)
+
+    def on_unmount(self) -> None:
+        """Flush and release the SIEM log file handle on app exit."""
+        if self._siem_exporter is not None:
+            self._siem_exporter.close()
 
     def _fire_secret_alerts(self, warnings: list["Warning"]) -> None:
         """Fire toast notifications for new secret leak warnings."""

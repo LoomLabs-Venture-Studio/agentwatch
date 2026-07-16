@@ -417,6 +417,8 @@ ollama serve
 
 agentwatch security-scan --log ~/.claude/projects/myapp/session.jsonl --llm
 agentwatch check --security --llm --llm-model llama3.2
+agentwatch watch --security --llm            # live TUI, throttled to a 30s cadence
+agentwatch watch-all --llm                   # same, per agent
 ```
 
 Local-only, by explicit design, not an oversight: this project's own
@@ -425,13 +427,18 @@ agent logs*, so Tier 2 only ever talks to a local Ollama daemon -- nothing
 here makes a network call to any external host, and there's no API-key env
 var to configure. If Ollama isn't running or the requested model isn't
 pulled, `--llm` degrades to a printed warning and Tier-1-only results
-rather than failing the scan.
+rather than failing the scan (in the live TUI, a one-time notification
+instead).
 
 Each assessed warning gets a `likely_true_positive`/`confidence`/
 `rationale` opinion attached under `details.llm_assessment` in JSON output
 (and consequently in `--siem-log` export too), plus a dedicated "TIER-2 LLM
-ASSESSMENT" section in plain-text output. Capped at the first 10 warnings
-per run to keep `--llm` runs bounded against a slow local model.
+ASSESSMENT" section in plain-text output (a `[Tier-2] ...` line inline in
+the live TUI's warnings list). Capped at the first 10 warnings per run to
+keep `--llm` runs bounded against a slow local model; in `watch`/
+`watch-all`, assessment is additionally throttled to a 30-second cadence
+(instead of the 1s health-refresh tick) and runs in a background worker so
+a slow local model can never stall the dashboard.
 
 ## SIEM Integration (optional)
 
@@ -439,16 +446,26 @@ per run to keep `--llm` runs bounded against a slow local model.
 pip install "agentwatch-monitor[siem]"
 
 agentwatch security-scan --log ~/.claude/projects/myapp/session.jsonl --siem-log /var/log/agentwatch/findings.jsonl
+agentwatch watch --security --siem-log /var/log/agentwatch/findings.jsonl   # live TUI
+agentwatch watch-all --siem-log /var/log/agentwatch/findings.jsonl          # per agent
 ```
 
-Appends one JSON object per finding (plus a run summary line) to the given
-path, using `python-json-logger`. This deliberately doesn't target or know
-about any specific SIEM product -- a JSON-lines file is the standard
-hand-off point any log-forwarding agent (Splunk Universal Forwarder,
-Filebeat, Datadog Agent, ...) already knows how to tail and parse. Opens in
-append mode, so it's safe to point every run at the same path. Currently
-wired into `check`/`security-scan` only; live `watch`/`watch-all` streaming
-export is not yet implemented (see [Contributing](#contributing)).
+Appends one JSON object per finding (plus a run summary line for the
+one-shot `check`/`security-scan` commands) to the given path, using
+`python-json-logger`. This deliberately doesn't target or know about any
+specific SIEM product -- a JSON-lines file is the standard hand-off point
+any log-forwarding agent (Splunk Universal Forwarder, Filebeat, Datadog
+Agent, ...) already knows how to tail and parse. Opens in append mode, so
+it's safe to point every run at the same path.
+
+In the live `watch`/`watch-all` TUIs, export is streaming rather than a
+one-shot dump: each still-open warning is appended exactly once (keyed by
+detector signal + stable identifying details, not by its often-changing
+message text), matching how a real event stream behaves rather than
+re-emitting the same open finding every second. `watch-all` exports each
+tracked agent independently under its own identity. A broken path (or a
+missing `siem`/`llm` extra) surfaces as a single dashboard notification
+instead of crashing the session.
 
 ## Multi-Agent Monitoring
 
@@ -461,8 +478,6 @@ Contributions welcome! Especially:
 - New detectors for failure patterns you've observed
 - Codex CLI: a real captured rollout log to verify the fixture-based parser against (see [Supported Agents](#supported-agents))
 - Better heuristics for existing detectors
-- Live `watch`/`watch-all` streaming export for `--siem-log` (currently one-shot `check`/`security-scan` only)
-- Tier-2 LLM analysis in the live TUI (currently one-shot `check`/`security-scan` only)
 
 ## License
 

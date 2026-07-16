@@ -463,7 +463,34 @@ def check(
     is_flag=True,
     help="Enable security detectors",
 )
-def watch(log: Path | None, security: bool):
+@click.option(
+    "--siem-log",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Append findings as JSON-lines to this file for SIEM ingestion, "
+         "as new warnings appear (requires the 'siem' extra: pip install "
+         "\"agentwatch-monitor[siem]\")",
+)
+@click.option(
+    "--llm",
+    is_flag=True,
+    help="Enable Tier-2 semantic triage of warnings via a local Ollama model, "
+         "refreshed periodically in the background (requires the 'llm' extra "
+         "and a running `ollama serve`; degrades to Tier-1-only if unavailable)",
+)
+@click.option(
+    "--llm-model",
+    default=DEFAULT_OLLAMA_MODEL,
+    show_default=True,
+    help="Local Ollama model to use for --llm",
+)
+def watch(
+    log: Path | None,
+    security: bool,
+    siem_log: Path | None,
+    llm: bool,
+    llm_model: str,
+):
     """Watch agent logs in real-time with a TUI dashboard."""
     # Import here to avoid slow startup for non-watch commands
     from agentwatch.ui.app import AgentWatchApp
@@ -475,7 +502,13 @@ def watch(log: Path | None, security: bool):
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
 
-    app = AgentWatchApp(log_path=log, security_mode=security)
+    app = AgentWatchApp(
+        log_path=log,
+        security_mode=security,
+        siem_log=siem_log,
+        llm=llm,
+        llm_model=llm_model,
+    )
     app.run()
 
 
@@ -648,7 +681,35 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
     is_flag=True,
     help="Scan all log directories instead of using process-based discovery",
 )
-def watch_all(security: bool, all_logs: bool):
+@click.option(
+    "--siem-log",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Append findings as JSON-lines to this file for SIEM ingestion, "
+         "as new warnings appear, per agent (requires the 'siem' extra: "
+         "pip install \"agentwatch-monitor[siem]\")",
+)
+@click.option(
+    "--llm",
+    is_flag=True,
+    help="Enable Tier-2 semantic triage of warnings via a local Ollama model, "
+         "refreshed periodically in the background, per agent (requires the "
+         "'llm' extra and a running `ollama serve`; degrades to Tier-1-only "
+         "if unavailable)",
+)
+@click.option(
+    "--llm-model",
+    default=DEFAULT_OLLAMA_MODEL,
+    show_default=True,
+    help="Local Ollama model to use for --llm",
+)
+def watch_all(
+    security: bool,
+    all_logs: bool,
+    siem_log: Path | None,
+    llm: bool,
+    llm_model: str,
+):
     """Watch agent logs in real-time with a multi-agent dashboard.
 
     By default, auto-discovers active agent processes and monitors only their
@@ -663,7 +724,13 @@ def watch_all(security: bool, all_logs: bool):
         if not watch_paths:
             click.echo("No agent log directories found.", err=True)
             sys.exit(1)
-        app = MultiAgentWatchApp(watch_paths=watch_paths, security_mode=security)
+        app = MultiAgentWatchApp(
+            watch_paths=watch_paths,
+            security_mode=security,
+            siem_log=siem_log,
+            llm=llm,
+            llm_model=llm_model,
+        )
     else:
         # Process-based discovery
         agents = build_agent_tree(find_running_agents())
@@ -671,7 +738,13 @@ def watch_all(security: bool, all_logs: bool):
             click.echo("No running agent processes found.", err=True)
             click.echo("Use --all-logs to scan all log directories instead.", err=True)
             sys.exit(1)
-        app = MultiAgentWatchApp(agent_processes=agents, security_mode=security)
+        app = MultiAgentWatchApp(
+            agent_processes=agents,
+            security_mode=security,
+            siem_log=siem_log,
+            llm=llm,
+            llm_model=llm_model,
+        )
 
     app.run()
 

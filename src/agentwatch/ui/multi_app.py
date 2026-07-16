@@ -25,9 +25,11 @@ from agentwatch.health import (
     calculate_team_health,
 )
 from agentwatch.health.rot import RotScorer
+from agentwatch.llm import DEFAULT_OLLAMA_MODEL
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.themes import ascii_safe, get_theme
 from agentwatch.ui.app import EfficiencyBar, HealthBar, SecurityStatus, StatsPanel, WarningsList
+from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
 from agentwatch.ui.rot_widget import ContextHealthWidget
 
 if TYPE_CHECKING:
@@ -230,11 +232,17 @@ class MultiAgentWatchApp(App):
         watch_paths: list[Path] | None = None,
         security_mode: bool = False,
         agent_processes: list[AgentProcess] | None = None,
+        siem_log: Path | None = None,
+        llm: bool = False,
+        llm_model: str = DEFAULT_OLLAMA_MODEL,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.watch_paths = watch_paths or []
         self.security_mode = security_mode
+        self.siem_log = siem_log
+        self.llm = llm
+        self.llm_model = llm_model
         self.agents: dict[Path, dict] = {}  # path -> {buffer, registry, item, pid, team_id}
         self.teams: dict[int, TeamHeaderItem] = {}  # team_id -> header item
         self._team_by_pid: dict[int, int] = {}  # pid -> team_id, kept in sync with self.agents
@@ -271,6 +279,41 @@ class MultiAgentWatchApp(App):
             yield StatsPanel(id="stats-display")
 
         yield Footer()
+
+    def _new_agent_state(
+        self,
+        *,
+        buffer: ActionBuffer,
+        registry,
+        item: "AgentItem",
+        pid: int | None,
+        team_id: int | None,
+        log_path: Path,
+        agent_type: str | None,
+    ) -> dict:
+        """Build a fresh per-agent state dict.
+
+        Each tracked agent gets its own `LiveSiemExporter`/`LiveLlmAssessor`
+        instance (when `--siem-log`/`--llm` are set) -- these carry
+        per-agent dedup/throttle state, so one agent's SIEM export or LLM
+        throttle timer is fully independent of every other agent's.
+        """
+        return {
+            "buffer": buffer,
+            "registry": registry,
+            "item": item,
+            "rot_scorer": RotScorer(),
+            "pid": pid,
+            "team_id": team_id,
+            "_last_count": -1,
+            "_last_report": None,
+            "siem_exporter": (
+                LiveSiemExporter(self.siem_log, agent_type=agent_type, source_log=str(log_path))
+                if self.siem_log is not None
+                else None
+            ),
+            "llm_assessor": LiveLlmAssessor(self.llm_model) if self.llm else None,
+        }
 
     def on_mount(self) -> None:
         """Called when app starts."""
@@ -328,16 +371,15 @@ class MultiAgentWatchApp(App):
 
                     agent_pid = proc.pid if proc else None
                     agent_team_id = proc.team_id if proc else None
-                    self.agents[log_path] = {
-                        "buffer": buffer,
-                        "registry": registry,
-                        "item": item,
-                        "rot_scorer": RotScorer(),
-                        "pid": agent_pid,
-                        "team_id": agent_team_id,
-                        "_last_count": -1,
-                        "_last_report": None,
-                    }
+                    self.agents[log_path] = self._new_agent_state(
+                        buffer=buffer,
+                        registry=registry,
+                        item=item,
+                        pid=agent_pid,
+                        team_id=agent_team_id,
+                        log_path=log_path,
+                        agent_type=proc.agent_type if proc else None,
+                    )
                     if agent_pid is not None and agent_team_id is not None:
                         self._team_by_pid[agent_pid] = agent_team_id
 
@@ -393,6 +435,8 @@ class MultiAgentWatchApp(App):
         # Run detectors
         warnings = registry.check_all(buffer)
 
+        self._export_and_assess(agent_data, warnings)
+
         # Compute efficiency and rot first so they feed into overall health
         eff = calculate_efficiency(warnings, buffer)
 
@@ -433,7 +477,15 @@ class MultiAgentWatchApp(App):
             agent_label = self._agent_label(agent_data)
             self._fire_secret_alerts(warnings, agent_label)
 
-        self.query_one("#warnings-list", WarningsList).update_warnings(warnings)
+        # Goal-alignment is per-agent (agent_data["llm_assessor"]), but only
+        # the currently-selected agent's cached advisory is ever shown --
+        # mirrors how `warnings` here is already only the selected agent's.
+        warnings_list = self.query_one("#warnings-list", WarningsList)
+        selected_llm_assessor: LiveLlmAssessor | None = agent_data.get("llm_assessor")
+        warnings_list.update_goal_alignment(
+            selected_llm_assessor.stamp_goal_alignment() if selected_llm_assessor else None
+        )
+        warnings_list.update_warnings(warnings)
 
         stats = self.query_one("#stats-display", StatsPanel)
         stats.update_stats(
@@ -466,6 +518,7 @@ class MultiAgentWatchApp(App):
                 other_report = data["_last_report"]
             else:
                 other_warnings = data["registry"].check_all(data["buffer"])
+                self._export_and_assess(data, other_warnings)
                 other_eff = calculate_efficiency(other_warnings, data["buffer"])
                 other_rot_value: float | None = None
                 other_rot_scorer = data.get("rot_scorer")
@@ -506,6 +559,89 @@ class MultiAgentWatchApp(App):
                     team_name=header.team.name,
                 )
                 header.update_status(team_report.overall_score, team_report.status)
+
+    def _export_and_assess(self, agent_data: dict, warnings: list["Warning"]) -> None:
+        """Per-agent SIEM export (new warnings only) + throttled Tier-2 LLM
+        triage, mirroring `AgentWatchApp._do_refresh`'s wiring but scoped to
+        one agent's own `LiveSiemExporter`/`LiveLlmAssessor` instance --
+        each tracked agent's dedup/throttle state is fully independent of
+        every other agent's (see `_new_agent_state`). Both failure paths
+        degrade to a one-time `notify()`, never raising into the caller.
+        """
+        siem_exporter: LiveSiemExporter | None = agent_data.get("siem_exporter")
+        if siem_exporter is not None:
+            buffer = agent_data["buffer"]
+            session_id = buffer.actions[0].session_id if buffer.actions else None
+            error = siem_exporter.export_new(warnings, session_id=session_id)
+            if error:
+                label = self._agent_label(agent_data)
+                self.notify(
+                    f"[{label}] {error}", title="SIEM export failed", severity="error", timeout=10
+                )
+
+        llm_assessor: LiveLlmAssessor | None = agent_data.get("llm_assessor")
+        if llm_assessor is not None:
+            llm_assessor.stamp(warnings)
+            if llm_assessor.due():
+                new_warnings = llm_assessor.new_warnings(warnings)
+                llm_assessor.mark_run()
+                label = self._agent_label(agent_data)
+                self.run_worker(self._run_llm_batch(llm_assessor, new_warnings, label))
+
+            # Tier-2 goal-alignment advisory (Sprint 15's assess_goal_
+            # alignment(), wired live here), dispatched per-agent just like
+            # per-warning triage above -- each tracked agent's throttle
+            # clock/cached advisory is independent (LiveLlmAssessor.
+            # goal_alignment_due()/mark_goal_run()), so a background agent's
+            # advisory stays fresh even while a different agent is selected
+            # in the sidebar. Rendering the cached result into the widget is
+            # the caller's job (only the *selected* agent's advisory is
+            # ever shown -- see _do_refresh_ui), not this per-agent helper's.
+            if llm_assessor.goal_alignment_due():
+                llm_assessor.mark_goal_run()
+                buffer = agent_data["buffer"]
+                label = self._agent_label(agent_data)
+                self.run_worker(self._run_goal_alignment_batch(llm_assessor, buffer, label))
+
+    async def _run_llm_batch(
+        self, assessor: LiveLlmAssessor, new_warnings: list["Warning"], agent_label: str
+    ) -> None:
+        """Run Tier-2 assessment for one agent's *new_warnings* off the
+        render path -- `asyncio.to_thread` keeps the blocking Ollama HTTP
+        calls off the event loop so a slow/hanging local model can never
+        stall the dashboard's render tick, no matter how many agents are
+        being watched concurrently.
+        """
+        error = await asyncio.to_thread(assessor.run_batch, new_warnings)
+        if error:
+            self.notify(
+                f"[{agent_label}] {error}", title="Tier-2 LLM unavailable", severity="warning",
+                timeout=10,
+            )
+
+    async def _run_goal_alignment_batch(
+        self, assessor: LiveLlmAssessor, buffer: ActionBuffer, agent_label: str
+    ) -> None:
+        """Run one agent's Tier-2 goal-alignment advisory off the render
+        path. Mirrors `_run_llm_batch` exactly (same `asyncio.to_thread`
+        dispatch, same shared-assessor unavailable-notification dedup via
+        `LiveLlmAssessor._ensure_analyzer`) but for `run_goal_alignment`'s
+        single session-level assessment against *buffer* instead of a batch
+        of per-warning triage calls.
+        """
+        error = await asyncio.to_thread(assessor.run_goal_alignment, buffer)
+        if error:
+            self.notify(
+                f"[{agent_label}] {error}", title="Tier-2 LLM unavailable", severity="warning",
+                timeout=10,
+            )
+
+    def on_unmount(self) -> None:
+        """Flush and release every agent's SIEM log file handle on app exit."""
+        for data in self.agents.values():
+            siem_exporter: LiveSiemExporter | None = data.get("siem_exporter")
+            if siem_exporter is not None:
+                siem_exporter.close()
 
     @staticmethod
     def _agent_label(agent_data: dict) -> str:
@@ -576,16 +712,15 @@ class MultiAgentWatchApp(App):
                 )
                 item.cpu_percent = proc.cpu_percent
                 item.memory_mb = proc.memory_mb
-                self.agents[proc.log_file] = {
-                    "buffer": buffer,
-                    "registry": registry,
-                    "item": item,
-                    "rot_scorer": RotScorer(),
-                    "pid": proc.pid,
-                    "team_id": proc.team_id,
-                    "_last_count": -1,
-                    "_last_report": None,
-                }
+                self.agents[proc.log_file] = self._new_agent_state(
+                    buffer=buffer,
+                    registry=registry,
+                    item=item,
+                    pid=proc.pid,
+                    team_id=proc.team_id,
+                    log_path=proc.log_file,
+                    agent_type=proc.agent_type,
+                )
                 if proc.pid is not None and proc.team_id is not None:
                     self._team_by_pid[proc.pid] = proc.team_id
                 agent_list.append(item)
