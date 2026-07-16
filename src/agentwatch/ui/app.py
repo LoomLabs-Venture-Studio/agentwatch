@@ -363,7 +363,7 @@ class AgentWatchApp(App):
         # Initialize components
         from agentwatch.detectors import create_registry
         from agentwatch.health.rot import RotScorer
-        from agentwatch.parser import ActionBuffer, AiderLogWatcher, LogWatcher
+        from agentwatch.parser import ActionBuffer, AiderLogWatcher, CursorWatcher, LogWatcher
 
         self._buffer = ActionBuffer()
         mode = "all" if self.security_mode else "health"
@@ -371,22 +371,82 @@ class AgentWatchApp(App):
         self._rot_scorer = RotScorer()
 
         # Set up log watcher. .md is an Aider Markdown chat-history transcript
-        # (PLAYBOOK Sprint 6 item 6 / Sprint 7 -- live tailing); everything
-        # else is JSONL (Claude Code/Moltbot/Codex), handled by LogWatcher's
-        # own format auto-detection.
+        # (PLAYBOOK Sprint 6 item 6 / Sprint 7 -- live tailing); .vscdb is a
+        # Cursor state.vscdb store (closes the "single-agent watch --log
+        # <state.vscdb>" gap PLAYBOOK Sprint 7 explicitly left out of scope);
+        # everything else is JSONL (Claude Code/Moltbot/Codex), handled by
+        # LogWatcher's own format auto-detection.
+        self.watcher = None
         if self.log_path.suffix == ".md":
             self.watcher = AiderLogWatcher(self.log_path)
+        elif self.log_path.suffix == ".vscdb":
+            composer_id = self._resolve_cursor_composer_id()
+            if composer_id is None:
+                # No crash: mirrors how LogWatcher/AiderLogWatcher degrade to
+                # an empty, idle dashboard (0 actions, default 100% health)
+                # when their target file is missing/unreadable -- surfaced
+                # here via a toast since a Cursor DB with no matching
+                # composer wouldn't otherwise produce any visible signal.
+                self.notify(
+                    "No active Cursor agent-mode conversation found in this "
+                    "state.vscdb (Cursor may not be running, or the DB has "
+                    "no agent-mode composer yet) -- showing an idle "
+                    "dashboard.",
+                    title="Cursor",
+                    severity="warning",
+                    timeout=10,
+                )
+            else:
+                self.watcher = CursorWatcher(self.log_path, composer_id_filter=composer_id)
         else:
             self.watcher = LogWatcher(self.log_path)
-        self.watcher.on_action(self._on_action)
 
-        # Start watching in background
-        self.run_worker(self.watcher.watch_with_callbacks())
+        # Start watching in background (skipped entirely for the "no
+        # matching Cursor composer" case above -- self.watcher stays None
+        # and the dashboard just renders its idle/default state).
+        if self.watcher is not None:
+            self.watcher.on_action(self._on_action)
+            self.run_worker(self.watcher.watch_with_callbacks())
 
         self.refresh_display()
 
         # Set up periodic refresh as backup (1s for responsive feel)
         self.set_interval(1.0, self.refresh_display)
+
+    def _resolve_cursor_composer_id(self) -> str | None:
+        """Auto-pick the most-recently-active agent-mode composer for a
+        single-agent Cursor ``--log <state.vscdb>`` watch.
+
+        Mirrors ``cursor_source.parse_cursor_session()``'s auto-detect
+        convention (which ``parser/logs.py::parse_file()``'s ``.vscdb``
+        dispatch already uses for the one-shot ``check``/``security-scan``
+        path) rather than reinventing selection logic:
+        ``select_latest_agent_composer()`` picks the newest non-archived,
+        non-draft, ``unifiedMode == "agent"`` composer.
+
+        Returns ``None`` (never raises) for every failure mode -- DB file
+        missing/unreadable (e.g. an explicit path that doesn't actually
+        exist, or a genuinely corrupt file), or no qualifying composer in
+        an otherwise-readable DB -- so ``on_mount`` can degrade to an idle
+        dashboard instead of crashing the TUI on startup.
+        """
+        from agentwatch.parser.cursor_source import (
+            fetch_composer_headers,
+            open_readonly,
+            select_latest_agent_composer,
+        )
+
+        try:
+            conn = open_readonly(self.log_path)
+        except Exception:
+            return None
+        try:
+            headers = fetch_composer_headers(conn)
+        except Exception:
+            return None
+        finally:
+            conn.close()
+        return select_latest_agent_composer(headers)
 
     def _on_action(self, action: Action) -> None:
         """Callback for new actions from watcher."""
