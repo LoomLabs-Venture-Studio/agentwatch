@@ -529,7 +529,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
     user_messages: dict[str, str] = {}  # uuid -> content snippet
     parent_map: dict[str, str] = {}  # assistant first_uuid -> parentUuid
 
-    with open(jsonl_path) as f:
+    with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
             if not line:
