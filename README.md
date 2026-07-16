@@ -105,7 +105,17 @@ Health detector categories and their weights in the detector score:
 | **Progress** | 35%    | Loops, stalls, thrashing           |
 | **Errors**   | 30%    | Error spirals, repeated failures   |
 | **Context**  | 20%    | Context rot, rediscovery, pressure |
-| **Goal**     | 15%    | Goal drift, wasted effort          |
+| **Goal**     | 15%    | Currently unused (see note below)  |
+
+> [!NOTE]
+> No detector currently sets `category=Category.GOAL` (verified against
+> `detectors/base.py`'s `Category` enum and every `detectors/health/*.py`
+> file), so this category always has zero warnings and its per-category
+> score is permanently locked at 100 — a fixed, inert +15% of the detector
+> score rather than an active check. This is **not** the same thing as the
+> [Goal-Alignment Advisory](#goal-alignment-advisory-also-under---llm)
+> (Tier-2, opt-in via `--llm`): that's a real, working feature, but it's
+> purely advisory and never feeds this row or any other score.
 
 ### Efficiency Score
 
