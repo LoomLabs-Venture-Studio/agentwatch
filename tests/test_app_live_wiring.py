@@ -117,12 +117,34 @@ class TestLlmThrottleAndNonBlocking:
 
         clock = {"t": 0.0}
         monkeypatch.setattr(live_mod, "_monotonic", lambda: clock["t"])
+        # Mount-time dispatch (see comment below) needs a fast, deterministic
+        # Ollama client -- without this, on_mount's own automatic first-tick
+        # dispatch would hit a real (likely absent) local Ollama daemon,
+        # which can hang well past what a couple of pilot.pause() calls wait
+        # for, making the "let the mount tick finish" step below flaky.
+        monkeypatch.setattr("agentwatch.llm._import_ollama_client", lambda: _FakeOllamaClient())
 
         log_path = tmp_path / "session.jsonl"
         log_path.write_text("", encoding="utf-8")
         app = AgentWatchApp(log_path=log_path, security_mode=False, llm=True)
 
         async with app.run_test() as pilot:
+            # on_mount() already ran one real refresh_display() at t=0 (the
+            # ActionBuffer truthiness fix means that call now genuinely
+            # executes instead of no-op'ing -- see ui/app.py's _on_action/
+            # refresh_display comments). Against the still-empty buffer that
+            # produced zero warnings, but LiveLlmAssessor.due() is keyed on
+            # elapsed time, not on whether there's anything to assess, so it
+            # still legitimately consumed the "free first tick" (and made a
+            # real check_available() call) before this test gets a chance to
+            # wire up its own fixture. Let that mount-time worker finish,
+            # then rewind the throttle clock via the assessor's own public
+            # mark_run() so this test's scenario starts from a clean,
+            # deterministic baseline instead of asserting against a window
+            # that on_mount already partially consumed.
+            await pilot.pause()
+            app._llm_assessor.mark_run(now=-LLM_ASSESSMENT_INTERVAL_SECONDS)
+
             call_count = {"n": 0}
 
             async def fake_run_llm_batch(new_warnings):
@@ -132,8 +154,8 @@ class TestLlmThrottleAndNonBlocking:
             app._detector_registry.check_all = lambda buffer: [_fixed_warning()]
             app._buffer.add(_make_action(0))
 
-            # First tick: due() is True immediately after mount (negative
-            # initial offset) -> dispatched once.
+            # First tick: due() is True immediately (rewound above) ->
+            # dispatched once.
             app.refresh_display()
             assert call_count["n"] == 0  # not blocking -- worker hasn't run yet
             await pilot.pause()
@@ -169,6 +191,16 @@ class TestLlmThrottleAndNonBlocking:
         app = AgentWatchApp(log_path=log_path, security_mode=False, llm=True)
 
         async with app.run_test() as pilot:
+            # See the throttle test above for why: on_mount() already ran a
+            # real refresh_display() at t=0, and LiveLlmAssessor.due() fires
+            # on elapsed time regardless of whether there's anything to
+            # assess yet, so it already consumed the first free tick (0
+            # warnings -> 0 chat() calls, but it did dispatch a worker and
+            # establish Ollama availability). Let it finish and rewind the
+            # throttle before setting up this test's own scenario.
+            await pilot.pause()
+            app._llm_assessor.mark_run(now=-LLM_ASSESSMENT_INTERVAL_SECONDS)
+
             app._detector_registry.check_all = lambda buffer: [_fixed_warning()]
             app._buffer.add(_make_action(0))
 
@@ -223,10 +255,19 @@ class TestFailureModesNotifyOnceNotSpam:
         log_path.write_text("", encoding="utf-8")
         app = AgentWatchApp(log_path=log_path, security_mode=False, llm=True)
 
-        async with app.run_test() as pilot:
-            notifications = []
-            app.notify = lambda *a, **k: notifications.append((a, k))
+        # Patched on the instance BEFORE run_test()/on_mount fires: since the
+        # ActionBuffer truthiness fix, on_mount's own automatic
+        # refresh_display() call at t=0 now genuinely executes (see the
+        # throttle test above) and immediately dispatches the first LLM
+        # batch, which -- since the fake client already raises on list() at
+        # this point -- is the ONE unavailable-notification this whole test
+        # is checking for. Capturing notify() from before mount (rather than
+        # patching it only after run_test() opens) is what makes that first,
+        # legitimate notification observable to the assertion below.
+        notifications = []
+        app.notify = lambda *a, **k: notifications.append((a, k))
 
+        async with app.run_test() as pilot:
             app._detector_registry.check_all = lambda buffer: [_fixed_warning()]
             app._buffer.add(_make_action(0))
 
