@@ -43,14 +43,22 @@ src/agentwatch/
   discovery.py         Finds running agent OS processes via regex process
                        matching (Claude Code/Aider/Codex); builds process/
                        team trees (PPID chains); merges in cursor_discovery's
-                       synthetic entries
+                       synthetic entries. Codex log resolution prefers a
+                       PID-based match (`_find_open_codex_rollout`, mirrors
+                       Claude Code's `_find_open_jsonl` via `psutil.Process.
+                       open_files()`) before falling back to cwd/mtime
+                       heuristics
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
                        entries); no OS process per composer, so pid/log_file
                        are synthetic (see module docstring)
   cc_stats.py          Parses ~/.claude/projects/*.jsonl for token-usage /
-                       burn-rate stats
+                       burn-rate stats; opens files with explicit
+                       encoding="utf-8", errors="ignore" (matches
+                       parser/logs.py's precedent) so a stray non-UTF-8
+                       byte skips that line instead of crashing `stats
+                       --all`
   themes.py             Pluggable status-label/emoji/color themes shared by
                        CLI, health scoring, and the TUI
 
@@ -68,7 +76,13 @@ src/agentwatch/
                        call_id-based buffering, era detection) --
                        fixture-verified only; genuine install confirmed
                        reachable 2026-07-15 but no live session captured
-                       (no credentials -- see Known Issues)
+                       (no credentials -- see Known Issues).
+                       `_CONFIRMED_CODEX_TOOL_TYPES` maps 8 real tool names
+                       beyond `apply_patch` (`exec_command`, `write_stdin`,
+                       `shell_command`, `view_image`, `list_mcp_resources`,
+                       `list_mcp_resource_templates`, `read_mcp_resource`,
+                       `tool_search`), each cited to a codex-rs source
+                       file/line -- see Known Issues
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping
@@ -100,9 +114,25 @@ src/agentwatch/
 
   ui/
     app.py               Single-agent Textual App (HealthBar,
-                       SecurityStatus, EfficiencyBar widgets)
+                       SecurityStatus, EfficiencyBar widgets). Dispatches
+                       on log-path suffix to LogWatcher (JSONL)/
+                       AiderLogWatcher (.md)/CursorWatcher (.vscdb, degrades
+                       to an idle-dashboard toast if no qualifying composer
+                       is found); wires `--siem-log`/`--llm`/`--llm-model`
+                       through `live_integrations.py`'s dedup/throttle
+                       helpers, including the Tier-2 goal-alignment advisory
     multi_app.py          Multi-agent Textual App (MultiLogWatcher + team
-                       health aggregation)
+                       health aggregation); same `--siem-log`/`--llm`/
+                       goal-alignment wiring as app.py, applied per-agent
+    live_integrations.py  Shared live-TUI SIEM export + Tier-2 LLM triage
+                       wiring for app.py/multi_app.py's 1s refresh loop:
+                       `warning_dedup_key()` (content-based identity so a
+                       still-open warning isn't re-exported/re-assessed
+                       every tick), `LiveSiemExporter` (export-once-per-
+                       warning), `LiveLlmAssessor` (throttled, dispatched
+                       off the render path via `run_worker`/
+                       `asyncio.to_thread`, also drives the goal-alignment
+                       advisory on its own independent throttle clock)
     rot_widget.py         ContextHealthWidget for rot visualization
 ```
 
@@ -209,8 +239,12 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   live both closed and open on this machine), and `agentwatch watch`/
   `watch-all` now live-tail a growing `.aider.chat.history.md` (confirmed
   live against a real appended file). Single-agent `agentwatch watch --log
-  <state.vscdb>` and `--all-logs` directory-scan mode remain explicitly out
-  of scope for Cursor (see PLAYBOOK Sprint 7). Known gap found live —
+  <state.vscdb>` was explicitly out of scope for Cursor at the time (see
+  PLAYBOOK Sprint 7) but shipped in Sprint 16 (PR #13, 2026-07-16) --
+  `ui/app.py` now dispatches `.vscdb` paths to `CursorWatcher`, auto-
+  selecting the most recently active agent-mode composer. `--all-logs`
+  directory-scan mode remains inapplicable to Cursor (architectural fact,
+  no per-session files to glob -- not a TODO). Known gap found live —
   Cursor's `tool_name` is always the literal constant
   `"user_message"`/`"assistant_message"`, which tripped
   `detectors/health/loops.py::LoopDetector`'s repetition check as a false
@@ -235,8 +269,19 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   correlatable by the same `call_id`) — wiring it in is a real architectural
   change (a second event family to correlate), scoped as a clear next
   sprint rather than rushed. `CODEX_HOME` multi-root support, real tool
-  names beyond `apply_patch`, and PID-based log resolution remain
-  unconfirmed.
+  names beyond `apply_patch`, and PID-based log resolution were unconfirmed
+  at the time -- **resolved in Sprint 17 (PR #14, 2026-07-16)**: PID-based
+  resolution implemented (`_find_open_codex_rollout`); `CODEX_HOME`
+  multi-root confirmed NOT supported, cited against both
+  `developers.openai.com/codex/environment-variables` and
+  `codex-rs/utils/home-dir/src/lib.rs`'s single `std::env::var()` read; 8
+  real tool names beyond `apply_patch` confirmed against
+  `codex-rs/core/src/tools/handlers/*_spec.rs` and mapped in
+  `_CONFIRMED_CODEX_TOOL_TYPES` (`parser/codex.py`). A separate multi-
+  agent-orchestration tool family (`spawn_agent`, `send_input`, etc.) was
+  found in the same registry but deliberately left unmapped -- a different
+  feature, doesn't fit this classifier's vocabulary. `ExecCommandEnd`
+  correlation and live-install verification remain open.
 - **Genuine `@openai/codex` package confirmed installable and runnable
   (2026-07-15), but a live-authenticated-session rollout still could not be
   captured — narrower and more precise than the old "no live install
@@ -280,6 +325,39 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   speculatively. Net position: package existence and authenticity are now
   confirmed; actual rollout-parsing correctness remains fixture-verified
   only, blocked specifically on credentials, not on install availability.
+- **The single-agent `agentwatch watch` TUI never displayed live data, for
+  any agent type, from the project's initial commit until Sprint 16 (PR
+  #12, 2026-07-16).** `AgentWatchApp._on_action` (`ui/app.py`) guarded with
+  `if self._buffer:` instead of `if self._buffer is not None:`.
+  `ActionBuffer` defines `__len__` but not `__bool__`, so a freshly
+  constructed (empty) buffer is falsy in Python's truthiness fallback --
+  the very first action delivered was silently dropped, the buffer never
+  gained any actions, and the guard kept failing forever. Not a regression
+  from any specific sprint; missed for this long because every prior TUI
+  test seeded `app._buffer` directly or called refresh manually, bypassing
+  the real `_on_action` callback path. Fixed (same pattern in
+  `refresh_display`'s buffer/registry guards too) and covered by a
+  regression test that drives a real `AgentWatchApp` through the actual
+  watcher -> `_on_action` path rather than manual buffer seeding -- proven
+  to fail against the pre-fix code, pass against the fix.
+- **Live `watch`/`watch_all` TUI wiring for `--siem-log`/`--llm` landed on
+  `develop` for real in Sprint 18 (PR #15, 2026-07-16)**, superseding PR #6
+  (the branch referenced as "sitting on develop, unmerged further" in
+  PLAYBOOK Sprint 13 -- that PR was closed as superseded, not merged; PR
+  #15 is the rebased delivery, re-verified against everything landed since
+  including the `ActionBuffer` fix above). Also adds the Tier-2
+  goal-alignment advisory (PLAYBOOK Sprint 15's CLI-only feature) into both
+  live TUIs on the same dedup/throttle machinery.
+- **`agentwatch stats --all` crashed outright on real `~/.claude/projects/`
+  history containing any non-UTF-8 byte** (fixed Sprint 20, PR #17,
+  2026-07-16): `cc_stats.py::parse_session_stats` opened its JSONL with no
+  explicit encoding, falling back to the platform locale encoding (cp1252
+  on Windows); a single bad byte raised an uncaught `UnicodeDecodeError`
+  during line iteration, outside the `try`/`except` that only guards
+  `json.loads()`. Fixed with the same `encoding="utf-8", errors="ignore"`
+  pattern already established at `parser/logs.py:506`. Live-verified
+  against this machine's real history (4 project dirs, 65 session files):
+  `stats --all` now exits 0 with correct aggregated output.
 
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
