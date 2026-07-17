@@ -2844,3 +2844,372 @@ first, exactly as flagged in this section's own acceptance criteria above.
 **Not done, deliberately, per board instruction:** not pushed to origin,
 no PR opened. Local commits only, in a throwaway worktree, awaiting an
 explicit go-ahead before either happens.
+
+### Sprint 16 -- Live TUI severe bugfix (Part A) + Cursor single-agent
+watch --log support (Part B)
+**Type:** bugfix (Part A) / feature (Part B)
+**Priority:** Part A first -- an independent QA pass found the
+single-agent `agentwatch watch` TUI has displayed no live data at all,
+for any agent type, since the project's initial commit. Part B (closing
+the Cursor `watch --log <state.vscdb>` gap Sprint 7 explicitly deferred)
+depends on Part A actually working, so it is scoped as the same sprint,
+branched second.
+**PRD Status:** not needed for either part -- Part A is a one-line root
+cause found by direct code read (`git log -S "if self._buffer:"` confirms
+it dates to the initial commit); Part B reuses Sprint 7's existing
+`select_latest_agent_composer()` convention, already used by `parser/
+logs.py::parse_file()`'s own `.vscdb` dispatch, so no new selection logic
+was designed.
+
+### Part A -- what this sprint found and fixed
+`AgentWatchApp._on_action` (`ui/app.py`) guarded with `if self._buffer:`
+instead of `if self._buffer is not None:`. `ActionBuffer` defines
+`__len__` but not `__bool__`, so Python's truthiness fallback makes a
+freshly constructed (empty) buffer falsy -- the very first action
+delivered was silently dropped, meaning the buffer never gained any
+actions, meaning the guard kept failing forever. `refresh_display`'s
+`if not self._buffer or not self._detector_registry:` guard had the exact
+same pitfall and would also have bailed out of the very first render.
+Every other bare-truthy buffer/registry/scorer check in `ui/app.py` and
+`ui/multi_app.py` was audited and confirmed fine (`_rot_scorer` and the
+rest define neither `__len__` nor `__bool__`, so ordinary `None` checks
+already behaved correctly there). Not a regression introduced by any
+specific sprint -- missed for this long because every prior TUI test
+seeded `app._buffer` directly or called `refresh_display()` manually,
+never exercising the real watcher -> `_on_action` callback path.
+
+### Part B -- what this sprint built
+`ui/app.py` gains a `.vscdb` dispatch branch: constructs a `CursorWatcher`
+auto-selecting the most-recently-active agent-mode composer via
+`select_latest_agent_composer()` -- the same convention `parser/
+logs.py::parse_file()`'s one-shot `check`/`security-scan` `.vscdb` path
+already uses, not new logic. Degrades gracefully (a `self.notify()`
+warning toast, idle dashboard, no crash) when no qualifying composer is
+found. `cli.py`'s `watch --log` help text updated to mention Cursor's
+`state.vscdb`, matching `check`'s existing wording. This branch was
+rebased onto Part A's fix before merging -- before that fix, Part B's own
+dispatch logic was correct but the live dashboard would never have shown
+any data regardless of source.
+
+### Acceptance Criteria
+- [x] Part A: `_on_action` and `refresh_display` use `is not None` checks,
+      not bare truthiness, for `_buffer`/`_detector_registry`
+- [x] Part A: new `tests/test_app_on_action_regression.py` drives a real
+      `AgentWatchApp` through the actual watcher -> `_on_action` path
+      (not manual buffer seeding) -- confirmed by both the implementing
+      pass and independently by the CTO to fail against the pre-fix code
+      (exact symptom: `got 0` actions) and pass against the fix
+- [x] Part A: live-verified via a headless Textual pilot run -- buffer
+      action count actually increases as a fixture log is watched,
+      `HealthBar` reflects real (non-default) detector output
+- [x] Part B: `ui/app.py` dispatches `.vscdb` paths to `CursorWatcher`
+      with auto-composer-selection, reusing `select_latest_agent_composer()`
+- [x] Part B: excludes the known `empty-state-draft` phantom composer and
+      `ask`-mode composers from auto-selection, matching Sprint 5/7's
+      existing Cursor composer-qualification rules
+- [x] Part B: graceful no-crash degrade (toast + idle dashboard) when no
+      qualifying composer exists
+- [x] Part B: new `tests/test_cursor_single_agent_tui.py` (11 tests):
+      dispatch correctness, auto-selection, every graceful-failure mode,
+      a full headless Textual pilot run
+- [x] Part B: live-verified against a real fixture `state.vscdb` (composer
+      + 4 bubbles) driven through `AgentWatchApp` -- all 4 actions land in
+      the buffer via the real Cursor watch path, independently reproduced
+      twice (implementing pass + CTO review)
+- [x] `python -m pytest tests/ -v` fully green for both parts (658/658
+      after Part A, 669/669 after Part B), `ruff check .` clean
+- [x] Branches off `develop`, draft PRs, board-reviewed before merge
+
+### Implementation Plan
+Part A delegated to engineer as a standalone fix: `ui/app.py` guard
+change + new regression test proving the real callback path. CTO
+independently reproduced the pre-fix failure before accepting the fix,
+per the same standard as every other sprint's "don't just trust the
+diff" review. Part B delegated as a second branch, rebased onto Part A's
+merged fix, reusing existing Cursor selection/qualification logic rather
+than inventing new rules.
+
+**Status: complete, CTO-reviewed, merged to `develop`.** Part A: PR #12
+(`fix/actionbuffer-truthiness-guard`, merged 2026-07-16). Part B: PR #13
+(`feature/cursor-single-agent-tui`, merged 2026-07-16, depends on and
+includes #12). Both draft PRs, board-approved before merge.
+
+### Sprint 17 -- Codex CLI: PID-based log resolution, CODEX_HOME and
+tool-name Open Questions resolved
+**Type:** feature / research hardening
+**Priority:** Closes three of Codex support's long-standing PRD Open
+Questions, revisited unsuccessfully across Sprints 4, 8, and 10. No live
+Codex CLI install/session was used or required -- purely primary-source
+research (real `codex-rs` source, real OpenAI docs) plus code matching
+this codebase's existing test patterns (mocked `psutil`), consistent
+with Codex's fixture-verified-only status elsewhere in this file.
+**PRD Status:** not needed -- each Open Question was resolved against a
+primary source (a doc page or an exact `codex-rs` file/line), not
+inferred, and cross-checked independently twice this session (once by
+CTO, once by a separate QA pass), including line-number spot-checks via
+the GitHub API.
+
+### What this sprint did
+1. **PID-based rollout resolution (Open Question #5) -- implemented.**
+   New `_find_open_codex_rollout()` (`discovery.py`) mirrors
+   `_find_open_jsonl()`'s exact approach (`psutil.Process.open_files()`)
+   for Codex's `sessions/**/rollout-*.jsonl` tree. Wired into
+   `_resolve_codex_log()` as the first, authoritative check when a PID is
+   available -- bypasses the cwd/mtime heuristics entirely when a live
+   process has a specific rollout file open.
+2. **`CODEX_HOME` multi-root (Open Question #2) -- resolved as confirmed
+   NOT supported**, not merely "still unconfirmed." Checked two primary
+   sources directly: `developers.openai.com/codex/environment-variables`
+   (redirects to `learn.chatgpt.com/docs/config-file/environment-variables`),
+   which documents `CODEX_HOME` as a single directory with no mention of a
+   list, and `codex-rs/utils/home-dir/src/lib.rs`'s
+   `find_codex_home_from_env` -- one `std::env::var()` read wrapped in one
+   `PathBuf::from()`, no delimiter-splitting anywhere. Docstring updated
+   with both citations; no implementation change needed (single-root was
+   already correct).
+3. **Real Codex tool names beyond `apply_patch` (Open Question #3) --
+   partially resolved**, after three prior sprints found nothing. A real
+   tool registry exists in `codex-rs/core/src/tools/handlers/*_spec.rs`.
+   New `_CONFIRMED_CODEX_TOOL_TYPES` table (`parser/codex.py`) maps 8
+   confirmed names (`exec_command`, `write_stdin`, `shell_command`,
+   `view_image`, `list_mcp_resources`, `list_mcp_resource_templates`,
+   `read_mcp_resource`, `tool_search`) to real `ToolType`s, each cited to
+   an exact file/line. A separate multi-agent-orchestration tool family
+   (`spawn_agent`, `send_input`, `update_plan`, `request_permissions`,
+   etc.) was also found in the same registry but deliberately left
+   unmapped -- a different feature (Codex coordinating its own
+   sub-agents), not this classifier's single-session file/exec/read
+   vocabulary.
+
+### Acceptance Criteria
+- [x] `_find_open_codex_rollout(pid, sessions_root)` matches Codex's real
+      rollout naming convention (`rollout-*.jsonl` under the date-bucketed
+      `sessions/` tree), not just any `.jsonl` file
+- [x] `_resolve_codex_log()` tries PID-based resolution first when a PID
+      is available; falls back to the existing `session_meta`/mtime
+      heuristics only when no PID match is found
+- [x] `CODEX_HOME` docstring cites both primary sources by exact
+      URL/file/function rather than asserting the conclusion unsupported
+- [x] `_CONFIRMED_CODEX_TOOL_TYPES` cites an exact `codex-rs` file/line
+      per entry, not a paraphrase
+- [x] Every citation independently re-verified twice this session: CTO
+      (re-fetched the docs page, re-read the Rust source, spot-checked
+      4+ tool-registry file/line citations via the GitHub API) and a
+      separate QA pass (re-verified PID resolution live via mocked
+      `psutil`, called `classify_codex_tool` directly against real names,
+      re-read the `CODEX_HOME` code path) -- both matched exactly,
+      including line numbers
+- [x] New/extended tests: PID-based resolution live-verified with a real
+      temp `CODEX_HOME/sessions/.../rollout-*.jsonl` plus a decoy file
+      and mocked `psutil.Process.open_files()`, confirming the PID match
+      wins over the cwd-heuristic decoy; `classify_codex_tool` called
+      directly against all 8 newly-confirmed names plus one still-unmapped
+      name (`spawn_agent` -> `UNKNOWN` as expected)
+- [x] `python -m pytest tests/ -v` -- 679/679 pass, `ruff check .` clean
+- [x] Draft PR against `develop`, board-approved before merge
+
+### Implementation Plan
+Single engineer: `discovery.py` (new PID-resolution helper + wiring),
+`parser/codex.py` (tool-name table + docstring corrections), extended
+test files. CTO independently re-verified every primary-source citation
+before accepting the PR, not just the engineer's summary of them.
+
+**Status: complete, CTO-reviewed, merged to `develop`.** PR #14
+(`feature/codex-discovery-hardening`, merged 2026-07-16). `ExecCommandEnd`
+correlation (flagged in Sprint 8 as a real architectural follow-up) and
+live-install verification (blocked on credentials -- see CLAUDE.md Known
+Issues) remain open, not attempted this sprint.
+
+### Sprint 18 -- Live-TUI SIEM/LLM wiring, re-verified and actually
+merged, + goal-alignment advisory wired into the live TUI
+**Type:** feature (re-delivery of Sprint 13) + feature (new, extends
+Sprint 15)
+**Priority:** Supersedes PR #6 (`feature/live-tui-siem-llm`, Sprint 13's
+original delivery, opened 2026-07-14). PR #6 never actually merged to
+`develop` -- it sat there per an earlier board instruction ("don't push
+or merge anything without asking me first") and Sprint 13's own status
+note said as much. By this sprint, `develop` had moved substantially
+(Sprint 16's `ActionBuffer` fix, Cursor single-agent TUI, Sprint 17's
+Codex hardening) including changes to the exact TUI refresh path
+(`ui/app.py`'s `_on_action`/`refresh_display`) Sprint 13's feature lives
+in, so a blind rebase-and-merge of PR #6 was rejected in favor of a real
+re-verification. PR #6 is closed as superseded rather than left open
+alongside the new branch.
+**PRD Status:** not needed -- same feature/helpers as Sprint 13 (already
+scoped there), plus goal-alignment wiring reusing Sprint 15's existing
+`assess_goal_alignment()` and this sprint's own `LiveLlmAssessor`
+extension point.
+
+### Part A -- Sprint 13 re-verified against current `develop`, not
+re-based blindly
+`warning_dedup_key()`, `LiveSiemExporter` (export-once-per-warning), and
+`LiveLlmAssessor` (30s throttle, dispatched via
+`asyncio.to_thread`/`run_worker`, never on the render path) were all
+re-read directly against current code and confirmed still correct.
+Rebasing onto Sprint 16's `ActionBuffer` fix surfaced 3 failing tests in
+`test_app_live_wiring.py`, root-caused via bisection: `on_mount()`'s own
+automatic `refresh_display()` call at t=0 now genuinely executes
+(previously silently no-op'd under the truthiness bug), legitimately
+consuming the LLM throttle's free first tick before those tests could
+wire up their fixtures. Confirmed as correct, desirable behavior
+(front-loads the Ollama availability check), not a regression -- fixed by
+accounting for the real mount-time tick, not by weakening any assertion.
+New `test_live_wiring_end_to_end.py` drives a real `AgentWatchApp`
+through the actual watcher -> `_on_action` -> detector ->
+`LiveSiemExporter`/`LiveLlmAssessor` pipeline (no manual buffer seeding)
+to prove this end to end -- exactly the kind of test Sprint 16's Part A
+postmortem said prior TUI tests were missing.
+
+### Part B -- goal-alignment live-TUI wiring (new this sprint)
+`LiveLlmAssessor` extended (not duplicated) with `goal_alignment_due()`/
+`mark_goal_run()`/`run_goal_alignment()`/`stamp_goal_alignment()`, sharing
+the per-warning-triage dispatch mechanism and Ollama-availability gate but
+with its own independent throttle clock -- goal alignment is a single
+session-level judgment, not a set of individually-identified findings, so
+`warning_dedup_key()`'s dedup-set machinery is deliberately not reused for
+it (would be dead weight). Wired into both `AgentWatchApp` and
+`MultiAgentWatchApp` (per-agent throttle state in the latter). Stays
+advisory-only: `git diff -- '**/base.py' '**/score.py'` confirmed empty,
+and every `GOAL` match in the diff is this feature's own label/docstrings,
+never the real `Category.GOAL`. The "no stated task" case renders
+nothing, matching `check`/`security-scan`'s existing silence-is-honest
+behavior from Sprint 15.
+
+### Acceptance Criteria
+- [x] `watch`/`watch_all` re-verified (not just re-based) against every
+      branch merged to `develop` since Sprint 13's original delivery
+- [x] The 3 tests broken by Sprint 16's `ActionBuffer` fix root-caused and
+      fixed by accounting for the real `on_mount()` tick, not by
+      weakening assertions
+- [x] New `test_live_wiring_end_to_end.py` drives the real watcher ->
+      `_on_action` -> detector -> exporter/assessor pipeline
+- [x] Goal-alignment advisory wired into both `AgentWatchApp` and
+      `MultiAgentWatchApp` with its own independent throttle clock,
+      sharing the Ollama-availability gate but not the dedup-set machinery
+- [x] Zero changes to `Category.GOAL`/`HEALTH_CATEGORY_WEIGHTS`/
+      `calculate_health()` -- verified via scoped `git diff` plus a
+      full-diff `GOAL` grep, same method Sprint 15 used
+- [x] "No stated task" renders nothing in the live TUI, matching the
+      CLI's existing silent behavior
+- [x] `python -m pytest tests/ -v` -- 743/743 pass, `ruff check .` clean
+- [x] README's Contributing-section wishlist line (still listing live-TUI
+      wiring as an open item since Sprint 13) closed out
+- [x] Draft PR against `develop`, board-approved before merge; PR #6
+      closed as superseded rather than left open
+
+### Implementation Plan
+Single engineer, rebased branch: `ui/app.py`, `ui/multi_app.py`,
+`ui/live_integrations.py` (extended), `cli.py`, README, and new/extended
+test files. CTO reviewed the re-verification specifically (confirmed the
+3 broken tests' root cause independently, not just accepted the fix) and
+the "zero score impact" guarantee for goal-alignment, same as Sprint 15's
+review standard.
+
+**Status: complete, CTO-reviewed, merged to `develop`.** PR #15
+(`feature/live-tui-siem-llm-rebased`, merged 2026-07-16). This is the
+branch that actually landed the feature Sprint 13 described as "sitting
+on develop, unmerged further" -- that description is now stale as of
+this sprint; see CLAUDE.md Known Issues for the correction.
+
+### Sprint 19 -- README accuracy fixes (goal-alignment gap, GOAL-category
+clarity, Cursor scope)
+**Type:** docs
+**Priority:** Three accuracy gaps found during this session's final
+completeness survey, all confirmed against actual code before fixing --
+same discipline as every prior docs-correction sprint in this file
+(Sprint 0's detector-count reconciliation, this session's own CLAUDE.md
+corrections).
+**PRD Status:** not needed -- docs-only, no behavior change.
+
+### What this sprint found and fixed
+1. **Goal-Alignment Advisory was completely undocumented** in README
+   despite being fully merged (`llm.py`'s `assess_goal_alignment()` from
+   Sprint 15, `cli.py`'s CLI wiring, and the live-TUI wiring from Sprint
+   18). New section under Tier-2 LLM Analysis describing the real
+   behavior: compares stated task vs. recent activity via local Ollama,
+   runs automatically under `--llm` (no separate flag), purely advisory
+   (never scores, never becomes a `Warning`), stays silent with no stated
+   task (the documented Codex case).
+2. **Detector-category table's "Goal" row implied an active scored
+   detector.** It isn't -- verified zero `category=Category.GOAL` sites
+   across every `detectors/health/*.py` file. Row now says "Currently
+   unused" with a note distinguishing it from the real (but unrelated,
+   unscored) Goal-Alignment Advisory above.
+3. **Cursor's Supported Agents row still said single-agent `watch --log
+   <state.vscdb>` was out of scope.** It shipped in Sprint 16 (PR #13).
+   Fixed to reflect that; only `--all-logs` remains inapplicable
+   (architectural fact -- Cursor has no per-session files to glob -- not
+   a TODO).
+
+### Acceptance Criteria
+- [x] README's Tier-2 LLM Analysis section documents goal-alignment
+      advisory behavior accurately, including the silent-no-stated-task
+      case and the Codex coverage gap
+- [x] Detector-category table's Goal row corrected to "Currently unused",
+      distinguished from the Goal-Alignment Advisory
+- [x] Cursor's Supported Agents row reflects Sprint 16's shipped
+      single-agent `watch --log <state.vscdb>` support
+- [x] `python -m pytest tests/ -v` -- 743/743 pass (docs-only change, as
+      expected -- no source touched), `ruff check .` clean
+- [x] Draft PR against `develop`, board-approved before merge
+
+### Implementation Plan
+CTO-authored directly (docs-only, no engineer delegation needed for a
+3-item accuracy pass): read `detectors/health/*.py` directly to confirm
+the zero-`Category.GOAL`-sites claim before writing the corrected table
+row, rather than assuming.
+
+**Status: complete, merged to `develop`.** PR #16
+(`docs/readme-accuracy-fixes`, merged 2026-07-16).
+
+### Sprint 20 -- `agentwatch stats --all` crash fix (non-UTF-8 bytes in
+Claude Code session history)
+**Type:** bugfix
+**Priority:** `agentwatch stats --all` crashed outright (uncaught
+`UnicodeDecodeError`) against this machine's own real
+`~/.claude/projects/` history -- a manual smoke-test failure on a command
+this file's own Build Commands section lists as a baseline check, not a
+theoretical edge case.
+**PRD Status:** not needed -- root cause and fix are both a direct,
+narrow match to an existing precedent in the same codebase.
+
+### What this sprint found and fixed
+`cc_stats.py::parse_session_stats` opened `~/.claude/projects/*.jsonl`
+with no explicit encoding, so it fell back to the platform locale
+encoding (cp1252 on Windows). A single non-UTF-8 byte anywhere in the
+file raised an uncaught `UnicodeDecodeError` while iterating lines --
+outside the `try`/`except` around `json.loads()` that only guards
+malformed JSON, not the line-iteration itself. Fix matches the precedent
+already established in this codebase for the same class of problem:
+`parser/logs.py:506` opens with `encoding="utf-8", errors="ignore"`.
+Applied the identical pattern here rather than inventing a new approach.
+`cc_stats.py` was audited for other `open()` calls with the same gap --
+this was the only one in the file.
+
+### Acceptance Criteria
+- [x] `parse_session_stats` opens its JSONL with `encoding="utf-8",
+      errors="ignore"`, matching `parser/logs.py`'s existing precedent
+- [x] New regression test (`test_skips_non_utf8_bytes`) uses a lone 0x8F
+      continuation byte -- invalid under both UTF-8 (not a valid start
+      byte) and cp1252 (undefined code point), so it reliably reproduces
+      the crash regardless of platform locale
+- [x] Regression test independently confirmed to fail with the real
+      `UnicodeDecodeError` against the pre-fix code, and pass after
+      reapplying the fix
+- [x] Live-verified against this machine's real `~/.claude/projects/`
+      history (4 project dirs, 65 real session files): `agentwatch stats
+      --all` completes cleanly with exit code 0 and correct aggregated
+      output, where it previously crashed
+- [x] `python -m pytest tests/ -v` fully green, `ruff check .` clean
+- [x] Draft PR against `develop`; CI green (`verify-deploy` 3.11/3.12,
+      both passing); board-approved before merge
+
+### Implementation Plan
+Single, narrow engineer fix: one `open()` call in `cc_stats.py`, one new
+regression test. No design decision needed given the direct precedent
+already in the codebase.
+
+**Status: complete, CTO-reviewed, CI-verified green, merged to
+`develop`.** PR #17 (`fix/cc-stats-encoding`, merged 2026-07-17). Audited
+for other `open()` calls with the same gap in the same file -- none
+found.
