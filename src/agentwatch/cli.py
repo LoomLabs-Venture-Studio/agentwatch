@@ -8,6 +8,7 @@ from pathlib import Path
 
 import click
 
+from agentwatch import __version__
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Warning
 from agentwatch.discovery import (
@@ -322,7 +323,7 @@ def print_security_alert(warnings) -> None:
 
 
 @click.group()
-@click.version_option(version="0.1.4")
+@click.version_option(version=__version__)
 @click.option(
     "--theme", "-t",
     type=click.Choice(list_themes()),
@@ -1638,12 +1639,15 @@ def main():
     cli()
 
 
-def security_main():
-    """Entry point for agentguard CLI (security-focused)."""
-    _ensure_utf8_stdio()
+def _build_guard_cli():
+    """Construct the `agentguard` Click group (security-focused CLI).
+
+    Factored out of `security_main()` so it can be reached directly (e.g. by
+    tests using Click's `CliRunner`) without spawning a real process.
+    """
     # Override defaults to always include security
     @click.group()
-    @click.version_option(version="0.1.4")
+    @click.version_option(version=__version__)
     def guard_cli():
         """AgentGuard - Security monitoring for AI agents."""
         pass
@@ -1698,6 +1702,13 @@ def security_main():
             force=force,
         )
 
+    return guard_cli
+
+
+def security_main():
+    """Entry point for agentguard CLI (security-focused)."""
+    _ensure_utf8_stdio()
+    guard_cli = _build_guard_cli()
     guard_cli()
 
 
