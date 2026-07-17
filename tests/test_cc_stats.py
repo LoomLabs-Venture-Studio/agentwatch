@@ -595,6 +595,42 @@ class TestParseSessionStats:
         report = parse_session_stats(jsonl)
         assert report.message_count == 1
 
+    def test_skips_non_utf8_bytes(self, tmp_path):
+        """Lines containing non-UTF-8 bytes are skipped, not fatal.
+
+        Regression test for a real crash against ~/.claude/projects/*.jsonl
+        on Windows: opening the file without an explicit encoding falls back
+        to the platform locale encoding (e.g. cp1252), and a stray non-UTF-8
+        byte anywhere in the file raised an uncaught UnicodeDecodeError while
+        iterating lines -- outside the try/except that only guards
+        json.loads(). `agentwatch stats --all` crashed outright instead of
+        skipping the bad line the way malformed JSON already is.
+        """
+        good_user_line = _make_user_line().encode("utf-8")
+        # A lone continuation byte (0x8F) is invalid both as UTF-8 (not a
+        # valid start byte) and as cp1252 (undefined code point), so this
+        # reliably raises UnicodeDecodeError under either encoding.
+        garbage_line = b"\x8f\x9d\x81garbage line with invalid bytes\x90"
+        good_assistant_line = _make_assistant_line(
+            "msg-1",
+            [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}],
+            input_tokens=100,
+            output_tokens=50,
+        ).encode("utf-8")
+
+        jsonl = tmp_path / "session.jsonl"
+        jsonl.write_bytes(good_user_line + b"\n" + garbage_line + b"\n" + good_assistant_line)
+
+        # (a) No exception raised.
+        report = parse_session_stats(jsonl)
+
+        # (b) The garbage line was skipped rather than corrupting other data.
+        # (c) The valid assistant line was still processed correctly.
+        assert report.message_count == 1
+        assert report.tool_call_count == 1
+        assert report.totals.input_tokens == 100
+        assert report.totals.output_tokens == 50
+
     def test_empty_file(self, tmp_path):
         """Empty file produces empty report."""
         jsonl = tmp_path / "session.jsonl"
