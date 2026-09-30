@@ -7,6 +7,7 @@ from collections import Counter
 from agentwatch.parser.models import NON_TOOL_ROLE_LABELS, ActionBuffer
 
 from ..base import Category, Detector, Severity, Warning
+from ..security.secret_scanner import redact_secrets
 
 
 class LoopDetector(Detector):
@@ -48,6 +49,9 @@ class LoopDetector(Detector):
             # Gather the actual commands/errors for context
             matching = [a for a in recent if f"{a.tool_name}:{a.file_path or ''}" == most_common]
             last_cmd = next((a.command for a in reversed(matching) if a.command), None)
+            if last_cmd:
+                # Exported verbatim to SIEM via details/suggestion -- mask secrets.
+                last_cmd = redact_secrets(last_cmd)
             last_err = next((a.error_message for a in reversed(matching) if a.error_message), None)
 
             detail_line = ""

@@ -11,6 +11,7 @@ from agentwatch.parser.security_patterns import (
 )
 
 from ..base import Category, SecurityDetector, Severity, Warning
+from .secret_scanner import redact_secrets
 
 
 class PrivilegeEscalationDetector(SecurityDetector):
@@ -40,7 +41,7 @@ class PrivilegeEscalationDetector(SecurityDetector):
                     signal="privilege_escalation",
                     message="Privilege escalation command detected",
                     details={
-                        "command": action.command[:100],  # Truncate for safety
+                        "command": redact_secrets(action.command)[:100],  # Truncate for safety
                         "tool": action.tool_name,
                     },
                 )
@@ -107,7 +108,7 @@ class DangerousCommandDetector(SecurityDetector):
                     signal="dangerous_command",
                     message="Dangerous command detected",
                     details={
-                        "command": action.command[:100],
+                        "command": redact_secrets(action.command)[:100],
                         "tool": action.tool_name,
                     },
                 )

@@ -7,6 +7,7 @@ import re
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
+from .secret_scanner import redact_secrets
 
 
 class MaliciousSkillDetector(SecurityDetector):
@@ -65,7 +66,7 @@ class MaliciousSkillDetector(SecurityDetector):
                     message=f"Skill '{action.skill_name}' executing suspicious command",
                     details={
                         "skill": action.skill_name,
-                        "command": action.command[:80],
+                        "command": redact_secrets(action.command)[:80],
                     },
                 )
 
@@ -225,7 +226,7 @@ class SkillInstallDetector(SecurityDetector):
                     severity=Severity.HIGH,
                     signal="skill_install",
                     message="New skill being installed",
-                    details={"command": action.command[:80]},
+                    details={"command": redact_secrets(action.command)[:80]},
                 )
 
         return None
