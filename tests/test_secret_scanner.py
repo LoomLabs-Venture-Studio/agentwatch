@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from agentwatch.detectors.security.secret_scanner import (
     AuditFinding,
@@ -927,7 +930,10 @@ class TestRedactLogFile:
 
         assert bak.read_bytes() == b"older backup\n"
 
-    def test_preserves_file_mode_and_leaves_no_temp_files(self, tmp_path):
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX file mode bits are not supported on Windows"
+    )
+    def test_preserves_file_mode(self, tmp_path):
         p = tmp_path / "mode.jsonl"
         p.write_text(json.dumps({"password": "Hunter2Pass!x"}) + "\n")
         p.chmod(0o640)
@@ -935,6 +941,13 @@ class TestRedactLogFile:
         redact_log_file(p)
 
         assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+    def test_leaves_no_temp_files(self, tmp_path):
+        p = tmp_path / "mode.jsonl"
+        p.write_text(json.dumps({"password": "Hunter2Pass!x"}) + "\n")
+
+        redact_log_file(p)
+
         assert sorted(x.name for x in tmp_path.iterdir()) == ["mode.jsonl", "mode.jsonl.bak"]
 
     def test_false_positive_not_counted_or_changed(self, tmp_path):
