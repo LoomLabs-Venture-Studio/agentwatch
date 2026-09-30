@@ -8,7 +8,7 @@ from collections import Counter
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
-from .secret_scanner import redact_secrets
+from .secret_scanner import redact_truncate
 
 
 class NetworkAnomalyDetector(SecurityDetector):
@@ -94,7 +94,7 @@ class NetworkAnomalyDetector(SecurityDetector):
                             severity=Severity.MEDIUM,
                             signal="data_upload",
                             message="Data being uploaded via command line",
-                            details={"command": redact_secrets(action.command)[:80]},
+                            details={"command": redact_truncate(action.command, 80)},
                         )
 
         return None
@@ -186,7 +186,7 @@ class C2CommunicationDetector(SecurityDetector):
                     severity=Severity.CRITICAL,
                     signal="c2_beacon",
                     message="Command pattern consistent with C2 beacon",
-                    details={"command": redact_secrets(action.command)[:80]},
+                    details={"command": redact_truncate(action.command, 80)},
                 )
 
         # Check for regular network polling
@@ -241,7 +241,7 @@ class DNSExfiltrationDetector(SecurityDetector):
                     severity=Severity.HIGH,
                     signal="dns_exfil",
                     message="Potential DNS exfiltration pattern",
-                    details={"command": redact_secrets(action.command)[:80]},
+                    details={"command": redact_truncate(action.command, 80)},
                 )
 
         return None

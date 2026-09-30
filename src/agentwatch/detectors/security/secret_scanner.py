@@ -384,6 +384,24 @@ def redact_secrets(text: str) -> str:
     return text
 
 
+# Extra chars scanned past the display cut-off so a secret that starts before
+# the cut-off still has its full minimum-length match inside the window. The
+# longest minimum match in _SECRET_PATTERNS is cloudflare_api_token (176:
+# "v1.0-" + 24 hex + "-" + 146 hex); claude_api_key is next at 103.
+_REDACT_WINDOW_MARGIN = 256
+
+
+def redact_truncate(text: str, limit: int) -> str:
+    """Return ``redact_secrets(text)[:limit]`` without scanning all of *text*.
+
+    Commands can be megabytes (heredocs), but callers only keep the first
+    *limit* chars; redacting a bounded window keeps detectors cheap. A secret
+    straddling *limit* is still masked because the window extends
+    ``_REDACT_WINDOW_MARGIN`` chars past it.
+    """
+    return redact_secrets(text[: limit + _REDACT_WINDOW_MARGIN])[:limit]
+
+
 # ---------------------------------------------------------------------------
 # SecretLeakScanner
 # ---------------------------------------------------------------------------

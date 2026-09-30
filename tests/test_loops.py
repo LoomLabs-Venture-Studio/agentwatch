@@ -110,3 +110,29 @@ class TestLoopDetectorSecretRedaction:
         assert warning.details["last_command"].startswith("curl -H 'X-Key: ")
         text = f"{warning.message}\n{warning.details}\n{warning.suggestion}"
         assert not any(token[i : i + 5] in text for i in range(len(token) - 4))
+
+    def test_huge_last_command_is_capped_and_masked(self):
+        """A heredoc-sized command must not be carried whole into details, and
+        a token straddling the cap must still be masked. (Kept to 50KB: the
+        cost of a 1MB command here is ActionBuffer.add's own stats scan, not
+        the detector -- the >1MB timing case lives in test_network_detectors.)"""
+        token = "ghp_" + "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2"
+        cmd = "p" * 180 + " " + token + " <<'EOF'\n" + "A" * 50_000 + "\nEOF"
+        det = LoopDetector(threshold=4, window=10)
+        buf = ActionBuffer()
+        for i in range(10):
+            buf.add(
+                Action(
+                    timestamp=datetime(2026, 1, 29, 12, 0) + timedelta(seconds=i),
+                    tool_name="bash",
+                    tool_type=ToolType.BASH,
+                    success=False,
+                    command=cmd,
+                    error_message="HTTP 500",
+                )
+            )
+        warning = det.check(buf)
+        assert warning is not None
+        assert len(warning.details["last_command"]) <= 200
+        text = f"{warning.message}\n{warning.details}\n{warning.suggestion}"
+        assert not any(token[i : i + 5] in text for i in range(len(token) - 4))
