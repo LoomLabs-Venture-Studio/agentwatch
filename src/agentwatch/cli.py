@@ -1434,6 +1434,7 @@ def audit(
     # --redact: replace secrets in affected log files
     redact_count = 0
     skipped_active: list[str] = []
+    backups: list[Path] = []
     if redact and all_findings and not dry_run:
         affected_files: dict[str, Path] = {}
         for pdir in dirs:
@@ -1447,7 +1448,7 @@ def audit(
                 skipped_active.append(fp.name)
                 continue
             try:
-                redact_count += redact_log_file(fp)
+                redact_count += redact_log_file(fp, backups=backups)
             except OSError:
                 continue
 
@@ -1480,6 +1481,7 @@ def audit(
             "total_findings": len(all_findings),
             "redacted": redact_count if redact and not dry_run else None,
             "skipped_active": sorted(set(skipped_active)) if skipped_active else [],
+            "backups": [str(b) for b in backups],
             "findings": finding_dicts,
         }
         click.echo(json.dumps(output, indent=2))
@@ -1499,6 +1501,22 @@ def audit(
                     bold=True,
                 )
             )
+            if backups:
+                click.echo(
+                    click.style(
+                        "  Backups with the ORIGINAL (unredacted) secrets were kept at:",
+                        fg="yellow",
+                        bold=True,
+                    )
+                )
+                for b in backups:
+                    click.echo(f"    {b}")
+                click.echo(
+                    click.style(
+                        "  Delete them once you've verified the redacted logs.",
+                        fg="yellow",
+                    )
+                )
             click.echo()
 
         if skipped_active:

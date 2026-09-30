@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 import math
 import os
 import re
+import stat
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -554,40 +558,187 @@ def audit_log_file(
     return findings
 
 
-def redact_log_file(log_path: Path) -> int:
-    """Replace all detected secrets in a JSONL log file with [REDACTED].
+_REDACTED = "[REDACTED]"
 
-    Operates line-by-line on the raw text so the JSONL structure is preserved.
-    Returns the number of replacements made.
+# Patterns whose match includes a key name + separator (``password": "...``).
+# Only the value after the separator is redacted.
+_ASSIGNMENT_LABELS = frozenset({
+    "aws_secret_key",
+    "password_assignment",
+    "bearer_token",
+    "generic_api_key",
+    "high_entropy_secret",
+})
+_ASSIGNMENT_PREFIX_RE = re.compile(r"[^:=]*[:=]\s*['\"]?")
+
+# Connection-string patterns: only the password between ``user:`` and ``@``.
+_URL_LABELS = frozenset({"neondb_connection_string", "database_connection_string"})
+_URL_PASSWORD_RE = re.compile(r"[a-z]+://[^:\s]+:([^@\s]+)@", re.IGNORECASE)
+
+
+def _value_span(m: re.Match, label: str) -> tuple[int, int]:
+    """Return the (start, end) span of the secret value inside a pattern match.
+
+    Detection patterns may include the key name, separator, quotes or a URL
+    host. Redacting the whole match would destroy JSON structure, so only the
+    value itself is replaced.
     """
-    lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+    start, end = m.span()
+    text = m.group(0)
+    if label in _ASSIGNMENT_LABELS:
+        prefix = _ASSIGNMENT_PREFIX_RE.match(text)
+        if prefix:
+            start += prefix.end()
+            value = text[prefix.end():]
+            end -= len(value) - len(value.rstrip("'\""))
+    elif label in _URL_LABELS:
+        pw = _URL_PASSWORD_RE.match(text)
+        if pw:
+            return m.start() + pw.start(1), m.start() + pw.end(1)
+    return start, end
+
+
+def _redact_text(text: str) -> tuple[str, int]:
+    """Redact secret values in *text*. Returns (new_text, real_redaction_count)."""
+    count = 0
+    for pattern, label in _SECRET_PATTERNS:
+        pieces: list[str] = []
+        pos = 0
+        for m in pattern.finditer(text):
+            # Leave placeholders/test data alone and don't re-count values
+            # that are already redacted; these are not real redactions.
+            if _is_false_positive(m.group(0)):
+                continue
+            vstart, vend = _value_span(m, label)
+            if vstart >= vend or text[vstart:vend] == _REDACTED:
+                continue
+            pieces.append(text[pos:vstart])
+            pieces.append(_REDACTED)
+            pos = vend
+            count += 1
+        if pieces:
+            pieces.append(text[pos:])
+            text = "".join(pieces)
+    return text, count
+
+
+def _redact_json_value(obj: Any) -> tuple[Any, int]:
+    """Redact secrets inside every string value of a parsed JSON document."""
+    if isinstance(obj, str):
+        return _redact_text(obj)
+    if isinstance(obj, list):
+        total = 0
+        out_list = []
+        for item in obj:
+            new_item, n = _redact_json_value(item)
+            out_list.append(new_item)
+            total += n
+        return out_list, total
+    if isinstance(obj, dict):
+        total = 0
+        out_dict = {}
+        for k, v in obj.items():
+            new_v, n = _redact_json_value(v)
+            out_dict[k] = new_v
+            total += n
+        return out_dict, total
+    return obj, 0
+
+
+_NOT_JSON = object()
+
+
+def _json_skeleton(text: str) -> Any:
+    """Parse *text* and blank out string values, keeping keys and structure.
+
+    Returns ``_NOT_JSON`` if *text* is not valid JSON.
+    """
+    def _shape(obj: Any) -> Any:
+        if isinstance(obj, str):
+            return str
+        if isinstance(obj, list):
+            return [_shape(v) for v in obj]
+        if isinstance(obj, dict):
+            return {k: _shape(v) for k, v in obj.items()}
+        return obj
+
+    try:
+        return _shape(json.loads(text))
+    except ValueError:
+        return _NOT_JSON
+
+
+def _redact_line(line: str) -> tuple[str, int]:
+    """Redact one JSONL line (without its newline).
+
+    Invariant: a line that was valid JSON stays valid JSON with the same keys
+    and structure. Redaction is done on the raw text so every other byte is
+    preserved; if that would change the JSON structure (e.g. a match spanning
+    two string values), fall back to redacting the parsed string values and
+    re-serializing that one line.
+    """
+    new_line, count = _redact_text(line)
+    if count == 0:
+        return line, 0
+    before = _json_skeleton(line)
+    if before is _NOT_JSON or _json_skeleton(new_line) == before:
+        return new_line, count
+    obj, count = _redact_json_value(json.loads(line))
+    if count == 0:
+        return line, 0
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")), count
+
+
+def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:
+    """Write *data* to *path* via a same-directory temp file + os.replace()."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def redact_log_file(log_path: Path, backups: list[Path] | None = None) -> int:
+    """Replace the values of detected secrets in a JSONL log file with [REDACTED].
+
+    Works line-by-line on the raw bytes (decoded with ``surrogateescape`` so
+    invalid UTF-8 round-trips exactly). Only the secret value is replaced; key
+    names, quotes and every other byte are kept, and valid JSON lines stay
+    valid JSON. When anything is redacted, a one-time ``<name>.bak`` copy of the
+    original bytes is kept (owner-only permissions, it still holds the secrets)
+    and the file is replaced atomically with its original permission mode.
+
+    If *backups* is given and anything was redacted, the ``.bak`` path (new or
+    pre-existing) is appended to it so callers can tell the user where the
+    unredacted copy lives.
+
+    Returns the number of real (non-false-positive) redactions.
+    """
+    original = log_path.read_bytes()
     total_replacements = 0
     new_lines: list[str] = []
 
-    for line in lines:
-        new_line = line
-        for pattern, _label in _SECRET_PATTERNS:
-            # Replace all occurrences of each pattern in this line. Track the
-            # actual redaction count ourselves rather than relying on
-            # re.subn()'s return value, which counts every regex match --
-            # including ones where _redact() recognized a false positive and
-            # returned the text unchanged.
-            actual_count = 0
-
-            def _redact(m: re.Match) -> str:
-                nonlocal actual_count
-                matched = m.group(0)
-                if _is_false_positive(matched):
-                    return matched  # leave placeholders/test data alone
-                actual_count += 1
-                return "[REDACTED]"
-
-            new_line = pattern.sub(_redact, new_line)
-            total_replacements += actual_count
+    for line in original.decode("utf-8", errors="surrogateescape").split("\n"):
+        new_line, count = _redact_line(line)
         new_lines.append(new_line)
+        total_replacements += count
 
     if total_replacements > 0:
-        log_path.write_text("".join(new_lines), encoding="utf-8")
+        mode = stat.S_IMODE(log_path.stat().st_mode)
+        backup = log_path.with_name(log_path.name + ".bak")
+        if not backup.exists():
+            _atomic_write_bytes(backup, original, 0o600)
+        data = "\n".join(new_lines).encode("utf-8", errors="surrogateescape")
+        _atomic_write_bytes(log_path, data, mode)
+        if backups is not None:
+            backups.append(backup)
 
     return total_replacements
 
