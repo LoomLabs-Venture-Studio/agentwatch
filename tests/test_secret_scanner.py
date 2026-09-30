@@ -366,8 +366,8 @@ class TestSecretLeakScanner:
         w = scanner.check(buf)
         assert w is not None
         assert "matched_prefix" in w.details
-        # Should be a truncated prefix, not the full key
-        assert w.details["matched_prefix"].endswith("...")
+        # Only the last 4 chars of a long token, never the key's prefix
+        assert w.details["matched_prefix"] == "…efgh"
 
     def test_warning_has_suggestion(self):
         scanner = SecretLeakScanner()
@@ -918,3 +918,92 @@ class TestImpactAssessment:
 
     def test_pattern_lookup_unknown(self):
         assert _pattern_for_secret_type("nonexistent_type") is None
+
+
+# ---------------------------------------------------------------------------
+# matched_prefix masking -- no displayed form may reveal the secret
+# ---------------------------------------------------------------------------
+
+_GHP_TOKEN = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+_SHORT_PASSWORD = "Hunter2Pass!"
+
+
+def _leaks(secret: str, text: str, window: int = 5) -> bool:
+    """True if any *window*-char run of *secret* appears in *text*.
+
+    A 5-char window allows the permitted last-4 hint but catches any
+    longer fragment, including the scheme prefix (e.g. ``ghp_A``).
+    """
+    return any(secret[i : i + window] in text for i in range(len(secret) - window + 1))
+
+
+class TestMatchedPrefixMasking:
+    """Regression tests for the matched_prefix plaintext leak [BUG]."""
+
+    def _warning_for(self, outgoing_data: str):
+        buf = ActionBuffer()
+        buf.add(_make_action(outgoing_data=outgoing_data))
+        w = SecretLeakScanner().check(buf)
+        assert w is not None
+        return w
+
+    def test_short_password_reveals_nothing(self):
+        w = self._warning_for(f'password="{_SHORT_PASSWORD}"')
+        assert w.details["secret_type"] == "password_assignment"
+        assert w.details["matched_prefix"] == "[hidden, 12 chars]"
+
+    def test_short_pwd_reveals_nothing(self):
+        w = self._warning_for('pwd = "s3cretpw"')
+        assert w.details["matched_prefix"] == "[hidden, 8 chars]"
+
+    def test_long_token_shows_only_last_four(self):
+        w = self._warning_for(f"here is my token {_GHP_TOKEN} ok")
+        assert w.details["secret_type"] == "github_pat"
+        assert w.details["matched_prefix"] == "…Q7r8"
+
+    def test_private_key_header_is_masked(self):
+        w = self._warning_for("-----BEGIN RSA PRIVATE KEY-----\nMIIE...")
+        assert w.details["secret_type"] == "private_key"
+        assert "BEGIN" not in w.details["matched_prefix"]
+
+    def test_audit_finding_matched_prefix_is_masked(self, tmp_path):
+        log = tmp_path / "session.jsonl"
+        entry = {
+            "type": "assistant",
+            "timestamp": "2026-03-01T12:00:00Z",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": f"here: {_GHP_TOKEN}"}],
+            },
+        }
+        log.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+        findings = audit_log_file(log)
+        assert findings, "fixture should produce at least one finding"
+        for f in findings:
+            assert not _leaks(_GHP_TOKEN, f.matched_prefix)
+
+    def test_siem_round_trip_contains_no_raw_secret(self, tmp_path):
+        from agentwatch.siem import SiemLogger
+
+        path = tmp_path / "siem.jsonl"
+        warnings = [
+            self._warning_for(f'password="{_SHORT_PASSWORD}"'),
+            self._warning_for(f"export GH={_GHP_TOKEN}"),
+        ]
+        with SiemLogger(path) as siem:
+            for w in warnings:
+                siem.log_warning(w)
+
+        raw_text = path.read_text(encoding="utf-8")
+        lines = [json.loads(line) for line in raw_text.splitlines() if line]
+        assert len(lines) == 2
+        # Key name is unchanged for downstream consumers.
+        assert all("matched_prefix" in line["details"] for line in lines)
+        assert _SHORT_PASSWORD not in raw_text
+        assert _GHP_TOKEN not in raw_text
+        # Fragment check on the decoded form: the raw file escapes the
+        # ellipsis as "…", whose trailing "6" would spuriously complete
+        # the token's own 5-char tail "6Q7r8".
+        decoded = "\n".join(json.dumps(line, ensure_ascii=False) for line in lines)
+        assert not _leaks(_SHORT_PASSWORD, decoded)
+        assert not _leaks(_GHP_TOKEN, decoded)
