@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -815,6 +817,372 @@ class TestRedactLogFile:
         p = tmp_path / "empty.jsonl"
         p.write_text("{}\n{}\n")
         assert redact_log_file(p) == 0
+
+    # -- Regression: redaction must not corrupt the log [BUG] ---------------
+
+    def test_password_key_value_stays_valid_json(self, tmp_path):
+        p = tmp_path / "pw.jsonl"
+        row = {"type": "tool_use", "input": {"password": "Hunter2Pass!x"}}
+        p.write_text(json.dumps(row) + "\n")
+
+        assert redact_log_file(p) == 1
+
+        assert p.read_text() == '{"type": "tool_use", "input": {"password": "[REDACTED]"}}\n'
+
+    def test_api_key_key_value_stays_valid_json(self, tmp_path):
+        p = tmp_path / "apikey.jsonl"
+        p.write_text(json.dumps({"input": {"api_key": "abcdefghij0123456789XYZ"}}) + "\n")
+
+        assert redact_log_file(p) == 1
+
+        assert p.read_text() == '{"input": {"api_key": "[REDACTED]"}}\n'
+
+    def test_token_inside_text_string(self, tmp_path):
+        token = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        p = tmp_path / "ghp.jsonl"
+        p.write_text(json.dumps({"type": "text", "text": f"export TOKEN={token}"}) + "\n")
+
+        assert redact_log_file(p) == 1
+
+        parsed = json.loads(p.read_text())
+        assert parsed == {"type": "text", "text": "export TOKEN=[REDACTED]"}
+
+    def test_db_url_inside_json_string_stays_valid_json(self, tmp_path):
+        rows = [
+            {"type": "text", "text": "connect postgres://user:s3cretPassw0rd@db.internal/app now"},
+            # URL at the very end of a string: greedy host tail must not eat the quote
+            {"text": "postgres://admin:Sup3rS3cretPw@db.host/app", "next": "x"},
+        ]
+        p = tmp_path / "db.jsonl"
+        p.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+        assert redact_log_file(p) == 2
+
+        lines = p.read_text().splitlines()
+        assert json.loads(lines[0]) == {
+            "type": "text",
+            "text": "connect postgres://user:[REDACTED]@db.internal/app now",
+        }
+        assert json.loads(lines[1]) == {
+            "text": "postgres://admin:[REDACTED]@db.host/app",
+            "next": "x",
+        }
+
+    def test_match_spanning_json_strings_never_breaks_json(self, tmp_path):
+        # The db-URL regex matches across the two string values here. A raw
+        # redaction would break the line, so the parsed-JSON fallback is used:
+        # the cross-string "match" is not a real secret, the ghp_ token is.
+        token = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        line = '{"a":"postgres://u:p1","b":"x@y","c":"' + token + '"}'
+        p = tmp_path / "span.jsonl"
+        p.write_text(line + "\n")
+
+        assert redact_log_file(p) == 1
+
+        out = p.read_text()
+        assert json.loads(out) == {"a": "postgres://u:p1", "b": "x@y", "c": "[REDACTED]"}
+        assert token not in out
+
+    def test_preserves_non_utf8_bytes(self, tmp_path):
+        clean = b'{"type":"text","text":"caf\xe9 bytes"}\n'
+        dirty = b'{"text":"na\xefve sk-abcdefghij1234567890ab \xff"}\n'
+        p = tmp_path / "latin1.jsonl"
+        p.write_bytes(clean + dirty)
+
+        assert redact_log_file(p) == 1
+
+        assert p.read_bytes() == clean + b'{"text":"na\xefve [REDACTED] \xff"}\n'
+
+    def test_no_secret_file_not_rewritten(self, tmp_path):
+        original = b'{"data": "no secrets here"}\n{"x": "caf\xe9"}\n'
+        p = tmp_path / "clean.jsonl"
+        p.write_bytes(original)
+        os.utime(p, (1_000_000_000, 1_000_000_000))
+
+        assert redact_log_file(p) == 0
+
+        assert p.read_bytes() == original
+        assert p.stat().st_mtime == 1_000_000_000
+        assert not (tmp_path / "clean.jsonl.bak").exists()
+
+    def test_creates_backup_with_original_bytes(self, tmp_path):
+        original = (
+            json.dumps({"input": {"password": "Hunter2Pass!x"}}).encode()
+            + b'\n{"x":"caf\xe9"}\n'
+        )
+        p = tmp_path / "bak.jsonl"
+        p.write_bytes(original)
+
+        redact_log_file(p)
+
+        assert (tmp_path / "bak.jsonl.bak").read_bytes() == original
+
+    def test_does_not_overwrite_existing_backup(self, tmp_path):
+        p = tmp_path / "bak2.jsonl"
+        p.write_text(json.dumps({"password": "Hunter2Pass!x"}) + "\n")
+        bak = tmp_path / "bak2.jsonl.bak"
+        bak.write_bytes(b"older backup\n")
+
+        assert redact_log_file(p) == 1
+
+        assert bak.read_bytes() == b"older backup\n"
+
+    def test_preserves_file_mode_and_leaves_no_temp_files(self, tmp_path):
+        p = tmp_path / "mode.jsonl"
+        p.write_text(json.dumps({"password": "Hunter2Pass!x"}) + "\n")
+        p.chmod(0o640)
+
+        redact_log_file(p)
+
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["mode.jsonl", "mode.jsonl.bak"]
+
+    def test_false_positive_not_counted_or_changed(self, tmp_path):
+        original = json.dumps({"api_key": "your_key_here_placeholder_12345678901234567890"}) + "\n"
+        p = tmp_path / "fp2.jsonl"
+        p.write_text(original)
+
+        assert redact_log_file(p) == 0
+
+        assert p.read_text() == original
+        assert not (tmp_path / "fp2.jsonl.bak").exists()
+
+    def test_second_run_is_noop(self, tmp_path):
+        p = tmp_path / "twice.jsonl"
+        p.write_text(json.dumps({"input": {"password": "Hunter2Pass!x"}}) + "\n")
+
+        assert redact_log_file(p) == 1
+        after_first = p.read_bytes()
+
+        assert redact_log_file(p) == 0
+        assert p.read_bytes() == after_first
+
+    # The db-URL match spans two JSON strings in these lines, forcing the
+    # parsed-JSON fallback. Lone surrogate escapes (a JS-truncated emoji) must
+    # stay escaped so the output is still valid UTF-8 and valid JSON.
+    _GHP = "ghp_Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2"
+
+    def _fallback_line(self, surrogate: str) -> bytes:
+        return (
+            '{"input":{"command":"psql postgres://u:p1","description":"ops@corp.io '
+            + surrogate + " " + self._GHP + '"}}'
+        ).encode()
+
+    def _assert_fallback_ok(self, tmp_path, surrogate: str) -> None:
+        p = tmp_path / "sur.jsonl"
+        p.write_bytes(self._fallback_line(surrogate) + b"\n")
+
+        assert redact_log_file(p) == 1
+
+        out = p.read_bytes().decode("utf-8")  # strict: must be valid UTF-8
+        parsed = json.loads(out)
+        assert self._GHP not in out
+        assert parsed["input"]["command"] == "psql postgres://u:p1"
+        assert parsed["input"]["description"].endswith(" [REDACTED]")
+
+    def test_fallback_keeps_lone_high_surrogate_escaped(self, tmp_path):
+        self._assert_fallback_ok(tmp_path, "\\ud83d")
+
+    def test_fallback_keeps_lone_low_surrogate_escaped(self, tmp_path):
+        self._assert_fallback_ok(tmp_path, "\\udc80")
+
+    def test_fallback_preserves_crlf(self, tmp_path):
+        p = tmp_path / "crlf.jsonl"
+        p.write_bytes(self._fallback_line("x") + b"\r\n" + b'{"ok":1}\r\n')
+
+        assert redact_log_file(p) == 1
+
+        lines = p.read_bytes().split(b"\n")
+        assert lines[0].endswith(b"\r") and self._GHP.encode() not in lines[0]
+        assert lines[1:] == [b'{"ok":1}\r', b""]
+
+    # "Already redacted" must be judged on the secret VALUE only. A DB URL's
+    # greedy host tail can swallow an unrelated [REDACTED] (e.g. a ghp_ token
+    # redacted by an earlier pattern) while the real password is still there.
+    _LIVE_URL = "postgres://admin:RealPw9xQ@db.host/app"
+
+    def _audit_command(self, tmp_path, command: str) -> list:
+        p = _write_jsonl(tmp_path, "det.jsonl", [
+            _make_assistant_line([], tool_inputs=[{"name": "Bash", "input": {"command": command}}]),
+        ])
+        return audit_log_file(p)
+
+    def test_already_redacted_values_are_not_detected(self, tmp_path):
+        command = "psql postgres://admin:[REDACTED]@db.host/app; password = '[REDACTED]'"
+        assert self._audit_command(tmp_path, command) == []
+
+    def test_placeholder_in_url_tail_does_not_hide_password(self, tmp_path):
+        findings = self._audit_command(tmp_path, f"psql {self._LIVE_URL}?token=[REDACTED]")
+        assert [f.secret_type for f in findings] == ["database_connection_string"]
+
+    def test_live_scanner_ignores_placeholder_only_in_url_tail(self):
+        buf = ActionBuffer()
+        buf.add(_make_action(
+            tool_type=ToolType.BASH, command=f"psql {self._LIVE_URL}?token=[REDACTED]",
+        ))
+        w = SecretLeakScanner().check(buf)
+        assert w is not None
+        assert w.details["secret_type"] == "database_connection_string"
+
+    def test_earlier_redacted_url_does_not_hide_later_live_one(self, tmp_path):
+        command = f"psql postgres://old:[REDACTED]@h1/x && psql {self._LIVE_URL}"
+        assert [f.secret_type for f in self._audit_command(tmp_path, command)] == [
+            "database_connection_string"
+        ]
+
+        p = tmp_path / "mixed.jsonl"
+        p.write_text(json.dumps({"text": command}) + "\n")
+        assert redact_log_file(p) == 1
+        assert json.loads(p.read_text()) == {
+            "text": "psql postgres://old:[REDACTED]@h1/x && psql postgres://admin:[REDACTED]@db.host/app"
+        }
+
+    def test_reports_backup_path_to_caller(self, tmp_path):
+        p = tmp_path / "out.jsonl"
+        p.write_text(json.dumps({"password": "Hunter2Pass!x"}) + "\n")
+        clean = tmp_path / "clean2.jsonl"
+        clean.write_text('{"data": "nothing"}\n')
+        backups: list[Path] = []
+
+        redact_log_file(p, backups=backups)
+        redact_log_file(clean, backups=backups)
+
+        assert backups == [tmp_path / "out.jsonl.bak"]
+
+
+class TestAuditRedactCli:
+    """`audit --redact` must tell the user where unredacted .bak backups are."""
+
+    def _setup(
+        self,
+        tmp_path,
+        monkeypatch,
+        command: str = "echo sk-proj-abc123def456ghi789jklmno",
+        name: str = "sess1",
+    ) -> Path:
+        project = tmp_path / "projects" / "-tmp-proj"
+        project.mkdir(parents=True, exist_ok=True)
+        _write_jsonl(project, f"{name}.jsonl", [
+            _make_assistant_line([], tool_inputs=[{
+                "name": "Bash",
+                "input": {"command": command},
+            }]),
+        ])
+        monkeypatch.setattr("agentwatch.cc_stats.CLAUDE_PROJECTS_DIR", tmp_path / "projects")
+        return project / f"{name}.jsonl.bak"
+
+    def test_rerun_after_redact_reports_no_findings(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        # Redaction keeps the key / URL around [REDACTED], so these would still
+        # match the detection patterns unless treated as already redacted.
+        self._setup(
+            tmp_path,
+            monkeypatch,
+            command="psql postgres://admin:S3cr3tPassw0rd@db.host/app; password = 'Hunter2Pass!x'",
+        )
+        runner = CliRunner()
+        first = runner.invoke(cli, ["audit", "--all", "--redact", "--json"])
+        assert json.loads(first.stdout)["redacted"] == 2
+
+        second = runner.invoke(cli, ["audit", "--all", "--redact", "--json"])
+
+        assert json.loads(second.stdout)["total_findings"] == 0
+        assert second.exit_code == 0
+
+    _GHP = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+
+    def _redact_then_reaudit(self, log: Path) -> str:
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        runner = CliRunner()
+        runner.invoke(cli, ["audit", "--all", "--redact", "--json"])
+        out = log.read_text()
+        assert "RealPw9xQ" not in out
+        assert self._GHP not in out
+
+        again = runner.invoke(cli, ["audit", "--all", "--json"])
+        assert json.loads(again.stdout)["total_findings"] == 0
+        assert again.exit_code == 0
+        return out
+
+    def test_url_with_token_in_tail_redacts_password_and_token(self, tmp_path, monkeypatch):
+        self._setup(
+            tmp_path,
+            monkeypatch,
+            command=f"psql postgres://admin:RealPw9xQ@db.host/app?token={self._GHP}",
+        )
+        out = self._redact_then_reaudit(tmp_path / "projects" / "-tmp-proj" / "sess1.jsonl")
+        assert "postgres://admin:[REDACTED]@db.host/app?token=[REDACTED]" in out
+
+    def test_url_next_to_token_in_sibling_field_compact(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)  # creates the project dir + patches
+        log = tmp_path / "projects" / "-tmp-proj" / "sess1.jsonl"
+        line = _make_assistant_line([], tool_inputs=[{
+            "name": "Bash",
+            "input": {"command": "psql postgres://admin:RealPw9xQ@db.host/app", "env": self._GHP},
+        }])
+        log.write_text(json.dumps(line, separators=(",", ":")) + "\n")
+
+        out = self._redact_then_reaudit(log)
+        cmd = json.loads(out)["message"]["content"][0]["input"]
+        assert cmd == {
+            "command": "psql postgres://admin:[REDACTED]@db.host/app",
+            "env": "[REDACTED]",
+        }
+
+    def test_one_failing_file_does_not_abort_run(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+        from agentwatch.detectors.security import secret_scanner
+
+        self._setup(tmp_path, monkeypatch, name="a_bad")
+        good_bak = self._setup(tmp_path, monkeypatch, name="b_good")
+        real = secret_scanner.redact_log_file
+
+        def flaky(path, backups=None):
+            if path.name == "a_bad.jsonl":
+                raise UnicodeEncodeError("utf-8", "\ud83d", 0, 1, "surrogates not allowed")
+            return real(path, backups=backups)
+
+        monkeypatch.setattr(secret_scanner, "redact_log_file", flaky)
+        result = CliRunner().invoke(cli, ["audit", "--all", "--redact", "--json"])
+
+        data = json.loads(result.stdout)
+        assert data["redacted"] == 1
+        assert data["backups"] == [str(good_bak)]
+        assert [e["log_file"] for e in data["redact_errors"]] == [
+            str(tmp_path / "projects" / "-tmp-proj" / "a_bad.jsonl")
+        ]
+
+    def test_human_output_names_backup(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        bak = self._setup(tmp_path, monkeypatch)
+        result = CliRunner().invoke(cli, ["audit", "--all", "--redact"])
+
+        assert bak.exists()
+        assert "ORIGINAL (unredacted) secrets" in result.output
+        assert str(bak) in result.output
+
+    def test_json_output_lists_backups(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        bak = self._setup(tmp_path, monkeypatch)
+        result = CliRunner().invoke(cli, ["audit", "--all", "--redact", "--json"])
+
+        data = json.loads(result.stdout)
+        assert data["redacted"] >= 1
+        assert data["backups"] == [str(bak)]
 
 
 # ---------------------------------------------------------------------------
