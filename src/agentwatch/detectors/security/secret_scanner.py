@@ -189,6 +189,10 @@ def _shannon_entropy(s: str) -> float:
 
 def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
     """Return True if the match is likely a placeholder or test fixture."""
+    # Already redacted by `audit --redact` (redaction keeps the key/URL around
+    # the placeholder, so the detection patterns can still match it).
+    if "[REDACTED]" in match_text:
+        return True
     if _PLACEHOLDER_RE.search(match_text):
         return True
     if file_path and _TEST_PATH_RE.search(file_path):
@@ -686,7 +690,12 @@ def _redact_line(line: str) -> tuple[str, int]:
     obj, count = _redact_json_value(json.loads(line))
     if count == 0:
         return line, 0
-    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")), count
+    # ensure_ascii=True keeps lone surrogates (e.g. a JS-truncated emoji
+    # "\ud83d") as \u escapes, so the line always encodes as valid UTF-8.
+    out = json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
+    if line.endswith("\r"):
+        out += "\r"  # keep CRLF line endings
+    return out, count
 
 
 def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:

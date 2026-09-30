@@ -1435,6 +1435,7 @@ def audit(
     redact_count = 0
     skipped_active: list[str] = []
     backups: list[Path] = []
+    redact_errors: list[dict[str, str]] = []
     if redact and all_findings and not dry_run:
         affected_files: dict[str, Path] = {}
         for pdir in dirs:
@@ -1447,10 +1448,14 @@ def audit(
             if not force and fp.name in active_log_files:
                 skipped_active.append(fp.name)
                 continue
+            # One bad file must not abort the run and skip the remaining files.
             try:
                 redact_count += redact_log_file(fp, backups=backups)
-            except OSError:
-                continue
+            except (OSError, UnicodeError, ValueError) as exc:
+                redact_errors.append({"log_file": str(fp), "error": str(exc)})
+                bak = fp.with_name(fp.name + ".bak")
+                if bak.exists() and bak not in backups:
+                    backups.append(bak)
 
     if json_output:
         finding_dicts = []
@@ -1482,6 +1487,7 @@ def audit(
             "redacted": redact_count if redact and not dry_run else None,
             "skipped_active": sorted(set(skipped_active)) if skipped_active else [],
             "backups": [str(b) for b in backups],
+            "redact_errors": redact_errors,
             "findings": finding_dicts,
         }
         click.echo(json.dumps(output, indent=2))
@@ -1493,14 +1499,22 @@ def audit(
                 click.style("  --dry-run: no files modified.", dim=True)
             )
             click.echo()
-        elif redact and redact_count > 0:
-            click.echo(
-                click.style(
-                    f"  Redacted {redact_count} secret(s) from log files.",
-                    fg="green",
-                    bold=True,
+        elif redact and (redact_count > 0 or backups or redact_errors):
+            if redact_count > 0:
+                click.echo(
+                    click.style(
+                        f"  Redacted {redact_count} secret(s) from log files.",
+                        fg="green",
+                        bold=True,
+                    )
                 )
-            )
+            for err in redact_errors:
+                click.echo(
+                    click.style(
+                        f"  Failed to redact {err['log_file']}: {err['error']}",
+                        fg="red",
+                    )
+                )
             if backups:
                 click.echo(
                     click.style(

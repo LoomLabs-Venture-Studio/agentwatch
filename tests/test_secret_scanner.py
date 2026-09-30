@@ -957,6 +957,49 @@ class TestRedactLogFile:
         assert redact_log_file(p) == 0
         assert p.read_bytes() == after_first
 
+    # The db-URL match spans two JSON strings in these lines, forcing the
+    # parsed-JSON fallback. Lone surrogate escapes (a JS-truncated emoji) must
+    # stay escaped so the output is still valid UTF-8 and valid JSON.
+    _GHP = "ghp_Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2"
+
+    def _fallback_line(self, surrogate: str) -> bytes:
+        return (
+            '{"input":{"command":"psql postgres://u:p1","description":"ops@corp.io '
+            + surrogate + " " + self._GHP + '"}}'
+        ).encode()
+
+    def _assert_fallback_ok(self, tmp_path, surrogate: str) -> None:
+        p = tmp_path / "sur.jsonl"
+        p.write_bytes(self._fallback_line(surrogate) + b"\n")
+
+        assert redact_log_file(p) == 1
+
+        out = p.read_bytes().decode("utf-8")  # strict: must be valid UTF-8
+        parsed = json.loads(out)
+        assert self._GHP not in out
+        assert parsed["input"]["command"] == "psql postgres://u:p1"
+        assert parsed["input"]["description"].endswith(" [REDACTED]")
+
+    def test_fallback_keeps_lone_high_surrogate_escaped(self, tmp_path):
+        self._assert_fallback_ok(tmp_path, "\\ud83d")
+
+    def test_fallback_keeps_lone_low_surrogate_escaped(self, tmp_path):
+        self._assert_fallback_ok(tmp_path, "\\udc80")
+
+    def test_fallback_preserves_crlf(self, tmp_path):
+        p = tmp_path / "crlf.jsonl"
+        p.write_bytes(self._fallback_line("x") + b"\r\n" + b'{"ok":1}\r\n')
+
+        assert redact_log_file(p) == 1
+
+        lines = p.read_bytes().split(b"\n")
+        assert lines[0].endswith(b"\r") and self._GHP.encode() not in lines[0]
+        assert lines[1:] == [b'{"ok":1}\r', b""]
+
+    def test_already_redacted_values_are_false_positives(self):
+        assert _is_false_positive("password = '[REDACTED]'")
+        assert _is_false_positive("postgres://admin:[REDACTED]@db.host/app")
+
     def test_reports_backup_path_to_caller(self, tmp_path):
         p = tmp_path / "out.jsonl"
         p.write_text(json.dumps({"password": "Hunter2Pass!x"}) + "\n")
@@ -973,17 +1016,69 @@ class TestRedactLogFile:
 class TestAuditRedactCli:
     """`audit --redact` must tell the user where unredacted .bak backups are."""
 
-    def _setup(self, tmp_path, monkeypatch) -> Path:
+    def _setup(
+        self,
+        tmp_path,
+        monkeypatch,
+        command: str = "echo sk-proj-abc123def456ghi789jklmno",
+        name: str = "sess1",
+    ) -> Path:
         project = tmp_path / "projects" / "-tmp-proj"
-        project.mkdir(parents=True)
-        _write_jsonl(project, "sess1.jsonl", [
+        project.mkdir(parents=True, exist_ok=True)
+        _write_jsonl(project, f"{name}.jsonl", [
             _make_assistant_line([], tool_inputs=[{
                 "name": "Bash",
-                "input": {"command": "echo sk-proj-abc123def456ghi789jklmno"},
+                "input": {"command": command},
             }]),
         ])
         monkeypatch.setattr("agentwatch.cc_stats.CLAUDE_PROJECTS_DIR", tmp_path / "projects")
-        return project / "sess1.jsonl.bak"
+        return project / f"{name}.jsonl.bak"
+
+    def test_rerun_after_redact_reports_no_findings(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        # Redaction keeps the key / URL around [REDACTED], so these would still
+        # match the detection patterns unless treated as already redacted.
+        self._setup(
+            tmp_path,
+            monkeypatch,
+            command="psql postgres://admin:S3cr3tPassw0rd@db.host/app; password = 'Hunter2Pass!x'",
+        )
+        runner = CliRunner()
+        first = runner.invoke(cli, ["audit", "--all", "--redact", "--json"])
+        assert json.loads(first.stdout)["redacted"] == 2
+
+        second = runner.invoke(cli, ["audit", "--all", "--redact", "--json"])
+
+        assert json.loads(second.stdout)["total_findings"] == 0
+        assert second.exit_code == 0
+
+    def test_one_failing_file_does_not_abort_run(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+        from agentwatch.detectors.security import secret_scanner
+
+        self._setup(tmp_path, monkeypatch, name="a_bad")
+        good_bak = self._setup(tmp_path, monkeypatch, name="b_good")
+        real = secret_scanner.redact_log_file
+
+        def flaky(path, backups=None):
+            if path.name == "a_bad.jsonl":
+                raise UnicodeEncodeError("utf-8", "\ud83d", 0, 1, "surrogates not allowed")
+            return real(path, backups=backups)
+
+        monkeypatch.setattr(secret_scanner, "redact_log_file", flaky)
+        result = CliRunner().invoke(cli, ["audit", "--all", "--redact", "--json"])
+
+        data = json.loads(result.stdout)
+        assert data["redacted"] == 1
+        assert data["backups"] == [str(good_bak)]
+        assert [e["log_file"] for e in data["redact_errors"]] == [
+            str(tmp_path / "projects" / "-tmp-proj" / "a_bad.jsonl")
+        ]
 
     def test_human_output_names_backup(self, tmp_path, monkeypatch):
         from click.testing import CliRunner
