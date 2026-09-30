@@ -996,9 +996,46 @@ class TestRedactLogFile:
         assert lines[0].endswith(b"\r") and self._GHP.encode() not in lines[0]
         assert lines[1:] == [b'{"ok":1}\r', b""]
 
-    def test_already_redacted_values_are_false_positives(self):
-        assert _is_false_positive("password = '[REDACTED]'")
-        assert _is_false_positive("postgres://admin:[REDACTED]@db.host/app")
+    # "Already redacted" must be judged on the secret VALUE only. A DB URL's
+    # greedy host tail can swallow an unrelated [REDACTED] (e.g. a ghp_ token
+    # redacted by an earlier pattern) while the real password is still there.
+    _LIVE_URL = "postgres://admin:RealPw9xQ@db.host/app"
+
+    def _audit_command(self, tmp_path, command: str) -> list:
+        p = _write_jsonl(tmp_path, "det.jsonl", [
+            _make_assistant_line([], tool_inputs=[{"name": "Bash", "input": {"command": command}}]),
+        ])
+        return audit_log_file(p)
+
+    def test_already_redacted_values_are_not_detected(self, tmp_path):
+        command = "psql postgres://admin:[REDACTED]@db.host/app; password = '[REDACTED]'"
+        assert self._audit_command(tmp_path, command) == []
+
+    def test_placeholder_in_url_tail_does_not_hide_password(self, tmp_path):
+        findings = self._audit_command(tmp_path, f"psql {self._LIVE_URL}?token=[REDACTED]")
+        assert [f.secret_type for f in findings] == ["database_connection_string"]
+
+    def test_live_scanner_ignores_placeholder_only_in_url_tail(self):
+        buf = ActionBuffer()
+        buf.add(_make_action(
+            tool_type=ToolType.BASH, command=f"psql {self._LIVE_URL}?token=[REDACTED]",
+        ))
+        w = SecretLeakScanner().check(buf)
+        assert w is not None
+        assert w.details["secret_type"] == "database_connection_string"
+
+    def test_earlier_redacted_url_does_not_hide_later_live_one(self, tmp_path):
+        command = f"psql postgres://old:[REDACTED]@h1/x && psql {self._LIVE_URL}"
+        assert [f.secret_type for f in self._audit_command(tmp_path, command)] == [
+            "database_connection_string"
+        ]
+
+        p = tmp_path / "mixed.jsonl"
+        p.write_text(json.dumps({"text": command}) + "\n")
+        assert redact_log_file(p) == 1
+        assert json.loads(p.read_text()) == {
+            "text": "psql postgres://old:[REDACTED]@h1/x && psql postgres://admin:[REDACTED]@db.host/app"
+        }
 
     def test_reports_backup_path_to_caller(self, tmp_path):
         p = tmp_path / "out.jsonl"
@@ -1054,6 +1091,49 @@ class TestAuditRedactCli:
 
         assert json.loads(second.stdout)["total_findings"] == 0
         assert second.exit_code == 0
+
+    _GHP = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+
+    def _redact_then_reaudit(self, log: Path) -> str:
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        runner = CliRunner()
+        runner.invoke(cli, ["audit", "--all", "--redact", "--json"])
+        out = log.read_text()
+        assert "RealPw9xQ" not in out
+        assert self._GHP not in out
+
+        again = runner.invoke(cli, ["audit", "--all", "--json"])
+        assert json.loads(again.stdout)["total_findings"] == 0
+        assert again.exit_code == 0
+        return out
+
+    def test_url_with_token_in_tail_redacts_password_and_token(self, tmp_path, monkeypatch):
+        self._setup(
+            tmp_path,
+            monkeypatch,
+            command=f"psql postgres://admin:RealPw9xQ@db.host/app?token={self._GHP}",
+        )
+        out = self._redact_then_reaudit(tmp_path / "projects" / "-tmp-proj" / "sess1.jsonl")
+        assert "postgres://admin:[REDACTED]@db.host/app?token=[REDACTED]" in out
+
+    def test_url_next_to_token_in_sibling_field_compact(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)  # creates the project dir + patches
+        log = tmp_path / "projects" / "-tmp-proj" / "sess1.jsonl"
+        line = _make_assistant_line([], tool_inputs=[{
+            "name": "Bash",
+            "input": {"command": "psql postgres://admin:RealPw9xQ@db.host/app", "env": self._GHP},
+        }])
+        log.write_text(json.dumps(line, separators=(",", ":")) + "\n")
+
+        out = self._redact_then_reaudit(log)
+        cmd = json.loads(out)["message"]["content"][0]["input"]
+        assert cmd == {
+            "command": "psql postgres://admin:[REDACTED]@db.host/app",
+            "env": "[REDACTED]",
+        }
 
     def test_one_failing_file_does_not_abort_run(self, tmp_path, monkeypatch):
         from click.testing import CliRunner

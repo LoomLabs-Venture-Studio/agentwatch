@@ -189,10 +189,6 @@ def _shannon_entropy(s: str) -> float:
 
 def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
     """Return True if the match is likely a placeholder or test fixture."""
-    # Already redacted by `audit --redact` (redaction keeps the key/URL around
-    # the placeholder, so the detection patterns can still match it).
-    if "[REDACTED]" in match_text:
-        return True
     if _PLACEHOLDER_RE.search(match_text):
         return True
     if file_path and _TEST_PATH_RE.search(file_path):
@@ -421,7 +417,7 @@ class SecretLeakScanner(SecurityDetector):
             contents = extract_scannable_content(action)
             for text, channel, file_path in contents:
                 for pattern, secret_type in _SECRET_PATTERNS:
-                    m = pattern.search(text)
+                    m = _first_live_match(pattern, secret_type, text)
                     if m is None:
                         continue
 
@@ -526,7 +522,7 @@ def audit_log_file(
 
         for text, channel, file_path in extract_scannable_content(action):
             for pattern, secret_type in _SECRET_PATTERNS:
-                m = pattern.search(text)
+                m = _first_live_match(pattern, secret_type, text)
                 if m is None:
                     continue
 
@@ -602,6 +598,25 @@ def _value_span(m: re.Match, label: str) -> tuple[int, int]:
     return start, end
 
 
+def _is_redacted_value(m: re.Match, label: str) -> bool:
+    """True if the secret VALUE of this match already holds [REDACTED].
+
+    Only the value span is checked, never the whole match: greedy tails (e.g.
+    a DB URL's host part) can swallow an unrelated placeholder while the real
+    password in the same match is still there.
+    """
+    vstart, vend = _value_span(m, label)
+    return _REDACTED in m.string[vstart:vend]
+
+
+def _first_live_match(pattern: re.Pattern, label: str, text: str) -> re.Match | None:
+    """First match of *pattern* in *text* whose value isn't already redacted."""
+    for m in pattern.finditer(text):
+        if not _is_redacted_value(m, label):
+            return m
+    return None
+
+
 def _redact_text(text: str) -> tuple[str, int]:
     """Redact secret values in *text*. Returns (new_text, real_redaction_count)."""
     count = 0
@@ -609,11 +624,14 @@ def _redact_text(text: str) -> tuple[str, int]:
         pieces: list[str] = []
         pos = 0
         for m in pattern.finditer(text):
-            # Leave placeholders/test data alone and don't re-count values
-            # that are already redacted; these are not real redactions.
+            # Leave placeholders/test data alone; they are not real redactions.
             if _is_false_positive(m.group(0)):
                 continue
             vstart, vend = _value_span(m, label)
+            # Skip only values that are exactly the placeholder (idempotent
+            # re-runs). A value that merely contains it, e.g. a password an
+            # earlier pattern partly redacted ("hunter-[REDACTED]!"), still
+            # gets fully redacted so no fragment of it is left behind.
             if vstart >= vend or text[vstart:vend] == _REDACTED:
                 continue
             pieces.append(text[pos:vstart])
