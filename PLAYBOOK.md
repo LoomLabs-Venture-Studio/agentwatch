@@ -43,6 +43,9 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
+> **Latest: Sprint 21 (2026-09-30), at the end of this file.** Start there.
+> Sprints below are kept in chronological order.
+
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
 **Type:** chore / bootstrap
 **Priority:** Unblocks all future sprints (no committed baseline, no CI gate,
@@ -3213,3 +3216,53 @@ already in the codebase.
 `develop`.** PR #17 (`fix/cc-stats-encoding`, merged 2026-07-17). Audited
 for other `open()` calls with the same gap in the same file -- none
 found.
+
+---
+
+### Sprint 21 -- Code review + secret-handling fixes (2026-09-30)
+**Type:** bugfix (security)
+**Priority:** A full-repo review found `audit --redact` corrupting users'
+session logs and the secret scanner writing plaintext passwords into
+SIEM/`--json` output.
+**PRD Status:** not needed
+**Harness:** PLAYBOOK standalone (CTO -> engineer -> QA, 3 QA rounds on #22)
+
+### Acceptance Criteria
+- [x] #19 `--version` reads `agentwatch.__version__` (merged to develop)
+- [x] #20 "Using log" auto-discovery message to stderr, so `--json` stdout
+      is clean (merged to develop)
+- [x] #23 `fix/secret-prefix-leak` (merged to develop): `matched_prefix`
+      uses `mask_secret()` (`[hidden, N chars]` under 20 chars, else
+      `…last4`). Raw commands in detector details/SIEM go through
+      `redact_truncate()` (masks a `limit + 256` window, then truncates).
+      LoopDetector `last_command` is capped at 200 chars.
+- [x] #22 `fix/audit-redact-corruption` (merged to develop):
+      - Only the secret value is redacted, under a same-JSON-shape
+        invariant with a parsed-JSON fallback (`ensure_ascii=True`).
+      - Bytes round-trip via `surrogateescape`.
+      - Atomic temp-file + `os.replace`, and a one-time 0600 `.bak` that
+        the CLI reports.
+      - Per-file error isolation (`redact_errors`).
+      - "Already redacted" is decided on the value span only
+        (`_is_redacted_value` / `_first_live_match`).
+- [x] QA: #23 PASS WITH NOTES; #22 PASS WITH NOTES (round 3, after 2 FAILs)
+- [x] CI green (verify-deploy 3.11/3.12) on both. `develop` passes ruff and
+      pytest with all four merged.
+
+### Follow-ups (open)
+- #26: DB-URL matches run past the password (newline-escaped `.env`
+  content leaves the second password in the log, loud). Also glued URLs
+  and glued secrets.
+- #24: remaining leak sinks. `network_host` stores full URLs including
+  `?token=` (most important), plus error text (`last_error`,
+  `sample_errors`) and unrecognised secret formats (`PGPASSWORD=`,
+  `curl -u`, `Bearer <space>`).
+- #25 (perf): cache redacted command text per action, since
+  `redact_secrets` re-runs every tick (~40% slower worst case in watch).
+- #21: network-visibility ADR. Branched from `main` (it carries the 3
+  revert commits), so rebuild the one ADR commit onto `develop` before
+  any merge. The board still has to decide on the approach.
+- loom-cli#204: pre-push hook `out-of-band-ddl` false positive (see
+  CLAUDE.md Git Rules for the `--no-verify` workaround).
+- Unprofiled: `ActionBuffer.add()` takes ~285ms per 1MB command
+  (SessionStats counters).

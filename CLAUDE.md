@@ -176,11 +176,24 @@ agentwatch watch --security     # manual smoke test (live TUI)
 ```
 
 ## Git Rules
-- Feature branches from main
+- **NEVER push to `main`, and NEVER recommend or propose merging anything
+  into `main`** (standing board rule, 2026-09-30). This includes
+  release/promote PRs; leave `main` out of next steps entirely.
+  (Native memory is per-machine, so this rule lives here too.)
+- `develop` is the integration line (v0.2.0+). Branch `feature/`, `fix/`,
+  `chore/` or `docs/` **from `develop`**; PRs target `develop`.
 - One commit per logical change
 - Format: `type(scope): description [ISSUE-ID]`
-- Draft PRs. Board approval to merge.
+- Draft PRs. Board approval to merge (squash).
 - Never force push shared branches.
+- **Pre-push hook:** loom's `verify-deploy` false-fails `out-of-band-ddl` on
+  every develop-based branch, because it diffs against `main` and flags the
+  Cursor SQLite test fixtures. Until loom-cli#204 is fixed, push with
+  `--no-verify` (board-approved 2026-09-30); CI runs the real ruff + pytest
+  gate on every PR. Run `npm ci` once per checkout so the hook's `yaml` dep
+  exists.
+- **Dev env:** `pip install -e ".[dev,siem,llm]"`. With `.[dev]` alone,
+  24 SIEM/LLM tests fail.
 
 ## Memory
 
