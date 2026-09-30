@@ -395,7 +395,7 @@ def check(
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
-        click.echo(f"Using log: {log}")
+        click.echo(f"Using log: {log}", err=True)
 
     # Parse logs
     buffer = ActionBuffer()
@@ -841,7 +841,7 @@ def security_scan(
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
-        click.echo(f"Using log: {log}")
+        click.echo(f"Using log: {log}", err=True)
 
     # Parse logs
     buffer = ActionBuffer()
