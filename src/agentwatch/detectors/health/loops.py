@@ -7,7 +7,11 @@ from collections import Counter
 from agentwatch.parser.models import NON_TOOL_ROLE_LABELS, ActionBuffer
 
 from ..base import Category, Detector, Severity, Warning
+from ..security.secret_scanner import redact_truncate
 
+# Cap for details["last_command"]. Every display slices to <= 100 chars; 200
+# keeps extra context for SIEM consumers and the live dedup key.
+_LAST_COMMAND_MAX_CHARS = 200
 
 class LoopDetector(Detector):
     """Detects when agent is stuck in a loop."""
@@ -48,6 +52,10 @@ class LoopDetector(Detector):
             # Gather the actual commands/errors for context
             matching = [a for a in recent if f"{a.tool_name}:{a.file_path or ''}" == most_common]
             last_cmd = next((a.command for a in reversed(matching) if a.command), None)
+            if last_cmd:
+                # Exported to SIEM via details/suggestion: mask secrets, and cap
+                # the length so a huge heredoc isn't regex-scanned every tick.
+                last_cmd = redact_truncate(last_cmd, _LAST_COMMAND_MAX_CHARS)
             last_err = next((a.error_message for a in reversed(matching) if a.error_message), None)
 
             detail_line = ""

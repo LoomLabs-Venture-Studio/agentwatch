@@ -343,20 +343,63 @@ _REMEDIATION: dict[str, str] = {
 }
 
 
-def _safe_prefix(match_text: str, max_len: int = 12) -> str:
-    """Return a safe partial display of a matched secret."""
-    # Find the likely secret value (after = or : or just the match start)
+# A value this long is assumed to be a random token, where the last 4 chars
+# are the standard hint for identifying which credential to rotate. Anything
+# shorter (typically a human-chosen password) reveals no characters at all.
+_MASK_TAIL_MIN_LEN = 20
+_MASK_TAIL_CHARS = 4
+
+
+def mask_secret(match_text: str) -> str:
+    """Return a display-safe form of a matched secret.
+
+    Reveals at most the last 4 chars of the secret value, and only when the
+    value is >= 20 chars; shorter values reveal nothing but their length.
+    The value is the text after ``=``/``:`` (quotes stripped) when present,
+    otherwise the whole match -- never the scheme prefix (``ghp_``, ``AKIA``
+    ...), which ``secret_type`` already identifies.
+    """
+    value = match_text
     for sep in ("=", ":"):
         idx = match_text.find(sep)
         if idx != -1:
             value = match_text[idx + 1 :].strip().strip("'\"").strip()
-            if len(value) > max_len:
-                return value[:max_len] + "..."
-            return value
-    # Fallback: prefix of the whole match
-    if len(match_text) > max_len:
-        return match_text[:max_len] + "..."
-    return match_text
+            break
+    if len(value) >= _MASK_TAIL_MIN_LEN:
+        return "…" + value[-_MASK_TAIL_CHARS:]
+    return f"[hidden, {len(value)} chars]"
+
+
+def redact_secrets(text: str) -> str:
+    """Replace every ``_SECRET_PATTERNS`` match in *text* with its masked form.
+
+    For free text (e.g. a shell command) that is about to be placed in a
+    ``Warning``. Deliberately skips the placeholder/false-positive filter:
+    masking a harmless placeholder costs nothing, leaking a real secret the
+    heuristic misjudged does. Callers that truncate must redact *first* --
+    truncating first can cut a token so the pattern no longer matches.
+    """
+    for pattern, _label in _SECRET_PATTERNS:
+        text = pattern.sub(lambda m: mask_secret(m.group(0)), text)
+    return text
+
+
+# Extra chars scanned past the display cut-off so a secret that starts before
+# the cut-off still has its full minimum-length match inside the window. The
+# longest minimum match in _SECRET_PATTERNS is cloudflare_api_token (176:
+# "v1.0-" + 24 hex + "-" + 146 hex); claude_api_key is next at 103.
+_REDACT_WINDOW_MARGIN = 256
+
+
+def redact_truncate(text: str, limit: int) -> str:
+    """Return ``redact_secrets(text)[:limit]`` without scanning all of *text*.
+
+    Commands can be megabytes (heredocs), but callers only keep the first
+    *limit* chars; redacting a bounded window keeps detectors cheap. A secret
+    straddling *limit* is still masked because the window extends
+    ``_REDACT_WINDOW_MARGIN`` chars past it.
+    """
+    return redact_secrets(text[: limit + _REDACT_WINDOW_MARGIN])[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +488,7 @@ class SecretLeakScanner(SecurityDetector):
                             "channel": channel,
                             "file_path": file_path,
                             "tool": tool_name,
-                            "matched_prefix": _safe_prefix(match_text),
+                            "matched_prefix": mask_secret(match_text),
                             "remediation": _REMEDIATION.get(
                                 secret_type,
                                 "Remove from file, use env var, rotate if committed to git",
@@ -541,7 +584,7 @@ def audit_log_file(
                         log_file=log_path.name,
                         session_id=session_id,
                         project_name=project_name,
-                        matched_prefix=_safe_prefix(match_text),
+                        matched_prefix=mask_secret(match_text),
                         severity=_SEVERITY_LABEL.get(severity, "medium"),
                         remediation=_REMEDIATION.get(
                             secret_type,
