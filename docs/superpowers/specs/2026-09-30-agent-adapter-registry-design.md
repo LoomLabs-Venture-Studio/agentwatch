@@ -82,7 +82,7 @@ Existing `LogWatcher`, `AiderLogWatcher`, `CursorWatcher` already satisfy
 
 ### 2. Registry — `src/agentwatch/agents/__init__.py`
 
-- `ADAPTERS: list[AgentAdapter]` — ordered: claude-code, codex, aider, cursor.
+- `ADAPTERS: list[AgentAdapter]` — ordered: claude-code, aider, codex, cursor (preserves historical `AGENT_PATTERNS` first-match-wins order; claude-code vs codex JSONL claims are mutually exclusive by content, so claim order doesn't depend on it).
 - `get(name: str) -> AgentAdapter | None`.
 - `adapter_for(path: Path) -> AgentAdapter | None` — first adapter whose
   `claims(path)` is true.
