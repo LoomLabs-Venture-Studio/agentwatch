@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from typing import AsyncIterator, Callable
@@ -24,6 +25,8 @@ from .cursor_source import (
 )
 from .logs import detect_log_format, parse_claude_code_entry, parse_moltbot_entry
 from .models import Action
+
+logger = logging.getLogger(__name__)
 
 
 class LogWatcher:
@@ -547,7 +550,18 @@ class MultiLogWatcher:
                 for log_meta in current_logs:
                     if log_meta not in self._active_files:
                         self._active_files.add(log_meta)
-                        watcher = self._make_watcher(log_meta)
+                        try:
+                            watcher = self._make_watcher(log_meta)
+                        except Exception:
+                            # One adapter failing to build a watcher must not
+                            # kill watch-all. Key stays in _active_files so it
+                            # is not retried (and re-logged) every poll tick.
+                            # DEBUG, not WARNING: no handler is configured, so
+                            # WARNING would reach stderr and garble the TUI.
+                            logger.debug(
+                                "make_watcher failed for %s", log_meta, exc_info=True
+                            )
+                            continue
                         self.watchers[log_meta] = watcher
                         tasks[log_meta] = asyncio.create_task(fill_queue(watcher, log_meta))
                         yield ("agent_added", log_meta)

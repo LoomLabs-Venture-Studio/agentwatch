@@ -295,3 +295,68 @@ class TestAdapterFailureIsolation:
             for r in caplog.records
         )
 
+    async def test_watch_all_survives_adapter_make_watcher_failure(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import asyncio
+        import logging
+        from datetime import datetime
+
+        from agentwatch.discovery import AgentProcess
+        from agentwatch.parser.models import Action, ToolType
+        from agentwatch.parser.watcher import MultiLogWatcher
+
+        class StubWatcher:
+            async def watch(self):
+                yield Action(timestamp=datetime(2026, 1, 1), tool_name="Read",
+                             tool_type=ToolType.READ, success=True, session_id="good")
+
+        class GoodAdapter(FakeAgentAdapter):
+            name = "goodagent"
+
+            def make_watcher(self, source, session_id):
+                return StubWatcher()
+
+        class BadAdapter(FakeAgentAdapter):
+            name = "badagent"
+
+            def claims(self, path):
+                return path.suffix == ".bad"
+
+            def make_watcher(self, source, session_id):
+                raise NotImplementedError("no watcher")
+
+        good_log = tmp_path / "g.fake"
+        bad_log = tmp_path / "b.bad"
+        good_log.write_text("", encoding="utf-8")
+        bad_log.write_text("", encoding="utf-8")
+        _isolate(monkeypatch, GoodAdapter(good_log), BadAdapter(bad_log))
+
+        def mk(pid, agent, log):
+            return AgentProcess(pid=pid, agent_type=agent, working_directory=tmp_path,
+                                log_file=log, session_id="s", command=agent)
+
+        # Bad agent first so it is attempted before the good one.
+        mlw = MultiLogWatcher.from_processes(
+            [mk(1, "badagent", bad_log), mk(2, "goodagent", good_log)], poll_interval=0.01
+        )
+
+        events = []
+
+        async def collect():
+            async for ev in mlw.watch():
+                events.append(ev)
+                if ev[0] == "action":
+                    return
+
+        with caplog.at_level(logging.DEBUG, logger="agentwatch.parser.watcher"):
+            await asyncio.wait_for(collect(), timeout=5)
+
+        kinds = [(k, d if k == "agent_added" else d[1]) for k, d in events]
+        assert ("agent_added", good_log) in kinds
+        assert ("agent_added", bad_log) not in kinds
+        assert ("action", good_log) in kinds
+        assert bad_log in mlw._active_files  # not retried every poll tick
+        assert bad_log not in mlw.watchers
+        assert any(r.levelno == logging.DEBUG and bad_log.name in r.getMessage()
+                   for r in caplog.records)
