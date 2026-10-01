@@ -12,22 +12,14 @@ from pathlib import Path
 
 import psutil
 
+from agentwatch import agents as _agents
 from agentwatch.path_encoding import encode_path_for_claude
 
-# Agent detection patterns: maps agent_type to (process name regex, excludes)
+# Back-compat: read-only view derived from the adapter registry. New agents
+# are added in agentwatch/agents/, not here.
 AGENT_PATTERNS: dict[str, dict] = {
-    "claude-code": {
-        "pattern": r"\bclaude\b",
-        "exclude": r"Claude\.app|Claude Helper|claude-code-guide|shell-snapshots",
-    },
-    "aider": {
-        "pattern": r"\baider\b",
-        "exclude": None,
-    },
-    "codex": {
-        "pattern": r"\bcodex\b",
-        "exclude": None,
-    },
+    a.name: {"pattern": a.process_pattern, "exclude": a.process_exclude}
+    for a in _agents.process_adapters()
 }
 
 
@@ -173,9 +165,12 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
 
-        for agent_type, config in AGENT_PATTERNS.items():
-            pattern = config["pattern"]
-            exclude = config["exclude"]
+        for adapter in _agents.process_adapters():
+            agent_type = adapter.name
+            pattern = adapter.process_pattern
+            exclude = adapter.process_exclude
+            if not pattern:
+                continue
 
             if not re.search(pattern, command):
                 continue
@@ -213,12 +208,10 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                     cache_hit = True
 
             if not cache_hit:
-                if agent_type == "claude-code":
-                    log_file, session_id = _resolve_claude_code_log(cwd, pid=pid)
-                elif agent_type == "aider":
-                    log_file, session_id = _resolve_aider_log(cwd)
-                elif agent_type == "codex":
-                    log_file, session_id = _resolve_codex_log(cwd, pid=pid)
+                try:
+                    log_file, session_id = adapter.resolve_log(cwd, pid)
+                except Exception:
+                    log_file, session_id = None, None
                 if cache is not None:
                     cache.log_by_pid[pid] = (log_file, session_id)
 
@@ -249,15 +242,15 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
     # workspace) -- appended after the PPID-based ancestor walk above so
     # they never get spuriously matched against pid_to_ppid, but before
     # depth/team assignment so they still get a valid depth=0/team_id=self
-    # like any other rootless agent. Lazy import mirrors the logs.py <->
-    # codex.py pattern: avoids a module-load-time cycle since
-    # cursor_discovery.py imports AgentProcess from this module.
-    try:
-        from agentwatch.cursor_discovery import find_cursor_agents
-
-        agents.extend(find_cursor_agents())
-    except Exception:
-        pass
+    # like any other rootless agent. Editor-kind adapters (Cursor, ...) do
+    # their own discovery; adapters import cursor_discovery lazily to avoid
+    # a module-load-time cycle (it imports AgentProcess from this module).
+    for editor in _agents.editor_adapters():
+        try:
+            agents.extend(editor.discover())
+        except Exception:
+            # One broken editor integration must not hide the others.
+            continue
 
     _compute_depths(agents)
     _assign_team_ids(agents)
