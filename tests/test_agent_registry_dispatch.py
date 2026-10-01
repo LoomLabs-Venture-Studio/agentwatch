@@ -129,8 +129,21 @@ class TestParseFileViaRegistry:
         from agentwatch.parser.logs import parse_file
 
         p = tmp_path / "log.txt"  # no adapter claims .txt
-        p.write_text(json.dumps({"type": "user", "sessionId": "s",
-                                 "message": {"role": "user", "content": "hi"}}) + "\n",
-                     encoding="utf-8")
-        # Same result as before the refactor: parsed as Claude Code JSONL.
-        assert isinstance(list(parse_file(p)), list)
+        entry = {
+            "type": "assistant",
+            "sessionId": "fallback-sess",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "Read",
+                     "input": {"file_path": "/tmp/a.py"}}
+                ],
+            },
+        }
+        p.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+        actions = list(parse_file(p))
+
+        # Parsed as Claude Code JSONL by the fallback, exactly as before the refactor.
+        assert [(a.tool_name, a.session_id) for a in actions] == [("Read", "fallback-sess")]
