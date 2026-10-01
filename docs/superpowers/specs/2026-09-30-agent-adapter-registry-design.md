@@ -82,15 +82,23 @@ Existing `LogWatcher`, `AiderLogWatcher`, `CursorWatcher` already satisfy
 
 ### 2. Registry — `src/agentwatch/agents/__init__.py`
 
-- `ADAPTERS: list[AgentAdapter]` — ordered: claude-code, aider, codex, cursor (preserves historical `AGENT_PATTERNS` first-match-wins order; claude-code vs codex JSONL claims are mutually exclusive by content, so claim order doesn't depend on it).
+- `ADAPTERS: list[AgentAdapter]` — ordered: claude-code, aider, codex, cursor (preserves historical `AGENT_PATTERNS` first-match-wins process-matching order; see "Ordering is load-bearing" below for how the same order affects `claims()`).
 - `get(name: str) -> AgentAdapter | None`.
 - `adapter_for(path: Path) -> AgentAdapter | None` — first adapter whose
   `claims(path)` is true.
 - `process_adapters()` / `editor_adapters()` — filtered views.
 
-**Ordering is load-bearing.** Claude Code must claim before Codex, matching
-the precedence in today's `detect_log_format`. Moltbot remains a format
-handled inside the Claude Code/JSONL path (it is not a discoverable agent).
+**Ordering is load-bearing.** Registry order drives two things: process matching
+(first match wins per PID) and `adapter_for` (first adapter whose `claims()` is
+true). Claude Code's `claims()` is the JSONL catch-all: it claims any `.jsonl`
+that is not sniffed as Codex (including `unknown` and Moltbot sniffs), matching
+today's `detect_log_format` fallback. Moltbot remains a format handled inside the
+Claude Code/JSONL path (it is not a discoverable agent). Consequently an adapter
+for a new JSONL-logging agent appended after claude-code is never reached via
+`adapter_for`. It must either be inserted BEFORE claude-code (safe only if its
+process pattern does not overlap claude-code/aider/codex, since process matching
+is first-match-wins in the same order), or claude-code's `claims()` must be
+narrowed. Which to do is decided in that sub-project against real captured logs.
 
 `claims()` for JSONL agents reuses `detect_log_format` on the first non-skip
 entry; Aider claims `.md` transcripts; Cursor claims `state.vscdb` / its
