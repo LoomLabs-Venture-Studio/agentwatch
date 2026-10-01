@@ -147,3 +147,77 @@ class TestParseFileViaRegistry:
 
         # Parsed as Claude Code JSONL by the fallback, exactly as before the refactor.
         assert [(a.tool_name, a.session_id) for a in actions] == [("Read", "fallback-sess")]
+
+
+class TestMultiLogWatcherViaRegistry:
+    def test_fake_agent_is_live_listed_and_watched(self, tmp_path, monkeypatch):
+        from agentwatch.discovery import AgentProcess
+        from agentwatch.parser.watcher import LogWatcher, MultiLogWatcher, _has_live_log
+
+        log = tmp_path / "s.fake"
+        log.write_text("", encoding="utf-8")
+        _isolate(monkeypatch, FakeAgentAdapter(log))
+        proc = AgentProcess(pid=777, agent_type="fakeagent", working_directory=tmp_path,
+                            log_file=log, session_id="fake-session", command="fakeagent")
+
+        assert _has_live_log(proc)
+        mlw = MultiLogWatcher.from_processes([proc])
+        assert mlw._find_all_logs() == [log]
+        w = mlw._make_watcher(log)
+        assert isinstance(w, LogWatcher) and w.session_id == "fake-session"
+
+    def test_builtin_agents_get_their_historical_watcher(self, tmp_path):
+        from agentwatch.discovery import AgentProcess
+        from agentwatch.parser.watcher import (
+            AiderLogWatcher,
+            CursorWatcher,
+            LogWatcher,
+            MultiLogWatcher,
+            _has_live_log,
+        )
+
+        cc = tmp_path / "cc.jsonl"
+        cc.write_text("", encoding="utf-8")
+        md = tmp_path / ".aider.chat.history.md"
+        md.write_text("", encoding="utf-8")
+        db = tmp_path / "state.vscdb"
+        db.write_text("", encoding="utf-8")
+        synthetic = tmp_path / "cursor-synthetic-key"  # never created
+
+        def mk(pid, agent, log, sid, **kw):
+            return AgentProcess(pid=pid, agent_type=agent, working_directory=tmp_path,
+                                log_file=log, session_id=sid, command=agent, **kw)
+
+        procs = [
+            mk(1, "claude-code", cc, "s-cc"),
+            mk(2, "aider", md, "s-aider"),
+            mk(3, "cursor", synthetic, "composer-9", cursor_db_path=db),
+        ]
+        assert all(_has_live_log(p) for p in procs)  # cursor live via db, not synthetic key
+        mlw = MultiLogWatcher.from_processes(procs)
+        assert mlw._find_all_logs() == [cc, md, synthetic]
+
+        w_cc, w_md, w_cur = (mlw._make_watcher(p.log_file) for p in procs)
+        assert type(w_cc) is LogWatcher and w_cc.session_id == "s-cc"
+        assert type(w_md) is AiderLogWatcher and w_md.session_id == "s-aider"
+        assert type(w_cur) is CursorWatcher
+        assert w_cur.composer_id_filter == "composer-9"
+        assert w_cur.db_path == db
+
+    def test_unknown_agent_and_stopped_entries(self, tmp_path):
+        from agentwatch.discovery import AgentProcess
+        from agentwatch.parser.watcher import MultiLogWatcher, _has_live_log
+
+        log = tmp_path / "x.jsonl"
+        log.write_text("", encoding="utf-8")
+        weird = AgentProcess(pid=5, agent_type="mystery", working_directory=tmp_path,
+                             log_file=log, session_id="m", command="mystery")
+        assert _has_live_log(weird)  # unknown agent: falls back to log_file.exists()
+        assert not _has_live_log(
+            AgentProcess(pid=6, agent_type="mystery", working_directory=tmp_path,
+                         log_file=tmp_path / "gone.jsonl", session_id="m", command="mystery")
+        )
+        mlw = MultiLogWatcher.from_processes([weird])
+        assert mlw._find_all_logs() == [log]  # .jsonl claimed by an adapter
+        weird.command = "(stopped)"
+        assert mlw._find_all_logs() == []
