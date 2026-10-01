@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -14,6 +15,8 @@ import psutil
 
 from agentwatch import agents as _agents
 from agentwatch.path_encoding import encode_path_for_claude
+
+logger = logging.getLogger(__name__)
 
 # Back-compat: read-only view derived from the adapter registry. New agents
 # are added in agentwatch/agents/, not here.
@@ -211,6 +214,7 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                 try:
                     log_file, session_id = adapter.resolve_log(cwd, pid)
                 except Exception:
+                    logger.debug("resolve_log failed for adapter %s", adapter.name, exc_info=True)
                     log_file, session_id = None, None
                 if cache is not None:
                     cache.log_by_pid[pid] = (log_file, session_id)
@@ -250,6 +254,7 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
             agents.extend(editor.discover())
         except Exception:
             # One broken editor integration must not hide the others.
+            logger.debug("discover failed for adapter %s", editor.name, exc_info=True)
             continue
 
     _compute_depths(agents)

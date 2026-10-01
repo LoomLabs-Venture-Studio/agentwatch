@@ -245,3 +245,53 @@ class TestSingleAgentAppViaRegistry:
         assert isinstance(select_single_agent_watcher(tmp_path / "x.log", None), LogWatcher)
         cw = select_single_agent_watcher(tmp_path / "state.vscdb", "comp-1")
         assert isinstance(cw, CursorWatcher) and cw.composer_id_filter == "comp-1"
+
+
+class TestAdapterFailureIsolation:
+    def test_resolve_log_failure_is_debug_logged_and_agent_still_listed(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+
+        class BadResolve(FakeAgentAdapter):
+            name = "badresolve"
+            process_pattern = r"\bbadresolve\b"
+
+            def resolve_log(self, cwd, pid):
+                raise RuntimeError("resolve exploded")
+
+        _isolate(monkeypatch, BadResolve(tmp_path / "x.fake"))
+        monkeypatch.setattr(discovery.psutil, "process_iter",
+                            _iter(_FakeProcess(321, ["badresolve", "--go"])))
+        monkeypatch.setattr(discovery, "_get_process_cwd", lambda pid: tmp_path)
+
+        with caplog.at_level(logging.DEBUG, logger="agentwatch.discovery"):
+            found = discovery.find_running_agents()
+
+        assert [(a.pid, a.agent_type, a.log_file) for a in found] == [(321, "badresolve", None)]
+        records = [r for r in caplog.records if r.name == "agentwatch.discovery"]
+        assert records and records[0].levelno == logging.DEBUG
+        assert "badresolve" in records[0].getMessage()
+        assert records[0].exc_info is not None
+
+    def test_editor_discover_failure_is_debug_logged(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        class Boom(BaseAdapter):
+            name = "boomeditor"
+            kind = "editor"
+
+            def discover(self):
+                raise RuntimeError("boom")
+
+        _isolate(monkeypatch, Boom())
+        monkeypatch.setattr(discovery.psutil, "process_iter", _iter())
+
+        with caplog.at_level(logging.DEBUG, logger="agentwatch.discovery"):
+            discovery.find_running_agents()
+
+        assert any(
+            r.name == "agentwatch.discovery" and "boomeditor" in r.getMessage()
+            for r in caplog.records
+        )
+
