@@ -461,40 +461,8 @@ def detect_log_format(first_entry: dict) -> str:
     return "unknown"
 
 
-def parse_file(
-    path: Path, session_id: str | None = None, analytics_log: Path | None = None
-) -> Iterator[Action]:
-    """Parse an agent log file, auto-detecting format.
-
-    Args:
-        path: Path to the log file. JSONL (Claude Code / Moltbot / Codex) is
-            auto-detected by content; a ``.md`` extension is dispatched to
-            the Aider Markdown chat-history parser, and a ``.vscdb``
-            extension to Cursor's ``state.vscdb`` SQLite store, instead.
-        session_id: Optional session ID to filter by. When provided, only actions
-            from this exact session are yielded (prevents log bleeding between
-            sessions). For a ``.vscdb`` path this is the Cursor composer_id to
-            parse; when omitted the most-recently-active agent-mode composer
-            is auto-picked (see ``cursor_source.select_latest_agent_composer``).
-        analytics_log: Optional path to an Aider ``--analytics-log`` JSONL
-            sidecar. Only used when ``path`` is a ``.md`` Aider transcript;
-            ignored for JSONL logs.
-    """
-    if path.suffix == ".md":
-        from .aider import parse_aider_log
-
-        for action in parse_aider_log(path, analytics_path=analytics_log):
-            if session_id is None or action.session_id == session_id:
-                yield action
-        return
-
-    if path.suffix == ".vscdb":
-        from .cursor_source import parse_cursor_session
-
-        for action in parse_cursor_session(path, composer_id=session_id):
-            yield action
-        return
-
+def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
+    """JSONL body of parse_file (Claude Code / Moltbot / Codex, auto-detected)."""
     # Imported lazily (not at module level) to avoid a logs.py <-> codex.py
     # circular import — codex.py imports classify_tool from this module at
     # its own module level.
@@ -547,6 +515,34 @@ def parse_file(
             for action in codex_parser.flush():
                 if session_id is None or action.session_id == session_id:
                     yield action
+
+
+def parse_file(
+    path: Path, session_id: str | None = None, analytics_log: Path | None = None
+) -> Iterator[Action]:
+    """Parse an agent log file, auto-detecting format.
+
+    Args:
+        path: Path to the log file. JSONL (Claude Code / Moltbot / Codex) is
+            auto-detected by content; a ``.md`` extension is dispatched to
+            the Aider Markdown chat-history parser, and a ``.vscdb``
+            extension to Cursor's ``state.vscdb`` SQLite store, instead.
+        session_id: Optional session ID to filter by. When provided, only actions
+            from this exact session are yielded (prevents log bleeding between
+            sessions). For a ``.vscdb`` path this is the Cursor composer_id to
+            parse; when omitted the most-recently-active agent-mode composer
+            is auto-picked (see ``cursor_source.select_latest_agent_composer``).
+        analytics_log: Optional path to an Aider ``--analytics-log`` JSONL
+            sidecar. Only used when ``path`` is a ``.md`` Aider transcript;
+            ignored for JSONL logs.
+    """
+    from agentwatch.agents import adapter_for
+
+    adapter = adapter_for(path)
+    if adapter is None:
+        yield from _parse_jsonl(path, session_id)
+        return
+    yield from adapter.parse_file(path, session_id, analytics_log=analytics_log)
 
 
 def find_log_files(base_path: Path | None = None) -> list[Path]:

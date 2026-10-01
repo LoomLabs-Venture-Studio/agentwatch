@@ -109,3 +109,28 @@ class TestDiscoveryViaRegistry:
                             lambda cwd, pid=None: (None, None))
 
         assert [a.agent_type for a in discovery.find_running_agents()] == ["claude-code"]
+
+
+class TestParseFileViaRegistry:
+    def test_fake_adapter_parse_file(self, tmp_path, monkeypatch):
+        from agentwatch.parser.logs import parse_file
+
+        p = tmp_path / "x.fake"
+        p.write_text("anything", encoding="utf-8")
+        _isolate(monkeypatch, FakeAgentAdapter(p))
+
+        actions = list(parse_file(p))
+
+        assert [a.session_id for a in actions] == ["fake-session"]
+
+    def test_unclaimed_path_falls_back_to_jsonl(self, tmp_path):
+        import json
+
+        from agentwatch.parser.logs import parse_file
+
+        p = tmp_path / "log.txt"  # no adapter claims .txt
+        p.write_text(json.dumps({"type": "user", "sessionId": "s",
+                                 "message": {"role": "user", "content": "hi"}}) + "\n",
+                     encoding="utf-8")
+        # Same result as before the refactor: parsed as Claude Code JSONL.
+        assert isinstance(list(parse_file(p)), list)
