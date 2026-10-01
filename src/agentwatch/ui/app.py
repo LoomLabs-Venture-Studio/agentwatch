@@ -325,6 +325,23 @@ class StatsPanel(Static):
         )
 
 
+def select_single_agent_watcher(log_path: Path, cursor_composer_id: str | None):
+    """Pick the live watcher for ``agentwatch watch --log <path>``.
+
+    Delegates to the adapter that claims *log_path*; unclaimed paths get a
+    plain LogWatcher (historical default: JSONL with format auto-detection).
+    For Cursor, *cursor_composer_id* is the composer to follow.
+    """
+    from agentwatch.agents import adapter_for
+    from agentwatch.parser import LogWatcher
+
+    adapter = adapter_for(log_path)
+    if adapter is None:
+        return LogWatcher(log_path)
+    session = cursor_composer_id if adapter.name == "cursor" else None
+    return adapter.make_watcher(log_path, session)
+
+
 class AgentWatchApp(App):
     """Main TUI application for AgentWatch."""
 
@@ -450,7 +467,7 @@ class AgentWatchApp(App):
         # Initialize components
         from agentwatch.detectors import create_registry
         from agentwatch.health.rot import RotScorer
-        from agentwatch.parser import ActionBuffer, AiderLogWatcher, CursorWatcher, LogWatcher
+        from agentwatch.parser import ActionBuffer
 
         self._buffer = ActionBuffer()
         mode = "all" if self.security_mode else "health"
@@ -467,16 +484,16 @@ class AgentWatchApp(App):
             if self.llm:
                 self._llm_assessor = LiveLlmAssessor(self.llm_model)
 
-        # Set up log watcher. .md is an Aider Markdown chat-history transcript
-        # (PLAYBOOK Sprint 6 item 6 / Sprint 7 -- live tailing); .vscdb is a
-        # Cursor state.vscdb store (closes the "single-agent watch --log
-        # <state.vscdb>" gap PLAYBOOK Sprint 7 explicitly left out of scope);
-        # everything else is JSONL (Claude Code/Moltbot/Codex), handled by
-        # LogWatcher's own format auto-detection.
+        # Set up log watcher. Selection is delegated to the agent adapter
+        # registry (agentwatch.agents): the adapter that claims the path builds
+        # the watcher (.md Aider chat history, .vscdb Cursor state store,
+        # otherwise JSONL via LogWatcher's own format auto-detection).
+        # .vscdb is still named here because the composer-resolution toast is
+        # UI behaviour specific to the single-agent Cursor case (intentional,
+        # documented exception).
         self.watcher = None
-        if self.log_path.suffix == ".md":
-            self.watcher = AiderLogWatcher(self.log_path)
-        elif self.log_path.suffix == ".vscdb":
+        composer_id = None
+        if self.log_path.suffix == ".vscdb":
             composer_id = self._resolve_cursor_composer_id()
             if composer_id is None:
                 # No crash: mirrors how LogWatcher/AiderLogWatcher degrade to
@@ -493,10 +510,8 @@ class AgentWatchApp(App):
                     severity="warning",
                     timeout=10,
                 )
-            else:
-                self.watcher = CursorWatcher(self.log_path, composer_id_filter=composer_id)
-        else:
-            self.watcher = LogWatcher(self.log_path)
+        if self.log_path.suffix != ".vscdb" or composer_id is not None:
+            self.watcher = select_single_agent_watcher(self.log_path, composer_id)
 
         # Start watching in background (skipped entirely for the "no
         # matching Cursor composer" case above -- self.watcher stays None

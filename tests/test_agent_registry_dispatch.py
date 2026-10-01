@@ -221,3 +221,27 @@ class TestMultiLogWatcherViaRegistry:
         assert mlw._find_all_logs() == [log]  # .jsonl claimed by an adapter
         weird.command = "(stopped)"
         assert mlw._find_all_logs() == []
+
+
+class TestSingleAgentAppViaRegistry:
+    def test_select_watcher_uses_adapter(self, tmp_path, monkeypatch):
+        from agentwatch.parser.watcher import LogWatcher
+        from agentwatch.ui.app import select_single_agent_watcher
+
+        log = tmp_path / "s.fake"
+        log.write_text("", encoding="utf-8")
+        _isolate(monkeypatch, FakeAgentAdapter(log))
+
+        w = select_single_agent_watcher(log, cursor_composer_id=None)
+
+        assert isinstance(w, LogWatcher) and w.path == log
+
+    def test_select_watcher_defaults(self, tmp_path):
+        from agentwatch.parser.watcher import AiderLogWatcher, CursorWatcher, LogWatcher
+        from agentwatch.ui.app import select_single_agent_watcher
+
+        assert isinstance(select_single_agent_watcher(tmp_path / "a.jsonl", None), LogWatcher)
+        assert isinstance(select_single_agent_watcher(tmp_path / "a.md", None), AiderLogWatcher)
+        assert isinstance(select_single_agent_watcher(tmp_path / "x.log", None), LogWatcher)
+        cw = select_single_agent_watcher(tmp_path / "state.vscdb", "comp-1")
+        assert isinstance(cw, CursorWatcher) and cw.composer_id_filter == "comp-1"
