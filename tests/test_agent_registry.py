@@ -20,6 +20,7 @@ _LEGACY_PATTERNS = {
     },
     "aider": {"pattern": r"\baider\b", "exclude": None},
     "codex": {"pattern": r"\bcodex\b", "exclude": None},
+    "copilot": {"pattern": r"(^|[/\\])copilot(\.exe)?(\s|$)", "exclude": r"^\S*node(\.exe)?\s"},
 }
 
 
@@ -30,14 +31,18 @@ def _write_jsonl(path: Path, entries: list[dict]) -> Path:
 
 class TestRegistryShape:
     def test_order(self):
-        assert [a.name for a in agents.ADAPTERS] == ["claude-code", "aider", "codex", "cursor"]
+        assert [a.name for a in agents.ADAPTERS] == [
+            "claude-code", "aider", "codex", "cursor", "copilot",
+        ]
 
     def test_get(self):
         assert agents.get("codex").name == "codex"
         assert agents.get("nope") is None
 
     def test_kinds(self):
-        assert [a.name for a in agents.process_adapters()] == ["claude-code", "aider", "codex"]
+        assert [a.name for a in agents.process_adapters()] == [
+            "claude-code", "aider", "codex", "copilot",
+        ]
         assert [a.name for a in agents.editor_adapters()] == ["cursor"]
 
     def test_process_patterns_match_legacy(self):

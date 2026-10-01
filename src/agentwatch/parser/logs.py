@@ -458,18 +458,26 @@ def detect_log_format(first_entry: dict) -> str:
     if entry_type in _CODEX_EVENT_TYPES:
         return "codex"
 
+    # Copilot CLI events.jsonl: dotted "type" with the body under "data"
+    # (every event in a live 1.0.90 capture used one of these prefixes).
+    if isinstance(first_entry.get("data"), dict) and entry_type.startswith(
+        ("session.", "user.", "system.", "assistant.", "tool.")
+    ):
+        return "copilot"
+
     return "unknown"
 
 
 def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
-    """JSONL body of parse_file (Claude Code / Moltbot / Codex, auto-detected)."""
+    """JSONL body of parse_file (Claude Code / Moltbot / Codex / Copilot, auto-detected)."""
     # Imported lazily (not at module level) to avoid a logs.py <-> codex.py
     # circular import — codex.py imports classify_tool from this module at
     # its own module level.
     from .codex import CodexParser
+    from .copilot import CopilotParser
 
     log_format = None
-    codex_parser: CodexParser | None = None
+    codex_parser: CodexParser | CopilotParser | None = None
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -489,11 +497,13 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
                     continue
                 if log_format == "codex":
                     codex_parser = CodexParser()
+                elif log_format == "copilot":
+                    codex_parser = CopilotParser()
 
             # Parse based on format
             if log_format == "moltbot":
                 result = parse_moltbot_entry(entry)
-            elif log_format == "codex":
+            elif log_format in ("codex", "copilot"):
                 result = codex_parser.parse_line(entry)
             else:
                 result = parse_claude_code_entry(entry)
@@ -511,7 +521,7 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
         # everything", so flush any function_call left waiting for output
         # that will now never arrive in this file. (LogWatcher's live-tail
         # equivalent deliberately does NOT do this — see watcher.py.)
-        if log_format == "codex" and codex_parser is not None:
+        if codex_parser is not None:
             for action in codex_parser.flush():
                 if session_id is None or action.session_id == session_id:
                     yield action

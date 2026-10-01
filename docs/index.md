@@ -240,6 +240,7 @@ agentwatch stats
 | Moltbot / Clawdbot | — | :material-check-circle:{ .t-green } | — |
 | Aider | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | Codex | :material-check-circle:{ .t-green } | — | — |
+| GitHub Copilot CLI | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | Cursor | — | — | — |
 
 Agent processes are discovered via `ps` scanning with pattern matching (`agentwatch.discovery.AGENT_PATTERNS`).
