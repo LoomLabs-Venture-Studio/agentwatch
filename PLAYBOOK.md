@@ -3266,3 +3266,72 @@ SIEM/`--json` output.
   CLAUDE.md Git Rules for the `--no-verify` workaround).
 - Unprofiled: `ActionBuffer.add()` takes ~285ms per 1MB command
   (SessionStats counters).
+
+---
+
+### Sprint 22 -- cli-agents sub-project 0: agent adapter registry (2026-10-01)
+**Type:** refactor (no behaviour change)
+**Priority:** Foundation for the cli-agents feature (Gemini CLI, Copilot
+CLI, opencode, Cline/Roo/Kilo). Per-agent dispatch was hardcoded in 5
+places; every new agent would have meant editing all of them.
+**PRD Status:** spec `docs/superpowers/specs/2026-09-30-agent-adapter-registry-design.md`,
+plan `docs/superpowers/plans/2026-09-30-agent-adapter-registry.md`
+**Harness:** superpowers subagent-driven-development (engineer per task,
+task review per task, opus whole-branch review, one fix wave, QA)
+**Branch:** `feature/cli-agents` (from `develop`), local only, not pushed
+
+### What changed
+New package `src/agentwatch/agents/`: `AgentAdapter` protocol +
+`BaseAdapter`, four thin adapters (claude-code, aider, codex, cursor)
+wrapping the existing functions, and an ordered `ADAPTERS` registry with
+`get` / `adapter_for` / `process_adapters` / `editor_adapters`. Discovery,
+one-shot `parse_file`, `MultiLogWatcher` and the single-agent TUI now
+dispatch through it. No parser logic moved.
+
+### Acceptance Criteria
+- [x] Registry + 4 adapters; registry order claude-code, aider, codex,
+      cursor (matches historical `AGENT_PATTERNS` first-match order; spec
+      corrected to match)
+- [x] Discovery, `parse_file`, `MultiLogWatcher`, `watch --log` dispatch via
+      the registry; Task 6 audit found no remaining hardcoded dispatch
+      (`ui/app.py` `.vscdb` composer toast is a documented exception)
+- [x] Per-adapter failure isolation: discovery debug-logs adapter errors;
+      one adapter's `make_watcher` failing no longer ends `watch-all`
+- [x] No existing test edited; 2 new test files; 829 passed, 1 skipped
+      (develop: 794); `ruff check .` clean
+- [x] QA PASS vs `develop` on this machine: `ps`/`ps --json`,
+      `check` (+`--json`, `--log`), `security-scan`, `stats --all`
+      (+`--json`), `list-detectors`, `--version` identical apart from
+      memory/uptime; `watch-all` and `watch --log` driven headless
+      (Textual `run_test`) on both trees with identical results
+- [ ] Draft PR into `develop` (awaiting board approval to push)
+
+Commits: `ac2c0b0` spec, `862840d` plan, `b3ac9c5` `83cba07` `00359fb`
+`effad1c` `08e0953` `ca77985` (Tasks 1-5), `4ba18c0` (spec order),
+`84aa546` `1edcd00` `4865992` `f5c720b` (final-review fixes).
+
+### Board decisions (2026-10-01)
+1. Sub-projects 1-4 (Gemini CLI, Copilot CLI, opencode, Cline/Roo/Kilo)
+   are built from **real session logs the board captures** by
+   installing each agent. No fixtures derived from source code, and no
+   parser work on 1-4 until real logs arrive. Logs must be scrubbed of
+   PII/secrets before they land in the repo as fixtures.
+2. Push/PR unchanged: the CTO stops and reports before every push or PR,
+   and the board approves each one.
+
+### Follow-ups (open, for sub-projects 1-4)
+- claude-code `claims()` takes every `.jsonl` not sniffed as Codex. A new
+  JSONL adapter (Copilot CLI is a likely one) must go before it in the
+  registry, or claude-code's claims must be narrowed. Decide against real logs.
+- Directory-scan auto-detect (`find_log_files`, `--all-logs`) still globs
+  `*.jsonl` only.
+- Editor-kind adapters: `AgentProcess.cursor_db_path` is Cursor-named.
+  The stopped-process rebuild in `MultiLogWatcher` copies fields one by
+  one. `select_single_agent_watcher` keys composer selection on
+  `adapter.name == "cursor"`.
+- Pre-existing (on `develop` too): watch-all agent state shows
+  `agent_type` as `"None"`.
+- Low-priority minors: `source_path` uses a bare assert; `Watcher.watch()`
+  typing is loose; `AGENT_PATTERNS` is frozen at import;
+  `process_adapters()` is rebuilt per scanned process; JSONL is sniffed
+  twice (50 lines, then the full parse).
