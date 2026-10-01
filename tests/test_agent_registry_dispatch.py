@@ -360,3 +360,38 @@ class TestAdapterFailureIsolation:
         assert bad_log not in mlw.watchers
         assert any(r.levelno == logging.DEBUG and bad_log.name in r.getMessage()
                    for r in caplog.records)
+
+
+class TestParseFileAnalyticsPassThrough:
+    def test_analytics_log_backfills_tokens_and_cost(self, tmp_path):
+        import json
+
+        from agentwatch.parser.logs import parse_file
+
+        md = tmp_path / ".aider.chat.history.md"
+        md.write_text(
+            "# aider chat started at 2024-01-15T10:30:00\n\n"
+            "#### add a hello function\n\n"
+            "Sure, I'll add that.\n\n"
+            "foo.py\n```python\n<<<<<<< SEARCH\n# TODO: implement hello\n=======\n"
+            'def hello():\n    print("hello")\n>>>>>>> REPLACE\n```\n',
+            encoding="utf-8",
+        )
+        analytics = tmp_path / "analytics.jsonl"
+        analytics.write_text(
+            json.dumps({
+                "event": "message_send",
+                "properties": {"prompt_tokens": 100, "completion_tokens": 50, "cost": 0.01},
+                "time": 1705315800,
+            }),
+            encoding="utf-8",
+        )
+
+        without = list(parse_file(md))
+        with_log = list(parse_file(md, analytics_log=analytics))
+
+        assert without and len(without) == len(with_log)
+        assert all(a.tokens_in == 0 and a.cost_usd == 0 for a in without)
+        assert all(a.tokens_in == 100 and a.tokens_out == 50 and a.cost_usd == 0.01
+                   for a in with_log if a.raw.get("turn") == 0)
+        assert any(a.tokens_in == 100 for a in with_log)
