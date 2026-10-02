@@ -26,9 +26,11 @@ class ClaudeCodeAdapter(BaseAdapter):
         return discovery._resolve_claude_code_log(cwd, pid=pid)
 
     def claims(self, path: Path) -> bool:
-        # Every JSONL that isn't Codex/Copilot -- including missing/undecidable
+        # Every JSONL that isn't Codex/Copilot/agy -- including missing/undecidable
         # files, which parse_file() has always treated as Claude Code/Moltbot.
-        return path.suffix == ".jsonl" and sniff_jsonl_format(path) not in ("codex", "copilot")
+        return path.suffix == ".jsonl" and sniff_jsonl_format(path) not in (
+            "codex", "copilot", "agy",
+        )
 
     def make_watcher(self, source: AgentProcess | Path, session_id: str | None) -> Watcher:
         from agentwatch.parser.watcher import LogWatcher

@@ -4,16 +4,17 @@ Order matters: process matching is first-match-wins per PID, in this order
 (preserves the historical AGENT_PATTERNS order), and adapter_for() returns the
 first adapter whose claims() is true. To add an agent: create agents/<name>.py
 with a BaseAdapter subclass and register it here. Caveat: claude-code's claims()
-is the JSONL catch-all (any .jsonl not sniffed as codex/copilot), so a new
+is the JSONL catch-all (any .jsonl not sniffed as codex/copilot/agy), so a new
 JSONL-logging adapter must be inserted BEFORE it (only safe if its process
 pattern does not overlap claude-code/aider/codex) or claude-code's claims() must
-be narrowed (as done for copilot).
+be narrowed (as done for copilot and agy).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from .agy import AgyAdapter
 from .aider import AiderAdapter
 from .base import AgentAdapter, BaseAdapter, Watcher
 from .claude_code import ClaudeCodeAdapter
@@ -27,6 +28,7 @@ ADAPTERS: list[AgentAdapter] = [
     CodexAdapter(),
     CursorAdapter(),
     CopilotAdapter(),
+    AgyAdapter(),
 ]
 
 

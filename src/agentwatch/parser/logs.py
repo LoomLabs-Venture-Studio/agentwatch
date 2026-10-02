@@ -465,19 +465,24 @@ def detect_log_format(first_entry: dict) -> str:
     ):
         return "copilot"
 
+    # agy (Antigravity CLI) transcript.jsonl: numbered steps.
+    if "step_index" in first_entry and "source" in first_entry:
+        return "agy"
+
     return "unknown"
 
 
 def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
-    """JSONL body of parse_file (Claude Code / Moltbot / Codex / Copilot, auto-detected)."""
+    """JSONL body of parse_file (Claude Code / Moltbot / Codex / Copilot / agy, auto-detected)."""
     # Imported lazily (not at module level) to avoid a logs.py <-> codex.py
     # circular import — codex.py imports classify_tool from this module at
     # its own module level.
+    from .agy import AgyParser
     from .codex import CodexParser
     from .copilot import CopilotParser
 
     log_format = None
-    codex_parser: CodexParser | CopilotParser | None = None
+    codex_parser: CodexParser | CopilotParser | AgyParser | None = None
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -499,11 +504,14 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
                     codex_parser = CodexParser()
                 elif log_format == "copilot":
                     codex_parser = CopilotParser()
+                elif log_format == "agy":
+                    # agy transcripts carry no session id; tag with the requested one.
+                    codex_parser = AgyParser(session_id)
 
             # Parse based on format
             if log_format == "moltbot":
                 result = parse_moltbot_entry(entry)
-            elif log_format in ("codex", "copilot"):
+            elif log_format in ("codex", "copilot", "agy"):
                 result = codex_parser.parse_line(entry)
             else:
                 result = parse_claude_code_entry(entry)

@@ -14,6 +14,7 @@ from watchfiles import Change, awatch
 from agentwatch.agents.base import Watcher
 from agentwatch.discovery import AgentProcess
 
+from .agy import AgyParser
 from .aider import parse_aider_sessions
 from .codex import CodexParser
 from .copilot import CopilotParser
@@ -38,7 +39,7 @@ class LogWatcher:
         self.session_id = session_id
         self._position = 0
         self._log_format: str | None = None
-        self._codex_parser: CodexParser | CopilotParser | None = None
+        self._codex_parser: CodexParser | CopilotParser | AgyParser | None = None
         self._callbacks: list[Callable[[Action], None]] = []
 
     def on_action(self, callback: Callable[[Action], None]) -> None:
@@ -55,10 +56,12 @@ class LogWatcher:
                 self._codex_parser = CodexParser()
             elif self._log_format == "copilot":
                 self._codex_parser = CopilotParser()
+            elif self._log_format == "agy":
+                self._codex_parser = AgyParser(self.session_id)
 
         if self._log_format == "moltbot":
             result = parse_moltbot_entry(entry)
-        elif self._log_format in ("codex", "copilot"):
+        elif self._log_format in ("codex", "copilot", "agy"):
             # NOTE: deliberately never call self._codex_parser.flush() here.
             # parse_file()'s one-shot batch read flushes at EOF because
             # end-of-file there genuinely means "this is everything" -- but

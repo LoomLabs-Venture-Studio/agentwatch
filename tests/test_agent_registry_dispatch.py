@@ -65,7 +65,7 @@ def _isolate(monkeypatch, *extra):
 
 class TestDiscoveryViaRegistry:
     def test_agent_patterns_still_exported(self):
-        assert set(discovery.AGENT_PATTERNS) == {"claude-code", "aider", "codex", "copilot"}
+        assert set(discovery.AGENT_PATTERNS) == {"claude-code", "aider", "codex", "copilot", "agy"}
         assert discovery.AGENT_PATTERNS["codex"] == {"pattern": r"\bcodex\b", "exclude": None}
 
     def test_fake_adapter_discovered_without_core_edits(self, tmp_path, monkeypatch):

@@ -87,6 +87,10 @@ src/agentwatch/
                        toolCallId-buffered like codex.py); adapter in
                        agents/copilot.py. Live-verified 2026-10-01
                        (1.0.90): ps, watch-all, check
+    agy.py               Antigravity CLI transcript.jsonl parsing (AgyParser;
+                       no call ids, results matched by step order);
+                       adapter in agents/agy.py. Live-verified
+                       2026-10-01 (1.2.14)
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping
