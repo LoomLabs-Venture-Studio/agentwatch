@@ -3278,7 +3278,7 @@ places; every new agent would have meant editing all of them.
 plan `docs/superpowers/plans/2026-09-30-agent-adapter-registry.md`
 **Harness:** superpowers subagent-driven-development (engineer per task,
 task review per task, opus whole-branch review, one fix wave, QA)
-**Branch:** `feature/cli-agents` (from `develop`), local only, not pushed
+**Branch:** `feature/cli-agents` (from `develop`), pushed; draft PR #29 into `develop`
 
 ### What changed
 New package `src/agentwatch/agents/`: `AgentAdapter` protocol +
@@ -3304,7 +3304,7 @@ dispatch through it. No parser logic moved.
       (+`--json`), `list-detectors`, `--version` identical apart from
       memory/uptime; `watch-all` and `watch --log` driven headless
       (Textual `run_test`) on both trees with identical results
-- [ ] Draft PR into `develop` (awaiting board approval to push)
+- [x] Draft PR #29 into `develop` (board approval still required to merge)
 
 Commits: `ac2c0b0` spec, `862840d` plan, `b3ac9c5` `83cba07` `00359fb`
 `effad1c` `08e0953` `ca77985` (Tasks 1-5), `4ba18c0` (spec order),
@@ -3318,6 +3318,22 @@ Commits: `ac2c0b0` spec, `862840d` plan, `b3ac9c5` `83cba07` `00359fb`
    PII/secrets before they land in the repo as fixtures.
 2. Push/PR unchanged: the CTO stops and reports before every push or PR,
    and the board approves each one.
+
+### Sub-projects shipped on this branch (live logs, per board decision 1)
+- [x] **GitHub Copilot CLI** (`d4b8e34`): `agents/copilot.py` +
+      `parser/copilot.py` (`events.jsonl`, `toolCallId`-buffered). Session
+      is found via `$COPILOT_HOME/session-state/*/inuse.<pid>.lock`.
+      Live-verified against 1.0.90: `ps`, `watch-all` and `check`. Copilot
+      logs no per-call token counts.
+- [x] **Antigravity CLI `agy`** (`5070d50`): `agents/agy.py` +
+      `parser/agy.py` (`transcript.jsonl`). There are no call ids, so
+      results are matched to calls by step order. Uses PID-only resolution
+      via the `presence/<id>.lock` that agy holds open. Live-verified against
+      1.2.14. The transcript has no token counts.
+- Both narrow claude-code's JSONL catch-all `claims()`, which resolves the
+  first follow-up below for these two agents.
+- Suite: 845 passed; `ruff check .` clean.
+- Remaining: opencode, Cline/Roo/Kilo (still waiting on real logs).
 
 ### Follow-ups (open, for sub-projects 1-4)
 - claude-code `claims()` takes every `.jsonl` not sniffed as Codex. A new
