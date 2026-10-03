@@ -3462,3 +3462,19 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
 - #33: empty-user Redis URLs, `@` inside a password, >256-char
   credentials, `check --json` order depends on `PYTHONHASHSEED`.
 - #31: low-severity items from #30.
+
+---
+
+### Sprint 25 -- Quadratic secret patterns (issue #32, 2026-10-03)
+**Type:** bug fix (performance / denial of service)
+**Branch:** `fix/discord-pattern-perf-32` (from `develop`, after #34)
+
+### Acceptance Criteria
+- [ ] `discord_bot_token` scans 1MB of `mysql` repeated (and any long
+      alphanumeric run) in linear time.
+- [ ] Every pattern in `_SECRET_PATTERNS` is swept against 1MB runs of
+      each character class (letters, digits, mixed, hex, base64, `-`/`_`,
+      dots, spaces). No pattern is quadratic; any found is fixed here.
+- [ ] Real Discord tokens are still detected and masked.
+- [ ] Timing regression tests use the existing subprocess + timeout
+      pattern. Full suite passes, `ruff check .` clean.
