@@ -1435,3 +1435,13 @@ class TestDbUrlRunOn:
             "command": "x=postgres://x:[REDACTED]@h;y=postgres://admin:[REDACTED]@db2.host/app"
         }
         assert redact_log_file(p) == 0
+
+
+def test_glued_secrets_all_redacted():
+    # Issue #26 part 3: the token pattern swallows "api"; redacting it first
+    # left "[REDACTED]_key=VALUE", which no pattern matches any more.
+    from agentwatch.detectors.security.secret_scanner import _redact_text
+
+    value = "Zq8Wm3Xr7Tn2Lp5Vb9Kc4Hd6"  # 24 chars: only generic_api_key matches
+    text = f"echo sk-proj-Ab3dEf6hIj9kLm2nOp5qRs8t6api_key={value}"
+    assert _redact_text(text) == ("echo [REDACTED]_key=[REDACTED]", 2)

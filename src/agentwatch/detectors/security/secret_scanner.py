@@ -751,30 +751,37 @@ def _first_live_match(pattern: re.Pattern, label: str, text: str) -> re.Match | 
 
 
 def _redact_text(text: str) -> tuple[str, int]:
-    """Redact secret values in *text*. Returns (new_text, real_redaction_count)."""
-    count = 0
+    """Redact secret values in *text*. Returns (new_text, real_redaction_count).
+
+    Every pattern is matched against the original text and overlapping value
+    spans are merged before anything is replaced: replacing pattern by
+    pattern let one replacement hide another value ("sk-proj-...api_key=V"
+    became "[REDACTED]_key=V", which no pattern matches).
+    """
+    spans: list[tuple[int, int]] = []
     for pattern, label in _SECRET_PATTERNS:
-        pieces: list[str] = []
-        pos = 0
         for m in _iter_matches(pattern, label, text):
             # Leave placeholders/test data alone; they are not real redactions.
             if _is_false_positive(_match_value(m)):
                 continue
             vstart, vend = _value_span(m, label)
             # Skip only values that are exactly the placeholder (idempotent
-            # re-runs). A value that merely contains it, e.g. a password an
-            # earlier pattern partly redacted ("hunter-[REDACTED]!"), still
-            # gets fully redacted so no fragment of it is left behind.
-            if vstart >= vend or text[vstart:vend] == _REDACTED:
-                continue
-            pieces.append(text[pos:vstart])
-            pieces.append(_REDACTED)
-            pos = vend
-            count += 1
-        if pieces:
-            pieces.append(text[pos:])
-            text = "".join(pieces)
-    return text, count
+            # re-runs). A value that merely contains it ("hunter-[REDACTED]!")
+            # still gets fully redacted so no fragment of it is left behind.
+            if vstart < vend and text[vstart:vend] != _REDACTED:
+                spans.append((vstart, vend))
+    merged: list[list[int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    pieces: list[str] = []
+    pos = 0
+    for start, end in merged:
+        pieces += [text[pos:start], _REDACTED]
+        pos = end
+    return "".join(pieces) + text[pos:], len(merged)
 
 
 def _redact_json_value(obj: Any) -> tuple[Any, int]:
