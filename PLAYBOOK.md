@@ -3462,3 +3462,25 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
 - #33: empty-user Redis URLs, `@` inside a password, >256-char
   credentials, `check --json` order depends on `PYTHONHASHSEED`.
 - #31: low-severity items from #30.
+
+---
+
+### Sprint 26 -- cli-agents sub-project 3: opencode (2026-10-03)
+**Type:** feature
+**Branch:** `feature/opencode-adapter` (from `develop`)
+Built from the real session the board captured on 2026-10-01 (opencode
+1.18.34), per board decision 1 in Sprint 22.
+
+### Acceptance Criteria
+- [ ] `agents/opencode.py` adapter + `parser/opencode.py`, registered in
+      `ADAPTERS`; read-only access to opencode's SQLite store.
+- [ ] read/write/bash/edit tool parts map to Actions with file_path,
+      command, success/error_message; user prompts go to
+      incoming_message; tool output to raw["content"]; file writes are
+      secret-scanned like Copilot/agy; token counts from step-finish /
+      message tokens if present.
+- [ ] `ps`, `watch-all`, `check`, `security-scan` surface a live opencode
+      session; process matching by program (not args).
+- [ ] Fixture is a scrubbed copy of the real session (no home path or
+      username); tests cover each tool type and the failed read.
+- [ ] Full suite passes, `ruff check .` clean; live-verified.
