@@ -3421,3 +3421,24 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
   dir are missed; contrived prose false positives (`make mysql
   -parallel`, mysql/curl `--help` lines); `/bin/curl` repeated is
   1.5s/MB; `-p<pw>:` displays as `[hidden, 0 chars]`.
+
+---
+
+### Sprint 24 -- DB-URL redaction run-on (issue #26, 2026-10-03)
+**Type:** bug fix (security)
+**Branch:** `fix/redact-db-url-runon-26` (from `develop`, after #30)
+
+### Acceptance Criteria
+- [ ] Newline-escaped `.env` with two DB URLs: `audit --redact` removes both
+      passwords in one run; a second run finds nothing.
+- [ ] A placeholder-masked URL glued to a live URL: the live password is
+      detected and redacted.
+- [ ] Glued secrets (`sk-proj-...api_key=VALUE`): every value the scanner
+      flags is gone after one redaction run.
+- [ ] DB-URL masking (part 4a of #24): a short host never reveals password
+      characters; "last 4" comes from the password, not the URL tail.
+- [ ] `database_connection_string` (and `neondb_connection_string`) scan
+      in linear time: 1MB of `postgres://a:` repeated in under 1s.
+- [ ] Regression test per item that fails before the fix, plus the
+      "every flagged value is gone after one run" oracle as a test.
+- [ ] Full suite passes, `ruff check .` clean.
