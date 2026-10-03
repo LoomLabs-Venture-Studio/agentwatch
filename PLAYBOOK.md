@@ -3429,16 +3429,36 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
 **Branch:** `fix/redact-db-url-runon-26` (from `develop`, after #30)
 
 ### Acceptance Criteria
-- [ ] Newline-escaped `.env` with two DB URLs: `audit --redact` removes both
+- [x] Newline-escaped `.env` with two DB URLs: `audit --redact` removes both
       passwords in one run; a second run finds nothing.
-- [ ] A placeholder-masked URL glued to a live URL: the live password is
+- [x] A placeholder-masked URL glued to a live URL: the live password is
       detected and redacted.
-- [ ] Glued secrets (`sk-proj-...api_key=VALUE`): every value the scanner
+- [x] Glued secrets (`sk-proj-...api_key=VALUE`): every value the scanner
       flags is gone after one redaction run.
-- [ ] DB-URL masking (part 4a of #24): a short host never reveals password
+- [x] DB-URL masking (part 4a of #24): a short host never reveals password
       characters; "last 4" comes from the password, not the URL tail.
-- [ ] `database_connection_string` (and `neondb_connection_string`) scan
+- [x] `database_connection_string` (and `neondb_connection_string`) scan
       in linear time: 1MB of `postgres://a:` repeated in under 1s.
-- [ ] Regression test per item that fails before the fix, plus the
+- [x] Regression test per item that fails before the fix, plus the
       "every flagged value is gone after one run" oracle as a test.
-- [ ] Full suite passes, `ruff check .` clean.
+- [x] Full suite passes, `ruff check .` clean.
+
+### Result (2026-10-03)
+- All criteria met. QA approved after one change round: `5b1fbf4` fixed
+  a regression where a host or user starting with `mysql`/`curl` hid the
+  password. Two pre-existing bugs were folded in: a placeholder URL hid a
+  live URL after it (`561c618`), and words like `example` in the host hid
+  a live password (`ee194ec`; the placeholder check now looks at the
+  password only).
+- Behaviour changes: stock-default DB passwords (`password`, `postgres`)
+  are no longer reported; `...@host?mail=a@example.com` is now flagged;
+  DB-URL users/passwords over 256 chars no longer match.
+- 1MB pathological inputs are linear (1-2.6s worst case on the audit
+  path; plain text is about 0.6s).
+- Suite: 1034 passed; `ruff check .` clean.
+
+### Follow-ups (open)
+- #32: `discord_bot_token` is quadratic (14.7s at 100KB of `mysql`).
+- #33: empty-user Redis URLs, `@` inside a password, >256-char
+  credentials, `check --json` order depends on `PYTHONHASHSEED`.
+- #31: low-severity items from #30.
