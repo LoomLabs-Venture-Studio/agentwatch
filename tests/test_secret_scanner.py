@@ -1413,3 +1413,25 @@ class TestDbUrlRunOn:
             + "\n"
         )
         assert redact_log_file(p) == 0
+
+    _GLUED = "x=postgres://x:[REDACTED]@h;y=postgres://admin:LivePw5Zk@db2.host/app"
+
+    def test_placeholder_glued_to_live_url_is_detected(self, tmp_path):
+        bash = {"name": "Bash", "input": {"command": self._GLUED}}
+        p = _write_jsonl(tmp_path, "glued.jsonl", [_make_assistant_line([], tool_inputs=[bash])])
+        assert [f.secret_type for f in audit_log_file(p)] == ["database_connection_string"]
+
+        buf = ActionBuffer()
+        buf.add(_make_action(tool_type=ToolType.BASH, command=self._GLUED))
+        w = SecretLeakScanner().check(buf)
+        assert w is not None and w.details["secret_type"] == "database_connection_string"
+
+    def test_placeholder_glued_to_live_url_is_redacted(self, tmp_path):
+        p = tmp_path / "glued.jsonl"
+        p.write_text(json.dumps({"command": self._GLUED}) + "\n")
+
+        assert redact_log_file(p) == 1
+        assert json.loads(p.read_text()) == {
+            "command": "x=postgres://x:[REDACTED]@h;y=postgres://admin:[REDACTED]@db2.host/app"
+        }
+        assert redact_log_file(p) == 0
