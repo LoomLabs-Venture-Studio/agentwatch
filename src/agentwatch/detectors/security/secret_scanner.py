@@ -172,7 +172,7 @@ _p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env"
 # "curl"/"mysql" in the text) and stopping the flag gap at the next
 # separator keeps these patterns linear: an unanchored, unbounded gap
 # rescans to end of line from every occurrence, quadratic on long output.
-_CMD = r"(?m:^|[;&|(`])\s*(?:(?:sudo|env|time)\s+)?(?:[^\s;&|`()]*/)?"
+_CMD = r"(?m:^|[;&|(`])[^\S\n]*(?:(?:sudo|env|time)\s+)?(?:[^\s;&|`()]*/)?"
 _FLAG_GAP = r"(?=\s)[^\n;&|(`]{0,200}?\s"
 # -p is case-sensitive: mysql's -P is the port.
 _p(

@@ -215,7 +215,10 @@ def _plain_redact_seconds() -> float:
     return time.perf_counter() - t
 
 
-@pytest.mark.parametrize("unit", ["curl ", "mysql ", "(curl ", "curl -u a", "a://b:", "a."])
+@pytest.mark.parametrize(
+    "unit",
+    ["curl ", "mysql ", "(curl ", "curl -u a", "a://b:", "a.", "\n", " \n", "\n\n"],
+)
 def test_redact_secrets_linear_on_pathological_input(unit):
     from agentwatch.detectors.security.secret_scanner import redact_secrets
 
