@@ -1465,3 +1465,92 @@ def test_db_url_mask_reveals_only_from_password(url, expected):
     buf.add(_make_action(tool_type=ToolType.BASH, command=f"psql {url}"))
     w = SecretLeakScanner().check(buf)
     assert w is not None and w.details["matched_prefix"] == expected
+
+
+# ---------------------------------------------------------------------------
+# Issue #26 oracle: every value the scanner flags is gone after one redaction
+# ---------------------------------------------------------------------------
+
+_ORACLE_GHP = "ghp_Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8"
+_ORACLE_CORPUS = [
+    # (tool input, as written by the agent)
+    {"file_path": "/app/.env", "content": (
+        "DATABASE_URL=postgres://app:Pr1maryPw9x@db1.internal:5432/app\n"
+        "REPLICA_URL=postgres://app:R3plicaPw7q@db2.internal:5432/app\n")},
+    {"command": "x=postgres://x:[REDACTED]@h;y=postgres://admin:LivePw5Zk@db2.host/app"},
+    {"command": "echo sk-proj-Ab3dEf6hIj9kLm2nOp5qRs8t6api_key=Zq8Wm3Xr7Tn2Lp5Vb9Kc4Hd6"},
+    {"command": f"psql postgres://admin:TailPw9xQ@db.host/app?token={_ORACLE_GHP}"},
+    {"command": "psql postgres://old:[REDACTED]@h1/x && psql postgres://admin:LaterPw3c@h2/app"},
+    {"command": "mysql://root:MyPw7Zk2q@db1/app;mysql://root:MyPw8Zk3r@db2/app"},
+    {"file_path": "/app/.env", "content": (
+        "A=postgres://u:NeonPw4Xy7@ep-x.us-east-2.aws.neon.tech/db\n"
+        "B=postgres://u:NeonPw5Zq8@ep-y.neon.tech/db\n")},
+    # A literal backslash-n inside the decoded command (JSON in a shell string).
+    {"command": "echo '{\"a\":\"postgres://u:EscPw1Aa9@h1/x\\nB=postgres://u:EscPw2Bb8@h2/y\"}'"},
+    {"command": "PGPASSWORD=PgEnvPw7Hq psql -h db -U app"},
+    {"command": 'MYSQL_PWD="MyEnvPw3Lz" mysql -u root'},
+    {"command": "mysql -uroot -p'QuotedPw5t' db"},
+    {"command": "cd /srv\nmysql -u root -pNewlinePw4 db"},
+    {"command": "mysql --host=mysql-primary -u root -pHostGlu9e db"},
+    {"command": "curl -s -u admin:CurlPw8Rk https://api.internal/v1"},
+    {"command": "git clone https://deploy:a8F3kQ9zL2mX7wP4tR6vB1nY5cH0@github.com/org/repo.git"},
+    {"command": "curl -H 'Authorization: Bearer b9G4lR0aM3nY8xQ5uS7wC2oZ6dI1' https://x"},
+    {"command": "export GH=" + _ORACLE_GHP + "; password = 'Hunter2Pass!x'"},
+]
+# Every secret planted above, so the oracle can't pass just because the
+# scanner never saw one (a run-on URL hid its neighbour from detection too).
+_ORACLE_PLANTED = [
+    "Pr1maryPw9x", "R3plicaPw7q", "LivePw5Zk", "Zq8Wm3Xr7Tn2Lp5Vb9Kc4Hd6", _ORACLE_GHP,
+    "TailPw9xQ", "LaterPw3c", "MyPw7Zk2q", "MyPw8Zk3r", "NeonPw4Xy7", "NeonPw5Zq8",
+    "EscPw1Aa9", "EscPw2Bb8", "PgEnvPw7Hq", "MyEnvPw3Lz", "QuotedPw5t", "NewlinePw4",
+    "HostGlu9e", "CurlPw8Rk", "a8F3kQ9zL2mX7wP4tR6vB1nY5cH0", "b9G4lR0aM3nY8xQ5uS7wC2oZ6dI1",
+    "Hunter2Pass!x",
+]
+
+
+def _flagged_values(log: Path) -> set[str]:
+    """Every live, non-placeholder value any pattern flags in *log*."""
+    from agentwatch.detectors.security.secret_scanner import (
+        _SECRET_PATTERNS,
+        _is_redacted_value,
+        _iter_matches,
+        _match_value,
+        _value_span,
+    )
+    from agentwatch.parser import parse_file
+
+    values = set()
+    for action in parse_file(log):
+        for text, _, file_path in extract_scannable_content(action):
+            for pattern, label in _SECRET_PATTERNS:
+                for m in _iter_matches(pattern, label, text):
+                    if _is_redacted_value(m, label):
+                        continue
+                    if _is_false_positive(_match_value(m), file_path):
+                        continue
+                    start, end = _value_span(m, label)
+                    values.add(text[start:end])
+    return values
+
+
+@pytest.mark.parametrize("tool_input", _ORACLE_CORPUS)
+def test_redaction_oracle(tmp_path, tool_input):
+    name = "Write" if "content" in tool_input else "Bash"
+    log = _write_jsonl(tmp_path, "oracle.jsonl", [
+        _make_assistant_line([], tool_inputs=[{"name": name, "input": tool_input}]),
+    ])
+    flagged = _flagged_values(log)
+    assert flagged, "corpus entry should be flagged"
+
+    assert redact_log_file(log) > 0
+
+    from agentwatch.parser import parse_file
+
+    raw = log.read_text()
+    assert all(json.loads(line) for line in raw.splitlines())  # still valid JSON
+    texts = [raw] + [t for a in parse_file(log) for t, _, _ in extract_scannable_content(a)]
+    assert [v for v in flagged if any(v in t for t in texts)] == []
+    assert [v for v in _ORACLE_PLANTED if any(v in t for t in texts)] == []
+    assert _flagged_values(log) == set()
+    assert audit_log_file(log) == []
+    assert redact_log_file(log) == 0
