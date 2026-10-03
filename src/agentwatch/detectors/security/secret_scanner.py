@@ -421,12 +421,17 @@ def _match_value(m: re.Match) -> str:
     return m.group("secret") if "secret" in m.re.groupindex else m.group(0)
 
 
-def _mask_match(m: re.Match) -> str:
-    """*m*'s text with only its secret part masked."""
-    if "secret" not in m.re.groupindex:
+def _mask_match(m: re.Match, label: str) -> str:
+    """*m*'s text with only its secret value masked.
+
+    Keeps the key name and quotes of an assignment match, so
+    ``MYSQL_PWD="..."`` reads ``MYSQL_PWD="[hidden, N chars]"`` rather than
+    ``MYSQL_[hidden, N chars]``.
+    """
+    if "secret" not in m.re.groupindex and label not in _ASSIGNMENT_LABELS:
         return mask_secret(m.group(0))
-    start, end = m.span("secret")
-    return m.string[m.start() : start] + mask_secret(m.group("secret")) + m.string[end : m.end()]
+    start, end = _value_span(m, label)
+    return m.string[m.start() : start] + mask_secret(_match_value(m)) + m.string[end : m.end()]
 
 
 def redact_secrets(text: str) -> str:
@@ -438,8 +443,8 @@ def redact_secrets(text: str) -> str:
     heuristic misjudged does. Callers that truncate must redact *first* --
     truncating first can cut a token so the pattern no longer matches.
     """
-    for pattern, _label in _SECRET_PATTERNS:
-        text = pattern.sub(_mask_match, text)
+    for pattern, label in _SECRET_PATTERNS:
+        text = pattern.sub(lambda m: _mask_match(m, label), text)
     return text
 
 

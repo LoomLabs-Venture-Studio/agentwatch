@@ -339,3 +339,9 @@ def test_codex_error_text_masks_token_straddling_cut(payload):
 
     result = _extract_exec_command_end(payload) or _extract_patch_apply_end(payload)
     assert result.error_text and not _leaks(result.error_text)
+
+
+def test_assignment_mask_keeps_key_name():
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    assert redact_secrets(f'MYSQL_PWD="{_PW}" mysql') == 'MYSQL_PWD="[hidden, 10 chars]" mysql'
