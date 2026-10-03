@@ -397,3 +397,51 @@ def test_sensitive_directory_masks_command_fallback():
     assert not _leaks(warning.message)
     assert not _leaks(json.dumps(warning.details))
     assert not _leaks(OllamaAnalyzer._build_prompt(warning))
+
+
+# --- QA N2: commands quoted mid-line still masked ------------------------------
+
+_MIDLINE_COMMANDS = [
+    f"ERROR 1045: the command was mysql -u root -p{_PW} appdb",
+    f"Command 'curl -s -u admin:{_PW} https://api.internal' failed",
+    f"$ curl -u admin:{_PW} https://api.internal",
+    f"timeout 10 curl -u admin:{_PW} https://api.internal",
+    f"bash -c 'mysql -u root -p{_PW} appdb'",
+    f"docker exec -it db mysql -u root -p{_PW} appdb",
+    f"ssh host mysql -u root -p{_PW} appdb",
+    f"xargs -n1 curl -u admin:{_PW}",
+    f"nohup mysqldump -u root -p{_PW} appdb",
+    f"DEBUG=1 curl -u admin:{_PW} https://api.internal",
+    f'["curl", "-u", "admin:{_PW}", "https://api.internal"]',
+    f'["mysql", "-u", "root", "-p{_PW}"]',
+    f"mariadb -u root -p{_PW} appdb",
+    f"mysqlsh -u root -p{_PW}",
+    f"mysqlbinlog -u root -p{_PW} binlog.000001",
+]
+
+
+@pytest.mark.parametrize("text", _MIDLINE_COMMANDS)
+def test_midline_commands_masked(text):
+    from agentwatch.detectors.security.secret_scanner import _redact_text, redact_secrets
+
+    assert _PW not in redact_secrets(text)
+    assert _PW not in _redact_text(text)[0]
+
+
+def test_find_primaries_after_mysql_are_not_passwords():
+    from agentwatch.detectors.security.secret_scanner import _redact_text
+
+    text = "find / -name mysql -print"
+    assert _redact_text(text) == (text, 0)
+
+
+@pytest.mark.parametrize("unit", ["'curl ", '"mysql ', "curl x ", "mysql -u -u "])
+def test_command_gap_linear_on_pathological_input(unit):
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    baseline = _plain_redact_seconds()
+    text = unit * (_PATHOLOGICAL_SIZE // len(unit))
+    t = time.perf_counter()
+    redact_secrets(text)
+    elapsed = time.perf_counter() - t
+    assert elapsed < max(1.0, 3 * baseline), f"{elapsed:.2f}s (plain {baseline:.2f}s)"

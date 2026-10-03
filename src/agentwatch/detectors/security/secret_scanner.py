@@ -167,22 +167,35 @@ _p(r"v1\.0-[a-f0-9]{24}-[a-f0-9]{146,}", "cloudflare_api_token")
 # (a variable reference) or ``…``/``[`` (an already-masked value).
 _SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[][^\s'\"]*)"
 _p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env")
-# A command word: at line start or after a shell separator, optionally
-# behind sudo/env/time and a directory. Anchoring here (rather than on any
-# "curl"/"mysql" in the text) and stopping the flag gap at the next
-# separator keeps these patterns linear: an unanchored, unbounded gap
-# rescans to end of line from every occurrence, quadratic on long output.
-_CMD = r"(?m:^|[;&|(`])[^\S\n]*(?:(?:sudo|env|time)\s+)?(?:[^\s;&|`()]*/)?"
-_FLAG_GAP = r"(?=\s)[^\n;&|(`]{0,200}?\s"
-# -p is case-sensitive: mysql's -P is the port.
+# curl/mysql as a program word anywhere on a line (error text quotes
+# commands mid-line, behind prompts, bash -c, ssh, docker exec, xargs ...),
+# but not inside a path, variable or identifier -- except a bin/ directory.
+_CMD = r"(?:(?<=/bin/)|(?<![\w/.$-]))"
+
+
+def _flag_gap(word: str) -> str:
+    """Up to 40 whitespace-separated tokens between *word* and its flag.
+
+    Stops at shell separators and newlines, and never runs past another
+    *word*: each char is then scanned from at most one start, which keeps
+    these patterns linear on long tool output (an unbounded or overlapping
+    gap goes quadratic).
+    """
+    return rf"\b(?:[^\s;&|(`]*[^\S\n]+(?!['\"]?(?:{word})\b)){{0,40}}?['\"]?"
+
+
+_MYSQL = r"mysql(?:dump|admin|import|show|check|sh|binlog)?|mariadb(?:-\w+)?"
+# -p is case-sensitive: mysql's -P is the port. find's -perm/-print/-prune/
+# -path are not passwords (find / -name mysql -print).
 _p(
-    _CMD + r"mysql(?:dump|admin|import|show|check)?" + _FLAG_GAP + r"(?-i:-p)['\"]?"
-    + _SECRET_VALUE,
+    _CMD + rf"(?:{_MYSQL})" + _flag_gap(_MYSQL)
+    + r"(?-i:-p)(?!(?:erm|rint\w*|rune|ath)\b)['\"]?" + _SECRET_VALUE,
     "cli_password_flag",
 )
 _p(r"--password=['\"]?" + _SECRET_VALUE, "cli_password_flag")
 _p(
-    _CMD + r"curl" + _FLAG_GAP + r"(?:-u\s*|--user[\s=]+)['\"]?[^\s:'\"]+:" + _SECRET_VALUE,
+    _CMD + r"curl" + _flag_gap("curl")
+    + r"(?:-u[\s'\",]*|--user[\s=,'\"]+)[^\s:'\"]+:" + _SECRET_VALUE,
     "curl_basic_auth",
 )
 # The scheme is bounded and dot-free for the same reason (dotted schemes
