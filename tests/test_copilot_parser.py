@@ -179,3 +179,22 @@ def test_secret_in_tool_output_reported_on_tool_output_channel(tmp_path):
     ]
     warning = _scan(parse_file(_write(tmp_path / "events.jsonl", entries)))
     assert warning is not None and warning.details["channel"] == "tool_output"
+
+
+def test_secret_in_edit_and_create_is_detected(tmp_path):
+    # Arg names from @github/copilot 1.0.0's tool schemas (edit: new_str, create: file_text).
+    for name, args in (("edit", {"path": "/w/app.py", "old_str": "x", "new_str": None}),
+                       ("create", {"path": "/w/app.py", "file_text": None})):
+        key = "new_str" if name == "edit" else "file_text"
+        args[key] = f'TOKEN = "{FAKE_GH_TOKEN}"\n'
+        entries = SESSION[:2] + [_start("c1", name, args, "56.000"), _done("c1", "56.500")]
+        warning = _scan(parse_file(_write(tmp_path / "events.jsonl", entries)))
+        assert warning is not None and warning.details["channel"] == "file_write", name
+
+
+def test_web_fetch_sets_hostname_only(tmp_path):
+    url = "https://api.example.com:8443/v1/data?token=abc123&x=1"
+    entries = SESSION[:2] + [_start("c1", "web_fetch", {"url": url}, "56.000"),
+                             _done("c1", "56.500")]
+    [fetch] = _tools(_write(tmp_path / "events.jsonl", entries))
+    assert fetch.network_host == "api.example.com"

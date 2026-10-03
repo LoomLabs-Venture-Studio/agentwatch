@@ -167,3 +167,27 @@ def test_secret_in_tool_output_reported_on_tool_output_channel(tmp_path):
     ]
     warning = _scan(parse_file(_write(tmp_path / "transcript.jsonl", entries)))
     assert warning is not None and warning.details["channel"] == "tool_output"
+
+
+def test_secret_in_file_write_is_detected(tmp_path):
+    # replace_file_content/ReplacementContent seen live; write_to_file/CodeContent is
+    # the tool example embedded in the agy 1.2.14 binary.
+    for name, args in (
+        ("replace_file_content", {"TargetFile": "/w/app.py", "TargetContent": "x",
+                                  "ReplacementContent": f'TOKEN = "{FAKE_GH_TOKEN}"\n'}),
+        ("write_to_file", {"TargetFile": "/w/app.py",
+                           "CodeContent": f'TOKEN = "{FAKE_GH_TOKEN}"\n'}),
+    ):
+        entries = SESSION[:1] + [_call(1, "27", name, **args), _step(2, "GENERIC", "28")]
+        warning = _scan(parse_file(_write(tmp_path / "transcript.jsonl", entries)))
+        assert warning is not None and warning.details["channel"] == "file_write", name
+
+
+def test_read_url_content_sets_hostname_only(tmp_path):
+    # `Url` is read_url_content's arg name in the agy 1.2.14 binary's schema.
+    entries = SESSION[:1] + [
+        _call(1, "27", "read_url_content", Url="https://docs.example.org/page?api_key=s3cr3t"),
+        _step(2, "GENERIC", "28", content="<html>...</html>"),
+    ]
+    [fetch] = _tools(_write(tmp_path / "transcript.jsonl", entries))
+    assert fetch.network_host == "docs.example.org"

@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
+from urllib.parse import urlsplit
 
 from .models import Action, ToolType
 
@@ -217,6 +218,20 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
         return None
 
     except Exception:
+        return None
+
+
+def url_hostname(url: Any) -> str | None:
+    """The hostname of *url*, for ``Action.network_host``.
+
+    Never the full URL: query strings carry tokens, and network_host is
+    displayed and exported verbatim (issue #24).
+    """
+    if not isinstance(url, str):
+        return None
+    try:
+        return urlsplit(url).hostname
+    except ValueError:
         return None
 
 

@@ -20,7 +20,7 @@ arrives. Token usage is only written as session totals in
 
 from __future__ import annotations
 
-from .logs import _parse_timestamp, classify_tool
+from .logs import _parse_timestamp, classify_tool, url_hostname
 from .models import Action, ToolType
 
 
@@ -60,16 +60,23 @@ class CopilotParser:
             name = data.get("toolName") or "unknown"
             args = data.get("arguments")
             args = args if isinstance(args, dict) else {}
-            self._pending[call_id] = Action(
+            action = Action(
                 timestamp=_parse_timestamp(entry),
                 tool_name=name,
                 tool_type=classify_tool(name),
                 success=True,  # provisional; set by tool.execution_complete
                 file_path=args.get("path"),
                 command=args.get("command"),
+                network_host=url_hostname(args.get("url")),  # web_fetch
                 session_id=self.session_id,
                 raw=entry,
             )
+            # Written text (edit: new_str, create: file_text) goes where the secret
+            # scanner reads Claude Code's Write/Edit input: raw["input"]["content"].
+            written = [args[k] for k in ("new_str", "file_text") if isinstance(args.get(k), str)]
+            if written:
+                action.raw["input"] = {"content": "\n".join(written)}
+            self._pending[call_id] = action
             return []
 
         if event_type == "tool.execution_complete" and call_id in self._pending:

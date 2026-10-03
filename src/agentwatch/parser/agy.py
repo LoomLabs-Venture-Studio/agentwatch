@@ -25,10 +25,13 @@ import json
 import re
 from typing import Any
 
-from .logs import _parse_timestamp, classify_tool
+from .logs import _parse_timestamp, classify_tool, url_hostname
 from .models import Action, ToolType
 
 _PATH_ARGS = ("AbsolutePath", "TargetFile", "DirectoryPath", "SearchPath")
+# Text written to disk: replace_file_content's ReplacementContent (seen live) and
+# write_to_file's CodeContent (agy 1.2.14 binary's tool example).
+_WRITE_ARGS = ("ReplacementContent", "CodeContent")
 _EXIT_CODE = re.compile(r"exited with code (-?\d+)")
 _USER_REQUEST = re.compile(r"<USER_REQUEST>\n?(.*?)\n?(?:</USER_REQUEST>|\Z)", re.DOTALL)
 
@@ -84,6 +87,11 @@ class AgyParser:
                 args = {k: _decode(v) for k, v in args.items()}
                 path = next((args[k] for k in _PATH_ARGS if isinstance(args.get(k), str)), None)
                 command = args.get("CommandLine")
+                call_raw = dict(raw)  # per call: the result is stored into it
+                written = [args[k] for k in _WRITE_ARGS if isinstance(args.get(k), str)]
+                if written:
+                    # Where the secret scanner reads Claude Code's Write/Edit input.
+                    call_raw["input"] = {"content": "\n".join(written)}
                 self._pending.append(Action(
                     timestamp=timestamp,
                     tool_name=name,
@@ -91,8 +99,9 @@ class AgyParser:
                     success=True,
                     file_path=path,
                     command=command if isinstance(command, str) else None,
+                    network_host=url_hostname(args.get("Url")),  # read_url_content
                     session_id=self.session_id,
-                    raw=dict(raw),  # per call: the result is stored into it
+                    raw=call_raw,
                 ))
             return emitted
 
