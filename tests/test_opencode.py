@@ -136,6 +136,19 @@ class TestAdapter:
         assert agents.adapter_for(other) is None
         assert agents.adapter_for(tmp_path / "x.vscdb").name == "cursor"
 
+    def test_lookalike_db_not_claimed(self, tmp_path):
+        # Same table names, other columns: used to crash check --log with
+        # "no such column: directory".
+        other = tmp_path / "app.db"
+        conn = sqlite3.connect(other)
+        for table in ("session", "message", "part"):
+            conn.execute(f"CREATE TABLE {table} (id TEXT, value TEXT)")
+        conn.execute("INSERT INTO session VALUES ('s1', 'x')")
+        conn.commit()
+        conn.close()
+        assert agents.adapter_for(other) is None
+        assert list(parse_file(other)) == []
+
     @pytest.mark.parametrize("cmdline", [
         ["opencode", "run", "use claude to fix codex"],
         ["/x/lib/node_modules/opencode-ai/bin/opencode.exe"],

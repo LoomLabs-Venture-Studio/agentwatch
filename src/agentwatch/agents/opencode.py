@@ -17,6 +17,13 @@ if TYPE_CHECKING:
     from agentwatch.parser.models import Action
 
 
+_COLUMNS = {
+    "session": {"id", "directory", "parent_id", "time_updated"},
+    "message": {"id", "session_id", "time_created", "data"},
+    "part": {"id", "message_id", "time_created", "data"},
+}
+
+
 def opencode_db() -> Path:
     """opencode's database path (see ``parser/opencode.py`` for the source).
 
@@ -85,12 +92,16 @@ class OpencodeAdapter(BaseAdapter):
         try:
             conn = open_readonly(path)
             try:
-                names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
+                # Columns parser/opencode.py queries, not just table names: a
+                # look-alike db must not reach the parser and crash `check`.
+                return all(
+                    need <= {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+                    for table, need in _COLUMNS.items()
+                )
             finally:
                 conn.close()
         except sqlite3.Error:
             return False
-        return {"session", "message", "part"} <= names
 
     def is_live(self, proc: AgentProcess) -> bool:
         return proc.log_file is not None and db_of(proc.log_file).exists()
