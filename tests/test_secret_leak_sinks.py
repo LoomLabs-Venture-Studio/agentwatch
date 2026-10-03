@@ -560,7 +560,8 @@ def test_db_url_patterns_linear_on_pathological_input():
 # whitespace; the mysql/curl flag gap scanned to the end from each one.
 _GLUED_WORD_UNITS = [
     "mysql://a:", "mysql:", "curl:", "curl@", '"mysql', "'curl", "/bin/mysql", "=mysql",
-    "mariadb:", "mysqldump:", "curl://a:",
+    "mariadb:", "mysqldump:", "curl://a:", "curl", "mysql:mysql:",
+    # Not "mysql" alone: discord_bot_token is quadratic on it (separate issue).
 ]
 
 
@@ -577,6 +578,16 @@ def test_flag_gap_linear_on_glued_program_words():
          "mysql --host=mysql-primary -u root -p[REDACTED] db"),
         # "-p" glued to the program word is not a flag.
         ("pip install mysql-python", "pip install mysql-python"),
+        # A token that merely starts with the program word does not end the gap.
+        ("mysql -u root -h mysql01 -pS3cretPw9", "mysql -u root -h mysql01 -p[REDACTED]"),
+        ("mysql -u root -h mysqldb.prod -pS3cretPw9",
+         "mysql -u root -h mysqldb.prod -p[REDACTED]"),
+        ("mysql -u mysqluser -pS3cretPw9 app", "mysql -u mysqluser -p[REDACTED] app"),
+        ("mysql --host=mysql_primary -u app -pS3cretPw9",
+         "mysql --host=mysql_primary -u app -p[REDACTED]"),
+        ("curl -H 'X: curlbot' -u admin:S3cretPw9 https://x",
+         "curl -H 'X: curlbot' -u admin:[REDACTED] https://x"),
+        ("curl --url curlhost -u admin:S3cretPw9", "curl --url curlhost -u admin:[REDACTED]"),
     ],
 )
 def test_flag_gap_glued_program_words(text, expected):

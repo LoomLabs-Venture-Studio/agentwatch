@@ -194,7 +194,7 @@ def _flag_gap(word: str) -> str:
     quadratic). Each token is possessive: otherwise a run of spaces can be
     split between tokens in exponentially many ways.
     """
-    token = rf"(?:(?!{_CMD}(?:{word}))[^\s;&|(`])*+"
+    token = rf"(?:(?!{_CMD}(?:{word})\b)[^\s;&|(`])*+"
     return rf"\b(?:{token}[^\S\n]++(?!['\"]?(?:{word})\b)){{1,40}}?['\"]?"
 
 

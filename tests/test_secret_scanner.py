@@ -1496,6 +1496,13 @@ _ORACLE_CORPUS = [
     {"command": "git clone https://deploy:a8F3kQ9zL2mX7wP4tR6vB1nY5cH0@github.com/org/repo.git"},
     {"command": "curl -H 'Authorization: Bearer b9G4lR0aM3nY8xQ5uS7wC2oZ6dI1' https://x"},
     {"command": "export GH=" + _ORACLE_GHP + "; password = 'Hunter2Pass!x'"},
+    # Tokens that start with the program word (QA round 2 of #26).
+    {"command": "mysql -u root -h mysql01 -pGapPw1Aq7"},
+    {"command": "mysql -u root -h mysqldb.prod -pGapPw2Bw6"},
+    {"command": "mysql -u mysqluser -pGapPw3Ce5 app"},
+    {"command": "mysql --host=mysql_primary -u app -pGapPw4Dr4"},
+    {"command": "curl -H 'X: curlbot' -u admin:GapPw5Et3 https://x"},
+    {"command": "curl --url curlhost -u admin:GapPw6Fy2"},
 ]
 # Every secret planted above, so the oracle can't pass just because the
 # scanner never saw one (a run-on URL hid its neighbour from detection too).
@@ -1504,7 +1511,8 @@ _ORACLE_PLANTED = [
     "TailPw9xQ", "LaterPw3c", "MyPw7Zk2q", "MyPw8Zk3r", "NeonPw4Xy7", "NeonPw5Zq8",
     "EscPw1Aa9", "EscPw2Bb8", "PgEnvPw7Hq", "MyEnvPw3Lz", "QuotedPw5t", "NewlinePw4",
     "HostGlu9e", "CurlPw8Rk", "a8F3kQ9zL2mX7wP4tR6vB1nY5cH0", "b9G4lR0aM3nY8xQ5uS7wC2oZ6dI1",
-    "Hunter2Pass!x",
+    "Hunter2Pass!x", "GapPw1Aq7", "GapPw2Bw6", "GapPw3Ce5", "GapPw4Dr4", "GapPw5Et3",
+    "GapPw6Fy2",
 ]
 
 
