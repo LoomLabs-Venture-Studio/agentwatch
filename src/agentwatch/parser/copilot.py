@@ -21,7 +21,7 @@ arrives. Token usage is only written as session totals in
 from __future__ import annotations
 
 from .logs import _parse_timestamp, classify_tool
-from .models import Action
+from .models import Action, ToolType
 
 
 class CopilotParser:
@@ -40,6 +40,20 @@ class CopilotParser:
         if event_type == "session.start":
             self.session_id = data.get("sessionId") or self.session_id
             return []
+
+        if event_type == "user.message":
+            content = data.get("content")
+            if not isinstance(content, str) or not content:
+                return []
+            return [Action(
+                timestamp=_parse_timestamp(entry),
+                tool_name="user_message",  # a NON_TOOL_ROLE_LABELS sentinel, like Cursor
+                tool_type=ToolType.UNKNOWN,
+                success=True,
+                incoming_message=content,
+                session_id=self.session_id,
+                raw=entry,
+            )]
 
         call_id = data.get("toolCallId")
         if event_type == "tool.execution_start" and call_id:
@@ -66,8 +80,10 @@ class CopilotParser:
                 action.error_message = error.get("message")
             result = data.get("result")
             if isinstance(result, dict) and isinstance(result.get("content"), str):
-                # Tool output is what an injection would arrive through.
-                action.incoming_message = result["content"]
+                # Tool output goes where Claude Code's tool_result keeps it
+                # (raw["content"]): the secret scanner's tool_output channel and
+                # the indirect/hidden-injection detectors read it there.
+                action.raw["content"] = result["content"]
             if entry.get("timestamp") and action.raw.get("timestamp"):
                 elapsed = _parse_timestamp(entry) - action.timestamp
                 action.duration_ms = max(int(elapsed.total_seconds() * 1000), 0)

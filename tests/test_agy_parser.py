@@ -49,6 +49,11 @@ def _write(path, entries):
     return path
 
 
+def _tools(path):
+    """Tool actions only; user prompts are emitted as separate user_message actions."""
+    return [a for a in parse_file(path) if a.tool_name != "user_message"]
+
+
 def test_detects_agy_format(tmp_path):
     assert detect_log_format(SESSION[0]) == "agy"
     # Claimed by the agy adapter, not claude-code's JSONL catch-all.
@@ -56,7 +61,7 @@ def test_detects_agy_format(tmp_path):
 
 
 def test_parses_real_session_shape(tmp_path):
-    actions = list(parse_file(_write(tmp_path / "transcript.jsonl", SESSION)))
+    actions = _tools(_write(tmp_path / "transcript.jsonl", SESSION))
 
     assert [(a.tool_name, a.tool_type, a.success) for a in actions] == [
         ("view_file", ToolType.READ, True),
@@ -82,7 +87,7 @@ def test_nonzero_exit_code_is_a_failure(tmp_path):
         _call(1, "27", "run_command", CommandLine="false"),
         _step(2, "GENERIC", "28", content="\nThe command exited with code 1.\nOutput:\n"),
     ]
-    [action] = parse_file(_write(tmp_path / "transcript.jsonl", entries))
+    [action] = _tools(_write(tmp_path / "transcript.jsonl", entries))
     assert (action.success, action.error_message) == (False, "exit code 1")
 
 
@@ -96,7 +101,7 @@ def test_background_command_counted_once(tmp_path):
         _step(4, "SYSTEM_MESSAGE", "53", content="The following is a <SYSTEM_MESSAGE> ..."),
         _step(5, "PLANNER_RESPONSE", "54", content="done"),
     ]
-    actions = list(parse_file(_write(tmp_path / "transcript.jsonl", entries)))
+    actions = _tools(_write(tmp_path / "transcript.jsonl", entries))
     assert [(a.command, a.success) for a in actions] == [("sleep 25", True)]
 
 
@@ -130,3 +135,35 @@ def test_resolve_log_from_presence_lock(tmp_path, monkeypatch):
 
 def test_resolve_log_without_pid(tmp_path):
     assert agy_adapter.resolve_agy_log(tmp_path) == (None, None)
+
+
+# Built from pieces so no scanner flags this file itself.
+FAKE_GH_TOKEN = "gh" + "p_" + "Zq7Lm2Xc9Vb4Nk8Rt1Yw6Pd3Hs5Jf0Ga2Ue7"
+
+
+def _scan(actions):
+    from agentwatch.detectors.security.secret_scanner import SecretLeakScanner
+    from agentwatch.parser.models import ActionBuffer
+
+    buf = ActionBuffer()
+    for a in actions:
+        buf.add(a)
+    return SecretLeakScanner().check(buf)
+
+
+def test_user_prompt_is_incoming_message_and_tool_output_is_not(tmp_path):
+    actions = list(parse_file(_write(tmp_path / "transcript.jsonl", SESSION)))
+    user = actions[0]
+    # Seen live: the request is wrapped in <USER_REQUEST> plus system metadata.
+    assert (user.tool_name, user.incoming_message) == ("user_message", "Read notes.txt ...")
+    assert [a.incoming_message for a in actions[1:]] == [None] * 4
+    assert actions[1].raw["content"].startswith("File Path:")
+
+
+def test_secret_in_tool_output_reported_on_tool_output_channel(tmp_path):
+    entries = SESSION[:1] + [
+        _call(1, "27", "view_file", AbsolutePath="/tmp/aw-test/.env"),
+        _step(2, "GENERIC", "32", content=f"GITHUB_TOKEN={FAKE_GH_TOKEN}\n"),
+    ]
+    warning = _scan(parse_file(_write(tmp_path / "transcript.jsonl", entries)))
+    assert warning is not None and warning.details["channel"] == "tool_output"

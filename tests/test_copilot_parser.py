@@ -57,6 +57,11 @@ def _write(path, entries):
     return path
 
 
+def _tools(path):
+    """Tool actions only; user prompts are emitted as separate user_message actions."""
+    return [a for a in parse_file(path) if a.tool_name != "user_message"]
+
+
 def test_detects_copilot_format(tmp_path):
     assert detect_log_format(SESSION[0]) == "copilot"
     # Claimed by the copilot adapter, not claude-code's JSONL catch-all.
@@ -64,7 +69,7 @@ def test_detects_copilot_format(tmp_path):
 
 
 def test_parses_real_session_shape(tmp_path):
-    actions = list(parse_file(_write(tmp_path / "events.jsonl", SESSION)))
+    actions = _tools(_write(tmp_path / "events.jsonl", SESSION))
 
     assert [(a.tool_name, a.tool_type, a.success) for a in actions] == [
         ("view", ToolType.READ, True),
@@ -74,7 +79,7 @@ def test_parses_real_session_shape(tmp_path):
     ]
     view, bash, edit, missing = actions
     assert view.file_path == "/tmp/aw-test/notes.txt"
-    assert view.incoming_message == "hello\n"
+    assert view.raw["content"] == "hello\n"  # tool output, not incoming_message
     assert view.duration_ms == 500
     assert bash.command == "python3 --version"
     assert edit.file_path == "/tmp/aw-test/notes.txt"
@@ -143,3 +148,34 @@ def test_resolve_log_uses_pid_lock_before_first_message(tmp_path, monkeypatch):
 def test_resolve_log_without_session_state(tmp_path, monkeypatch):
     monkeypatch.setenv("COPILOT_HOME", str(tmp_path))
     assert _resolve_copilot_log(tmp_path) == (None, None)
+
+
+# Built from pieces so no scanner flags this file itself.
+FAKE_GH_TOKEN = "gh" + "p_" + "Zq7Lm2Xc9Vb4Nk8Rt1Yw6Pd3Hs5Jf0Ga2Ue7"
+
+
+def _scan(actions):
+    from agentwatch.detectors.security.secret_scanner import SecretLeakScanner
+    from agentwatch.parser.models import ActionBuffer
+
+    buf = ActionBuffer()
+    for a in actions:
+        buf.add(a)
+    return SecretLeakScanner().check(buf)
+
+
+def test_user_prompt_is_incoming_message_and_tool_output_is_not(tmp_path):
+    actions = list(parse_file(_write(tmp_path / "events.jsonl", SESSION)))
+    user = actions[0]
+    assert (user.tool_name, user.incoming_message) == ("user_message", "Read notes.txt ...")
+    assert [a.incoming_message for a in actions[1:]] == [None] * 4
+    assert actions[1].raw["content"] == "hello\n"  # tool output, where Claude Code keeps it
+
+
+def test_secret_in_tool_output_reported_on_tool_output_channel(tmp_path):
+    entries = SESSION[:2] + [
+        _start("c1", "view", {"path": "/tmp/aw-test/.env"}, "56.000"),
+        _done("c1", "56.500", content=f"GITHUB_TOKEN={FAKE_GH_TOKEN}\n"),
+    ]
+    warning = _scan(parse_file(_write(tmp_path / "events.jsonl", entries)))
+    assert warning is not None and warning.details["channel"] == "tool_output"

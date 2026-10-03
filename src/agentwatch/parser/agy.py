@@ -26,10 +26,11 @@ import re
 from typing import Any
 
 from .logs import _parse_timestamp, classify_tool
-from .models import Action
+from .models import Action, ToolType
 
 _PATH_ARGS = ("AbsolutePath", "TargetFile", "DirectoryPath", "SearchPath")
 _EXIT_CODE = re.compile(r"exited with code (-?\d+)")
+_USER_REQUEST = re.compile(r"<USER_REQUEST>\n?(.*?)\n?(?:</USER_REQUEST>|\Z)", re.DOTALL)
 
 
 def _decode(value: Any) -> Any:
@@ -50,6 +51,27 @@ class AgyParser:
 
     def parse_line(self, entry: dict) -> list[Action]:
         tool_calls = entry.get("tool_calls")
+        content = entry.get("content") if isinstance(entry.get("content"), str) else None
+        # raw minus the step's own text: the scanner reads raw["content"] as tool output.
+        raw = {k: v for k, v in entry.items() if k != "content"}
+
+        if entry.get("type") == "USER_INPUT":
+            # Seen live: "<USER_REQUEST>\n...\n</USER_REQUEST>\n<ADDITIONAL_METADATA>...".
+            m = _USER_REQUEST.search(content or "")
+            message = m.group(1) if m else content
+            emitted = self.flush()
+            if message:
+                emitted.append(Action(
+                    timestamp=_parse_timestamp({"timestamp": entry.get("created_at")}),
+                    tool_name="user_message",  # a NON_TOOL_ROLE_LABELS sentinel, like Cursor
+                    tool_type=ToolType.UNKNOWN,
+                    success=True,
+                    incoming_message=message,
+                    session_id=self.session_id,
+                    raw=raw,
+                ))
+            return emitted
+
         if entry.get("type") == "PLANNER_RESPONSE":
             # A new plan means any still-unanswered calls got no result step.
             emitted = self.flush()
@@ -70,7 +92,7 @@ class AgyParser:
                     file_path=path,
                     command=command if isinstance(command, str) else None,
                     session_id=self.session_id,
-                    raw=entry,
+                    raw=dict(raw),  # per call: the result is stored into it
                 ))
             return emitted
 
@@ -78,8 +100,9 @@ class AgyParser:
             return []
 
         action = self._pending.pop(0)
-        content = entry.get("content") if isinstance(entry.get("content"), str) else None
-        action.incoming_message = content
+        if content is not None:
+            # Where Claude Code's tool_result keeps output (scanner tool_output channel).
+            action.raw["content"] = content
         if entry.get("status") == "ERROR":
             action.success = False
             action.error_message = entry.get("error") or content
