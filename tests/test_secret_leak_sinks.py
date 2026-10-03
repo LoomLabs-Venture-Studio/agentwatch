@@ -345,3 +345,34 @@ def test_assignment_mask_keeps_key_name():
     from agentwatch.detectors.security.secret_scanner import redact_secrets
 
     assert redact_secrets(f'MYSQL_PWD="{_PW}" mysql') == 'MYSQL_PWD="[hidden, 10 chars]" mysql'
+
+
+# --- Goal-alignment prompt: user messages --------------------------------------
+
+def test_goal_alignment_prompt_masks_user_messages(monkeypatch):
+    from types import SimpleNamespace
+
+    from agentwatch.llm import OllamaAnalyzer
+
+    prompts: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, host=None):
+            pass
+
+        def chat(self, model, messages, **kwargs):
+            prompts.append(messages[0]["content"])
+            return SimpleNamespace(message=SimpleNamespace(
+                content='{"aligned": true, "confidence": "high", "drift_summary": "ok"}'
+            ))
+
+    monkeypatch.setattr("agentwatch.llm._import_ollama_client", lambda: _FakeClient)
+    buf = ActionBuffer()
+    for i, msg in enumerate([f"deploy with GITHUB_TOKEN={_GHP_TOKEN}",
+                             f"actually use token {_GHP_TOKEN} instead"]):
+        buf.add(Action(timestamp=datetime(2026, 3, 1, 12, i), tool_name="user",
+                       tool_type=ToolType.UNKNOWN, success=True, incoming_message=msg))
+
+    OllamaAnalyzer(model="llama3.2").assess_goal_alignment(buf)
+    assert prompts and "deploy with" in prompts[0] and "actually use" in prompts[0]
+    assert not _leaks(prompts[0])

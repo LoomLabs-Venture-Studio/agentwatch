@@ -47,7 +47,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .detectors.security.secret_scanner import redact_truncate
+from .detectors.security.secret_scanner import redact_secrets, redact_truncate
 
 if TYPE_CHECKING:
     from .detectors.base import Warning
@@ -306,7 +306,10 @@ class OllamaAnalyzer:
         included so the model has something concrete to judge alignment
         against.
         """
-        stated_messages = [a.incoming_message for a in buffer.actions if a.incoming_message]
+        # Redacted: the model's reply can echo a secret into --json output.
+        stated_messages = [
+            redact_secrets(a.incoming_message) for a in buffer.actions if a.incoming_message
+        ]
         if not stated_messages:
             return None
 
