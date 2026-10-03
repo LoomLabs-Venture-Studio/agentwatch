@@ -183,15 +183,19 @@ _CMD = r"(?:(?<=/bin/)|(?<![\w/.$-]))"
 
 
 def _flag_gap(word: str) -> str:
-    """Up to 40 whitespace-separated tokens between *word* and its flag.
+    """1 to 40 whitespace-separated tokens between *word* and its flag.
+
+    At least one: "-p" glued to the word ("mysql-python") is not a flag.
 
     Stops at shell separators and newlines, and never runs past another
-    *word*: each char is then scanned from at most one start, which keeps
-    these patterns linear on long tool output (an unbounded or overlapping
-    gap goes quadratic). Each token is possessive: otherwise a run of spaces
-    can be split between tokens in exponentially many ways.
+    *word*, not even one glued inside a token ("mysql:mysql:..."): each char
+    is then scanned from at most one start, which keeps these patterns
+    linear on long tool output (an unbounded or overlapping gap goes
+    quadratic). Each token is possessive: otherwise a run of spaces can be
+    split between tokens in exponentially many ways.
     """
-    return rf"\b(?:[^\s;&|(`]*+[^\S\n]++(?!['\"]?(?:{word})\b)){{0,40}}?['\"]?"
+    token = rf"(?:(?!{_CMD}(?:{word}))[^\s;&|(`])*+"
+    return rf"\b(?:{token}[^\S\n]++(?!['\"]?(?:{word})\b)){{1,40}}?['\"]?"
 
 
 _MYSQL = r"mysql(?:dump|admin|import|show|check|sh|binlog)?|mariadb(?:-\w+)?"

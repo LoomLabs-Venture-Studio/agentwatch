@@ -554,3 +554,32 @@ def _worst_redact_ratio(units: list[str]) -> tuple[str, float, float]:
 def test_db_url_patterns_linear_on_pathological_input():
     unit, elapsed, base = _worst_redact_ratio(_DB_URL_UNITS)
     assert elapsed < max(1.0, 3 * base), f"{unit!r}: {elapsed:.2f}s (plain {base:.2f}s)"
+
+
+# A mysql:// URL (or any text) glues program words together with no
+# whitespace; the mysql/curl flag gap scanned to the end from each one.
+_GLUED_WORD_UNITS = [
+    "mysql://a:", "mysql:", "curl:", "curl@", '"mysql', "'curl", "/bin/mysql", "=mysql",
+    "mariadb:", "mysqldump:", "curl://a:",
+]
+
+
+def test_flag_gap_linear_on_glued_program_words():
+    unit, elapsed, base = _worst_redact_ratio(_GLUED_WORD_UNITS)
+    assert elapsed < max(1.0, 3 * base), f"{unit!r}: {elapsed:.2f}s (plain {base:.2f}s)"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # The gap stops at the glued "mysql" now; the later start still finds -p.
+        (f"mysql --host=mysql-primary -u root -p{_PW} db",
+         "mysql --host=mysql-primary -u root -p[REDACTED] db"),
+        # "-p" glued to the program word is not a flag.
+        ("pip install mysql-python", "pip install mysql-python"),
+    ],
+)
+def test_flag_gap_glued_program_words(text, expected):
+    from agentwatch.detectors.security.secret_scanner import _redact_text
+
+    assert _redact_text(text)[0] == expected
