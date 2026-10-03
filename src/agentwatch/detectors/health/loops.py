@@ -7,7 +7,7 @@ from collections import Counter
 from agentwatch.parser.models import NON_TOOL_ROLE_LABELS, ActionBuffer
 
 from ..base import Category, Detector, Severity, Warning
-from ..security.secret_scanner import redact_truncate
+from ..security.secret_scanner import redact_secrets, redact_truncate
 
 # Cap for details["last_command"]. Every display slices to <= 100 chars; 200
 # keeps extra context for SIEM consumers and the live dedup key.
@@ -57,6 +57,8 @@ class LoopDetector(Detector):
                 # the length so a huge heredoc isn't regex-scanned every tick.
                 last_cmd = redact_truncate(last_cmd, _LAST_COMMAND_MAX_CHARS)
             last_err = next((a.error_message for a in reversed(matching) if a.error_message), None)
+            if last_err:
+                last_err = redact_secrets(last_err)
 
             detail_line = ""
             if last_cmd:
@@ -176,7 +178,7 @@ class ThrashDetector(Detector):
                 last_err = None
                 for a in reversed(recent):
                     if a.is_bash and not a.success and a.error_message:
-                        last_err = a.error_message[:120]
+                        last_err = redact_truncate(a.error_message, 120)
                         break
 
                 return Warning(
