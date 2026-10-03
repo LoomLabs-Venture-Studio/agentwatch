@@ -17,7 +17,14 @@ if TYPE_CHECKING:
 class ClaudeCodeAdapter(BaseAdapter):
     name = "claude-code"
     kind = "process"
-    process_pattern = r"\bclaude\b"
+    # Matched against the program path (discovery.program_path), never the args.
+    # Native binary (`claude`, npm `bin/claude.exe`, `claude-<platform>/claude`), the
+    # native installer's `claude/versions/<ver>`, and pre-native npm `cli.js`.
+    process_pattern = (
+        r"(^|[/\\])claude(\.exe)?$"
+        r"|[/\\]claude[/\\]versions[/\\][^/\\]+$"
+        r"|[/\\]@anthropic-ai[/\\]claude-code[/\\]cli\.js$"
+    )
     process_exclude = r"Claude\.app|Claude Helper|claude-code-guide|shell-snapshots"
 
     def resolve_log(self, cwd: Path, pid: int | None) -> tuple[Path | None, str | None]:

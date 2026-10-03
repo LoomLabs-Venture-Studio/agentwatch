@@ -16,7 +16,8 @@ if TYPE_CHECKING:
 class AiderAdapter(BaseAdapter):
     name = "aider"
     kind = "process"
-    process_pattern = r"\baider\b"
+    # Program path: `aider`, the script after python, or `python -m aider`.
+    process_pattern = r"(^|[/\\])aider(\.exe)?$"
     process_exclude = None
 
     def resolve_log(self, cwd: Path, pid: int | None) -> tuple[Path | None, str | None]:

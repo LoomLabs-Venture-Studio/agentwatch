@@ -11,15 +11,20 @@ from agentwatch import agents
 from agentwatch.agents.base import BaseAdapter, sniff_jsonl_format
 from agentwatch.discovery import AgentProcess
 
-# Snapshot of discovery.AGENT_PATTERNS as of develop@45e19ce. Adapters must
-# reproduce these verbatim.
+# Snapshot of discovery.AGENT_PATTERNS. Was a verbatim copy of develop@45e19ce;
+# claude-code/aider/codex were re-anchored to the program path in the PR-29 fix
+# wave (args like `--model claude-...` stole other agents' PIDs).
 _LEGACY_PATTERNS = {
     "claude-code": {
-        "pattern": r"\bclaude\b",
+        "pattern": (
+            r"(^|[/\\])claude(\.exe)?$"
+            r"|[/\\]claude[/\\]versions[/\\][^/\\]+$"
+            r"|[/\\]@anthropic-ai[/\\]claude-code[/\\]cli\.js$"
+        ),
         "exclude": r"Claude\.app|Claude Helper|claude-code-guide|shell-snapshots",
     },
-    "aider": {"pattern": r"\baider\b", "exclude": None},
-    "codex": {"pattern": r"\bcodex\b", "exclude": None},
+    "aider": {"pattern": r"(^|[/\\])aider(\.exe)?$", "exclude": None},
+    "codex": {"pattern": r"(^|[/\\])codex(\.exe|\.js)?$", "exclude": None},
     "copilot": {"pattern": r"(^|[/\\])copilot(\.exe)?(\s|$)", "exclude": r"^\S*node(\.exe)?\s"},
     "agy": {"pattern": r"(^|[/\\])agy(\.exe)?(\s|$)", "exclude": None},
 }

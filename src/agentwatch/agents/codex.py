@@ -16,7 +16,8 @@ if TYPE_CHECKING:
 class CodexAdapter(BaseAdapter):
     name = "codex"
     kind = "process"
-    process_pattern = r"\bcodex\b"
+    # Program path: the native binary, or node running `.bin/codex` / `bin/codex.js`.
+    process_pattern = r"(^|[/\\])codex(\.exe|\.js)?$"
     process_exclude = None
 
     def resolve_log(self, cwd: Path, pid: int | None) -> tuple[Path | None, str | None]:
