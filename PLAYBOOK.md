@@ -3353,7 +3353,7 @@ Commits: `ac2c0b0` spec, `862840d` plan, `b3ac9c5` `83cba07` `00359fb`
 - agy: exit-code failure only for `run_command`'s leading result line.
   A non-GENERIC step while calls are pending emits them without a result
   instead of shifting later results onto the wrong calls.
-- Suite: 883 passed; `ruff check .` clean.
+- Suite: 888 passed; `ruff check .` clean.
 
 ### Follow-ups (open, for sub-projects 1-4)
 - [x] claude-code `claims()` takes every `.jsonl` not sniffed as Codex.
