@@ -3335,10 +3335,29 @@ Commits: `ac2c0b0` spec, `862840d` plan, `b3ac9c5` `83cba07` `00359fb`
 - Suite: 845 passed; `ruff check .` clean.
 - Remaining: opencode, Cline/Roo/Kilo (still waiting on real logs).
 
+### Fix wave (manager audit of PR #29, 2026-10-03)
+- Process routing: claude-code/aider/codex patterns matched anywhere in
+  the command line, so `copilot --model claude-...`, `copilot --model
+  gpt-5.1-codex`, `agy -p '...claude...'` and `aider --model claude-...`
+  went to the wrong adapter. The live machine also listed Claude Desktop
+  and Claude Code's own bash shells as agents. Patterns now match the
+  program (`discovery.program_path`: argv[0], or the script/`-m` module
+  after node/python/bun/deno). Each fix is its own commit with a
+  regression test.
+- Copilot/agy: user prompts now go in `incoming_message` (as a
+  `user_message` action). Tool output moves to `raw["content"]`, the
+  scanner's tool_output channel.
+- Copilot/agy file writes (`new_str`/`file_text`, `ReplacementContent`/
+  `CodeContent`) are now secret-scanned. `web_fetch`/`read_url_content`
+  set `network_host` to the hostname only.
+- agy: exit-code failure only for `run_command`'s leading result line.
+  A non-GENERIC step while calls are pending emits them without a result
+  instead of shifting later results onto the wrong calls.
+- Suite: 883 passed; `ruff check .` clean.
+
 ### Follow-ups (open, for sub-projects 1-4)
-- claude-code `claims()` takes every `.jsonl` not sniffed as Codex. A new
-  JSONL adapter (Copilot CLI is a likely one) must go before it in the
-  registry, or claude-code's claims must be narrowed. Decide against real logs.
+- [x] claude-code `claims()` takes every `.jsonl` not sniffed as Codex.
+  Done: narrowed to exclude copilot and agy, alongside codex.
 - Directory-scan auto-detect (`find_log_files`, `--all-logs`) still globs
   `*.jsonl` only.
 - Editor-kind adapters: `AgentProcess.cursor_db_path` is Cursor-named.

@@ -473,8 +473,9 @@ def detect_log_format(first_entry: dict) -> str:
     if entry_type in _CODEX_EVENT_TYPES:
         return "codex"
 
-    # Copilot CLI events.jsonl: dotted "type" with the body under "data"
-    # (every event in a live 1.0.90 capture used one of these prefixes).
+    # Copilot CLI events.jsonl: dotted "type" with the body under "data".
+    # Only the first entry is sniffed, and that is always session.start. A
+    # live 1.0.90 capture also has model.* events, which this list leaves out.
     if isinstance(first_entry.get("data"), dict) and entry_type.startswith(
         ("session.", "user.", "system.", "assistant.", "tool.")
     ):

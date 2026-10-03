@@ -239,23 +239,24 @@ agentwatch stats
 | Claude Code | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } |
 | Moltbot / Clawdbot | — | :material-check-circle:{ .t-green } | — |
 | Aider | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| Codex | :material-check-circle:{ .t-green } | — | — |
+| Codex | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | GitHub Copilot CLI | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | Antigravity CLI (agy) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| Cursor | — | — | — |
+| Cursor | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 
-Agent processes are discovered via `ps` scanning with pattern matching (`agentwatch.discovery.AGENT_PATTERNS`).
-Sub-agents are linked through PPID chain walking and grouped into teams.
+Each agent is an adapter in `agentwatch.agents` (ordered `ADAPTERS` registry). Running agents are
+found by scanning processes with `psutil` and matching each adapter's pattern against the *program*
+(argv[0], or the script after `node`/`python`), never its arguments, so `copilot --model
+claude-sonnet-4.5` is Copilot, not Claude Code. Sub-agents are linked through PPID chain walking and
+grouped into teams.
 
-Claude Code is the only agent with a full pipeline today (process discovery, log-file resolution, and
-log parsing into actions). Moltbot has a log parser (`parser/logs.py`) but no process-discovery pattern,
-so it must be pointed at a log file directly rather than auto-discovered. Aider's process and chat-history
-log are discovered, and as of Sprint 3 its `.aider.chat.history.md` transcript is parsed into actions too
-(`parser/aider.py::parse_aider_log`), so `agentwatch check`/`security-scan` now run real health/security
-analysis against Aider sessions; an optional `--analytics-log` JSONL sidecar backfills token/cost data.
-Live `agentwatch watch` tailing of Aider logs is not yet supported — one-shot `check`/`security-scan` only.
-Codex is detected as a running process only, with no log resolution or parsing. Cursor has no support at
-all yet — planned only.
+Claude Code, Aider, GitHub Copilot CLI and Antigravity CLI (agy) each have the full pipeline:
+process discovery, log-file resolution, and log parsing into actions, both one-shot (`check`,
+`security-scan`) and live (`watch`, `watch-all`). Cursor has the same pipeline, but discovery is
+gated on the Cursor process and reads composers from its `state.vscdb`. Codex is discovered and its
+rollout JSONL is parsed, but the parser is verified against fixtures only, not a live session.
+Moltbot has a log parser but no process discovery, so you point it at a log file directly. An Aider
+`--analytics-log` JSONL sidecar backfills token and cost data.
 
 ---
 
