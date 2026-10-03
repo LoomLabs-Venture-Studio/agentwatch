@@ -364,7 +364,7 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
         network_host = None
         network_port = None
         if isinstance(tool_input, dict):
-            network_host = tool_input.get("host") or tool_input.get("url")
+            network_host = tool_input.get("host") or url_hostname(tool_input.get("url"))
             network_port = tool_input.get("port")
 
         # Incoming messages (for prompt injection detection)
