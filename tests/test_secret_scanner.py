@@ -1509,26 +1509,25 @@ _ORACLE_PLANTED = [
 
 
 def _flagged_values(log: Path) -> set[str]:
-    """Every live, non-placeholder value any pattern flags in *log*."""
-    from agentwatch.detectors.security.secret_scanner import (
-        _SECRET_PATTERNS,
-        _is_redacted_value,
-        _iter_matches,
-        _match_value,
-        _value_span,
-    )
+    """Every live, non-placeholder value any pattern flags in *log*.
+
+    Uses only scanner names that exist before #26 too (falling back to plain
+    finditer), so on old code the oracle fails on assertions, not imports.
+    """
+    from agentwatch.detectors.security import secret_scanner as sc
     from agentwatch.parser import parse_file
 
+    iter_matches = getattr(sc, "_iter_matches", lambda p, _label, t: p.finditer(t))
     values = set()
     for action in parse_file(log):
         for text, _, file_path in extract_scannable_content(action):
-            for pattern, label in _SECRET_PATTERNS:
-                for m in _iter_matches(pattern, label, text):
-                    if _is_redacted_value(m, label):
+            for pattern, label in sc._SECRET_PATTERNS:
+                for m in iter_matches(pattern, label, text):
+                    if sc._is_redacted_value(m, label):
                         continue
-                    if _is_false_positive(_match_value(m), file_path):
+                    if _is_false_positive(sc._match_value(m), file_path):
                         continue
-                    start, end = _value_span(m, label)
+                    start, end = sc._value_span(m, label)
                     values.add(text[start:end])
     return values
 
