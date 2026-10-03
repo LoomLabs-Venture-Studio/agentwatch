@@ -1445,3 +1445,23 @@ def test_glued_secrets_all_redacted():
     value = "Zq8Wm3Xr7Tn2Lp5Vb9Kc4Hd6"  # 24 chars: only generic_api_key matches
     text = f"echo sk-proj-Ab3dEf6hIj9kLm2nOp5qRs8t6api_key={value}"
     assert _redact_text(text) == ("echo [REDACTED]_key=[REDACTED]", 2)
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        # A 1-char host used to make "last 4" of "//u:Pw12345678@x" read "…78@x".
+        ("postgres://u:Pw12345678@x", "[hidden, 10 chars]"),
+        ("mysql://root:S3cretPw@db.internal:3306/app", "[hidden, 8 chars]"),
+        ("postgres://u:Ab3dEf6hIj9kLm2nOp5qRs8t@h/db", "…Rs8t"),  # 24-char password
+    ],
+)
+def test_db_url_mask_reveals_only_from_password(url, expected):
+    # Issue #24 part 4a: the reveal comes from the password, not the URL tail.
+    from agentwatch.detectors.security.secret_scanner import mask_secret
+
+    assert mask_secret(url) == expected
+    buf = ActionBuffer()
+    buf.add(_make_action(tool_type=ToolType.BASH, command=f"psql {url}"))
+    w = SecretLeakScanner().check(buf)
+    assert w is not None and w.details["matched_prefix"] == expected

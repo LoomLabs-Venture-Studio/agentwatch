@@ -418,14 +418,19 @@ def mask_secret(match_text: str) -> str:
     value is >= 20 chars; shorter values reveal nothing but their length.
     The value is the text after ``=``/``:`` (quotes stripped) when present,
     otherwise the whole match -- never the scheme prefix (``ghp_``, ``AKIA``
-    ...), which ``secret_type`` already identifies.
+    ...), which ``secret_type`` already identifies. For a connection-string
+    URL the value is its password, never the host tail.
     """
     value = match_text
-    for sep in ("=", ":"):
-        idx = match_text.find(sep)
-        if idx != -1:
-            value = match_text[idx + 1 :].strip().strip("'\"").strip()
-            break
+    url = _URL_PASSWORD_RE.match(match_text)
+    if url:
+        value = url.group(1)
+    else:
+        for sep in ("=", ":"):
+            idx = match_text.find(sep)
+            if idx != -1:
+                value = match_text[idx + 1 :].strip().strip("'\"").strip()
+                break
     if len(value) >= _MASK_TAIL_MIN_LEN:
         return "…" + value[-_MASK_TAIL_CHARS:]
     return f"[hidden, {len(value)} chars]"
