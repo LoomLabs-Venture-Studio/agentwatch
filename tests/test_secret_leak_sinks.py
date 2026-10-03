@@ -303,3 +303,39 @@ def test_mysql_clients_still_flag_real_passwords(client):
     from agentwatch.detectors.security.secret_scanner import redact_secrets
 
     assert _PW not in redact_secrets(f"sudo /usr/bin/{client} -u root -p{_PW} db")
+
+
+# --- QA B4: parsers redact error text before truncating ------------------------
+
+def test_claude_code_error_message_masks_token_straddling_cut():
+    from agentwatch.parser.logs import parse_claude_code_entry
+
+    entry = {
+        "type": "user",
+        "timestamp": "2026-03-01T12:00:00Z",
+        "message": {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": "t1", "is_error": True,
+            "content": "x" * 490 + " " + _GHP_TOKEN,
+        }]},
+    }
+    result = parse_claude_code_entry(entry)
+    actions = result if isinstance(result, list) else [result]
+    errors = [a.error_message for a in actions if a and a.error_message]
+    assert errors and not any(_leaks(e) for e in errors)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"type": "exec_command_end", "call_id": "c1", "status": "failed", "exit_code": 1,
+         "stderr": "x" * 190 + " " + _GHP_TOKEN},
+        {"type": "patch_apply_end", "call_id": "c1", "success": False,
+         "stderr": "x" * 190 + " " + _GHP_TOKEN},
+    ],
+    ids=["exec", "patch"],
+)
+def test_codex_error_text_masks_token_straddling_cut(payload):
+    from agentwatch.parser.codex import _extract_exec_command_end, _extract_patch_apply_end
+
+    result = _extract_exec_command_end(payload) or _extract_patch_apply_end(payload)
+    assert result.error_text and not _leaks(result.error_text)

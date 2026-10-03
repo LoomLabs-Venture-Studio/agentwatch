@@ -113,7 +113,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from .logs import classify_tool
+from .logs import _redact_truncate, classify_tool
 from .models import Action, ToolType
 
 # Boundary between the "mid" and "new" (>=0.44) Codex rollout schema eras,
@@ -400,7 +400,7 @@ def _extract_exec_command_end(payload: dict) -> _ExecResult | None:
     if is_error:
         detail = (payload.get("stderr") or payload.get("formatted_output") or "").strip()
         prefix = f"exit {exit_code}: " if isinstance(exit_code, int) else ""
-        error_text = (prefix + detail[:200]) or None
+        error_text = (prefix + _redact_truncate(detail, 200)) or None
 
     return _ExecResult(call_id=call_id, is_error=is_error, error_text=error_text)
 
@@ -429,7 +429,7 @@ def _extract_patch_apply_end(payload: dict) -> _ExecResult | None:
     error_text = None
     if is_error:
         detail = (payload.get("stderr") or "").strip()
-        error_text = detail[:200] or None
+        error_text = _redact_truncate(detail, 200) or None
 
     return _ExecResult(call_id=call_id, is_error=is_error, error_text=error_text)
 
