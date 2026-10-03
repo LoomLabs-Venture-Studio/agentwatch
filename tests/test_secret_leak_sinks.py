@@ -435,7 +435,10 @@ def test_find_primaries_after_mysql_are_not_passwords():
     assert _redact_text(text) == (text, 0)
 
 
-@pytest.mark.parametrize("unit", ["'curl ", '"mysql ', "curl x ", "mysql -u -u "])
+@pytest.mark.parametrize(
+    "unit",
+    ["'curl ", '"mysql ', "curl x ", "mysql -u -u ", "curl" + " " * 40 + "x\n"],
+)
 def test_command_gap_linear_on_pathological_input(unit):
     from agentwatch.detectors.security.secret_scanner import redact_secrets
 
@@ -470,3 +473,39 @@ def test_redact_log_file_removes_context_secrets(tmp_path):
     assert count == len(commands)
     for line in text.splitlines():
         assert "[REDACTED]" in json.loads(line)["command"]
+
+
+# --- QA R1: no exponential backtracking on runs of spaces -----------------------
+
+_SPACE_RUNS = [
+    "curl" + " " * 30 + "x",
+    "mysql" + " " * 30 + "x",
+    "curl" + "  a" * 40,
+    "  curl                            Transfer data from a URL\n"
+    "  mysql                           MySQL command-line client\n",
+]
+
+
+def test_command_gap_no_backtracking_blowup_on_spaces():
+    # A subprocess with a timeout: before the fix these take minutes, and a
+    # hang must fail this test rather than stall the whole suite.
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, json, time\n"
+        "from agentwatch.detectors.security.secret_scanner import redact_secrets\n"
+        "worst = 0.0\n"
+        "for text in json.loads(sys.argv[1]):\n"
+        "    t = time.perf_counter(); redact_secrets(text)\n"
+        "    worst = max(worst, time.perf_counter() - t)\n"
+        "print(worst)\n"
+    )
+    try:
+        out = subprocess.run(
+            [sys.executable, "-c", code, json.dumps(_SPACE_RUNS)],
+            capture_output=True, text=True, timeout=20, check=True,
+        ).stdout
+    except subprocess.TimeoutExpired:
+        pytest.fail("redact_secrets hung on runs of spaces")
+    assert float(out) < 0.5

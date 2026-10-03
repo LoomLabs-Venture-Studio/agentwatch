@@ -179,9 +179,10 @@ def _flag_gap(word: str) -> str:
     Stops at shell separators and newlines, and never runs past another
     *word*: each char is then scanned from at most one start, which keeps
     these patterns linear on long tool output (an unbounded or overlapping
-    gap goes quadratic).
+    gap goes quadratic). Each token is possessive: otherwise a run of spaces
+    can be split between tokens in exponentially many ways.
     """
-    return rf"\b(?:[^\s;&|(`]*[^\S\n]+(?!['\"]?(?:{word})\b)){{0,40}}?['\"]?"
+    return rf"\b(?:[^\s;&|(`]*+[^\S\n]++(?!['\"]?(?:{word})\b)){{0,40}}?['\"]?"
 
 
 _MYSQL = r"mysql(?:dump|admin|import|show|check|sh|binlog)?|mariadb(?:-\w+)?"
@@ -195,7 +196,7 @@ _p(
 _p(r"--password=['\"]?" + _SECRET_VALUE, "cli_password_flag")
 _p(
     _CMD + r"curl" + _flag_gap("curl")
-    + r"(?:-u[\s'\",]*|--user[\s=,'\"]+)[^\s:'\"]+:" + _SECRET_VALUE,
+    + r"(?:-u[\s'\",]*+|--user[\s=,'\"]++)[^\s:'\"]+:" + _SECRET_VALUE,
     "curl_basic_auth",
 )
 # The scheme is bounded and dot-free for the same reason (dotted schemes
