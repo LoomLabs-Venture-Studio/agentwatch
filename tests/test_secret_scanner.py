@@ -1496,6 +1496,10 @@ _ORACLE_CORPUS = [
     {"command": "git clone https://deploy:a8F3kQ9zL2mX7wP4tR6vB1nY5cH0@github.com/org/repo.git"},
     {"command": "curl -H 'Authorization: Bearer b9G4lR0aM3nY8xQ5uS7wC2oZ6dI1' https://x"},
     {"command": "export GH=" + _ORACLE_GHP + "; password = 'Hunter2Pass!x'"},
+    # A placeholder URL before a live one (QA round 2 of #26).
+    {"file_path": "/app/.env", "content": (
+        "TEST_URL=postgres://<user>:<password>@localhost/app\n"
+        "DATABASE_URL=postgres://admin:AfterPh7Lq@prod.db/app\n")},
     # Tokens that start with the program word (QA round 2 of #26).
     {"command": "mysql -u root -h mysql01 -pGapPw1Aq7"},
     {"command": "mysql -u root -h mysqldb.prod -pGapPw2Bw6"},
@@ -1512,7 +1516,7 @@ _ORACLE_PLANTED = [
     "EscPw1Aa9", "EscPw2Bb8", "PgEnvPw7Hq", "MyEnvPw3Lz", "QuotedPw5t", "NewlinePw4",
     "HostGlu9e", "CurlPw8Rk", "a8F3kQ9zL2mX7wP4tR6vB1nY5cH0", "b9G4lR0aM3nY8xQ5uS7wC2oZ6dI1",
     "Hunter2Pass!x", "GapPw1Aq7", "GapPw2Bw6", "GapPw3Ce5", "GapPw4Dr4", "GapPw5Et3",
-    "GapPw6Fy2",
+    "GapPw6Fy2", "AfterPh7Lq",
 ]
 
 
@@ -1561,3 +1565,20 @@ def test_redaction_oracle(tmp_path, tool_input):
     assert _flagged_values(log) == set()
     assert audit_log_file(log) == []
     assert redact_log_file(log) == 0
+
+
+def test_placeholder_url_does_not_hide_live_url_after_it(tmp_path):
+    # QA round 2 of #26: the first unredacted match was a placeholder, and the
+    # callers then dropped the whole pattern instead of looking further.
+    env = (
+        "TEST_URL=postgres://<user>:<password>@localhost/app\n"
+        "DATABASE_URL=postgres://admin:LivePw5Zk@prod.db/app\n"
+    )
+    write = {"name": "Write", "input": {"file_path": "/app/.env", "content": env}}
+    log = _write_jsonl(tmp_path, "ph.jsonl", [_make_assistant_line([], tool_inputs=[write])])
+    assert [f.secret_type for f in audit_log_file(log)] == ["database_connection_string"]
+
+    buf = ActionBuffer()
+    buf.add(_make_action(tool_type=ToolType.WRITE, raw={"input": write["input"]}))
+    w = SecretLeakScanner().check(buf)
+    assert w is not None and w.details["secret_type"] == "database_connection_string"

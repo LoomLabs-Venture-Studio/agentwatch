@@ -552,13 +552,8 @@ class SecretLeakScanner(SecurityDetector):
             contents = extract_scannable_content(action)
             for text, channel, file_path in contents:
                 for pattern, secret_type in _SECRET_PATTERNS:
-                    m = _first_live_match(pattern, secret_type, text)
+                    m = _first_live_match(pattern, secret_type, text, file_path)
                     if m is None:
-                        continue
-
-                    match_text = _match_value(m)
-
-                    if _is_false_positive(match_text, file_path):
                         continue
 
                     dedup = self._dedup_key(secret_type, channel, file_path)
@@ -657,12 +652,8 @@ def audit_log_file(
 
         for text, channel, file_path in extract_scannable_content(action):
             for pattern, secret_type in _SECRET_PATTERNS:
-                m = _first_live_match(pattern, secret_type, text)
+                m = _first_live_match(pattern, secret_type, text, file_path)
                 if m is None:
-                    continue
-
-                match_text = _match_value(m)
-                if _is_false_positive(match_text, file_path):
                     continue
 
                 dedup_key = f"{secret_type}:{channel}:{file_path or ''}"
@@ -759,10 +750,18 @@ def _iter_matches(pattern: re.Pattern, label: str, text: str) -> Iterator[re.Mat
         pos = _value_span(m, label)[1] if label in _URL_LABELS else m.end()
 
 
-def _first_live_match(pattern: re.Pattern, label: str, text: str) -> re.Match | None:
-    """First match of *pattern* in *text* whose value isn't already redacted."""
+def _first_live_match(
+    pattern: re.Pattern, label: str, text: str, file_path: str | None = None
+) -> re.Match | None:
+    """First match of *pattern* in *text* that is neither redacted nor a placeholder.
+
+    Both are skipped here, not by the caller: a placeholder or redacted
+    match must not hide a live one later in the same text.
+    """
     for m in _iter_matches(pattern, label, text):
-        if not _is_redacted_value(m, label):
+        if not _is_redacted_value(m, label) and not _is_false_positive(
+            _match_value(m), file_path
+        ):
             return m
     return None
 
