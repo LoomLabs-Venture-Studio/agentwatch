@@ -376,3 +376,21 @@ def test_goal_alignment_prompt_masks_user_messages(monkeypatch):
     OllamaAnalyzer(model="llama3.2").assess_goal_alignment(buf)
     assert prompts and "deploy with" in prompts[0] and "actually use" in prompts[0]
     assert not _leaks(prompts[0])
+
+
+# --- SensitiveDirectoryAccessDetector: command fallback ------------------------
+
+def test_sensitive_directory_masks_command_fallback():
+    from agentwatch.detectors.security.privilege import SensitiveDirectoryAccessDetector
+    from agentwatch.llm import OllamaAnalyzer
+
+    buf = ActionBuffer()
+    buf.add(Action(timestamp=datetime(2026, 3, 1, 12, 0), tool_name="Bash",
+                   tool_type=ToolType.BASH, success=True,
+                   command=f"cat ~/.ssh/config && GITHUB_TOKEN={_GHP_TOKEN} gh api"))
+    warning = SensitiveDirectoryAccessDetector().check(buf)
+    assert warning is not None and warning.signal == "sensitive_directory"
+    assert "~/.ssh/config" in warning.details["path"]
+    assert not _leaks(warning.message)
+    assert not _leaks(json.dumps(warning.details))
+    assert not _leaks(OllamaAnalyzer._build_prompt(warning))
