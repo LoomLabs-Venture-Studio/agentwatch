@@ -267,3 +267,39 @@ def test_quoted_mysql_password_masked_flagged_and_redacted(quote):
                    tool_type=ToolType.BASH, success=True, command=text))
     warning = SecretLeakScanner().check(buf)
     assert warning is not None and warning.details["secret_type"] == "cli_password_flag"
+
+
+# --- QA B3: mysql as a real client command; placeholder values -----------------
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "gcc $(mysql_config --cflags) -pthread main.c",
+        "PGPASSWORD=postgres psql -h localhost",
+        "PGPASSWORD=password psql",
+        "curl -u admin:admin http://localhost:8080",
+        "git clone https://user:pass@example.org/repo.git",
+        "mysqldump --password=<password> appdb",
+    ],
+)
+def test_scanner_ignores_non_client_mysql_and_default_credentials(text):
+    from agentwatch.detectors.security.secret_scanner import (
+        SecretLeakScanner,
+        _redact_text,
+    )
+
+    buf = ActionBuffer()
+    buf.add(Action(timestamp=datetime(2026, 3, 1, 12, 0), tool_name="Bash",
+                   tool_type=ToolType.BASH, success=True, command=text))
+    assert SecretLeakScanner().check(buf) is None
+    # audit --redact must not rewrite logs over them either.
+    assert _redact_text(text) == (text, 0)
+
+
+@pytest.mark.parametrize(
+    "client", ["mysql", "mysqldump", "mysqladmin", "mysqlimport", "mysqlshow", "mysqlcheck"]
+)
+def test_mysql_clients_still_flag_real_passwords(client):
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    assert _PW not in redact_secrets(f"sudo /usr/bin/{client} -u root -p{_PW} db")

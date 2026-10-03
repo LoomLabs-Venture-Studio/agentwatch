@@ -175,7 +175,11 @@ _p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env"
 _CMD = r"(?m:^|[;&|(`])\s*(?:(?:sudo|env|time)\s+)?(?:[^\s;&|`()]*/)?"
 _FLAG_GAP = r"(?=\s)[^\n;&|(`]{0,200}?\s"
 # -p is case-sensitive: mysql's -P is the port.
-_p(_CMD + r"mysql\w*" + _FLAG_GAP + r"(?-i:-p)['\"]?" + _SECRET_VALUE, "cli_password_flag")
+_p(
+    _CMD + r"mysql(?:dump|admin|import|show|check)?" + _FLAG_GAP + r"(?-i:-p)['\"]?"
+    + _SECRET_VALUE,
+    "cli_password_flag",
+)
 _p(r"--password=['\"]?" + _SECRET_VALUE, "cli_password_flag")
 _p(
     _CMD + r"curl" + _FLAG_GAP + r"(?:-u\s*|--user[\s=]+)['\"]?[^\s:'\"]+:" + _SECRET_VALUE,
@@ -198,11 +202,17 @@ _p(r"\bbearer\s+(?P<secret>[a-z0-9_\-.=~+/]{20,})", "bearer_header")
 
 _PLACEHOLDER_RE = re.compile(
     r"your[_-]?(?:key|token|secret|api|password)|"
-    r"example|xxx{3,}|<REPLACE>|TODO|CHANGEME|"
+    r"example|xxx{3,}|<[\w-]+>|TODO|CHANGEME|"
     r"insert[_-]?(?:key|token|here)|"
     r"placeholder|dummy|test[_-]?(?:key|token|secret)",
     re.IGNORECASE,
 )
+
+# Stock/default credentials: a value that is exactly one of these is a
+# placeholder or a well-known default, not a leaked secret.
+_DEFAULT_CREDENTIALS = frozenset({
+    "admin", "pass", "passwd", "password", "postgres", "root", "secret", "mysql",
+})
 
 _TEST_PATH_RE = re.compile(r"(?:^|/)(?:test_|tests/|fixture|mock|conftest)", re.IGNORECASE)
 
@@ -226,6 +236,7 @@ def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
         return True
     # Low Shannon entropy suggests a pattern like "aaaaaaa..." rather than a real key
     # Extract the value portion (after = or :) for entropy check
+    value = match_text
     for sep in ("=", ":"):
         idx = match_text.find(sep)
         if idx != -1:
@@ -233,7 +244,7 @@ def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
             if len(value) >= 16 and _shannon_entropy(value) < 3.0:
                 return True
             break
-    return False
+    return value.lower() in _DEFAULT_CREDENTIALS
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +519,7 @@ class SecretLeakScanner(SecurityDetector):
                     if m is None:
                         continue
 
-                    match_text = m.group(0)
+                    match_text = _match_value(m)
 
                     if _is_false_positive(match_text, file_path):
                         continue
@@ -613,7 +624,7 @@ def audit_log_file(
                 if m is None:
                     continue
 
-                match_text = m.group(0)
+                match_text = _match_value(m)
                 if _is_false_positive(match_text, file_path):
                     continue
 
@@ -714,7 +725,7 @@ def _redact_text(text: str) -> tuple[str, int]:
         pos = 0
         for m in pattern.finditer(text):
             # Leave placeholders/test data alone; they are not real redactions.
-            if _is_false_positive(m.group(0)):
+            if _is_false_positive(_match_value(m)):
                 continue
             vstart, vend = _value_span(m, label)
             # Skip only values that are exactly the placeholder (idempotent
