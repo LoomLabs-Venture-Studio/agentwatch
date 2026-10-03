@@ -509,3 +509,48 @@ def test_command_gap_no_backtracking_blowup_on_spaces():
     except subprocess.TimeoutExpired:
         pytest.fail("redact_secrets hung on runs of spaces")
     assert float(out) < 0.5
+
+
+# --- #26: DB-URL patterns stay linear --------------------------------------------
+
+_DB_URL_UNITS = [
+    "postgres://a:", "postgres://a", "postgres://", "postgresql://a:", "mongodb://a:b",
+    "redis://:", "postgres://a:b@", "postgres://a:b@x;", "postgres://a:b@neon",
+    "postgres://a:b@x\\n",  # raw-JSON newline escape between glued URLs
+]
+
+
+def _worst_redact_ratio(units: list[str]) -> tuple[str, float, float]:
+    """(unit, seconds, plain-text seconds) for the slowest 1MB *units* input.
+
+    Runs in a subprocess with a timeout: before the fix these take minutes,
+    and a hang must fail the test rather than stall the whole suite.
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, json, time\n"
+        "from agentwatch.detectors.security.secret_scanner import _redact_text\n"
+        "size = int(sys.argv[2])\n"
+        "def run(text):\n"
+        "    t = time.perf_counter(); _redact_text(text); return time.perf_counter() - t\n"
+        "base = run('x' * size)\n"
+        "times = {u: run(u * (size // len(u))) for u in json.loads(sys.argv[1])}\n"
+        "worst = max(times, key=times.get)\n"
+        "print(json.dumps([worst, times[worst], base]))\n"
+    )
+    try:
+        out = subprocess.run(
+            [sys.executable, "-c", code, json.dumps(units), str(_PATHOLOGICAL_SIZE)],
+            capture_output=True, text=True, timeout=60, check=True,
+        ).stdout
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"_redact_text hung on one of {units}")
+    unit, elapsed, base = json.loads(out)
+    return unit, elapsed, base
+
+
+def test_db_url_patterns_linear_on_pathological_input():
+    unit, elapsed, base = _worst_redact_ratio(_DB_URL_UNITS)
+    assert elapsed < max(1.0, 3 * base), f"{unit!r}: {elapsed:.2f}s (plain {base:.2f}s)"

@@ -69,12 +69,20 @@ _p(r"xox[bpors]-[0-9a-zA-Z\-]{10,}", "slack_token")
 _p(r"sk_live_[0-9a-zA-Z]{24,}", "stripe_secret_key")
 _p(r"pk_live_[0-9a-zA-Z]{24,}", "stripe_publishable_key")
 
+# Connection strings: user and password are bounded and possessive, since
+# unbounded each "postgres://" start scans to the end of the text (quadratic
+# on long tool output); 256 chars is far beyond any real user/password. The
+# host tail stops at "@" and "\" (a raw-JSON escape such as "\n"), so it
+# never overlaps the next URL's tail.
+_URL_USERINFO = r"[^:\s]{1,256}+:[^@\s]{1,256}+@"
+_URL_TAIL = r"[^\s@\\]"
+
 # Neon DB connection string — must be before generic database pattern
-_p(r"postgres://[^:\s]+:[^@\s]+@[^\s]*neon\.tech", "neondb_connection_string")
+_p(r"postgres://" + _URL_USERINFO + _URL_TAIL + r"*neon\.tech", "neondb_connection_string")
 
 # Database connection strings with embedded passwords (generic)
 _p(
-    r"(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://[^:\s]+:[^@\s]+@[^\s]+",
+    r"(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://" + _URL_USERINFO + _URL_TAIL + "++",
     "database_connection_string",
 )
 
