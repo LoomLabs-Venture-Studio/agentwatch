@@ -184,13 +184,6 @@ def read_session(
             message = json.loads(data)
         except (TypeError, json.JSONDecodeError):
             continue
-        done = (
-            i + 1 < len(messages)
-            or bool((message.get("time") or {}).get("completed"))
-            or include_unfinished
-        )
-        if not done:
-            break
         parts = []
         for (pdata,) in conn.execute(
             "SELECT data FROM part WHERE message_id = ? ORDER BY time_created, id", (mid,)
@@ -199,6 +192,21 @@ def read_session(
                 parts.append(json.loads(pdata))
             except (TypeError, json.JSONDecodeError):
                 continue
+        # A tool still running holds its message even when a later message
+        # exists: prompt.ts writes a queued prompt's row before the step ends.
+        # ponytail: a part left running by a crashed opencode holds the rest of
+        # that session in a live watch; one-shot reads are unaffected.
+        running = any(
+            p.get("type") == "tool"
+            and isinstance(p.get("state"), dict)
+            and p["state"].get("status") in ("pending", "running")
+            for p in parts
+        )
+        done = include_unfinished or (not running and (
+            i + 1 < len(messages) or bool((message.get("time") or {}).get("completed"))
+        ))
+        if not done:
+            break  # keep message order: later messages wait for this one
         out.append((mid, message_actions(message, parts, session_id)))
     return out
 

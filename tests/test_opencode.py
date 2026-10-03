@@ -215,3 +215,47 @@ class TestWatcher:
         conn.commit()
         conn.close()
         assert [a.tool_name for a in watcher._poll_once()] == ["bash"]
+
+    def test_running_tool_holds_message_despite_later_prompt(self, db):
+        # A prompt queued while a tool runs (prompt.ts writes the user row
+        # before the busy loop ends) must not close the running step early.
+        conn = sqlite3.connect(db)
+        mid, created, data = conn.execute(
+            "SELECT id, time_created, data FROM message WHERE session_id = ? "
+            "ORDER BY time_created DESC LIMIT 1", (BOARD,),
+        ).fetchone()
+        (bash_data,) = conn.execute(
+            "SELECT data FROM part WHERE session_id = ? AND data LIKE '%\"tool\":\"bash\"%'",
+            (BOARD,),
+        ).fetchone()
+        (user_data,) = conn.execute(
+            "SELECT data FROM message WHERE session_id = ? AND data LIKE '%\"role\":\"user\"%'",
+            (BOARD,),
+        ).fetchone()
+        watcher = OpencodeWatcher(db, session_id=BOARD)
+        watcher._poll_once()
+
+        step = json.loads(data)
+        del step["time"]["completed"]
+        bash = json.loads(bash_data)
+        done_state = dict(bash["state"])
+        bash["state"] = {"status": "running", "input": done_state["input"],
+                         "time": {"start": done_state["time"]["start"]}}
+        conn.execute("INSERT INTO message VALUES ('msg_run', ?, ?, ?, ?)",
+                     (BOARD, created + 10, created + 10, json.dumps(step)))
+        conn.execute("INSERT INTO part VALUES ('prt_run', 'msg_run', ?, ?, ?, ?)",
+                     (BOARD, created + 11, created + 11, json.dumps(bash)))
+        conn.execute("INSERT INTO message VALUES ('msg_queued', ?, ?, ?, ?)",
+                     (BOARD, created + 12, created + 12, user_data))
+        conn.commit()
+        assert [a.tool_name for a in watcher._poll_once()] == []
+
+        bash["state"] = done_state
+        step["time"]["completed"] = created + 20
+        conn.execute("UPDATE part SET data = ? WHERE id = 'prt_run'", (json.dumps(bash),))
+        conn.execute("UPDATE message SET data = ? WHERE id = 'msg_run'", (json.dumps(step),))
+        conn.commit()
+        conn.close()
+        [action] = [a for a in watcher._poll_once() if a.tool_name == "bash"]
+        assert action.command == "python3 --version"
+        assert action.tokens_in == step["tokens"]["input"] > 0
