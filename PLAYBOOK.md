@@ -3385,19 +3385,39 @@ Issue #24 parts 1-3 and part 4b. Part 4a (DB-URL "last 4" taken from the
 URL tail) moves to #26, because #26 changes the same DB-URL masking code.
 
 ### Acceptance Criteria
-- [ ] Moltbot `network_host` holds the hostname only (`url_hostname`),
+- [x] Moltbot `network_host` holds the hostname only (`url_hostname`),
       never the full URL. A `web_fetch` URL with `?token=ghp_...` puts no
       token in `security-scan --siem-log` or `--json` output.
-- [ ] Error text in `health/loops.py`, `health/stuck.py` and
+- [x] Error text in `health/loops.py`, `health/stuck.py` and
       `health/errors.py` (`last_error`, `sample_errors`, `recent_errors`,
       `error_pattern`, and suggestions built from them) is masked before
       it goes into a `Warning`.
-- [ ] Masking recognises `PGPASSWORD=... psql`, `mysql -p...`,
+- [x] Masking recognises `PGPASSWORD=... psql`, `mysql -p...`,
       `curl -u user:...`, `https://user:token@host` with an unprefixed
       token, and `Authorization: Bearer <token>`. Placeholder values still
       give no false positives in the scanner.
-- [ ] Goal-alignment LLM prompt gets redacted command text.
-- [ ] One regression test per sink. Each test fails before the fix and
+- [x] Goal-alignment LLM prompt gets redacted command text.
+- [x] One regression test per sink. Each test fails before the fix and
       passes after it.
-- [ ] Full suite passes, `ruff check .` clean, no existing test edited
+- [x] Full suite passes, `ruff check .` clean, no existing test edited
       without a written reason.
+
+### Result (2026-10-03)
+- All criteria met. QA approved at `fdd4742` after three block rounds:
+  quadratic regex on `mysql`/`curl` lines, then quadratic blank-line
+  runs plus mid-line misses plus `audit --redact` false success, then
+  catastrophic backtracking on space runs (fixed with possessive
+  quantifiers). Every round has its own regression and timing tests.
+- Also fixed on this branch: goal-alignment user messages are redacted,
+  the `sensitive_directory` command fallback is redacted, and parsers
+  redact error text before truncating it (Claude Code 500, Codex 200).
+- Suite: 985 passed; `ruff check .` clean. Real sessions give
+  byte-identical output to `develop`.
+
+### Follow-ups (open)
+- `database_connection_string` is quadratic (`postgres://a:` repeated);
+  also on `develop`. Fix with #26.
+- QA low items: `mysql_secure_installation -p` and curl outside a `bin/`
+  dir are missed; contrived prose false positives (`make mysql
+  -parallel`, mysql/curl `--help` lines); `/bin/curl` repeated is
+  1.5s/MB; `-p<pw>:` displays as `[hidden, 0 chars]`.
