@@ -11,7 +11,8 @@ wired end-to-end and live-tested against real installs; Codex CLI support
 is fixture-verified only — a genuine `@openai/codex` install has now been
 confirmed reachable (2026-07-15) but no live authenticated session/rollout
 has been captured against it (no credentials in this environment — see
-Known Issues). It watches an agent's session logs as they
+Known Issues). GitHub Copilot CLI and Antigravity CLI (`agy`) are wired
+end-to-end and live-verified (Copilot 1.0.90, agy 1.2.14, 2026-10-01). It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
 result as a CLI report, a CI-friendly exit code, or a live Textual TUI. Built
@@ -40,8 +41,16 @@ src/agentwatch/
                        Entry points: `agentwatch` and `agentguard`
                        (security-first alias), both -> agentwatch.cli
   __init__.py          Public package API re-exporting detectors/health/parser/etc.
-  discovery.py         Finds running agent OS processes via regex process
-                       matching (Claude Code/Aider/Codex); builds process/
+  agents/              One adapter per agent: AgentAdapter protocol +
+                       BaseAdapter defaults (base.py) and the ordered
+                       ADAPTERS registry (__init__.py: claude-code, aider,
+                       codex, cursor, copilot, agy). Process matching is
+                       first-match-wins per PID in that order; adapter_for()
+                       picks the first adapter whose claims() accepts a path
+  discovery.py         Finds running agent OS processes by matching each
+                       process adapter's pattern against the program
+                       (program_path: argv[0], or the script after an
+                       interpreter -- never the args); builds process/
                        team trees (PPID chains); merges in cursor_discovery's
                        synthetic entries. Codex log resolution prefers a
                        PID-based match (`_find_open_codex_rollout`, mirrors
@@ -66,7 +75,7 @@ src/agentwatch/
     models.py           Action / ActionBuffer / SessionStats / ToolType /
                        MetricResult data models
     logs.py              JSONL parsers per agent log format (Claude Code,
-                       Moltbot, Codex), sensitive-path pattern matching,
+                       Moltbot, Codex, Copilot, agy), sensitive-path pattern matching,
                        parse_file() extension-based dispatch (.md -> aider,
                        .vscdb -> cursor_source, else JSONL auto-detect)
     aider.py             Aider Markdown chat-history + --analytics-log JSONL
@@ -101,7 +110,7 @@ src/agentwatch/
                        timer poll + lastUpdatedAt watermark, optional
                        composer_id_filter), and MultiLogWatcher
                        (multi-file/DB, process/team-aware, dispatches to
-                       whichever of the three a given AgentProcess needs)
+                       whichever watcher the agent's adapter makes)
 
   detectors/
     base.py              Detector / SecurityDetector ABCs, Category,
