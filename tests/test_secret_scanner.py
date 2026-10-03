@@ -1388,3 +1388,28 @@ class TestMatchedPrefixMasking:
         decoded = "\n".join(json.dumps(line, ensure_ascii=False) for line in lines)
         assert not _leaks(_SHORT_PASSWORD, decoded)
         assert not _leaks(_GHP_TOKEN, decoded)
+
+
+# ---------------------------------------------------------------------------
+# Issue #26: DB-URL matches must not run on past the password
+# ---------------------------------------------------------------------------
+
+class TestDbUrlRunOn:
+    def test_newline_escaped_env_redacts_both_passwords_in_raw_line(self, tmp_path):
+        # In raw JSONL the .env newline is the two chars "\n", not whitespace,
+        # so the first URL's host tail used to swallow the second URL.
+        env = (
+            "DATABASE_URL=postgres://app:Pr1maryPw9x@db1.internal:5432/app\n"
+            "REPLICA_URL=postgres://app:R3plicaPw7q@db2.internal:5432/app\n"
+        )
+        line = json.dumps({"input": {"file_path": "/app/.env", "content": env}})
+        p = tmp_path / "env.jsonl"
+        p.write_text(line + "\n")
+
+        assert redact_log_file(p) == 2
+        # Redacted in the raw text: every other byte kept, no re-serialization.
+        assert p.read_text() == (
+            line.replace("Pr1maryPw9x", "[REDACTED]").replace("R3plicaPw7q", "[REDACTED]")
+            + "\n"
+        )
+        assert redact_log_file(p) == 0

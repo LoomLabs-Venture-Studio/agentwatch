@@ -10,6 +10,7 @@ import re
 import stat
 import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -728,9 +729,22 @@ def _is_redacted_value(m: re.Match, label: str) -> bool:
     return _REDACTED in m.string[vstart:vend]
 
 
+def _iter_matches(pattern: re.Pattern, label: str, text: str) -> Iterator[re.Match]:
+    """Like ``pattern.finditer(text)``, but resume after a DB URL's password.
+
+    A DB URL's host tail stops only at whitespace, so it can run over the
+    next URL: in raw JSON a newline is the two chars ``\\n``, and URLs may be
+    glued with ``;``. Resuming after the whole match would skip that URL.
+    """
+    pos = 0
+    while (m := pattern.search(text, pos)) is not None:
+        yield m
+        pos = _value_span(m, label)[1] if label in _URL_LABELS else m.end()
+
+
 def _first_live_match(pattern: re.Pattern, label: str, text: str) -> re.Match | None:
     """First match of *pattern* in *text* whose value isn't already redacted."""
-    for m in pattern.finditer(text):
+    for m in _iter_matches(pattern, label, text):
         if not _is_redacted_value(m, label):
             return m
     return None
@@ -742,7 +756,7 @@ def _redact_text(text: str) -> tuple[str, int]:
     for pattern, label in _SECRET_PATTERNS:
         pieces: list[str] = []
         pos = 0
-        for m in pattern.finditer(text):
+        for m in _iter_matches(pattern, label, text):
             # Leave placeholders/test data alone; they are not real redactions.
             if _is_false_positive(_match_value(m)):
                 continue
