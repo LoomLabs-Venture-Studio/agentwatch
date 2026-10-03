@@ -18,10 +18,13 @@ import pytest
 
 from agentwatch import agents
 from agentwatch.agents.opencode import OpencodeAdapter, db_of, session_key
-from agentwatch.detectors.security.secret_scanner import extract_scannable_content
+from agentwatch.detectors.security.secret_scanner import (
+    SecretLeakScanner,
+    extract_scannable_content,
+)
 from agentwatch.discovery import AgentProcess, match_process_adapter
 from agentwatch.parser.logs import parse_file
-from agentwatch.parser.models import ToolType
+from agentwatch.parser.models import ActionBuffer, ToolType
 from agentwatch.parser.opencode import latest_session, message_actions, open_readonly
 from agentwatch.parser.watcher import MultiLogWatcher, OpencodeWatcher
 
@@ -272,3 +275,66 @@ class TestWatcher:
         [action] = [a for a in watcher._poll_once() if a.tool_name == "bash"]
         assert action.command == "python3 --version"
         assert action.tokens_in == step["tokens"]["input"] > 0
+
+    def test_orphaned_running_tool_released_by_later_assistant(self, db):
+        # opencode SIGKILLed mid-tool leaves the part "running" forever; a resumed
+        # run (`opencode run -s`) appends new steps after it. Those must not be
+        # held back, and the orphan surfaces as a failed "interrupted" call.
+        conn = sqlite3.connect(db)
+        created, data = conn.execute(
+            "SELECT time_created, data FROM message WHERE session_id = ? "
+            "ORDER BY time_created DESC LIMIT 1", (BOARD,),
+        ).fetchone()
+        (bash_data,) = conn.execute(
+            "SELECT data FROM part WHERE session_id = ? AND data LIKE '%\"tool\":\"bash\"%'",
+            (BOARD,),
+        ).fetchone()
+        (write_data,) = conn.execute(
+            "SELECT data FROM part WHERE session_id = ? AND data LIKE '%\"tool\":\"write\"%'",
+            (BOARD,),
+        ).fetchone()
+        (user_data,) = conn.execute(
+            "SELECT data FROM message WHERE session_id = ? AND data LIKE '%\"role\":\"user\"%'",
+            (BOARD,),
+        ).fetchone()
+        watcher = OpencodeWatcher(db, session_id=BOARD)
+        watcher._poll_once()
+
+        killed = json.loads(data)
+        del killed["time"]["completed"]
+        bash = json.loads(bash_data)
+        bash["state"] = {"status": "running", "input": bash["state"]["input"],
+                         "time": {"start": bash["state"]["time"]["start"]}}
+        write = json.loads(write_data)
+        write["state"]["input"]["content"] = "GITHUB_TOKEN=ghp_uA1D9rvmF8n2aw14M4xy9CPf2PA2dpbhA04M"
+        resumed = json.loads(data)
+        rows = [
+            ("msg_killed", killed, [("prt_orphan", bash)]),
+            ("msg_resume", json.loads(user_data), []),
+            ("msg_after", resumed, [("prt_secret", write)]),
+        ]
+        for n, (mid, msg, parts) in enumerate(rows, start=1):
+            t = created + 10 * n
+            conn.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                         (mid, BOARD, t, t, json.dumps(msg)))
+            for pid, part in parts:
+                conn.execute("INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+                             (pid, mid, BOARD, t + 1, t + 1, json.dumps(part)))
+        conn.commit()
+        conn.close()
+
+        actions = watcher._poll_once()
+        # (the resume prompt row has no text part here, so no user_message)
+        assert [a.tool_name for a in actions] == ["bash", "write"]
+        orphan, secret_write = actions
+        assert orphan.success is False
+        assert orphan.error_message == "interrupted"
+        assert orphan.command == "python3 --version"
+        buffer = ActionBuffer()
+        for a in actions:
+            buffer.add(a)
+        warning = SecretLeakScanner().check(buffer)
+        assert warning is not None
+        assert warning.signal == "secret_leak"
+        assert "github" in warning.message.lower()
+        assert secret_write.file_path == "/home/user/aw-test/notes.txt"

@@ -81,10 +81,18 @@ def latest_session(
     return None
 
 
-def _tool_action(part: dict, session_id: str) -> Action | None:
+def _tool_action(part: dict, session_id: str, interrupted: bool = False) -> Action | None:
     state = part.get("state")
-    if not isinstance(state, dict) or state.get("status") not in ("completed", "error"):
-        return None  # pending/running: the row will be rewritten
+    if not isinstance(state, dict):
+        return None
+    if state.get("status") in ("pending", "running"):
+        if not interrupted:
+            return None  # the row will be rewritten
+        # Orphaned by a killed opencode (only a graceful abort marks parts
+        # interrupted, processor.ts): report it as a failed call.
+        state = {**state, "status": "error", "error": "interrupted"}
+    elif state.get("status") not in ("completed", "error"):
+        return None
     name = part.get("tool") or "unknown"
     args = state.get("input") if isinstance(state.get("input"), dict) else {}
     times = state.get("time") if isinstance(state.get("time"), dict) else {}
@@ -119,8 +127,14 @@ def _tool_action(part: dict, session_id: str) -> Action | None:
     return action
 
 
-def message_actions(message: dict, parts: list[dict], session_id: str) -> list[Action]:
-    """Actions for one done message: a user prompt, or one assistant step."""
+def message_actions(
+    message: dict, parts: list[dict], session_id: str, interrupted: bool = False
+) -> list[Action]:
+    """Actions for one done message: a user prompt, or one assistant step.
+
+    *interrupted*: the step was cut off, so still-running tool parts are
+    emitted as failed calls.
+    """
     texts = [
         p["text"] for p in parts
         if p.get("type") == "text" and isinstance(p.get("text"), str)
@@ -140,7 +154,10 @@ def message_actions(message: dict, parts: list[dict], session_id: str) -> list[A
             raw=message,
         )]
 
-    actions = [a for p in parts if p.get("type") == "tool" and (a := _tool_action(p, session_id))]
+    actions = [
+        a for p in parts
+        if p.get("type") == "tool" and (a := _tool_action(p, session_id, interrupted))
+    ]
     if not actions and texts:
         actions = [Action(
             timestamp=created,
@@ -177,12 +194,16 @@ def read_session(
         (session_id,),
     ).fetchall()
     out: list[tuple[str, list[Action]]] = []
-    for i, (mid, data) in enumerate(messages):
-        if mid in skip:
-            continue
+    decoded: list[dict | None] = []
+    for _, data in messages:
         try:
-            message = json.loads(data)
+            msg = json.loads(data)
         except (TypeError, json.JSONDecodeError):
+            msg = None
+        decoded.append(msg if isinstance(msg, dict) else None)
+    for i, (mid, _) in enumerate(messages):
+        message = decoded[i]
+        if mid in skip or message is None:
             continue
         parts = []
         for (pdata,) in conn.execute(
@@ -192,22 +213,31 @@ def read_session(
                 parts.append(json.loads(pdata))
             except (TypeError, json.JSONDecodeError):
                 continue
-        # A tool still running holds its message even when a later message
-        # exists: prompt.ts writes a queued prompt's row before the step ends.
-        # ponytail: a part left running by a crashed opencode holds the rest of
-        # that session in a live watch; one-shot reads are unaffected.
         running = any(
             p.get("type") == "tool"
             and isinstance(p.get("state"), dict)
             and p["state"].get("status") in ("pending", "running")
             for p in parts
         )
-        done = include_unfinished or (not running and (
-            i + 1 < len(messages) or bool((message.get("time") or {}).get("completed"))
-        ))
+        # A running tool holds its step even when a later user message exists
+        # (prompt.ts writes a queued prompt's row before the step ends). Only a
+        # later assistant message releases it: opencode starts the next step
+        # after this one ends, so a part still "running" then was orphaned by
+        # a killed process (e.g. resumed with `opencode run -s`).
+        interrupted = running and any(
+            m is not None and m.get("role") == "assistant" for m in decoded[i + 1:]
+        )
+        if running:
+            done = interrupted or include_unfinished
+        else:
+            done = (
+                include_unfinished
+                or i + 1 < len(messages)
+                or bool((message.get("time") or {}).get("completed"))
+            )
         if not done:
             break  # keep message order: later messages wait for this one
-        out.append((mid, message_actions(message, parts, session_id)))
+        out.append((mid, message_actions(message, parts, session_id, interrupted)))
     return out
 
 
