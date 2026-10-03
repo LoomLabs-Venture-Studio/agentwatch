@@ -3370,3 +3370,34 @@ Commits: `ac2c0b0` spec, `862840d` plan, `b3ac9c5` `83cba07` `00359fb`
   typing is loose; `AGENT_PATTERNS` is frozen at import;
   `process_adapters()` is rebuilt per scanned process; JSONL is sniffed
   twice (50 lines, then the full parse).
+
+---
+
+### Sprint 23 -- Secret leak sinks after #23 (issue #24, 2026-10-03)
+**Type:** bug fix (security)
+**Priority:** First of three follow-ups (#24, then #26, then #25).
+PR #29 merged into `develop` (`f3e5bd0`) first, so this fix covers all 6
+adapters.
+**Branch:** `fix/secret-leak-sinks-24` (from `develop`)
+
+### Scope
+Issue #24 parts 1-3 and part 4b. Part 4a (DB-URL "last 4" taken from the
+URL tail) moves to #26, because #26 changes the same DB-URL masking code.
+
+### Acceptance Criteria
+- [ ] Moltbot `network_host` holds the hostname only (`url_hostname`),
+      never the full URL. A `web_fetch` URL with `?token=ghp_...` puts no
+      token in `security-scan --siem-log` or `--json` output.
+- [ ] Error text in `health/loops.py`, `health/stuck.py` and
+      `health/errors.py` (`last_error`, `sample_errors`, `recent_errors`,
+      `error_pattern`, and suggestions built from them) is masked before
+      it goes into a `Warning`.
+- [ ] Masking recognises `PGPASSWORD=... psql`, `mysql -p...`,
+      `curl -u user:...`, `https://user:token@host` with an unprefixed
+      token, and `Authorization: Bearer <token>`. Placeholder values still
+      give no false positives in the scanner.
+- [ ] Goal-alignment LLM prompt gets redacted command text.
+- [ ] One regression test per sink. Each test fails before the fix and
+      passes after it.
+- [ ] Full suite passes, `ruff check .` clean, no existing test edited
+      without a written reason.
