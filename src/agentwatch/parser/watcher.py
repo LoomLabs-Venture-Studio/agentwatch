@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
 from watchfiles import Change, awatch
 
+from agentwatch.agents.base import Watcher
 from agentwatch.discovery import AgentProcess
 
+from .agy import AgyParser
 from .aider import parse_aider_sessions
 from .codex import CodexParser
+from .copilot import CopilotParser
 from .cursor_source import (
     bubble_to_action,
     fetch_bubbles,
@@ -24,6 +28,8 @@ from .cursor_source import (
 from .logs import detect_log_format, parse_claude_code_entry, parse_moltbot_entry
 from .models import Action
 
+logger = logging.getLogger(__name__)
+
 
 class LogWatcher:
     """Watches a log file for new entries in real-time."""
@@ -33,7 +39,7 @@ class LogWatcher:
         self.session_id = session_id
         self._position = 0
         self._log_format: str | None = None
-        self._codex_parser: CodexParser | None = None
+        self._codex_parser: CodexParser | CopilotParser | AgyParser | None = None
         self._callbacks: list[Callable[[Action], None]] = []
 
     def on_action(self, callback: Callable[[Action], None]) -> None:
@@ -48,10 +54,14 @@ class LogWatcher:
                 return []
             if self._log_format == "codex":
                 self._codex_parser = CodexParser()
+            elif self._log_format == "copilot":
+                self._codex_parser = CopilotParser()
+            elif self._log_format == "agy":
+                self._codex_parser = AgyParser(self.session_id)
 
         if self._log_format == "moltbot":
             result = parse_moltbot_entry(entry)
-        elif self._log_format == "codex":
+        elif self._log_format in ("codex", "copilot", "agy"):
             # NOTE: deliberately never call self._codex_parser.flush() here.
             # parse_file()'s one-shot batch read flushes at EOF because
             # end-of-file there genuinely means "this is everything" -- but
@@ -365,14 +375,18 @@ class CursorWatcher:
 def _has_live_log(proc: AgentProcess) -> bool:
     """Whether *proc* has a real, currently-readable data source.
 
-    For every non-Cursor agent this means the real ``log_file`` exists on
-    disk. Cursor entries use a synthetic, never-created ``log_file`` as a
-    ``MultiLogWatcher`` identity key (see
-    ``cursor_discovery.py::_cursor_synthetic_log_key``) -- their liveness
-    check instead looks at the real ``cursor_db_path``.
+    Delegates to the agent's adapter. By default that means the real
+    ``log_file`` exists on disk; Cursor entries use a synthetic,
+    never-created ``log_file`` as a ``MultiLogWatcher`` identity key (see
+    ``cursor_discovery.py::_cursor_synthetic_log_key``), so its adapter
+    checks the real ``cursor_db_path`` instead. Unknown agent types fall
+    back to the default log-file check.
     """
-    if proc.agent_type == "cursor":
-        return proc.cursor_db_path is not None and proc.cursor_db_path.exists()
+    from agentwatch.agents import get
+
+    adapter = get(proc.agent_type)
+    if adapter is not None:
+        return adapter.is_live(proc)
     return proc.log_file is not None and proc.log_file.exists()
 
 
@@ -382,7 +396,7 @@ class MultiLogWatcher:
     def __init__(self, paths: list[Path], poll_interval: float = 0.5):
         self.base_paths = paths
         self.poll_interval = poll_interval
-        self.watchers: dict[Path, LogWatcher | AiderLogWatcher | CursorWatcher] = {}
+        self.watchers: dict[Path, Watcher] = {}
         self._active_files: set[Path] = set()
         self._process_meta: dict[Path, AgentProcess] = {}  # log_path -> process info
         self._stopped_at: dict[Path, float] = {}  # log_path -> monotonic time when first stopped
@@ -485,15 +499,17 @@ class MultiLogWatcher:
     def _find_all_logs(self) -> list[Path]:
         """Find all watchable log entries in base paths.
 
-        In process mode this is ``.jsonl`` files (Claude Code/Moltbot/Codex),
-        ``.md`` files (Aider -- PLAYBOOK Sprint 6 item 6), plus Cursor
-        entries (identified by ``agent_type``, not suffix, since their key
-        is a synthetic never-created path -- see ``cursor_discovery.py``).
+        In process mode this is every non-stopped entry whose agent has a
+        registered adapter (or whose path an adapter claims). Cursor entries
+        are matched by ``agent_type``, not suffix, since their key is a
+        synthetic never-created path -- see ``cursor_discovery.py``.
         """
         if self._process_mode:
+            from agentwatch.agents import adapter_for, get
+
             return [
                 p for p, proc in self._process_meta.items()
-                if (p.suffix in (".jsonl", ".md") or proc.agent_type == "cursor")
+                if (get(proc.agent_type) is not None or adapter_for(p) is not None)
                 and proc.command != "(stopped)"
             ]
 
@@ -505,6 +521,21 @@ class MultiLogWatcher:
                 logs.extend(p.rglob("*.jsonl"))
         return logs
 
+    def _make_watcher(self, log_meta: Path) -> Watcher:
+        """Build the watcher for one tracked entry via its agent's adapter.
+
+        Falls back to adapter_for(path), then plain LogWatcher -- the
+        historical default for any JSONL path.
+        """
+        from agentwatch.agents import adapter_for, get
+
+        proc = self._process_meta.get(log_meta)
+        sid = proc.session_id if proc else None
+        adapter = (get(proc.agent_type) if proc else None) or adapter_for(log_meta)
+        if adapter is None:
+            return LogWatcher(log_meta, session_id=sid)
+        return adapter.make_watcher(proc if proc is not None else log_meta, sid)
+
     async def watch(self) -> AsyncIterator[tuple[str, Action | Path]]:
         """
         Watch all files, yielding events.
@@ -512,7 +543,7 @@ class MultiLogWatcher:
         """
         queue: asyncio.Queue = asyncio.Queue()
 
-        async def fill_queue(watcher: LogWatcher | AiderLogWatcher | CursorWatcher, key: Path):
+        async def fill_queue(watcher: Watcher, key: Path):
             async for action in watcher.watch():
                 await queue.put(("action", (action, key)))
 
@@ -525,17 +556,18 @@ class MultiLogWatcher:
                 for log_meta in current_logs:
                     if log_meta not in self._active_files:
                         self._active_files.add(log_meta)
-                        proc = self._process_meta.get(log_meta)
-                        sid = proc.session_id if proc else None
-                        watcher: LogWatcher | AiderLogWatcher | CursorWatcher
-                        if proc is not None and proc.agent_type == "cursor":
-                            watcher = CursorWatcher(
-                                db_path=proc.cursor_db_path, composer_id_filter=sid
+                        try:
+                            watcher = self._make_watcher(log_meta)
+                        except Exception:
+                            # One adapter failing to build a watcher must not
+                            # kill watch-all. Key stays in _active_files so it
+                            # is not retried (and re-logged) every poll tick.
+                            # DEBUG, not WARNING: no handler is configured, so
+                            # WARNING would reach stderr and garble the TUI.
+                            logger.debug(
+                                "make_watcher failed for %s", log_meta, exc_info=True
                             )
-                        elif log_meta.suffix == ".md":
-                            watcher = AiderLogWatcher(log_meta, session_id=sid)
-                        else:
-                            watcher = LogWatcher(log_meta, session_id=sid)
+                            continue
                         self.watchers[log_meta] = watcher
                         tasks[log_meta] = asyncio.create_task(fill_queue(watcher, log_meta))
                         yield ("agent_added", log_meta)

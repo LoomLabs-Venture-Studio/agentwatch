@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -12,23 +13,59 @@ from pathlib import Path
 
 import psutil
 
+from agentwatch import agents as _agents
 from agentwatch.path_encoding import encode_path_for_claude
 
-# Agent detection patterns: maps agent_type to (process name regex, excludes)
+logger = logging.getLogger(__name__)
+
+# Back-compat: read-only view derived from the adapter registry. New agents
+# are added in agentwatch/agents/, not here.
 AGENT_PATTERNS: dict[str, dict] = {
-    "claude-code": {
-        "pattern": r"\bclaude\b",
-        "exclude": r"Claude\.app|Claude Helper|claude-code-guide|shell-snapshots",
-    },
-    "aider": {
-        "pattern": r"\baider\b",
-        "exclude": None,
-    },
-    "codex": {
-        "pattern": r"\bcodex\b",
-        "exclude": None,
-    },
+    a.name: {"pattern": a.process_pattern, "exclude": a.process_exclude}
+    for a in _agents.process_adapters()
 }
+
+_INTERPRETER = re.compile(r"(node|nodejs|bun|deno|pythonw?[\d.]*)(\.exe)?", re.IGNORECASE)
+
+
+def program_path(cmdline: list[str], name: str = "") -> str:
+    """The program a process runs: argv[0], or the script/module after an interpreter.
+
+    Agents are identified by this, never by their arguments: ``copilot --model
+    gpt-5.1-codex`` is Copilot, not Codex.
+    """
+    if not cmdline:
+        return name
+    if not _INTERPRETER.fullmatch(re.split(r"[/\\]", cmdline[0])[-1]):
+        return cmdline[0]
+    # ponytail: interpreter flags taking a separate value (`node -r x`) are not skipped.
+    args = iter(cmdline[1:])
+    for arg in args:
+        if arg == "-m":
+            return next(args, cmdline[0])
+        if arg in ("-c", "-e", "--eval", "-p", "--print"):
+            return cmdline[0]  # inline code, no script
+        if not arg.startswith("-"):
+            return arg
+    return cmdline[0]
+
+
+def match_process_adapter(cmdline: list[str], name: str = "") -> _agents.AgentAdapter | None:
+    """First process adapter whose pattern matches the program.
+
+    Excludes see the program prefixed by its interpreter (``node /x/bin/copilot``),
+    never the arguments, so a session's own args can't hide it.
+    """
+    program = program_path(cmdline, name)
+    launcher = cmdline[0] if cmdline else name
+    command = program if launcher == program else f"{launcher} {program}"
+    for adapter in _agents.process_adapters():
+        if not adapter.process_pattern or not re.search(adapter.process_pattern, program):
+            continue
+        if adapter.process_exclude and re.search(adapter.process_exclude, command):
+            continue
+        return adapter
+    return None
 
 
 @dataclass
@@ -173,17 +210,9 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
 
-        for agent_type, config in AGENT_PATTERNS.items():
-            pattern = config["pattern"]
-            exclude = config["exclude"]
-
-            if not re.search(pattern, command):
-                continue
-            if exclude and re.search(exclude, command):
-                continue
-
-            if pid in seen_pids:
-                continue
+        adapter = match_process_adapter(cmdline, name)
+        if adapter is not None and pid not in seen_pids:
+            agent_type = adapter.name
             seen_pids.add(pid)
 
             etime = _format_etime(time.time() - create_time) if create_time else ""
@@ -213,12 +242,11 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                     cache_hit = True
 
             if not cache_hit:
-                if agent_type == "claude-code":
-                    log_file, session_id = _resolve_claude_code_log(cwd, pid=pid)
-                elif agent_type == "aider":
-                    log_file, session_id = _resolve_aider_log(cwd)
-                elif agent_type == "codex":
-                    log_file, session_id = _resolve_codex_log(cwd, pid=pid)
+                try:
+                    log_file, session_id = adapter.resolve_log(cwd, pid)
+                except Exception:
+                    logger.debug("resolve_log failed for adapter %s", adapter.name, exc_info=True)
+                    log_file, session_id = None, None
                 if cache is not None:
                     cache.log_by_pid[pid] = (log_file, session_id)
 
@@ -249,15 +277,16 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
     # workspace) -- appended after the PPID-based ancestor walk above so
     # they never get spuriously matched against pid_to_ppid, but before
     # depth/team assignment so they still get a valid depth=0/team_id=self
-    # like any other rootless agent. Lazy import mirrors the logs.py <->
-    # codex.py pattern: avoids a module-load-time cycle since
-    # cursor_discovery.py imports AgentProcess from this module.
-    try:
-        from agentwatch.cursor_discovery import find_cursor_agents
-
-        agents.extend(find_cursor_agents())
-    except Exception:
-        pass
+    # like any other rootless agent. Editor-kind adapters (Cursor, ...) do
+    # their own discovery; adapters import cursor_discovery lazily to avoid
+    # a module-load-time cycle (it imports AgentProcess from this module).
+    for editor in _agents.editor_adapters():
+        try:
+            agents.extend(editor.discover())
+        except Exception:
+            # One broken editor integration must not hide the others.
+            logger.debug("discover failed for adapter %s", editor.name, exc_info=True)
+            continue
 
     _compute_depths(agents)
     _assign_team_ids(agents)

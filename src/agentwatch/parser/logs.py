@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
+from urllib.parse import urlsplit
 
 from .models import Action, ToolType
 
@@ -217,6 +218,20 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
         return None
 
     except Exception:
+        return None
+
+
+def url_hostname(url: Any) -> str | None:
+    """The hostname of *url*, for ``Action.network_host``.
+
+    Never the full URL: query strings carry tokens, and network_host is
+    displayed and exported verbatim (issue #24).
+    """
+    if not isinstance(url, str):
+        return None
+    try:
+        return urlsplit(url).hostname
+    except ValueError:
         return None
 
 
@@ -458,7 +473,82 @@ def detect_log_format(first_entry: dict) -> str:
     if entry_type in _CODEX_EVENT_TYPES:
         return "codex"
 
+    # Copilot CLI events.jsonl: dotted "type" with the body under "data".
+    # Only the first entry is sniffed, and that is always session.start. A
+    # live 1.0.90 capture also has model.* events, which this list leaves out.
+    if isinstance(first_entry.get("data"), dict) and entry_type.startswith(
+        ("session.", "user.", "system.", "assistant.", "tool.")
+    ):
+        return "copilot"
+
+    # agy (Antigravity CLI) transcript.jsonl: numbered steps.
+    if "step_index" in first_entry and "source" in first_entry:
+        return "agy"
+
     return "unknown"
+
+
+def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
+    """JSONL body of parse_file (Claude Code / Moltbot / Codex / Copilot / agy, auto-detected)."""
+    # Imported lazily (not at module level) to avoid a logs.py <-> codex.py
+    # circular import — codex.py imports classify_tool from this module at
+    # its own module level.
+    from .agy import AgyParser
+    from .codex import CodexParser
+    from .copilot import CopilotParser
+
+    log_format = None
+    codex_parser: CodexParser | CopilotParser | AgyParser | None = None
+
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Detect format on first valid entry (skip metadata-only entries)
+            if log_format is None or log_format == "skip":
+                log_format = detect_log_format(entry)
+                if log_format == "skip":
+                    continue
+                if log_format == "codex":
+                    codex_parser = CodexParser()
+                elif log_format == "copilot":
+                    codex_parser = CopilotParser()
+                elif log_format == "agy":
+                    # agy transcripts carry no session id; tag with the requested one.
+                    codex_parser = AgyParser(session_id)
+
+            # Parse based on format
+            if log_format == "moltbot":
+                result = parse_moltbot_entry(entry)
+            elif log_format in ("codex", "copilot", "agy"):
+                result = codex_parser.parse_line(entry)
+            else:
+                result = parse_claude_code_entry(entry)
+
+            # Yield results, optionally filtering by session_id
+            if isinstance(result, list):
+                for action in result:
+                    if session_id is None or action.session_id == session_id:
+                        yield action
+            elif result:
+                if session_id is None or result.session_id == session_id:
+                    yield result
+
+        # One-shot batch read: end-of-file legitimately means "this is
+        # everything", so flush any function_call left waiting for output
+        # that will now never arrive in this file. (LogWatcher's live-tail
+        # equivalent deliberately does NOT do this — see watcher.py.)
+        if codex_parser is not None:
+            for action in codex_parser.flush():
+                if session_id is None or action.session_id == session_id:
+                    yield action
 
 
 def parse_file(
@@ -480,73 +570,13 @@ def parse_file(
             sidecar. Only used when ``path`` is a ``.md`` Aider transcript;
             ignored for JSONL logs.
     """
-    if path.suffix == ".md":
-        from .aider import parse_aider_log
+    from agentwatch.agents import adapter_for
 
-        for action in parse_aider_log(path, analytics_path=analytics_log):
-            if session_id is None or action.session_id == session_id:
-                yield action
+    adapter = adapter_for(path)
+    if adapter is None:
+        yield from _parse_jsonl(path, session_id)
         return
-
-    if path.suffix == ".vscdb":
-        from .cursor_source import parse_cursor_session
-
-        for action in parse_cursor_session(path, composer_id=session_id):
-            yield action
-        return
-
-    # Imported lazily (not at module level) to avoid a logs.py <-> codex.py
-    # circular import — codex.py imports classify_tool from this module at
-    # its own module level.
-    from .codex import CodexParser
-
-    log_format = None
-    codex_parser: CodexParser | None = None
-
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            # Detect format on first valid entry (skip metadata-only entries)
-            if log_format is None or log_format == "skip":
-                log_format = detect_log_format(entry)
-                if log_format == "skip":
-                    continue
-                if log_format == "codex":
-                    codex_parser = CodexParser()
-
-            # Parse based on format
-            if log_format == "moltbot":
-                result = parse_moltbot_entry(entry)
-            elif log_format == "codex":
-                result = codex_parser.parse_line(entry)
-            else:
-                result = parse_claude_code_entry(entry)
-
-            # Yield results, optionally filtering by session_id
-            if isinstance(result, list):
-                for action in result:
-                    if session_id is None or action.session_id == session_id:
-                        yield action
-            elif result:
-                if session_id is None or result.session_id == session_id:
-                    yield result
-
-        # One-shot batch read: end-of-file legitimately means "this is
-        # everything", so flush any function_call left waiting for output
-        # that will now never arrive in this file. (LogWatcher's live-tail
-        # equivalent deliberately does NOT do this — see watcher.py.)
-        if log_format == "codex" and codex_parser is not None:
-            for action in codex_parser.flush():
-                if session_id is None or action.session_id == session_id:
-                    yield action
+    yield from adapter.parse_file(path, session_id, analytics_log=analytics_log)
 
 
 def find_log_files(base_path: Path | None = None) -> list[Path]:

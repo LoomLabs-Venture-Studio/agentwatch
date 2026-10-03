@@ -1,0 +1,230 @@
+"""agy (Antigravity CLI) transcript parsing + discovery.
+
+Step shapes are copied from live agy 1.2.14 sessions (2026-10-01): one that
+read a file, edited it, ran a shell command and read a missing file, and one
+that ran a background command.
+"""
+
+import json
+import re
+from types import SimpleNamespace
+
+from agentwatch import agents
+from agentwatch.agents import agy as agy_adapter
+from agentwatch.parser.logs import detect_log_format, parse_file
+from agentwatch.parser.models import ToolType
+
+
+def _step(i, type_, ts, status="DONE", **extra):
+    return {"step_index": i, "source": "MODEL", "type": type_, "status": status,
+            "created_at": f"2026-10-01T12:38:{ts}Z", **extra}
+
+
+def _call(i, ts, name, **args):
+    # agy JSON-encodes every argument value.
+    return _step(i, "PLANNER_RESPONSE", ts, tool_calls=[
+        {"name": name, "args": {k: json.dumps(v) for k, v in args.items()}}])
+
+
+SESSION = [
+    {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+     "created_at": "2026-10-01T12:38:27Z", "content": "<USER_REQUEST>\nRead notes.txt ..."},
+    _call(1, "27", "view_file", AbsolutePath="/tmp/aw-test/notes.txt"),
+    _step(2, "GENERIC", "32", content="File Path: `file:///tmp/aw-test/notes.txt`\n1: hello\n"),
+    _call(3, "32", "replace_file_content", TargetFile="/tmp/aw-test/notes.txt",
+          TargetContent="hello\n", ReplacementContent="hello world\n"),
+    _step(4, "GENERIC", "36", content="The following changes were made ..."),
+    _call(5, "36", "run_command", CommandLine="python3 --version", Cwd="/tmp/aw-test"),
+    _step(6, "GENERIC", "45",
+          content="\nThe command exited with code 0.\nOutput:\nPython 3.14.6\r\n"),
+    _call(7, "45", "view_file", AbsolutePath="/tmp/aw-test/missing.txt"),
+    _step(8, "GENERIC", "51", status="ERROR",
+          error="failed to read file: stat /tmp/aw-test/missing.txt: no such file or directory"),
+    _step(9, "PLANNER_RESPONSE", "51", content="Here are the results ..."),
+]
+
+
+def _write(path, entries):
+    path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+    return path
+
+
+def _tools(path):
+    """Tool actions only; user prompts are emitted as separate user_message actions."""
+    return [a for a in parse_file(path) if a.tool_name != "user_message"]
+
+
+def test_detects_agy_format(tmp_path):
+    assert detect_log_format(SESSION[0]) == "agy"
+    # Claimed by the agy adapter, not claude-code's JSONL catch-all.
+    assert agents.adapter_for(_write(tmp_path / "transcript.jsonl", SESSION)).name == "agy"
+
+
+def test_parses_real_session_shape(tmp_path):
+    actions = _tools(_write(tmp_path / "transcript.jsonl", SESSION))
+
+    assert [(a.tool_name, a.tool_type, a.success) for a in actions] == [
+        ("view_file", ToolType.READ, True),
+        ("replace_file_content", ToolType.EDIT, True),
+        ("run_command", ToolType.BASH, True),
+        ("view_file", ToolType.READ, False),
+    ]
+    view, edit, run, missing = actions
+    assert view.file_path == "/tmp/aw-test/notes.txt"  # JSON-decoded, no quotes
+    assert view.duration_ms == 5000
+    assert edit.file_path == "/tmp/aw-test/notes.txt"
+    assert run.command == "python3 --version"
+    assert "no such file" in missing.error_message
+
+
+def test_session_id_comes_from_caller(tmp_path):
+    path = _write(tmp_path / "transcript.jsonl", SESSION)
+    assert {a.session_id for a in parse_file(path, session_id="cid-1")} == {"cid-1"}
+
+
+def test_nonzero_exit_code_is_a_failure(tmp_path):
+    entries = SESSION[:1] + [
+        _call(1, "27", "run_command", CommandLine="false"),
+        _step(2, "GENERIC", "28", content="\nThe command exited with code 1.\nOutput:\n"),
+    ]
+    [action] = _tools(_write(tmp_path / "transcript.jsonl", entries))
+    assert (action.success, action.error_message) == (False, "exit code 1")
+
+
+def test_background_command_counted_once(tmp_path):
+    # Seen live: a background command's step stays RUNNING and is never
+    # updated; completion arrives as a SYSTEM_MESSAGE.
+    entries = SESSION[:1] + [
+        _call(1, "27", "run_command", CommandLine="sleep 25"),
+        _step(2, "GENERIC", "28", status="RUNNING", content="Tool is running as a background task"),
+        _step(3, "PLANNER_RESPONSE", "29", content="Waiting for it to finish..."),
+        _step(4, "SYSTEM_MESSAGE", "53", content="The following is a <SYSTEM_MESSAGE> ..."),
+        _step(5, "PLANNER_RESPONSE", "54", content="done"),
+    ]
+    actions = _tools(_write(tmp_path / "transcript.jsonl", entries))
+    assert [(a.command, a.success) for a in actions] == [("sleep 25", True)]
+
+
+def test_process_pattern():
+    adapter = agents.get("agy")
+
+    def matches(cmd):
+        return bool(re.search(adapter.process_pattern, cmd))
+
+    assert matches("agy --dangerously-skip-permissions -p hi")  # seen live
+    assert matches("/home/u/.local/bin/agy")
+    assert not matches("/bin/bash -c pgrep -af 'agy|antigravity'")
+    assert not matches("/usr/bin/agyle")
+
+
+def test_resolve_log_from_presence_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(agy_adapter, "AGY_HOME", tmp_path)
+    lock = tmp_path / "presence" / "cid-1.lock"
+    lock.parent.mkdir()
+    lock.touch()
+    proc = SimpleNamespace(open_files=lambda: [SimpleNamespace(path=str(lock))])
+    monkeypatch.setattr(agy_adapter.psutil, "Process", lambda pid: proc)
+
+    # Transcript not written yet -> session known, no log.
+    assert agy_adapter.resolve_agy_log(tmp_path, pid=1) == (None, "cid-1")
+    log = tmp_path / "brain" / "cid-1" / ".system_generated" / "logs" / "transcript.jsonl"
+    log.parent.mkdir(parents=True)
+    _write(log, SESSION[:1])
+    assert agy_adapter.resolve_agy_log(tmp_path, pid=1) == (log, "cid-1")
+
+
+def test_resolve_log_without_pid(tmp_path):
+    assert agy_adapter.resolve_agy_log(tmp_path) == (None, None)
+
+
+# Built from pieces so no scanner flags this file itself.
+FAKE_GH_TOKEN = "gh" + "p_" + "Zq7Lm2Xc9Vb4Nk8Rt1Yw6Pd3Hs5Jf0Ga2Ue7"
+
+
+def _scan(actions):
+    from agentwatch.detectors.security.secret_scanner import SecretLeakScanner
+    from agentwatch.parser.models import ActionBuffer
+
+    buf = ActionBuffer()
+    for a in actions:
+        buf.add(a)
+    return SecretLeakScanner().check(buf)
+
+
+def test_user_prompt_is_incoming_message_and_tool_output_is_not(tmp_path):
+    actions = list(parse_file(_write(tmp_path / "transcript.jsonl", SESSION)))
+    user = actions[0]
+    # Seen live: the request is wrapped in <USER_REQUEST> plus system metadata.
+    assert (user.tool_name, user.incoming_message) == ("user_message", "Read notes.txt ...")
+    assert [a.incoming_message for a in actions[1:]] == [None] * 4
+    assert actions[1].raw["content"].startswith("File Path:")
+
+
+def test_secret_in_tool_output_reported_on_tool_output_channel(tmp_path):
+    entries = SESSION[:1] + [
+        _call(1, "27", "view_file", AbsolutePath="/tmp/aw-test/.env"),
+        _step(2, "GENERIC", "32", content=f"GITHUB_TOKEN={FAKE_GH_TOKEN}\n"),
+    ]
+    warning = _scan(parse_file(_write(tmp_path / "transcript.jsonl", entries)))
+    assert warning is not None and warning.details["channel"] == "tool_output"
+
+
+def test_secret_in_file_write_is_detected(tmp_path):
+    # replace_file_content/ReplacementContent seen live; write_to_file/CodeContent is
+    # the tool example embedded in the agy 1.2.14 binary.
+    for name, args in (
+        ("replace_file_content", {"TargetFile": "/w/app.py", "TargetContent": "x",
+                                  "ReplacementContent": f'TOKEN = "{FAKE_GH_TOKEN}"\n'}),
+        ("write_to_file", {"TargetFile": "/w/app.py",
+                           "CodeContent": f'TOKEN = "{FAKE_GH_TOKEN}"\n'}),
+    ):
+        entries = SESSION[:1] + [_call(1, "27", name, **args), _step(2, "GENERIC", "28")]
+        warning = _scan(parse_file(_write(tmp_path / "transcript.jsonl", entries)))
+        assert warning is not None and warning.details["channel"] == "file_write", name
+
+
+def test_read_url_content_sets_hostname_only(tmp_path):
+    # `Url` is read_url_content's arg name in the agy 1.2.14 binary's schema.
+    entries = SESSION[:1] + [
+        _call(1, "27", "read_url_content", Url="https://docs.example.org/page?api_key=s3cr3t"),
+        _step(2, "GENERIC", "28", content="<html>...</html>"),
+    ]
+    [fetch] = _tools(_write(tmp_path / "transcript.jsonl", entries))
+    assert fetch.network_host == "docs.example.org"
+
+
+def test_exit_code_only_read_from_run_commands_leading_line(tmp_path):
+    header = "Created At: 2026-10-01T14:38:45+02:00\nCompleted At: 2026-10-01T14:38:45+02:00\n"
+    entries = SESSION[:1] + [
+        _call(1, "27", "view_file", AbsolutePath="/w/ci.log"),
+        _step(2, "GENERIC", "28",
+              content=header + "File Path: `ci.log`\n1: build exited with code 1\n"),
+        _call(3, "28", "run_command", CommandLine="make test"),
+        _step(4, "GENERIC", "29", content=header + "\nThe command exited with code 0.\nOutput:\n"
+              "subtest exited with code 1 (expected)\n"),
+        _call(5, "29", "run_command", CommandLine="false"),
+        _step(6, "GENERIC", "30", content=header + "\nThe command exited with code 2.\nOutput:\n"),
+    ]
+    actions = _tools(_write(tmp_path / "transcript.jsonl", entries))
+    assert [(a.tool_name, a.success) for a in actions] == [
+        ("view_file", True), ("run_command", True), ("run_command", False),
+    ]
+    assert actions[2].error_message == "exit code 2"
+
+
+def test_unexpected_step_while_calls_pending_does_not_shift_results(tmp_path):
+    # No call ids: if anything other than a GENERIC result interrupts, the pending
+    # calls are emitted without a result rather than paired with later steps.
+    entries = SESSION[:1] + [
+        _step(1, "PLANNER_RESPONSE", "27", tool_calls=[
+            {"name": "read_url_content", "args": {"Url": json.dumps("https://example.com/")}},
+            {"name": "run_command", "args": {"CommandLine": json.dumps("make")}},
+        ]),
+        _step(2, "SYSTEM_MESSAGE", "28", content="The following is a <SYSTEM_MESSAGE> ..."),
+        _step(3, "GENERIC", "29", status="ERROR", error="boom"),
+    ]
+    actions = _tools(_write(tmp_path / "transcript.jsonl", entries))
+    assert [(a.tool_name, a.success, a.error_message) for a in actions] == [
+        ("read_url_content", True, None),
+        ("run_command", True, None),
+    ]
