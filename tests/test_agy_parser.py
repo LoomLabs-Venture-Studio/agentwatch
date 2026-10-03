@@ -210,3 +210,21 @@ def test_exit_code_only_read_from_run_commands_leading_line(tmp_path):
         ("view_file", True), ("run_command", True), ("run_command", False),
     ]
     assert actions[2].error_message == "exit code 2"
+
+
+def test_unexpected_step_while_calls_pending_does_not_shift_results(tmp_path):
+    # No call ids: if anything other than a GENERIC result interrupts, the pending
+    # calls are emitted without a result rather than paired with later steps.
+    entries = SESSION[:1] + [
+        _step(1, "PLANNER_RESPONSE", "27", tool_calls=[
+            {"name": "read_url_content", "args": {"Url": json.dumps("https://example.com/")}},
+            {"name": "run_command", "args": {"CommandLine": json.dumps("make")}},
+        ]),
+        _step(2, "SYSTEM_MESSAGE", "28", content="The following is a <SYSTEM_MESSAGE> ..."),
+        _step(3, "GENERIC", "29", status="ERROR", error="boom"),
+    ]
+    actions = _tools(_write(tmp_path / "transcript.jsonl", entries))
+    assert [(a.tool_name, a.success, a.error_message) for a in actions] == [
+        ("read_url_content", True, None),
+        ("run_command", True, None),
+    ]

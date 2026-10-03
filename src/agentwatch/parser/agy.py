@@ -10,14 +10,18 @@ Verified against live agy 1.2.14 sessions (2026-10-01)::
     {"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "DONE",
      "created_at": "...Z", "content": "<tool output>"}
 
-Tool calls carry no call id: each call's result is the next non-planner step,
-in order. A failed call is ``status: "ERROR"`` with an ``error`` string; a
-shell command's exit code is only in ``run_command``'s result text, whose
-first line after the timestamp header is "The command exited with code N.".
-A background command's step stays ``RUNNING`` and is never updated, so it
-counts as a success. Every ``args`` value is JSON-encoded.
-The file has no session id (it is the directory name), so the parser is
-given one.
+Tool calls carry no call id: each call's result is the next GENERIC step, in
+order. Any other step while calls are pending ends the pairing (the calls are
+emitted without a result) rather than risk shifting results onto the wrong
+calls. Live transcripts only show one call per plan, with its result at the
+next ``step_index``, so step_index offsets are not used for pairing.
+
+A failed call is ``status: "ERROR"`` with an ``error`` string. A shell
+command's exit code is only in ``run_command``'s result text, whose first line
+after the timestamp header is "The command exited with code N.". A background
+command's step stays ``RUNNING`` and is never updated, so it counts as a
+success. Every ``args`` value is JSON-encoded. The file has no session id (it
+is the directory name), so the parser is given one.
 """
 
 from __future__ import annotations
@@ -110,8 +114,13 @@ class AgyParser:
                 ))
             return emitted
 
-        if not self._pending or entry.get("type") != "GENERIC":
-            return []
+        if entry.get("type") != "GENERIC":
+            # Not a result step while calls wait (e.g. a SYSTEM_MESSAGE): with no
+            # call ids, pairing later results would shift them onto the wrong
+            # calls, so emit the pending calls without a result instead.
+            return self.flush()
+        if not self._pending:
+            return []  # a result with no call to pair it with
 
         action = self._pending.pop(0)
         if content is not None:
