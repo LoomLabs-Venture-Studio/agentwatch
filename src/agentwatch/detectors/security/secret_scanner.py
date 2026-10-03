@@ -818,20 +818,28 @@ def _redact_line(line: str) -> tuple[str, int]:
     re-serializing that one line.
     """
     new_line, count = _redact_text(line)
-    if count == 0:
-        return line, 0
     before = _json_skeleton(line)
-    if before is _NOT_JSON or _json_skeleton(new_line) == before:
-        return new_line, count
-    obj, count = _redact_json_value(json.loads(line))
-    if count == 0:
-        return line, 0
+    if before is _NOT_JSON:
+        return (new_line, count) if count else (line, 0)
+    if count and _json_skeleton(new_line) != before:
+        obj, count = _redact_json_value(json.loads(line))
+        return (_dump_json_line(obj, line), count) if count else (line, 0)
+    # Some secrets only show once JSON escapes are decoded (a command after
+    # "\n" reads "...nmysql -p..." in the raw text). Re-check the decoded
+    # values so nothing a finding was reported for is left behind.
+    obj, extra = _redact_json_value(json.loads(new_line))
+    if extra:
+        return _dump_json_line(obj, line), count + extra
+    return (new_line, count) if count else (line, 0)
+
+
+def _dump_json_line(obj: Any, original: str) -> str:
     # ensure_ascii=True keeps lone surrogates (e.g. a JS-truncated emoji
     # "\ud83d") as \u escapes, so the line always encodes as valid UTF-8.
     out = json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
-    if line.endswith("\r"):
+    if original.endswith("\r"):
         out += "\r"  # keep CRLF line endings
-    return out, count
+    return out
 
 
 def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:

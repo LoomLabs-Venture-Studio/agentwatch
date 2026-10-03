@@ -445,3 +445,28 @@ def test_command_gap_linear_on_pathological_input(unit):
     redact_secrets(text)
     elapsed = time.perf_counter() - t
     assert elapsed < max(1.0, 3 * baseline), f"{elapsed:.2f}s (plain {baseline:.2f}s)"
+
+
+# --- QA N3: audit --redact removes context secrets from JSONL --------------------
+
+def test_redact_log_file_removes_context_secrets(tmp_path):
+    from agentwatch.detectors.security.secret_scanner import redact_log_file
+
+    commands = [
+        f"mysql -u root -p{_PW} db",
+        f"curl -u admin:{_PW} https://api.internal",
+        f"mysql -uroot -p'{_PW}' db",
+        # In raw JSON the newline is the two chars "\n", so "mysql" follows
+        # an "n": only the decoded string shows it as a command.
+        f"cd /srv\nmysql -u root -p{_PW} db",
+    ]
+    log = tmp_path / "session.jsonl"
+    log.write_text("\n".join(json.dumps({"command": c}) for c in commands) + "\n")
+
+    count = redact_log_file(log)
+
+    text = log.read_text()
+    assert _PW not in text
+    assert count == len(commands)
+    for line in text.splitlines():
+        assert "[REDACTED]" in json.loads(line)["command"]
