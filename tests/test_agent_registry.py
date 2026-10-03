@@ -21,7 +21,7 @@ _LEGACY_PATTERNS = {
             r"|[/\\]claude[/\\]versions[/\\][^/\\]+$"
             r"|[/\\]@anthropic-ai[/\\]claude-code[/\\]cli\.js$"
         ),
-        "exclude": r"Claude\.app|Claude Helper|claude-code-guide|shell-snapshots",
+        "exclude": r"Claude\.app|Claude Helper",
     },
     "aider": {"pattern": r"(^|[/\\])aider(\.exe)?$", "exclude": None},
     "codex": {"pattern": r"(^|[/\\])codex(\.exe|\.js)?$", "exclude": None},

@@ -25,7 +25,7 @@ class ClaudeCodeAdapter(BaseAdapter):
         r"|[/\\]claude[/\\]versions[/\\][^/\\]+$"
         r"|[/\\]@anthropic-ai[/\\]claude-code[/\\]cli\.js$"
     )
-    process_exclude = r"Claude\.app|Claude Helper|claude-code-guide|shell-snapshots"
+    process_exclude = r"Claude\.app|Claude Helper"
 
     def resolve_log(self, cwd: Path, pid: int | None) -> tuple[Path | None, str | None]:
         from agentwatch import discovery  # call-time lookup: tests monkeypatch this

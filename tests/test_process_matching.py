@@ -85,3 +85,30 @@ def test_program_path():
     assert program_path(["python3.12", "-m", "aider"]) == "aider"
     assert program_path(["node", "-e", "x"]) == "node"
     assert program_path([], "claude") == "claude"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        # A session's own arguments must not hide it (manager re-audit, PR #29).
+        ["claude", "-p", "look at shell-snapshots"],
+        ["claude", "--agent", "claude-code-guide"],
+        ["/home/u/.local/bin/claude", "--add-dir", "/Applications/Claude.app"],
+    ],
+)
+def test_claude_args_do_not_trigger_exclude(argv):
+    assert _route(argv) == "claude-code"
+
+
+def test_excludes_still_apply_to_the_program():
+    assert _route(["/Applications/Claude.app/Contents/Resources/claude"]) is None
+    assert _route(["node", "/Applications/Claude.app/Contents/Resources/cli.js"]) is None
+    # Copilot's node loader (seen live) still yields to the native binary it spawns.
+    assert _route(["node", "/home/u/.nvm/versions/node/v24/bin/copilot", "-p", "hi"]) is None
+    assert _route(["node", f"{NVM}/@github/copilot/npm-loader.js"]) is None
+
+
+def test_pythonw_is_an_interpreter():
+    assert program_path([r"C:\Python312\pythonw.exe", r"C:\venv\Scripts\aider"]) == (
+        r"C:\venv\Scripts\aider"
+    )

@@ -25,7 +25,7 @@ AGENT_PATTERNS: dict[str, dict] = {
     for a in _agents.process_adapters()
 }
 
-_INTERPRETER = re.compile(r"(node|nodejs|bun|deno|python[\d.]*)(\.exe)?", re.IGNORECASE)
+_INTERPRETER = re.compile(r"(node|nodejs|bun|deno|pythonw?[\d.]*)(\.exe)?", re.IGNORECASE)
 
 
 def program_path(cmdline: list[str], name: str = "") -> str:
@@ -51,9 +51,14 @@ def program_path(cmdline: list[str], name: str = "") -> str:
 
 
 def match_process_adapter(cmdline: list[str], name: str = "") -> _agents.AgentAdapter | None:
-    """First process adapter whose pattern matches the program (excludes see the full command)."""
+    """First process adapter whose pattern matches the program.
+
+    Excludes see the program prefixed by its interpreter (``node /x/bin/copilot``),
+    never the arguments, so a session's own args can't hide it.
+    """
     program = program_path(cmdline, name)
-    command = " ".join(cmdline) or name
+    launcher = cmdline[0] if cmdline else name
+    command = program if launcher == program else f"{launcher} {program}"
     for adapter in _agents.process_adapters():
         if not adapter.process_pattern or not re.search(adapter.process_pattern, program):
             continue
