@@ -200,6 +200,8 @@ class SensitiveDirectoryAccessDetector(SecurityDetector):
             path = action.file_path or action.command or ""
 
             if self._pattern.search(path):
+                # The fallback is a whole command: mask secrets before any cut.
+                path = redact_truncate(path, 200)
                 # Write operations are more severe
                 severity = Severity.HIGH if action.is_file_edit else Severity.MEDIUM
 

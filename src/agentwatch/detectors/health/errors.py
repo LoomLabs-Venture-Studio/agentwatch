@@ -8,6 +8,7 @@ from collections import Counter
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, Detector, Severity, Warning
+from ..security.secret_scanner import redact_truncate
 
 
 class ErrorSpiralDetector(Detector):
@@ -37,7 +38,7 @@ class ErrorSpiralDetector(Detector):
         if consecutive_failures >= self.threshold:
             # Collect the actual errors
             recent_errs = [
-                a.error_message[:100] for a in reversed(recent)
+                redact_truncate(a.error_message, 100) for a in reversed(recent)
                 if not a.success and a.error_message
             ][:3]
 
@@ -76,7 +77,8 @@ class ErrorBlindnessDetector(Detector):
         error = re.sub(r'line \d+', 'line N', error)
         error = re.sub(r':\d+:\d+', ':N:N', error)
         error = re.sub(r'/[\w/.-]+\.py', 'FILE.py', error)
-        return error.strip()[:200]  # Truncate for comparison
+        # Redact before truncating: a cut token would no longer match.
+        return redact_truncate(error.strip(), 200)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
         if len(buffer) < self.window:
@@ -154,7 +156,7 @@ class SyntaxLoopDetector(Detector):
         if syntax_errors >= self.threshold:
             # Collect sample error messages
             samples = [
-                a.error_message[:100] for a in recent
+                redact_truncate(a.error_message, 100) for a in recent
                 if a.error_message and self._pattern.search(a.error_message)
             ][:3]
 

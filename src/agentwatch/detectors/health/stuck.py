@@ -12,6 +12,7 @@ from collections import Counter
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, Detector, Severity, Warning
+from ..security.secret_scanner import redact_secrets, redact_truncate
 
 # Maps raw error strings to a normalized error class
 _ERROR_CLASS_PATTERNS = [
@@ -94,7 +95,7 @@ class SameOutcomeDetector(Detector):
 
         # Gather example error messages for this class
         examples = [msg for ec, msg in error_classes_after_edits if ec == most_common_class]
-        example_msg = examples[-1][:120] if examples else ""
+        example_msg = redact_truncate(examples[-1], 120) if examples else ""
 
         return Warning(
             category=self.category,
@@ -163,7 +164,7 @@ class FileChurnDetector(Detector):
             a.error_message for a in recent
             if a.is_bash and not a.success and a.error_message
         ]
-        last_error = recent_errors[-1][:120] if recent_errors else None
+        last_error = redact_truncate(recent_errors[-1], 120) if recent_errors else None
 
         return Warning(
             category=self.category,
@@ -318,7 +319,9 @@ class ErrorClassPersistenceDetector(Detector):
 
         # Collect the different error messages for this class
         error_samples = [msg for ec, msg in failures if ec == most_common_class]
-        unique_messages = list(dict.fromkeys(error_samples))[:3]  # Dedupe, keep order, max 3
+        unique_messages = [
+            redact_secrets(m) for m in list(dict.fromkeys(error_samples))[:3]
+        ]  # Dedupe, keep order, max 3
 
         return Warning(
             category=self.category,

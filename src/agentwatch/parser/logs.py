@@ -178,7 +178,10 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
 
                 if is_error:
                     # Create an action representing the failed result
-                    error_msg = str(result_content)[:500] if result_content else "Tool error"
+                    error_msg = (
+                        _redact_truncate(str(result_content), 500)
+                        if result_content else "Tool error"
+                    )
                     actions.append(Action(
                         timestamp=timestamp,
                         tool_name="tool_result",
@@ -219,6 +222,16 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
 
     except Exception:
         return None
+
+
+def _redact_truncate(text: str, limit: int) -> str:
+    """Mask secrets, then cut to *limit* (cutting first leaves part of a
+    token straddling the cut unmasked). Imported lazily: the detectors
+    package imports the parser package, so a module-level import cycles.
+    """
+    from agentwatch.detectors.security.secret_scanner import redact_truncate
+
+    return redact_truncate(text, limit)
 
 
 def url_hostname(url: Any) -> str | None:
@@ -364,7 +377,7 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
         network_host = None
         network_port = None
         if isinstance(tool_input, dict):
-            network_host = tool_input.get("host") or tool_input.get("url")
+            network_host = tool_input.get("host") or url_hostname(tool_input.get("url"))
             network_port = tool_input.get("port")
 
         # Incoming messages (for prompt injection detection)

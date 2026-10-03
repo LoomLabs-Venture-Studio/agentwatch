@@ -160,6 +160,55 @@ _p(r"pypi-[a-zA-Z0-9\-_]{16,}", "pypi_token")
 # Cloudflare
 _p(r"v1\.0-[a-f0-9]{24}-[a-f0-9]{146,}", "cloudflare_api_token")
 
+# Unprefixed secrets recognisable only by their command/header context. The
+# named group ``secret`` marks the value: only it is masked/redacted, since
+# the match also holds the context (``mysql -u root -p...``) that mask_secret
+# would otherwise mistake for the value. A value never starts with ``$``
+# (a variable reference) or ``…``/``[`` (an already-masked value).
+_SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[][^\s'\"]*)"
+_p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env")
+# curl/mysql as a program word anywhere on a line (error text quotes
+# commands mid-line, behind prompts, bash -c, ssh, docker exec, xargs ...),
+# but not inside a path, variable or identifier -- except a bin/ directory.
+_CMD = r"(?:(?<=/bin/)|(?<![\w/.$-]))"
+
+
+def _flag_gap(word: str) -> str:
+    """Up to 40 whitespace-separated tokens between *word* and its flag.
+
+    Stops at shell separators and newlines, and never runs past another
+    *word*: each char is then scanned from at most one start, which keeps
+    these patterns linear on long tool output (an unbounded or overlapping
+    gap goes quadratic). Each token is possessive: otherwise a run of spaces
+    can be split between tokens in exponentially many ways.
+    """
+    return rf"\b(?:[^\s;&|(`]*+[^\S\n]++(?!['\"]?(?:{word})\b)){{0,40}}?['\"]?"
+
+
+_MYSQL = r"mysql(?:dump|admin|import|show|check|sh|binlog)?|mariadb(?:-\w+)?"
+# -p is case-sensitive: mysql's -P is the port. find's -perm/-print/-prune/
+# -path are not passwords (find / -name mysql -print).
+_p(
+    _CMD + rf"(?:{_MYSQL})" + _flag_gap(_MYSQL)
+    + r"(?-i:-p)(?!(?:erm|rint\w*|rune|ath)\b)['\"]?" + _SECRET_VALUE,
+    "cli_password_flag",
+)
+_p(r"--password=['\"]?" + _SECRET_VALUE, "cli_password_flag")
+_p(
+    _CMD + r"curl" + _flag_gap("curl")
+    + r"(?:-u[\s'\",]*+|--user[\s=,'\"]++)[^\s:'\"]+:" + _SECRET_VALUE,
+    "curl_basic_auth",
+)
+# The scheme is bounded and dot-free for the same reason (dotted schemes
+# are rare; "a.a.a..." would otherwise restart a scheme scan at every "a").
+# Any scheme except the database ones database_connection_string handles.
+_p(
+    r"\b(?!(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://)[a-z][a-z0-9+-]{0,30}://"
+    r"[^\s:/@]+:(?P<secret>[^\s@/$…\[][^\s@/]*)@",
+    "url_credentials",
+)
+_p(r"\bbearer\s+(?P<secret>[a-z0-9_\-.=~+/]{20,})", "bearer_header")
+
 
 # ---------------------------------------------------------------------------
 # Placeholder / false-positive filters
@@ -167,11 +216,17 @@ _p(r"v1\.0-[a-f0-9]{24}-[a-f0-9]{146,}", "cloudflare_api_token")
 
 _PLACEHOLDER_RE = re.compile(
     r"your[_-]?(?:key|token|secret|api|password)|"
-    r"example|xxx{3,}|<REPLACE>|TODO|CHANGEME|"
+    r"example|xxx{3,}|<[\w-]+>|TODO|CHANGEME|"
     r"insert[_-]?(?:key|token|here)|"
     r"placeholder|dummy|test[_-]?(?:key|token|secret)",
     re.IGNORECASE,
 )
+
+# Stock/default credentials: a value that is exactly one of these is a
+# placeholder or a well-known default, not a leaked secret.
+_DEFAULT_CREDENTIALS = frozenset({
+    "admin", "pass", "passwd", "password", "postgres", "root", "secret", "mysql",
+})
 
 _TEST_PATH_RE = re.compile(r"(?:^|/)(?:test_|tests/|fixture|mock|conftest)", re.IGNORECASE)
 
@@ -195,6 +250,7 @@ def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
         return True
     # Low Shannon entropy suggests a pattern like "aaaaaaa..." rather than a real key
     # Extract the value portion (after = or :) for entropy check
+    value = match_text
     for sep in ("=", ":"):
         idx = match_text.find(sep)
         if idx != -1:
@@ -202,7 +258,7 @@ def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
             if len(value) >= 16 and _shannon_entropy(value) < 3.0:
                 return True
             break
-    return False
+    return value.lower() in _DEFAULT_CREDENTIALS
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +430,24 @@ def mask_secret(match_text: str) -> str:
     return f"[hidden, {len(value)} chars]"
 
 
+def _match_value(m: re.Match) -> str:
+    """The secret part of a match: its ``secret`` group if it has one."""
+    return m.group("secret") if "secret" in m.re.groupindex else m.group(0)
+
+
+def _mask_match(m: re.Match, label: str) -> str:
+    """*m*'s text with only its secret value masked.
+
+    Keeps the key name and quotes of an assignment match, so
+    ``MYSQL_PWD="..."`` reads ``MYSQL_PWD="[hidden, N chars]"`` rather than
+    ``MYSQL_[hidden, N chars]``.
+    """
+    if "secret" not in m.re.groupindex and label not in _ASSIGNMENT_LABELS:
+        return mask_secret(m.group(0))
+    start, end = _value_span(m, label)
+    return m.string[m.start() : start] + mask_secret(_match_value(m)) + m.string[end : m.end()]
+
+
 def redact_secrets(text: str) -> str:
     """Replace every ``_SECRET_PATTERNS`` match in *text* with its masked form.
 
@@ -383,8 +457,8 @@ def redact_secrets(text: str) -> str:
     heuristic misjudged does. Callers that truncate must redact *first* --
     truncating first can cut a token so the pattern no longer matches.
     """
-    for pattern, _label in _SECRET_PATTERNS:
-        text = pattern.sub(lambda m: mask_secret(m.group(0)), text)
+    for pattern, label in _SECRET_PATTERNS:
+        text = pattern.sub(lambda m: _mask_match(m, label), text)
     return text
 
 
@@ -464,7 +538,7 @@ class SecretLeakScanner(SecurityDetector):
                     if m is None:
                         continue
 
-                    match_text = m.group(0)
+                    match_text = _match_value(m)
 
                     if _is_false_positive(match_text, file_path):
                         continue
@@ -492,7 +566,7 @@ class SecretLeakScanner(SecurityDetector):
                             "channel": channel,
                             "file_path": file_path,
                             "tool": tool_name,
-                            "matched_prefix": mask_secret(match_text),
+                            "matched_prefix": mask_secret(_match_value(m)),
                             "remediation": _REMEDIATION.get(
                                 secret_type,
                                 "Remove from file, use env var, rotate if committed to git",
@@ -569,7 +643,7 @@ def audit_log_file(
                 if m is None:
                     continue
 
-                match_text = m.group(0)
+                match_text = _match_value(m)
                 if _is_false_positive(match_text, file_path):
                     continue
 
@@ -588,7 +662,7 @@ def audit_log_file(
                         log_file=log_path.name,
                         session_id=session_id,
                         project_name=project_name,
-                        matched_prefix=mask_secret(match_text),
+                        matched_prefix=mask_secret(_match_value(m)),
                         severity=_SEVERITY_LABEL.get(severity, "medium"),
                         remediation=_REMEDIATION.get(
                             secret_type,
@@ -626,6 +700,8 @@ def _value_span(m: re.Match, label: str) -> tuple[int, int]:
     host. Redacting the whole match would destroy JSON structure, so only the
     value itself is replaced.
     """
+    if "secret" in m.re.groupindex:
+        return m.span("secret")
     start, end = m.span()
     text = m.group(0)
     if label in _ASSIGNMENT_LABELS:
@@ -668,7 +744,7 @@ def _redact_text(text: str) -> tuple[str, int]:
         pos = 0
         for m in pattern.finditer(text):
             # Leave placeholders/test data alone; they are not real redactions.
-            if _is_false_positive(m.group(0)):
+            if _is_false_positive(_match_value(m)):
                 continue
             vstart, vend = _value_span(m, label)
             # Skip only values that are exactly the placeholder (idempotent
@@ -743,20 +819,28 @@ def _redact_line(line: str) -> tuple[str, int]:
     re-serializing that one line.
     """
     new_line, count = _redact_text(line)
-    if count == 0:
-        return line, 0
     before = _json_skeleton(line)
-    if before is _NOT_JSON or _json_skeleton(new_line) == before:
-        return new_line, count
-    obj, count = _redact_json_value(json.loads(line))
-    if count == 0:
-        return line, 0
+    if before is _NOT_JSON:
+        return (new_line, count) if count else (line, 0)
+    if count and _json_skeleton(new_line) != before:
+        obj, count = _redact_json_value(json.loads(line))
+        return (_dump_json_line(obj, line), count) if count else (line, 0)
+    # Some secrets only show once JSON escapes are decoded (a command after
+    # "\n" reads "...nmysql -p..." in the raw text). Re-check the decoded
+    # values so nothing a finding was reported for is left behind.
+    obj, extra = _redact_json_value(json.loads(new_line))
+    if extra:
+        return _dump_json_line(obj, line), count + extra
+    return (new_line, count) if count else (line, 0)
+
+
+def _dump_json_line(obj: Any, original: str) -> str:
     # ensure_ascii=True keeps lone surrogates (e.g. a JS-truncated emoji
     # "\ud83d") as \u escapes, so the line always encodes as valid UTF-8.
     out = json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
-    if line.endswith("\r"):
+    if original.endswith("\r"):
         out += "\r"  # keep CRLF line endings
-    return out, count
+    return out
 
 
 def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:
