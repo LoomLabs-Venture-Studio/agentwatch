@@ -244,3 +244,26 @@ def test_scanner_ignores_mysql_as_argument(text):
     buf.add(Action(timestamp=datetime(2026, 3, 1, 12, 0), tool_name="Bash",
                    tool_type=ToolType.BASH, success=True, command=text))
     assert SecretLeakScanner().check(buf) is None
+
+
+# --- QA B2: quoted mysql -p value ----------------------------------------------
+
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_quoted_mysql_password_masked_flagged_and_redacted(quote):
+    from agentwatch.detectors.security.secret_scanner import (
+        SecretLeakScanner,
+        _redact_text,
+        redact_secrets,
+    )
+
+    pw = "secretpass1"
+    text = f"mysql -uroot -p{quote}{pw}{quote} db"
+    assert pw not in redact_secrets(text)
+    redacted, count = _redact_text(text)
+    assert pw not in redacted and count == 1
+
+    buf = ActionBuffer()
+    buf.add(Action(timestamp=datetime(2026, 3, 1, 12, 0), tool_name="Bash",
+                   tool_type=ToolType.BASH, success=True, command=text))
+    warning = SecretLeakScanner().check(buf)
+    assert warning is not None and warning.details["secret_type"] == "cli_password_flag"

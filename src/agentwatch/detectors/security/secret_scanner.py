@@ -175,7 +175,7 @@ _p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env"
 _CMD = r"(?m:^|[;&|(`])\s*(?:(?:sudo|env|time)\s+)?(?:[^\s;&|`()]*/)?"
 _FLAG_GAP = r"(?=\s)[^\n;&|(`]{0,200}?\s"
 # -p is case-sensitive: mysql's -P is the port.
-_p(_CMD + r"mysql\w*" + _FLAG_GAP + r"(?-i:-p)" + _SECRET_VALUE, "cli_password_flag")
+_p(_CMD + r"mysql\w*" + _FLAG_GAP + r"(?-i:-p)['\"]?" + _SECRET_VALUE, "cli_password_flag")
 _p(r"--password=['\"]?" + _SECRET_VALUE, "cli_password_flag")
 _p(
     _CMD + r"curl" + _FLAG_GAP + r"(?:-u\s*|--user[\s=]+)['\"]?[^\s:'\"]+:" + _SECRET_VALUE,
