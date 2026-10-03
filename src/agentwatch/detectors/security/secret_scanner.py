@@ -750,6 +750,18 @@ def _iter_matches(pattern: re.Pattern, label: str, text: str) -> Iterator[re.Mat
         pos = _value_span(m, label)[1] if label in _URL_LABELS else m.end()
 
 
+def _is_placeholder(m: re.Match, label: str, file_path: str | None = None) -> bool:
+    """``_is_false_positive`` for a match, judged on the right text.
+
+    For a DB URL that is only its password: a host like ``db.example.com``
+    or a ``?application_name=test_key`` tail says nothing about it.
+    """
+    if label in _URL_LABELS:
+        start, end = _value_span(m, label)
+        return _is_false_positive(m.string[start:end], file_path)
+    return _is_false_positive(_match_value(m), file_path)
+
+
 def _first_live_match(
     pattern: re.Pattern, label: str, text: str, file_path: str | None = None
 ) -> re.Match | None:
@@ -759,9 +771,7 @@ def _first_live_match(
     match must not hide a live one later in the same text.
     """
     for m in _iter_matches(pattern, label, text):
-        if not _is_redacted_value(m, label) and not _is_false_positive(
-            _match_value(m), file_path
-        ):
+        if not _is_redacted_value(m, label) and not _is_placeholder(m, label, file_path):
             return m
     return None
 
@@ -778,7 +788,7 @@ def _redact_text(text: str) -> tuple[str, int]:
     for pattern, label in _SECRET_PATTERNS:
         for m in _iter_matches(pattern, label, text):
             # Leave placeholders/test data alone; they are not real redactions.
-            if _is_false_positive(_match_value(m)):
+            if _is_placeholder(m, label):
                 continue
             vstart, vend = _value_span(m, label)
             # Skip only values that are exactly the placeholder (idempotent

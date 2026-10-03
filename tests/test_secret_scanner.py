@@ -680,7 +680,7 @@ class TestNewPatterns:
         assert self._scan(key) == "neondb_api_key"
 
     def test_neondb_connection_string(self):
-        key = "postgres://user:password@ep-cool-name-123456.us-east-2.aws.neon.tech"
+        key = "postgres://user:N3onPw7xQ@ep-cool-name-123456.us-east-2.aws.neon.tech"
         assert self._scan(key) == "neondb_connection_string"
 
     def test_vercel_token(self):
@@ -1500,6 +1500,9 @@ _ORACLE_CORPUS = [
     {"file_path": "/app/.env", "content": (
         "TEST_URL=postgres://<user>:<password>@localhost/app\n"
         "DATABASE_URL=postgres://admin:AfterPh7Lq@prod.db/app\n")},
+    # Placeholder-looking text outside the password (QA round 2 of #26).
+    {"command": "psql postgres://admin:ExHostPw8m@db.example.com/app"},
+    {"command": "psql postgres://admin:TailKeyPw6@db.host/app?application_name=test_key"},
     # Tokens that start with the program word (QA round 2 of #26).
     {"command": "mysql -u root -h mysql01 -pGapPw1Aq7"},
     {"command": "mysql -u root -h mysqldb.prod -pGapPw2Bw6"},
@@ -1516,7 +1519,7 @@ _ORACLE_PLANTED = [
     "EscPw1Aa9", "EscPw2Bb8", "PgEnvPw7Hq", "MyEnvPw3Lz", "QuotedPw5t", "NewlinePw4",
     "HostGlu9e", "CurlPw8Rk", "a8F3kQ9zL2mX7wP4tR6vB1nY5cH0", "b9G4lR0aM3nY8xQ5uS7wC2oZ6dI1",
     "Hunter2Pass!x", "GapPw1Aq7", "GapPw2Bw6", "GapPw3Ce5", "GapPw4Dr4", "GapPw5Et3",
-    "GapPw6Fy2", "AfterPh7Lq",
+    "GapPw6Fy2", "AfterPh7Lq", "ExHostPw8m", "TailKeyPw6",
 ]
 
 
@@ -1530,6 +1533,9 @@ def _flagged_values(log: Path) -> set[str]:
     from agentwatch.parser import parse_file
 
     iter_matches = getattr(sc, "_iter_matches", lambda p, _label, t: p.finditer(t))
+    is_placeholder = getattr(
+        sc, "_is_placeholder", lambda m, _label, fp: _is_false_positive(sc._match_value(m), fp)
+    )
     values = set()
     for action in parse_file(log):
         for text, _, file_path in extract_scannable_content(action):
@@ -1537,7 +1543,7 @@ def _flagged_values(log: Path) -> set[str]:
                 for m in iter_matches(pattern, label, text):
                     if sc._is_redacted_value(m, label):
                         continue
-                    if _is_false_positive(sc._match_value(m), file_path):
+                    if is_placeholder(m, label, file_path):
                         continue
                     start, end = sc._value_span(m, label)
                     values.add(text[start:end])
@@ -1582,3 +1588,34 @@ def test_placeholder_url_does_not_hide_live_url_after_it(tmp_path):
     buf.add(_make_action(tool_type=ToolType.WRITE, raw={"input": write["input"]}))
     w = SecretLeakScanner().check(buf)
     assert w is not None and w.details["secret_type"] == "database_connection_string"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgres://admin:LivePw5Zk@db.example.com/app",
+        "postgres://admin:LivePw5Zk@db.host/app?application_name=test_key",
+    ],
+)
+def test_db_url_placeholder_check_uses_password_only(tmp_path, url):
+    # QA round 2 of #26: the placeholder check ran on the whole URL, so a
+    # host or query that looks like a placeholder hid a live password.
+    bash = {"name": "Bash", "input": {"command": f"psql {url}"}}
+    log = _write_jsonl(tmp_path, "fp.jsonl", [_make_assistant_line([], tool_inputs=[bash])])
+    assert [f.secret_type for f in audit_log_file(log)] == ["database_connection_string"]
+    assert redact_log_file(log) == 1
+    assert "LivePw5Zk" not in log.read_text()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgres://<user>:<password>@localhost/app",
+        "postgres://user:password@db.host/app",
+        "postgres://app:CHANGEME@db.host/app",
+    ],
+)
+def test_db_url_placeholder_password_still_ignored(url):
+    buf = ActionBuffer()
+    buf.add(_make_action(tool_type=ToolType.BASH, command=f"psql {url}"))
+    assert SecretLeakScanner().check(buf) is None
