@@ -116,3 +116,64 @@ def test_error_text_masked_in_health_warnings(detector_cls, error):
     warning = detector_cls().check(_error_buffer(error))
     assert warning is not None
     assert not _leaks(_dump(warning))
+
+
+# --- Part 3: secrets recognisable only by context ------------------------------
+
+_PW = "Hx7q2Lm9Zr"  # short, human-style password: the mask reveals nothing
+_LONG = "a8F3kQ9zL2mX7wP4tR6vB1nY5cH0"  # unprefixed token
+
+_CONTEXT_SECRETS = [
+    (f"PGPASSWORD={_PW} psql -h db -U app", _PW),
+    (f"MYSQL_PWD={_PW} mysql -u root", _PW),
+    (f"mysql -u root -p{_PW} appdb", _PW),
+    (f"mysqldump --password={_PW} appdb", _PW),
+    (f"curl -s -u admin:{_PW} https://api.internal/v1", _PW),
+    (f"curl --user admin:{_LONG} https://api.internal/v1", _LONG),
+    (f"git clone https://deploy:{_LONG}@github.com/org/repo.git", _LONG),
+    (f"curl -H 'Authorization: Bearer {_LONG}' https://api.internal", _LONG),
+]
+
+
+@pytest.mark.parametrize("text,secret", _CONTEXT_SECRETS)
+def test_redact_secrets_masks_context_secrets(text, secret):
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    out = redact_secrets(text)
+    assert not _leaks(out, secret), out
+    # Only the value is masked; the surrounding command stays readable.
+    assert all(part in out for part in text.split(secret))
+
+
+@pytest.mark.parametrize("text,secret", _CONTEXT_SECRETS)
+def test_scanner_detects_context_secrets_without_revealing_them(text, secret):
+    from agentwatch.detectors.security.secret_scanner import SecretLeakScanner
+
+    buf = ActionBuffer()
+    buf.add(Action(timestamp=datetime(2026, 3, 1, 12, 0), tool_name="Bash",
+                   tool_type=ToolType.BASH, success=True, command=text))
+    warning = SecretLeakScanner().check(buf)
+    assert warning is not None
+    assert not _leaks(_dump(warning), secret)
+    if len(secret) < 20:
+        assert "[hidden" in warning.details["matched_prefix"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "mysql -h db -P3306 -u root -p appdb",  # -P is the port; bare -p prompts
+        "PGPASSWORD=$PGPASS psql -h db",
+        "curl -u \"$USER:$TOKEN\" https://api.internal",
+        "PGPASSWORD=CHANGEME psql",
+        "curl -H 'Authorization: Bearer your_token_here_0000000000'",
+        "ssh -p2222 host",
+    ],
+)
+def test_scanner_ignores_context_placeholders(text):
+    from agentwatch.detectors.security.secret_scanner import SecretLeakScanner
+
+    buf = ActionBuffer()
+    buf.add(Action(timestamp=datetime(2026, 3, 1, 12, 0), tool_name="Bash",
+                   tool_type=ToolType.BASH, success=True, command=text))
+    assert SecretLeakScanner().check(buf) is None

@@ -160,6 +160,28 @@ _p(r"pypi-[a-zA-Z0-9\-_]{16,}", "pypi_token")
 # Cloudflare
 _p(r"v1\.0-[a-f0-9]{24}-[a-f0-9]{146,}", "cloudflare_api_token")
 
+# Unprefixed secrets recognisable only by their command/header context. The
+# named group ``secret`` marks the value: only it is masked/redacted, since
+# the match also holds the context (``mysql -u root -p...``) that mask_secret
+# would otherwise mistake for the value. A value never starts with ``$``
+# (a variable reference) or ``…``/``[`` (an already-masked value).
+_SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[][^\s'\"]*)"
+_p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env")
+# -p is case-sensitive: mysql's -P is the port.
+_p(r"\bmysql\w*\b[^\n;|&]*?\s(?-i:-p)" + _SECRET_VALUE, "cli_password_flag")
+_p(r"--password=['\"]?" + _SECRET_VALUE, "cli_password_flag")
+_p(
+    r"\bcurl\b[^\n;|&]*?\s(?:-u\s*|--user[\s=]+)['\"]?[^\s:'\"]+:" + _SECRET_VALUE,
+    "curl_basic_auth",
+)
+# Any scheme except the database ones database_connection_string handles.
+_p(
+    r"\b(?!(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://)[a-z][a-z0-9+.-]*://"
+    r"[^\s:/@]+:(?P<secret>[^\s@/$…\[][^\s@/]*)@",
+    "url_credentials",
+)
+_p(r"\bbearer\s+(?P<secret>[a-z0-9_\-.=~+/]{20,})", "bearer_header")
+
 
 # ---------------------------------------------------------------------------
 # Placeholder / false-positive filters
@@ -374,6 +396,19 @@ def mask_secret(match_text: str) -> str:
     return f"[hidden, {len(value)} chars]"
 
 
+def _match_value(m: re.Match) -> str:
+    """The secret part of a match: its ``secret`` group if it has one."""
+    return m.group("secret") if "secret" in m.re.groupindex else m.group(0)
+
+
+def _mask_match(m: re.Match) -> str:
+    """*m*'s text with only its secret part masked."""
+    if "secret" not in m.re.groupindex:
+        return mask_secret(m.group(0))
+    start, end = m.span("secret")
+    return m.string[m.start() : start] + mask_secret(m.group("secret")) + m.string[end : m.end()]
+
+
 def redact_secrets(text: str) -> str:
     """Replace every ``_SECRET_PATTERNS`` match in *text* with its masked form.
 
@@ -384,7 +419,7 @@ def redact_secrets(text: str) -> str:
     truncating first can cut a token so the pattern no longer matches.
     """
     for pattern, _label in _SECRET_PATTERNS:
-        text = pattern.sub(lambda m: mask_secret(m.group(0)), text)
+        text = pattern.sub(_mask_match, text)
     return text
 
 
@@ -492,7 +527,7 @@ class SecretLeakScanner(SecurityDetector):
                             "channel": channel,
                             "file_path": file_path,
                             "tool": tool_name,
-                            "matched_prefix": mask_secret(match_text),
+                            "matched_prefix": mask_secret(_match_value(m)),
                             "remediation": _REMEDIATION.get(
                                 secret_type,
                                 "Remove from file, use env var, rotate if committed to git",
@@ -588,7 +623,7 @@ def audit_log_file(
                         log_file=log_path.name,
                         session_id=session_id,
                         project_name=project_name,
-                        matched_prefix=mask_secret(match_text),
+                        matched_prefix=mask_secret(_match_value(m)),
                         severity=_SEVERITY_LABEL.get(severity, "medium"),
                         remediation=_REMEDIATION.get(
                             secret_type,
@@ -626,6 +661,8 @@ def _value_span(m: re.Match, label: str) -> tuple[int, int]:
     host. Redacting the whole match would destroy JSON structure, so only the
     value itself is replaced.
     """
+    if "secret" in m.re.groupindex:
+        return m.span("secret")
     start, end = m.span()
     text = m.group(0)
     if label in _ASSIGNMENT_LABELS:
