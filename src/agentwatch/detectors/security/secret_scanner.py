@@ -10,6 +10,7 @@ import re
 import stat
 import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -68,12 +69,20 @@ _p(r"xox[bpors]-[0-9a-zA-Z\-]{10,}", "slack_token")
 _p(r"sk_live_[0-9a-zA-Z]{24,}", "stripe_secret_key")
 _p(r"pk_live_[0-9a-zA-Z]{24,}", "stripe_publishable_key")
 
+# Connection strings: user and password are bounded and possessive, since
+# unbounded each "postgres://" start scans to the end of the text (quadratic
+# on long tool output); 256 chars is far beyond any real user/password. The
+# host tail stops at "@" and "\" (a raw-JSON escape such as "\n"), so it
+# never overlaps the next URL's tail.
+_URL_USERINFO = r"[^:\s]{1,256}+:[^@\s]{1,256}+@"
+_URL_TAIL = r"[^\s@\\]"
+
 # Neon DB connection string — must be before generic database pattern
-_p(r"postgres://[^:\s]+:[^@\s]+@[^\s]*neon\.tech", "neondb_connection_string")
+_p(r"postgres://" + _URL_USERINFO + _URL_TAIL + r"*neon\.tech", "neondb_connection_string")
 
 # Database connection strings with embedded passwords (generic)
 _p(
-    r"(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://[^:\s]+:[^@\s]+@[^\s]+",
+    r"(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://" + _URL_USERINFO + _URL_TAIL + "++",
     "database_connection_string",
 )
 
@@ -174,15 +183,19 @@ _CMD = r"(?:(?<=/bin/)|(?<![\w/.$-]))"
 
 
 def _flag_gap(word: str) -> str:
-    """Up to 40 whitespace-separated tokens between *word* and its flag.
+    """1 to 40 whitespace-separated tokens between *word* and its flag.
+
+    At least one: "-p" glued to the word ("mysql-python") is not a flag.
 
     Stops at shell separators and newlines, and never runs past another
-    *word*: each char is then scanned from at most one start, which keeps
-    these patterns linear on long tool output (an unbounded or overlapping
-    gap goes quadratic). Each token is possessive: otherwise a run of spaces
-    can be split between tokens in exponentially many ways.
+    *word*, not even one glued inside a token ("mysql:mysql:..."): each char
+    is then scanned from at most one start, which keeps these patterns
+    linear on long tool output (an unbounded or overlapping gap goes
+    quadratic). Each token is possessive: otherwise a run of spaces can be
+    split between tokens in exponentially many ways.
     """
-    return rf"\b(?:[^\s;&|(`]*+[^\S\n]++(?!['\"]?(?:{word})\b)){{0,40}}?['\"]?"
+    token = rf"(?:(?!{_CMD}(?:{word})\b)[^\s;&|(`])*+"
+    return rf"\b(?:{token}[^\S\n]++(?!['\"]?(?:{word})\b)){{1,40}}?['\"]?"
 
 
 _MYSQL = r"mysql(?:dump|admin|import|show|check|sh|binlog)?|mariadb(?:-\w+)?"
@@ -417,14 +430,19 @@ def mask_secret(match_text: str) -> str:
     value is >= 20 chars; shorter values reveal nothing but their length.
     The value is the text after ``=``/``:`` (quotes stripped) when present,
     otherwise the whole match -- never the scheme prefix (``ghp_``, ``AKIA``
-    ...), which ``secret_type`` already identifies.
+    ...), which ``secret_type`` already identifies. For a connection-string
+    URL the value is its password, never the host tail.
     """
     value = match_text
-    for sep in ("=", ":"):
-        idx = match_text.find(sep)
-        if idx != -1:
-            value = match_text[idx + 1 :].strip().strip("'\"").strip()
-            break
+    url = _URL_PASSWORD_RE.match(match_text)
+    if url:
+        value = url.group(1)
+    else:
+        for sep in ("=", ":"):
+            idx = match_text.find(sep)
+            if idx != -1:
+                value = match_text[idx + 1 :].strip().strip("'\"").strip()
+                break
     if len(value) >= _MASK_TAIL_MIN_LEN:
         return "…" + value[-_MASK_TAIL_CHARS:]
     return f"[hidden, {len(value)} chars]"
@@ -534,13 +552,8 @@ class SecretLeakScanner(SecurityDetector):
             contents = extract_scannable_content(action)
             for text, channel, file_path in contents:
                 for pattern, secret_type in _SECRET_PATTERNS:
-                    m = _first_live_match(pattern, secret_type, text)
+                    m = _first_live_match(pattern, secret_type, text, file_path)
                     if m is None:
-                        continue
-
-                    match_text = _match_value(m)
-
-                    if _is_false_positive(match_text, file_path):
                         continue
 
                     dedup = self._dedup_key(secret_type, channel, file_path)
@@ -639,12 +652,8 @@ def audit_log_file(
 
         for text, channel, file_path in extract_scannable_content(action):
             for pattern, secret_type in _SECRET_PATTERNS:
-                m = _first_live_match(pattern, secret_type, text)
+                m = _first_live_match(pattern, secret_type, text, file_path)
                 if m is None:
-                    continue
-
-                match_text = _match_value(m)
-                if _is_false_positive(match_text, file_path):
                     continue
 
                 dedup_key = f"{secret_type}:{channel}:{file_path or ''}"
@@ -728,39 +737,77 @@ def _is_redacted_value(m: re.Match, label: str) -> bool:
     return _REDACTED in m.string[vstart:vend]
 
 
-def _first_live_match(pattern: re.Pattern, label: str, text: str) -> re.Match | None:
-    """First match of *pattern* in *text* whose value isn't already redacted."""
-    for m in pattern.finditer(text):
-        if not _is_redacted_value(m, label):
+def _iter_matches(pattern: re.Pattern, label: str, text: str) -> Iterator[re.Match]:
+    """Like ``pattern.finditer(text)``, but resume after a DB URL's password.
+
+    A DB URL's host tail stops only at whitespace, so it can run over the
+    next URL: in raw JSON a newline is the two chars ``\\n``, and URLs may be
+    glued with ``;``. Resuming after the whole match would skip that URL.
+    """
+    pos = 0
+    while (m := pattern.search(text, pos)) is not None:
+        yield m
+        pos = _value_span(m, label)[1] if label in _URL_LABELS else m.end()
+
+
+def _is_placeholder(m: re.Match, label: str, file_path: str | None = None) -> bool:
+    """``_is_false_positive`` for a match, judged on the right text.
+
+    For a DB URL that is only its password: a host like ``db.example.com``
+    or a ``?application_name=test_key`` tail says nothing about it.
+    """
+    if label in _URL_LABELS:
+        start, end = _value_span(m, label)
+        return _is_false_positive(m.string[start:end], file_path)
+    return _is_false_positive(_match_value(m), file_path)
+
+
+def _first_live_match(
+    pattern: re.Pattern, label: str, text: str, file_path: str | None = None
+) -> re.Match | None:
+    """First match of *pattern* in *text* that is neither redacted nor a placeholder.
+
+    Both are skipped here, not by the caller: a placeholder or redacted
+    match must not hide a live one later in the same text.
+    """
+    for m in _iter_matches(pattern, label, text):
+        if not _is_redacted_value(m, label) and not _is_placeholder(m, label, file_path):
             return m
     return None
 
 
 def _redact_text(text: str) -> tuple[str, int]:
-    """Redact secret values in *text*. Returns (new_text, real_redaction_count)."""
-    count = 0
+    """Redact secret values in *text*. Returns (new_text, real_redaction_count).
+
+    Every pattern is matched against the original text and overlapping value
+    spans are merged before anything is replaced: replacing pattern by
+    pattern let one replacement hide another value ("sk-proj-...api_key=V"
+    became "[REDACTED]_key=V", which no pattern matches).
+    """
+    spans: list[tuple[int, int]] = []
     for pattern, label in _SECRET_PATTERNS:
-        pieces: list[str] = []
-        pos = 0
-        for m in pattern.finditer(text):
+        for m in _iter_matches(pattern, label, text):
             # Leave placeholders/test data alone; they are not real redactions.
-            if _is_false_positive(_match_value(m)):
+            if _is_placeholder(m, label):
                 continue
             vstart, vend = _value_span(m, label)
             # Skip only values that are exactly the placeholder (idempotent
-            # re-runs). A value that merely contains it, e.g. a password an
-            # earlier pattern partly redacted ("hunter-[REDACTED]!"), still
-            # gets fully redacted so no fragment of it is left behind.
-            if vstart >= vend or text[vstart:vend] == _REDACTED:
-                continue
-            pieces.append(text[pos:vstart])
-            pieces.append(_REDACTED)
-            pos = vend
-            count += 1
-        if pieces:
-            pieces.append(text[pos:])
-            text = "".join(pieces)
-    return text, count
+            # re-runs). A value that merely contains it ("hunter-[REDACTED]!")
+            # still gets fully redacted so no fragment of it is left behind.
+            if vstart < vend and text[vstart:vend] != _REDACTED:
+                spans.append((vstart, vend))
+    merged: list[list[int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    pieces: list[str] = []
+    pos = 0
+    for start, end in merged:
+        pieces += [text[pos:start], _REDACTED]
+        pos = end
+    return "".join(pieces) + text[pos:], len(merged)
 
 
 def _redact_json_value(obj: Any) -> tuple[Any, int]:

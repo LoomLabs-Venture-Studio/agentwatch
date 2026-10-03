@@ -680,7 +680,7 @@ class TestNewPatterns:
         assert self._scan(key) == "neondb_api_key"
 
     def test_neondb_connection_string(self):
-        key = "postgres://user:password@ep-cool-name-123456.us-east-2.aws.neon.tech"
+        key = "postgres://user:N3onPw7xQ@ep-cool-name-123456.us-east-2.aws.neon.tech"
         assert self._scan(key) == "neondb_connection_string"
 
     def test_vercel_token(self):
@@ -1388,3 +1388,234 @@ class TestMatchedPrefixMasking:
         decoded = "\n".join(json.dumps(line, ensure_ascii=False) for line in lines)
         assert not _leaks(_SHORT_PASSWORD, decoded)
         assert not _leaks(_GHP_TOKEN, decoded)
+
+
+# ---------------------------------------------------------------------------
+# Issue #26: DB-URL matches must not run on past the password
+# ---------------------------------------------------------------------------
+
+class TestDbUrlRunOn:
+    def test_newline_escaped_env_redacts_both_passwords_in_raw_line(self, tmp_path):
+        # In raw JSONL the .env newline is the two chars "\n", not whitespace,
+        # so the first URL's host tail used to swallow the second URL.
+        env = (
+            "DATABASE_URL=postgres://app:Pr1maryPw9x@db1.internal:5432/app\n"
+            "REPLICA_URL=postgres://app:R3plicaPw7q@db2.internal:5432/app\n"
+        )
+        line = json.dumps({"input": {"file_path": "/app/.env", "content": env}})
+        p = tmp_path / "env.jsonl"
+        p.write_text(line + "\n")
+
+        assert redact_log_file(p) == 2
+        # Redacted in the raw text: every other byte kept, no re-serialization.
+        assert p.read_text() == (
+            line.replace("Pr1maryPw9x", "[REDACTED]").replace("R3plicaPw7q", "[REDACTED]")
+            + "\n"
+        )
+        assert redact_log_file(p) == 0
+
+    _GLUED = "x=postgres://x:[REDACTED]@h;y=postgres://admin:LivePw5Zk@db2.host/app"
+
+    def test_placeholder_glued_to_live_url_is_detected(self, tmp_path):
+        bash = {"name": "Bash", "input": {"command": self._GLUED}}
+        p = _write_jsonl(tmp_path, "glued.jsonl", [_make_assistant_line([], tool_inputs=[bash])])
+        assert [f.secret_type for f in audit_log_file(p)] == ["database_connection_string"]
+
+        buf = ActionBuffer()
+        buf.add(_make_action(tool_type=ToolType.BASH, command=self._GLUED))
+        w = SecretLeakScanner().check(buf)
+        assert w is not None and w.details["secret_type"] == "database_connection_string"
+
+    def test_placeholder_glued_to_live_url_is_redacted(self, tmp_path):
+        p = tmp_path / "glued.jsonl"
+        p.write_text(json.dumps({"command": self._GLUED}) + "\n")
+
+        assert redact_log_file(p) == 1
+        assert json.loads(p.read_text()) == {
+            "command": "x=postgres://x:[REDACTED]@h;y=postgres://admin:[REDACTED]@db2.host/app"
+        }
+        assert redact_log_file(p) == 0
+
+
+def test_glued_secrets_all_redacted():
+    # Issue #26 part 3: the token pattern swallows "api"; redacting it first
+    # left "[REDACTED]_key=VALUE", which no pattern matches any more.
+    from agentwatch.detectors.security.secret_scanner import _redact_text
+
+    value = "Zq8Wm3Xr7Tn2Lp5Vb9Kc4Hd6"  # 24 chars: only generic_api_key matches
+    text = f"echo sk-proj-Ab3dEf6hIj9kLm2nOp5qRs8t6api_key={value}"
+    assert _redact_text(text) == ("echo [REDACTED]_key=[REDACTED]", 2)
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        # A 1-char host used to make "last 4" of "//u:Pw12345678@x" read "…78@x".
+        ("postgres://u:Pw12345678@x", "[hidden, 10 chars]"),
+        ("mysql://root:S3cretPw@db.internal:3306/app", "[hidden, 8 chars]"),
+        ("postgres://u:Ab3dEf6hIj9kLm2nOp5qRs8t@h/db", "…Rs8t"),  # 24-char password
+    ],
+)
+def test_db_url_mask_reveals_only_from_password(url, expected):
+    # Issue #24 part 4a: the reveal comes from the password, not the URL tail.
+    from agentwatch.detectors.security.secret_scanner import mask_secret
+
+    assert mask_secret(url) == expected
+    buf = ActionBuffer()
+    buf.add(_make_action(tool_type=ToolType.BASH, command=f"psql {url}"))
+    w = SecretLeakScanner().check(buf)
+    assert w is not None and w.details["matched_prefix"] == expected
+
+
+# ---------------------------------------------------------------------------
+# Issue #26 oracle: every value the scanner flags is gone after one redaction
+# ---------------------------------------------------------------------------
+
+_ORACLE_GHP = "ghp_Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8"
+_ORACLE_CORPUS = [
+    # (tool input, as written by the agent)
+    {"file_path": "/app/.env", "content": (
+        "DATABASE_URL=postgres://app:Pr1maryPw9x@db1.internal:5432/app\n"
+        "REPLICA_URL=postgres://app:R3plicaPw7q@db2.internal:5432/app\n")},
+    {"command": "x=postgres://x:[REDACTED]@h;y=postgres://admin:LivePw5Zk@db2.host/app"},
+    {"command": "echo sk-proj-Ab3dEf6hIj9kLm2nOp5qRs8t6api_key=Zq8Wm3Xr7Tn2Lp5Vb9Kc4Hd6"},
+    {"command": f"psql postgres://admin:TailPw9xQ@db.host/app?token={_ORACLE_GHP}"},
+    {"command": "psql postgres://old:[REDACTED]@h1/x && psql postgres://admin:LaterPw3c@h2/app"},
+    {"command": "mysql://root:MyPw7Zk2q@db1/app;mysql://root:MyPw8Zk3r@db2/app"},
+    {"file_path": "/app/.env", "content": (
+        "A=postgres://u:NeonPw4Xy7@ep-x.us-east-2.aws.neon.tech/db\n"
+        "B=postgres://u:NeonPw5Zq8@ep-y.neon.tech/db\n")},
+    # A literal backslash-n inside the decoded command (JSON in a shell string).
+    {"command": "echo '{\"a\":\"postgres://u:EscPw1Aa9@h1/x\\nB=postgres://u:EscPw2Bb8@h2/y\"}'"},
+    {"command": "PGPASSWORD=PgEnvPw7Hq psql -h db -U app"},
+    {"command": 'MYSQL_PWD="MyEnvPw3Lz" mysql -u root'},
+    {"command": "mysql -uroot -p'QuotedPw5t' db"},
+    {"command": "cd /srv\nmysql -u root -pNewlinePw4 db"},
+    {"command": "mysql --host=mysql-primary -u root -pHostGlu9e db"},
+    {"command": "curl -s -u admin:CurlPw8Rk https://api.internal/v1"},
+    {"command": "git clone https://deploy:a8F3kQ9zL2mX7wP4tR6vB1nY5cH0@github.com/org/repo.git"},
+    {"command": "curl -H 'Authorization: Bearer b9G4lR0aM3nY8xQ5uS7wC2oZ6dI1' https://x"},
+    {"command": "export GH=" + _ORACLE_GHP + "; password = 'Hunter2Pass!x'"},
+    # A placeholder URL before a live one (QA round 2 of #26).
+    {"file_path": "/app/.env", "content": (
+        "TEST_URL=postgres://<user>:<password>@localhost/app\n"
+        "DATABASE_URL=postgres://admin:AfterPh7Lq@prod.db/app\n")},
+    # Placeholder-looking text outside the password (QA round 2 of #26).
+    {"command": "psql postgres://admin:ExHostPw8m@db.example.com/app"},
+    {"command": "psql postgres://admin:TailKeyPw6@db.host/app?application_name=test_key"},
+    # Tokens that start with the program word (QA round 2 of #26).
+    {"command": "mysql -u root -h mysql01 -pGapPw1Aq7"},
+    {"command": "mysql -u root -h mysqldb.prod -pGapPw2Bw6"},
+    {"command": "mysql -u mysqluser -pGapPw3Ce5 app"},
+    {"command": "mysql --host=mysql_primary -u app -pGapPw4Dr4"},
+    {"command": "curl -H 'X: curlbot' -u admin:GapPw5Et3 https://x"},
+    {"command": "curl --url curlhost -u admin:GapPw6Fy2"},
+]
+# Every secret planted above, so the oracle can't pass just because the
+# scanner never saw one (a run-on URL hid its neighbour from detection too).
+_ORACLE_PLANTED = [
+    "Pr1maryPw9x", "R3plicaPw7q", "LivePw5Zk", "Zq8Wm3Xr7Tn2Lp5Vb9Kc4Hd6", _ORACLE_GHP,
+    "TailPw9xQ", "LaterPw3c", "MyPw7Zk2q", "MyPw8Zk3r", "NeonPw4Xy7", "NeonPw5Zq8",
+    "EscPw1Aa9", "EscPw2Bb8", "PgEnvPw7Hq", "MyEnvPw3Lz", "QuotedPw5t", "NewlinePw4",
+    "HostGlu9e", "CurlPw8Rk", "a8F3kQ9zL2mX7wP4tR6vB1nY5cH0", "b9G4lR0aM3nY8xQ5uS7wC2oZ6dI1",
+    "Hunter2Pass!x", "GapPw1Aq7", "GapPw2Bw6", "GapPw3Ce5", "GapPw4Dr4", "GapPw5Et3",
+    "GapPw6Fy2", "AfterPh7Lq", "ExHostPw8m", "TailKeyPw6",
+]
+
+
+def _flagged_values(log: Path) -> set[str]:
+    """Every live, non-placeholder value any pattern flags in *log*.
+
+    Uses only scanner names that exist before #26 too (falling back to plain
+    finditer), so on old code the oracle fails on assertions, not imports.
+    """
+    from agentwatch.detectors.security import secret_scanner as sc
+    from agentwatch.parser import parse_file
+
+    iter_matches = getattr(sc, "_iter_matches", lambda p, _label, t: p.finditer(t))
+    is_placeholder = getattr(
+        sc, "_is_placeholder", lambda m, _label, fp: _is_false_positive(sc._match_value(m), fp)
+    )
+    values = set()
+    for action in parse_file(log):
+        for text, _, file_path in extract_scannable_content(action):
+            for pattern, label in sc._SECRET_PATTERNS:
+                for m in iter_matches(pattern, label, text):
+                    if sc._is_redacted_value(m, label):
+                        continue
+                    if is_placeholder(m, label, file_path):
+                        continue
+                    start, end = sc._value_span(m, label)
+                    values.add(text[start:end])
+    return values
+
+
+@pytest.mark.parametrize("tool_input", _ORACLE_CORPUS)
+def test_redaction_oracle(tmp_path, tool_input):
+    name = "Write" if "content" in tool_input else "Bash"
+    log = _write_jsonl(tmp_path, "oracle.jsonl", [
+        _make_assistant_line([], tool_inputs=[{"name": name, "input": tool_input}]),
+    ])
+    flagged = _flagged_values(log)
+    assert flagged, "corpus entry should be flagged"
+
+    assert redact_log_file(log) > 0
+
+    from agentwatch.parser import parse_file
+
+    raw = log.read_text()
+    assert all(json.loads(line) for line in raw.splitlines())  # still valid JSON
+    texts = [raw] + [t for a in parse_file(log) for t, _, _ in extract_scannable_content(a)]
+    assert [v for v in flagged if any(v in t for t in texts)] == []
+    assert [v for v in _ORACLE_PLANTED if any(v in t for t in texts)] == []
+    assert _flagged_values(log) == set()
+    assert audit_log_file(log) == []
+    assert redact_log_file(log) == 0
+
+
+def test_placeholder_url_does_not_hide_live_url_after_it(tmp_path):
+    # QA round 2 of #26: the first unredacted match was a placeholder, and the
+    # callers then dropped the whole pattern instead of looking further.
+    env = (
+        "TEST_URL=postgres://<user>:<password>@localhost/app\n"
+        "DATABASE_URL=postgres://admin:LivePw5Zk@prod.db/app\n"
+    )
+    write = {"name": "Write", "input": {"file_path": "/app/.env", "content": env}}
+    log = _write_jsonl(tmp_path, "ph.jsonl", [_make_assistant_line([], tool_inputs=[write])])
+    assert [f.secret_type for f in audit_log_file(log)] == ["database_connection_string"]
+
+    buf = ActionBuffer()
+    buf.add(_make_action(tool_type=ToolType.WRITE, raw={"input": write["input"]}))
+    w = SecretLeakScanner().check(buf)
+    assert w is not None and w.details["secret_type"] == "database_connection_string"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgres://admin:LivePw5Zk@db.example.com/app",
+        "postgres://admin:LivePw5Zk@db.host/app?application_name=test_key",
+    ],
+)
+def test_db_url_placeholder_check_uses_password_only(tmp_path, url):
+    # QA round 2 of #26: the placeholder check ran on the whole URL, so a
+    # host or query that looks like a placeholder hid a live password.
+    bash = {"name": "Bash", "input": {"command": f"psql {url}"}}
+    log = _write_jsonl(tmp_path, "fp.jsonl", [_make_assistant_line([], tool_inputs=[bash])])
+    assert [f.secret_type for f in audit_log_file(log)] == ["database_connection_string"]
+    assert redact_log_file(log) == 1
+    assert "LivePw5Zk" not in log.read_text()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgres://<user>:<password>@localhost/app",
+        "postgres://user:password@db.host/app",
+        "postgres://app:CHANGEME@db.host/app",
+    ],
+)
+def test_db_url_placeholder_password_still_ignored(url):
+    buf = ActionBuffer()
+    buf.add(_make_action(tool_type=ToolType.BASH, command=f"psql {url}"))
+    assert SecretLeakScanner().check(buf) is None
