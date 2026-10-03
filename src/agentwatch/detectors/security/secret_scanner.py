@@ -151,8 +151,9 @@ _p(r"r8_[a-zA-Z0-9]{36,}", "replicate_api_key")
 # Pinecone
 _p(r"pc-[a-zA-Z0-9]{32,}", "pinecone_api_key")
 
-# Discord Bot
-_p(r"[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27,}", "discord_bot_token")
+# Discord Bot. Starts only at the beginning of an alphanumeric run: from every
+# M/N inside a long run the scan went to its end (quadratic, #32).
+_p(r"(?<![A-Za-z\d])[MN][A-Za-z\d]{23,}+\.[\w-]{6}\.[\w-]{27,}", "discord_bot_token")
 
 # Doppler
 _p(r"dp\.st\.[a-zA-Z0-9_\-]{40,}", "doppler_service_token")

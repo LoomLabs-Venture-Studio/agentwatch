@@ -560,14 +560,45 @@ def test_db_url_patterns_linear_on_pathological_input():
 # whitespace; the mysql/curl flag gap scanned to the end from each one.
 _GLUED_WORD_UNITS = [
     "mysql://a:", "mysql:", "curl:", "curl@", '"mysql', "'curl", "/bin/mysql", "=mysql",
-    "mariadb:", "mysqldump:", "curl://a:", "curl", "mysql:mysql:",
-    # Not "mysql" alone: discord_bot_token is quadratic on it (separate issue).
+    "mariadb:", "mysqldump:", "curl://a:", "curl", "mysql:mysql:", "mysql",
 ]
 
 
 def test_flag_gap_linear_on_glued_program_words():
     unit, elapsed, base = _worst_redact_ratio(_GLUED_WORD_UNITS)
     assert elapsed < max(1.0, 3 * base), f"{unit!r}: {elapsed:.2f}s (plain {base:.2f}s)"
+
+
+# --- #32: no pattern rescans a long alphanumeric run from every position ----------
+
+# Each unit, repeated to 1MB, made discord_bot_token quadratic: an M/N
+# inside a long run started a scan to the run's end.
+_ALNUM_RUN_UNITS = ["mysql", "M", "N0", "Ab1xY"]
+
+
+def test_patterns_linear_on_long_alphanumeric_runs():
+    unit, elapsed, base = _worst_redact_ratio(_ALNUM_RUN_UNITS)
+    assert elapsed < max(1.0, 3 * base), f"{unit!r}: {elapsed:.2f}s (plain {base:.2f}s)"
+
+
+_DISCORD_TOKEN = "MTk4NjIyNDgzNDcxOTI1MjQ4" ".Cl2FMQ.ZnCjm1XVW7vRze4b7Cq4se7kKWs"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [_DISCORD_TOKEN, f"Bot {_DISCORD_TOKEN}", f'DISCORD="{_DISCORD_TOKEN}"'],
+)
+def test_discord_token_still_detected_and_masked(text):
+    from agentwatch.detectors.security.secret_scanner import (
+        _first_live_match,
+        _pattern_for_secret_type,
+        redact_secrets,
+    )
+
+    pattern = _pattern_for_secret_type("discord_bot_token")
+    m = _first_live_match(pattern, "discord_bot_token", text)
+    assert m is not None and m.group(0) == _DISCORD_TOKEN
+    assert redact_secrets(text) == text.replace(_DISCORD_TOKEN, "…" + _DISCORD_TOKEN[-4:])
 
 
 @pytest.mark.parametrize(
