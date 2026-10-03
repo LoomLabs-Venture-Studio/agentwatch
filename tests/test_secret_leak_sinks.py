@@ -571,9 +571,13 @@ def test_flag_gap_linear_on_glued_program_words():
 
 # --- #32: no pattern rescans a long alphanumeric run from every position ----------
 
-# Each unit, repeated to 1MB, made discord_bot_token quadratic: an M/N
-# inside a long run started a scan to the run's end.
-_ALNUM_RUN_UNITS = ["mysql", "M", "N0", "Ab1xY"]
+# Each unit, repeated to 1MB, made one pattern quadratic: discord_bot_token
+# (an M/N inside a long run), jwt_token (eyJ inside a run) and
+# high_entropy_secret (a key word inside an identifier) each started a scan
+# to the run's end.
+_ALNUM_RUN_UNITS = [
+    "mysql", "M", "N0", "Ab1xY", "eyJ", "eyJa", "key_", "secret", "auth_", "tokenkey",
+]
 
 
 def test_patterns_linear_on_long_alphanumeric_runs():
@@ -599,6 +603,37 @@ def test_discord_token_still_detected_and_masked(text):
     m = _first_live_match(pattern, "discord_bot_token", text)
     assert m is not None and m.group(0) == _DISCORD_TOKEN
     assert redact_secrets(text) == text.replace(_DISCORD_TOKEN, "…" + _DISCORD_TOKEN[-4:])
+
+
+_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6"
+    "IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+)
+_HIGH_ENTROPY = "q8Zr3Vt1Lw9Kx2Bn7Mf4Hd6Js0Pc5Ya1Rg8Ue3Ti"
+
+
+@pytest.mark.parametrize(
+    "label,text,expected",
+    [
+        ("jwt_token", f"Authorization: Bearer {_JWT}", _JWT),
+        ("jwt_token", f'{{"id_token":"{_JWT}"}}', _JWT),
+        ("jwt_token", f"?jwt={_JWT}&x=1", _JWT),
+        # The match starts at the name's last key word; the value is unchanged.
+        ("high_entropy_secret", f'MY_SECRET_KEY = "{_HIGH_ENTROPY}"',
+         f'KEY = "{_HIGH_ENTROPY}'),
+        ("high_entropy_secret", f"auth_token: {_HIGH_ENTROPY}", f"token: {_HIGH_ENTROPY}"),
+        ("high_entropy_secret", f"credentials={_HIGH_ENTROPY}", f"credentials={_HIGH_ENTROPY}"),
+        ("high_entropy_secret", f"client-secret={_HIGH_ENTROPY}", f"secret={_HIGH_ENTROPY}"),
+    ],
+)
+def test_jwt_and_high_entropy_still_detected(label, text, expected):
+    from agentwatch.detectors.security.secret_scanner import (
+        _first_live_match,
+        _pattern_for_secret_type,
+    )
+
+    m = _first_live_match(_pattern_for_secret_type(label), label, text)
+    assert m is not None and m.group(0) == expected
 
 
 @pytest.mark.parametrize(
