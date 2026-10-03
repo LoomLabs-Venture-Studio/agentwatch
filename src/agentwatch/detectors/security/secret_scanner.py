@@ -167,16 +167,25 @@ _p(r"v1\.0-[a-f0-9]{24}-[a-f0-9]{146,}", "cloudflare_api_token")
 # (a variable reference) or ``…``/``[`` (an already-masked value).
 _SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[][^\s'\"]*)"
 _p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env")
+# A command word: at line start or after a shell separator, optionally
+# behind sudo/env/time and a directory. Anchoring here (rather than on any
+# "curl"/"mysql" in the text) and stopping the flag gap at the next
+# separator keeps these patterns linear: an unanchored, unbounded gap
+# rescans to end of line from every occurrence, quadratic on long output.
+_CMD = r"(?m:^|[;&|(`])\s*(?:(?:sudo|env|time)\s+)?(?:[^\s;&|`()]*/)?"
+_FLAG_GAP = r"(?=\s)[^\n;&|(`]{0,200}?\s"
 # -p is case-sensitive: mysql's -P is the port.
-_p(r"\bmysql\w*\b[^\n;|&]*?\s(?-i:-p)" + _SECRET_VALUE, "cli_password_flag")
+_p(_CMD + r"mysql\w*" + _FLAG_GAP + r"(?-i:-p)" + _SECRET_VALUE, "cli_password_flag")
 _p(r"--password=['\"]?" + _SECRET_VALUE, "cli_password_flag")
 _p(
-    r"\bcurl\b[^\n;|&]*?\s(?:-u\s*|--user[\s=]+)['\"]?[^\s:'\"]+:" + _SECRET_VALUE,
+    _CMD + r"curl" + _FLAG_GAP + r"(?:-u\s*|--user[\s=]+)['\"]?[^\s:'\"]+:" + _SECRET_VALUE,
     "curl_basic_auth",
 )
+# The scheme is bounded and dot-free for the same reason (dotted schemes
+# are rare; "a.a.a..." would otherwise restart a scheme scan at every "a").
 # Any scheme except the database ones database_connection_string handles.
 _p(
-    r"\b(?!(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://)[a-z][a-z0-9+.-]*://"
+    r"\b(?!(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://)[a-z][a-z0-9+-]{0,30}://"
     r"[^\s:/@]+:(?P<secret>[^\s@/$…\[][^\s@/]*)@",
     "url_credentials",
 )

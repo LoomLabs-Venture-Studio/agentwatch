@@ -7,7 +7,9 @@ or the TUI.
 
 from __future__ import annotations
 
+import functools
 import json
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -197,3 +199,48 @@ def test_goal_alignment_synopsis_masks_commands(command):
                     tool_type=ToolType.BASH, success=True, command=command)
     (line,) = OllamaAnalyzer._build_action_synopsis([action])
     assert not _leaks(line)
+
+
+# --- QA B1: context patterns stay linear on long tool output -------------------
+
+_PATHOLOGICAL_SIZE = 1_000_000
+
+
+@functools.cache
+def _plain_redact_seconds() -> float:
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    t = time.perf_counter()
+    redact_secrets("x" * _PATHOLOGICAL_SIZE)
+    return time.perf_counter() - t
+
+
+@pytest.mark.parametrize("unit", ["curl ", "mysql ", "(curl ", "curl -u a", "a://b:", "a."])
+def test_redact_secrets_linear_on_pathological_input(unit):
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    baseline = _plain_redact_seconds()
+    text = unit * (_PATHOLOGICAL_SIZE // len(unit))
+    t = time.perf_counter()
+    redact_secrets(text)
+    elapsed = time.perf_counter() - t
+    # Quadratic patterns take minutes here; linear ones cost about the
+    # same as plain text. The baseline term absorbs slow CI machines.
+    assert elapsed < max(1.0, 3 * baseline), f"{elapsed:.2f}s (plain {baseline:.2f}s)"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "find /var/lib/mysql -type f -perm 600",
+        "ls /etc/mysql -persist",
+        "find / -name mysql -print",
+    ],
+)
+def test_scanner_ignores_mysql_as_argument(text):
+    from agentwatch.detectors.security.secret_scanner import SecretLeakScanner
+
+    buf = ActionBuffer()
+    buf.add(Action(timestamp=datetime(2026, 3, 1, 12, 0), tool_name="Bash",
+                   tool_type=ToolType.BASH, success=True, command=text))
+    assert SecretLeakScanner().check(buf) is None
