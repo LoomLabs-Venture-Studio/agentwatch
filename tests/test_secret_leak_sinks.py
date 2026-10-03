@@ -177,3 +177,23 @@ def test_scanner_ignores_context_placeholders(text):
     buf.add(Action(timestamp=datetime(2026, 3, 1, 12, 0), tool_name="Bash",
                    tool_type=ToolType.BASH, success=True, command=text))
     assert SecretLeakScanner().check(buf) is None
+
+
+# --- Part 4b: goal-alignment LLM prompt ----------------------------------------
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"git push https://x-access-token:{_GHP_TOKEN}@github.com/org/repo.git",
+        # Token straddles the 117-char synopsis cut: redact before truncating.
+        "echo " + "x" * 100 + f" {_GHP_TOKEN}",
+    ],
+    ids=["whole", "straddles_cut"],
+)
+def test_goal_alignment_synopsis_masks_commands(command):
+    from agentwatch.llm import OllamaAnalyzer
+
+    action = Action(timestamp=datetime(2026, 3, 1, 12, 0), tool_name="Bash",
+                    tool_type=ToolType.BASH, success=True, command=command)
+    (line,) = OllamaAnalyzer._build_action_synopsis([action])
+    assert not _leaks(line)

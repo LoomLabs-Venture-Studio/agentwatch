@@ -47,6 +47,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .detectors.security.secret_scanner import redact_truncate
+
 if TYPE_CHECKING:
     from .detectors.base import Warning
     from .parser.models import Action, ActionBuffer
@@ -329,7 +331,9 @@ class OllamaAnalyzer:
         handful of very long ones can't blow out the prompt size."""
         lines = []
         for a in actions:
-            target = a.file_path or a.command or ""
+            # Redact before truncating: the model's reply can echo a secret
+            # into --json output.
+            target = redact_truncate(a.file_path or a.command or "", 121)
             if len(target) > 120:
                 target = target[:117] + "..."
             lines.append(f"{a.tool_type.value}: {target}" if target else a.tool_type.value)
