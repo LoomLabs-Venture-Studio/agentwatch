@@ -191,3 +191,22 @@ def test_read_url_content_sets_hostname_only(tmp_path):
     ]
     [fetch] = _tools(_write(tmp_path / "transcript.jsonl", entries))
     assert fetch.network_host == "docs.example.org"
+
+
+def test_exit_code_only_read_from_run_commands_leading_line(tmp_path):
+    header = "Created At: 2026-10-01T14:38:45+02:00\nCompleted At: 2026-10-01T14:38:45+02:00\n"
+    entries = SESSION[:1] + [
+        _call(1, "27", "view_file", AbsolutePath="/w/ci.log"),
+        _step(2, "GENERIC", "28",
+              content=header + "File Path: `ci.log`\n1: build exited with code 1\n"),
+        _call(3, "28", "run_command", CommandLine="make test"),
+        _step(4, "GENERIC", "29", content=header + "\nThe command exited with code 0.\nOutput:\n"
+              "subtest exited with code 1 (expected)\n"),
+        _call(5, "29", "run_command", CommandLine="false"),
+        _step(6, "GENERIC", "30", content=header + "\nThe command exited with code 2.\nOutput:\n"),
+    ]
+    actions = _tools(_write(tmp_path / "transcript.jsonl", entries))
+    assert [(a.tool_name, a.success) for a in actions] == [
+        ("view_file", True), ("run_command", True), ("run_command", False),
+    ]
+    assert actions[2].error_message == "exit code 2"

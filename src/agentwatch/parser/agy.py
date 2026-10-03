@@ -12,9 +12,10 @@ Verified against live agy 1.2.14 sessions (2026-10-01)::
 
 Tool calls carry no call id: each call's result is the next non-planner step,
 in order. A failed call is ``status: "ERROR"`` with an ``error`` string; a
-shell command's exit code is only in the result text ("The command exited
-with code N."). A background command's step stays ``RUNNING`` and is never
-updated, so it counts as a success. Every ``args`` value is JSON-encoded.
+shell command's exit code is only in ``run_command``'s result text, whose
+first line after the timestamp header is "The command exited with code N.".
+A background command's step stays ``RUNNING`` and is never updated, so it
+counts as a success. Every ``args`` value is JSON-encoded.
 The file has no session id (it is the directory name), so the parser is
 given one.
 """
@@ -32,7 +33,11 @@ _PATH_ARGS = ("AbsolutePath", "TargetFile", "DirectoryPath", "SearchPath")
 # Text written to disk: replace_file_content's ReplacementContent (seen live) and
 # write_to_file's CodeContent (agy 1.2.14 binary's tool example).
 _WRITE_ARGS = ("ReplacementContent", "CodeContent")
-_EXIT_CODE = re.compile(r"exited with code (-?\d+)")
+# run_command's result opens with "Created At:"/"Completed At:" header lines
+# (seen live), then "The command exited with code N." -- only that line counts.
+_EXIT_CODE = re.compile(
+    r"\A(?:(?:Created|Completed) At:[^\n]*\n|[ \t\r]*\n)*The command exited with code (-?\d+)\."
+)
 _USER_REQUEST = re.compile(r"<USER_REQUEST>\n?(.*?)\n?(?:</USER_REQUEST>|\Z)", re.DOTALL)
 
 
@@ -115,7 +120,11 @@ class AgyParser:
         if entry.get("status") == "ERROR":
             action.success = False
             action.error_message = entry.get("error") or content
-        elif content and (m := _EXIT_CODE.search(content)) and m.group(1) != "0":
+        elif (
+            action.tool_name == "run_command"
+            and (m := _EXIT_CODE.match(content or ""))
+            and m.group(1) != "0"
+        ):
             action.success = False
             action.error_message = f"exit code {m.group(1)}"
         done = _parse_timestamp({"timestamp": entry.get("created_at")})
