@@ -280,8 +280,9 @@ _W_ACTIONS_TURN = 0.10
 _W_DURATION = 0.15
 
 # Session budget estimate (tokens).
-# The budget is the total throughput (input+cache+output summed across
-# all turns) at which we consider the session fully pressured — roughly
+# The budget is the total throughput (input+cache creation+cache reads+output
+# summed across all turns; cache reads are intentionally included here, unlike
+# burn rate and I/O ratio) at which we consider the session fully pressured — roughly
 # 10× a 200k-token context window, to account for cache-heavy workloads
 # where the same window is refilled on every turn.
 _SESSION_BUDGET = 2_000_000
@@ -306,13 +307,23 @@ def calculate_efficiency(
     duration = stats.duration_minutes
     action_count = stats.action_count
 
-    # Full input including cache — used for pressure, burn rate, and I/O ratio.
-    full_input = stats.total_input_tokens + stats.total_cache_creation + stats.total_cache_read
-    full_throughput = full_input + stats.total_output_tokens
-    # Fall back to total_tokens when no cache data is available.
+    # Full throughput including cache reads — used ONLY for context pressure,
+    # which deliberately measures cumulative tokens against _SESSION_BUDGET.
+    full_throughput = (
+        stats.total_input_tokens + stats.total_cache_creation
+        + stats.total_cache_read + stats.total_output_tokens
+    )
+    # Fresh input excludes cache reads — used for burn rate and I/O ratio.
+    # Cache reads are the whole conversation re-sent on every API call, so
+    # including them makes both metrics saturate on any normal cached session.
+    fresh_input = stats.total_input_tokens + stats.total_cache_creation
+    fresh_throughput = fresh_input + stats.total_output_tokens
+    # Fall back to total_tokens when no token breakdown is available.
     if full_throughput == 0:
         full_throughput = stats.total_tokens
-        full_input = stats.total_tokens
+    if fresh_throughput == 0:
+        fresh_throughput = stats.total_tokens
+        fresh_input = stats.total_tokens
 
     # --- 1. Context pressure (linear 0→1 as usage 0→100%) ---
     # Uses cumulative throughput against a session budget rather than
@@ -323,17 +334,19 @@ def calculate_efficiency(
     pressure_penalty = _clamp01(context_usage_pct / 100.0)
 
     # --- 2. Token burn rate (0 at ≤5k tok/min, 1.0 at ≥30k) ---
-    # Skip penalty for very short sessions where rate naturally spikes
-    burn_rate = full_throughput / duration if duration > 0 else 0.0
+    # Fresh tokens only (no cache reads). Skip penalty for very short
+    # sessions where rate naturally spikes.
+    burn_rate = fresh_throughput / duration if duration > 0 else 0.0
     if duration >= 2.0:
         burn_penalty = _clamp01((burn_rate - 5_000) / (30_000 - 5_000))
     else:
         burn_penalty = 0.0
 
     # --- 3. I/O ratio (0 at ratio≤8, 1.0 at ratio≥20) ---
-    # Skip penalty for very short sessions where ratio hasn't stabilized
+    # Fresh input only (no cache reads). Skip penalty for very short
+    # sessions where ratio hasn't stabilized.
     io_ratio = (
-        full_input / stats.total_output_tokens
+        fresh_input / stats.total_output_tokens
         if stats.total_output_tokens > 0
         else 0.0
     )
