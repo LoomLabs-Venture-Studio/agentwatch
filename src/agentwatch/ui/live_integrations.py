@@ -43,6 +43,7 @@ from __future__ import annotations
 from time import monotonic as _monotonic
 from typing import TYPE_CHECKING
 
+from agentwatch.detectors.base import warning_dedup_key  # noqa: F401 (re-export)
 from agentwatch.llm import MAX_WARNINGS_TO_ASSESS, LlmUnavailableError, OllamaAnalyzer
 from agentwatch.siem import SiemExportError, SiemLogger
 
@@ -61,36 +62,6 @@ if TYPE_CHECKING:
 # materially coarser cadence than the 1s render tick while still refreshing
 # several times over a typical multi-minute agent session.
 LLM_ASSESSMENT_INTERVAL_SECONDS = 30.0
-
-# "Identity-ish" detail keys, checked in this order, used to disambiguate
-# two simultaneously-open warnings that share the same `signal` but concern
-# different targets (e.g. two different files each independently tripping
-# the same re-read-loop detector). Deliberately excludes any key known to
-# carry a live occurrence counter (those change every tick and would defeat
-# dedup if included here).
-_IDENTITY_DETAIL_KEYS = (
-    "secret_type",
-    "channel",
-    "file_path",
-    "file",
-    "path",
-    "error_class",
-    "error_pattern",
-    "last_command",
-    "last_error",
-)
-
-
-def warning_dedup_key(warning: "Warning") -> str:
-    """Stable content-based identity for *warning*, used to recognize
-    "already seen, still open" across `check_all()` calls that construct
-    an entirely new `Warning` object each time."""
-    parts = [warning.signal]
-    for key in _IDENTITY_DETAIL_KEYS:
-        value = warning.details.get(key)
-        if value:
-            parts.append(f"{key}={value}")
-    return "|".join(parts)
 
 
 class LiveSiemExporter:

@@ -397,19 +397,15 @@ def check(
             sys.exit(1)
         click.echo(f"Using log: {log}", err=True)
 
-    # Parse logs
+    # Parse logs and run checks over the whole session
+    mode = "all" if security else "health"
+    registry = create_registry(mode=mode)
     buffer = ActionBuffer()
-    for action in parse_file(log, analytics_log=analytics_log):
-        buffer.add(action)
+    warnings = registry.scan(parse_file(log, analytics_log=analytics_log), buffer)
 
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
         sys.exit(1)
-
-    # Create registry and run checks
-    mode = "all" if security else "health"
-    registry = create_registry(mode=mode)
-    warnings = registry.check_all(buffer)
 
     # Calculate scores (Tier-1 only -- LLM assessment below is advisory
     # enrichment applied to warning.details after scoring, never before)
@@ -843,18 +839,14 @@ def security_scan(
             sys.exit(1)
         click.echo(f"Using log: {log}", err=True)
 
-    # Parse logs
+    # Parse logs and run only security detectors, over the whole session
+    registry = create_registry(mode="security")
     buffer = ActionBuffer()
-    for action in parse_file(log, analytics_log=analytics_log):
-        buffer.add(action)
+    warnings = registry.scan(parse_file(log, analytics_log=analytics_log), buffer)
 
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
         sys.exit(1)
-
-    # Run only security detectors
-    registry = create_registry(mode="security")
-    warnings = registry.check_all(buffer)
 
     security_score = calculate_security_score(warnings)
 
