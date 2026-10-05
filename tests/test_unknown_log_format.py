@@ -339,3 +339,41 @@ class TestLiveWatcherWindow:
         assert w._read_new_lines() == []
         _append(p, _claude_lines(1))
         assert _tools(w._read_new_lines()) == ["Read"]
+
+
+# --- Claude Code metadata before the first message is replayed, not dropped -----
+
+SYSTEM_LINE = {
+    "type": "system", "sessionId": "s1", "timestamp": "2026-01-01T00:00:00Z",
+    "subtype": "stop_hook_summary", "content": "hook output",
+}
+
+
+def _write_lines(tmp_path, name, lines):
+    p = tmp_path / name
+    p.write_text("".join(json.dumps(e) + "\n" for e in lines), encoding="utf-8")
+    return p
+
+
+def test_metadata_before_first_message_is_parsed(tmp_path):
+    p = _write_lines(tmp_path, "s.jsonl", [SYSTEM_LINE, CLAUDE_ASSISTANT])
+    assert [a.tool_name for a in parse_file(p)] == ["system", "Read"]
+
+
+def test_metadata_only_file_is_parsed_as_claude_code(tmp_path):
+    p = _write_lines(tmp_path, "s.jsonl", [SYSTEM_LINE])
+    assert [a.tool_name for a in parse_file(p)] == ["system"]
+
+
+def test_unknown_lines_are_not_replayed(tmp_path):
+    p = _write_lines(tmp_path, "s.jsonl", [{"foo": 1}, SYSTEM_LINE, CLAUDE_ASSISTANT])
+    assert [a.tool_name for a in parse_file(p)] == ["system", "Read"]
+
+
+def test_watcher_replays_metadata_on_first_message(tmp_path):
+    p = _write_lines(tmp_path, "s.jsonl", [SYSTEM_LINE])
+    watcher = LogWatcher(p)
+    assert watcher._read_new_lines() == []
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(json.dumps(CLAUDE_ASSISTANT) + "\n")
+    assert [a.tool_name for a in watcher._read_new_lines()] == ["system", "Read"]

@@ -69,6 +69,12 @@ class LogWatcher:
                 self._codex_parser = CopilotParser()
             elif self._log_format == "agy":
                 self._codex_parser = AgyParser(self.session_id)
+            elif self._log_format == "claude_code":
+                # Claude Code metadata seen before the first message (#39).
+                replayed = [
+                    a for e in self._sniffer.take_skipped() for a in self._parse_entry(e)
+                ]
+                return replayed + self._parse_entry(entry)
 
         if self._log_format == "unknown":
             # Not an agent log we understand (#39): emit nothing rather than

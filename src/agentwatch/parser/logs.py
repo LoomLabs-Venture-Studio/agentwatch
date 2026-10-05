@@ -574,6 +574,10 @@ class FormatSniffer:
     def __init__(self) -> None:
         self.format: str | None = None
         self.unknown_seen = 0
+        # "skip" entries are Claude Code metadata. Some carry content the
+        # detectors scan (system, queue-operation), so callers replay them
+        # once the format locks to claude_code instead of dropping them.
+        self.skipped: list[dict] = []
 
     def feed(self, entry: object) -> str | None:
         """Return the locked format ("unknown" included), or None if undecided."""
@@ -581,6 +585,7 @@ class FormatSniffer:
             return self.format
         fmt = detect_log_format(entry)
         if fmt == "skip":
+            self.skipped.append(entry)
             return None
         if fmt == "unknown":
             self.unknown_seen += 1
@@ -596,6 +601,11 @@ class FormatSniffer:
         if self.format is None and self.unknown_seen:
             return "unknown"
         return self.format
+
+    def take_skipped(self) -> list[dict]:
+        """Hand back the skipped Claude Code metadata entries, once."""
+        skipped, self.skipped = self.skipped, []
+        return skipped
 
 
 def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
@@ -613,6 +623,17 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
     sniffer = FormatSniffer()
     log_format = None
     codex_parser: CodexParser | CopilotParser | AgyParser | None = None
+
+    def parse(entry: dict) -> list[Action]:
+        if log_format == "moltbot":
+            result = parse_moltbot_entry(entry)
+        elif log_format in ("codex", "copilot", "agy"):
+            result = codex_parser.parse_line(entry)
+        else:
+            result = parse_claude_code_entry(entry)
+        if not isinstance(result, list):
+            result = [result] if result else []
+        return [a for a in result if session_id is None or a.session_id == session_id]
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -642,27 +663,21 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
                 elif log_format == "agy":
                     # agy transcripts carry no session id; tag with the requested one.
                     codex_parser = AgyParser(session_id)
+                elif log_format == "claude_code":
+                    for skipped in sniffer.take_skipped():
+                        yield from parse(skipped)
 
-            # Parse based on format
-            if log_format == "moltbot":
-                result = parse_moltbot_entry(entry)
-            elif log_format in ("codex", "copilot", "agy"):
-                result = codex_parser.parse_line(entry)
-            else:
-                result = parse_claude_code_entry(entry)
+            yield from parse(entry)
 
-            # Yield results, optionally filtering by session_id
-            if isinstance(result, list):
-                for action in result:
-                    if session_id is None or action.session_id == session_id:
-                        yield action
-            elif result:
-                if session_id is None or result.session_id == session_id:
-                    yield result
-
-        # File ended inside the sniff window with only unrecognised entries.
-        if log_format is None and sniffer.finish() == "unknown":
-            raise UnsupportedLogFormatError(path, "no recognised agent log records")
+        if log_format is None:
+            # File ended inside the sniff window with only unrecognised entries.
+            if sniffer.finish() == "unknown":
+                raise UnsupportedLogFormatError(path, "no recognised agent log records")
+            # Only Claude Code metadata (no message yet): parse it as Claude
+            # Code, as before #39.
+            log_format = "claude_code"
+            for skipped in sniffer.take_skipped():
+                yield from parse(skipped)
 
         # One-shot batch read: end-of-file legitimately means "this is
         # everything", so flush any function_call left waiting for output
