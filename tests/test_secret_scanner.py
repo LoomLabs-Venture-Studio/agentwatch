@@ -1619,3 +1619,32 @@ def test_db_url_placeholder_password_still_ignored(url):
     buf = ActionBuffer()
     buf.add(_make_action(tool_type=ToolType.BASH, command=f"psql {url}"))
     assert SecretLeakScanner().check(buf) is None
+
+
+@pytest.mark.parametrize("text,shown,redacted", [
+    # Missed forms
+    ("mysql_secure_installation -pHx7q2Lm9Zr",
+     "mysql_secure_installation -p[hidden, 10 chars]",
+     "mysql_secure_installation -p[REDACTED]"),
+    ("/opt/x/curl -u a:Hx7q2Lm9Zr https://h",
+     "/opt/x/curl -u a:[hidden, 10 chars] https://h",
+     "/opt/x/curl -u a:[REDACTED] https://h"),
+    # A trailing colon is punctuation: count right, colon kept
+    ("mysql -u root -pHx7q2Lm9Zr: Access denied",
+     "mysql -u root -p[hidden, 10 chars]: Access denied",
+     "mysql -u root -p[REDACTED]: Access denied"),
+])
+def test_scanner_followups_31(text, shown, redacted):
+    from agentwatch.detectors.security.secret_scanner import _redact_text, redact_secrets
+
+    assert redact_secrets(text) == shown
+    assert _redact_text(text) == (redacted, 1)
+
+
+def test_curl_path_prefix_stays_linear():
+    """#31: "/x/curl" starts must not each rescan a 40-token gap."""
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    start = time.perf_counter()
+    redact_secrets("/x/curl " * 60_000)
+    assert time.perf_counter() - start < 2.0
