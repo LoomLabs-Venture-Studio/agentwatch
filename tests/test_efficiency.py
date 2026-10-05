@@ -230,3 +230,27 @@ class TestReportFields:
         assert d["status"] == theme.level_1  # Degraded equivalent
         assert d["cache_hit_rate"] == 0.65
         assert d["penalty_context"] == 0.0
+
+
+class TestCacheReadsExcludedFromBurn:
+    """Regression #36: cache reads must not drive burn rate or I/O ratio."""
+
+    def test_cache_heavy_session_not_penalized_for_burn_or_io(self):
+        buffer = ActionBuffer(max_size=2000)
+        now = datetime.now()
+        # ~4 minutes, 50k cache reads per call (99% hit rate), small fresh
+        # input, modest output. ~1M cumulative keeps context pressure at ~50%
+        # so the score isolates burn/io. Old code: ~270k tok/min, io ratio ~170.
+        for i in range(20):
+            buffer.add(_make_action(
+                tokens_in=200,
+                tokens_out=300,
+                cache_creation_tokens=500,
+                cache_read_tokens=50_000,
+                timestamp=now + timedelta(seconds=i * 12),
+            ))
+        report = calculate_efficiency([], buffer)
+        assert report.duration_minutes >= 2.0
+        assert report.token_burn_rate < 30_000, report.token_burn_rate
+        assert report.io_ratio < 8.0, report.io_ratio
+        assert report.score >= 75, f"Expected >=75, got {report.score}"

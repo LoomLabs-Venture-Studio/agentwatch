@@ -107,7 +107,7 @@ class EfficiencyBar(Static):
             (
                 "Pressure",
                 r.penalty_context,
-                f"{r.context_usage_pct:.0f}% ctx, {burn_k:.1f}k tok/min",
+                f"{r.context_usage_pct:.0f}% budget, {burn_k:.1f}k tok/min",
             ),
             ("Cache", r.penalty_cache, f"{r.cache_hit_rate * 100:.0f}% hit rate"),
             (
