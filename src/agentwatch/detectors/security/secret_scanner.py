@@ -12,6 +12,7 @@ import tempfile
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -495,7 +496,14 @@ def redact_truncate(text: str, limit: int) -> str:
     straddling *limit* is still masked because the window extends
     ``_REDACT_WINDOW_MARGIN`` chars past it.
     """
-    return redact_secrets(text[: limit + _REDACT_WINDOW_MARGIN])[:limit]
+    return _redact_window(text[: limit + _REDACT_WINDOW_MARGIN])[:limit]
+
+
+@lru_cache(maxsize=4096)
+def _redact_window(window: str) -> str:
+    """Memoized ``redact_secrets`` for bounded windows: detectors re-redact
+    the same commands and errors on every watch tick (#25)."""
+    return redact_secrets(window)
 
 
 # ---------------------------------------------------------------------------
