@@ -6,6 +6,7 @@ transcript (header line with sessionId, then type="gemini" records) and of a
 SQLite store, not any real content.
 """
 
+import asyncio
 import json
 import sqlite3
 
@@ -14,8 +15,14 @@ from click.testing import CliRunner
 
 from agentwatch import agents
 from agentwatch.agents.base import sniff_jsonl_format
+from agentwatch.agents.claude_code import ClaudeCodeAdapter
 from agentwatch.cli import cli
-from agentwatch.parser.logs import UnsupportedLogFormatError, detect_log_format, parse_file
+from agentwatch.parser.logs import (
+    FORMAT_SNIFF_LINES,
+    UnsupportedLogFormatError,
+    detect_log_format,
+    parse_file,
+)
 from agentwatch.parser.watcher import LogWatcher, MultiLogWatcher
 
 GEMINI_HEADER = {
@@ -156,3 +163,179 @@ class TestCli:
         result = CliRunner().invoke(cli, ["audit", "--all", "--json"])
         assert not isinstance(result.exception, UnsupportedLogFormatError), result.output
         assert result.exit_code == 0
+
+
+# --- Format-sniff window ------------------------------------------------------
+# One stray unrecognised line must not lock the format: up to
+# FORMAT_SNIFF_LINES unknown entries are skipped like "skip" entries and the
+# first recognised entry decides. sniff_jsonl_format (claims()), _parse_jsonl
+# and LogWatcher must all agree.
+
+STRAY = {"note": "not an agent record"}
+SKIP = {"type": "mode", "sessionId": "s1"}
+
+
+def _claude_lines(n=3):
+    out = []
+    for i in range(n):
+        a = json.loads(json.dumps(CLAUDE_ASSISTANT))
+        a["message"]["content"][0]["id"] = f"t{i}"
+        a["message"]["content"][0]["input"]["file_path"] = f"/f{i}.py"
+        out.append(a)
+    return out
+
+
+def _strays(n):
+    return [dict(STRAY, i=i) for i in range(n)]
+
+
+def _write(p, entries):
+    p.write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
+    return p
+
+
+def _append(p, entries):
+    with open(p, "a", encoding="utf-8") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+
+def _tools(actions):
+    return [a.tool_name for a in actions]
+
+
+def _all_agree_claude(p, expected_tools):
+    """sniff/claims, parse_file and a fresh LogWatcher all treat *p* as Claude Code."""
+    assert sniff_jsonl_format(p) == "claude_code"
+    assert ClaudeCodeAdapter().claims(p)
+    assert agents.adapter_for(p) is not None
+    assert _tools(parse_file(p)) == expected_tools
+    assert _tools(LogWatcher(p)._read_new_lines()) == expected_tools
+
+
+def _all_agree_unknown(p):
+    """sniff/claims, parse_file and a fresh LogWatcher all reject *p*."""
+    assert sniff_jsonl_format(p) == "unknown"
+    assert not ClaudeCodeAdapter().claims(p)
+    assert agents.adapter_for(p) is None
+    with pytest.raises(UnsupportedLogFormatError, match="no recognised agent log records"):
+        list(parse_file(p))
+    assert LogWatcher(p)._read_new_lines() == []
+
+
+class TestSniffWindow:
+    def test_window_size(self):
+        assert FORMAT_SNIFF_LINES == 50
+
+    # (a) stray unknown first line + valid Claude Code lines
+    def test_stray_first_line_parses_as_claude(self, tmp_path):
+        p = _write(tmp_path / "s.jsonl", [STRAY] + _claude_lines())
+        _all_agree_claude(p, ["Read", "Read", "Read"])
+
+    def test_stray_gemini_records_then_claude(self, tmp_path):
+        p = _write(tmp_path / "s.jsonl", [GEMINI_HEADER, GEMINI_MESSAGE] + _claude_lines(2))
+        _all_agree_claude(p, ["Read", "Read"])
+
+    def test_check_cli_with_stray_first_line(self, tmp_path):
+        p = _write(tmp_path / "s.jsonl", [STRAY] + _claude_lines())
+        result = CliRunner().invoke(cli, ["check", "--log", str(p), "--json"])
+        assert "unsupported log format" not in result.output, result.output
+        assert "No actions found" not in result.output, result.output
+        assert not isinstance(result.exception, UnsupportedLogFormatError)
+        assert result.exit_code in (0, 1, 2), result.output
+        report = json.loads(result.output)
+        assert report
+
+    def test_unknown_just_inside_window_then_claude(self, tmp_path):
+        p = _write(tmp_path / "s.jsonl", _strays(FORMAT_SNIFF_LINES - 1) + _claude_lines(1))
+        _all_agree_claude(p, ["Read"])
+
+    def test_skip_lines_do_not_use_up_window(self, tmp_path):
+        entries = [SKIP] * (FORMAT_SNIFF_LINES + 10) + [STRAY] + _claude_lines(1)
+        p = _write(tmp_path / "s.jsonl", entries)
+        _all_agree_claude(p, ["Read"])
+
+    def test_undecodable_and_non_dict_lines_do_not_use_up_window(self, tmp_path):
+        p = tmp_path / "s.jsonl"
+        junk = "not json\n42\n[1]\n" * FORMAT_SNIFF_LINES
+        p.write_text(junk + json.dumps(STRAY) + "\n" + json.dumps(CLAUDE_ASSISTANT) + "\n",
+                     encoding="utf-8")
+        _all_agree_claude(p, ["Read"])
+
+    def test_recognised_format_stays_locked(self, tmp_path):
+        # Once Claude Code is locked, later odd lines go through its parser
+        # as before -- no mid-file raise.
+        p = _write(tmp_path / "s.jsonl", _claude_lines(1) + _strays(3) + _claude_lines(1))
+        assert _tools(parse_file(p)).count("Read") == 2
+
+    # (b) only unknown lines: still rejected with the existing error
+    def test_only_unknown_lines_still_rejected(self, tmp_path):
+        _all_agree_unknown(_gemini_log(tmp_path))
+
+    def test_single_unknown_line_file_rejected(self, tmp_path):
+        _all_agree_unknown(_write(tmp_path / "s.jsonl", [STRAY]))
+
+    # (d) more than the window of unknown lines, then a valid one
+    def test_more_than_window_unknown_then_valid_stays_unknown(self, tmp_path):
+        p = _write(tmp_path / "s.jsonl", _strays(FORMAT_SNIFF_LINES + 5) + _claude_lines(2))
+        _all_agree_unknown(p)
+
+    def test_exactly_window_unknown_then_valid_is_unknown(self, tmp_path):
+        p = _write(tmp_path / "s.jsonl", _strays(FORMAT_SNIFF_LINES) + _claude_lines(1))
+        _all_agree_unknown(p)
+
+    def test_only_skip_lines_and_empty_stay_undecided(self, tmp_path):
+        skip = _write(tmp_path / "skip.jsonl", [SKIP] * (FORMAT_SNIFF_LINES + 5))
+        empty = tmp_path / "empty.jsonl"
+        empty.write_text("", encoding="utf-8")
+        for p in (skip, empty):
+            assert sniff_jsonl_format(p) is None
+            assert ClaudeCodeAdapter().claims(p)
+            assert list(parse_file(p)) == []
+            assert LogWatcher(p)._read_new_lines() == []
+
+    def test_binary_still_rejected_immediately(self, tmp_path):
+        p = tmp_path / "s.jsonl"
+        p.write_bytes(b"\0\0\n" + (json.dumps(CLAUDE_ASSISTANT) + "\n").encode())
+        assert sniff_jsonl_format(p) == "unknown"
+        with pytest.raises(UnsupportedLogFormatError, match="binary"):
+            list(parse_file(p))
+
+
+class TestLiveWatcherWindow:
+    # (c) live LogWatcher: bad first line, then valid lines arrive
+    def test_bad_first_line_then_valid_lines_appended(self, tmp_path):
+        p = _write(tmp_path / "live.jsonl", [STRAY])
+        w = LogWatcher(p)
+        assert w._read_new_lines() == []
+        _append(p, _claude_lines(2))
+        assert _tools(w._read_new_lines()) == ["Read", "Read"]
+
+    async def test_bad_first_line_then_valid_via_watch(self, tmp_path):
+        p = _write(tmp_path / "live.jsonl", [STRAY, GEMINI_MESSAGE] + _claude_lines(2))
+        agen = LogWatcher(p).watch()
+        try:
+            got = [await asyncio.wait_for(agen.__anext__(), 5) for _ in range(2)]
+        finally:
+            await agen.aclose()
+        assert _tools(got) == ["Read", "Read"]
+
+    def test_window_counter_persists_across_reads(self, tmp_path):
+        p = _write(tmp_path / "live.jsonl", [])
+        w = LogWatcher(p)
+        half = FORMAT_SNIFF_LINES // 2
+        _append(p, _strays(half))
+        assert w._read_new_lines() == []
+        _append(p, _strays(FORMAT_SNIFF_LINES - half))
+        assert w._read_new_lines() == []
+        # Window used up across two reads: a valid line no longer recovers it.
+        _append(p, _claude_lines(1))
+        assert w._read_new_lines() == []
+
+    def test_recovers_inside_window_across_reads(self, tmp_path):
+        p = _write(tmp_path / "live.jsonl", [])
+        w = LogWatcher(p)
+        _append(p, _strays(FORMAT_SNIFF_LINES - 1))
+        assert w._read_new_lines() == []
+        _append(p, _claude_lines(1))
+        assert _tools(w._read_new_lines()) == ["Read"]

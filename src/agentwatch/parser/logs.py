@@ -463,6 +463,13 @@ class UnsupportedLogFormatError(ValueError):
         super().__init__(f"unsupported log format: {path} ({reason})")
 
 
+# How many decoded dict entries may be unrecognised ("unknown") before a log
+# counts as an unsupported format. "skip" entries, undecodable lines and
+# non-dict JSON don't count. Shared by sniff_jsonl_format, _parse_jsonl and
+# LogWatcher via FormatSniffer, so claims() and the parsers always agree.
+FORMAT_SNIFF_LINES = 50
+
+
 # Claude Code bookkeeping lines with no session id of their own.
 _CLAUDE_METADATA_TYPES = frozenset(
     {"file-history-snapshot", "file-history-delta", "summary", "config"}
@@ -553,6 +560,44 @@ def detect_log_format(first_entry: dict) -> str:
     return "unknown"
 
 
+class FormatSniffer:
+    """Incremental log-format decision over a stream of decoded entries.
+
+    The first recognised entry locks the format. "skip" entries are ignored,
+    and so are up to FORMAT_SNIFF_LINES "unknown" ones -- a stray first line
+    must not make a real agent log unreadable (#39). Only once that many
+    unknown entries arrive with nothing recognised does the format lock to
+    "unknown". Feed it entries one at a time; state persists across calls, so
+    a live tail can feed it across reads.
+    """
+
+    def __init__(self) -> None:
+        self.format: str | None = None
+        self.unknown_seen = 0
+
+    def feed(self, entry: object) -> str | None:
+        """Return the locked format ("unknown" included), or None if undecided."""
+        if self.format is not None:
+            return self.format
+        fmt = detect_log_format(entry)
+        if fmt == "skip":
+            return None
+        if fmt == "unknown":
+            self.unknown_seen += 1
+            if self.unknown_seen >= FORMAT_SNIFF_LINES:
+                self.format = "unknown"
+            return self.format
+        self.format = fmt
+        return fmt
+
+    def finish(self) -> str | None:
+        """Decision at end of input: undecided input that held any unknown
+        entry (and nothing recognised) is "unknown"; skip-only stays None."""
+        if self.format is None and self.unknown_seen:
+            return "unknown"
+        return self.format
+
+
 def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
     """JSONL body of parse_file (Claude Code / Moltbot / Codex / Copilot / agy, auto-detected)."""
     # Imported lazily (not at module level) to avoid a logs.py <-> codex.py
@@ -565,6 +610,7 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
     if is_binary_file(path):
         raise UnsupportedLogFormatError(path, "binary file, not a JSONL agent log")
 
+    sniffer = FormatSniffer()
     log_format = None
     codex_parser: CodexParser | CopilotParser | AgyParser | None = None
 
@@ -581,10 +627,11 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
             if not isinstance(entry, dict):
                 continue
 
-            # Detect format on first valid entry (skip metadata-only entries)
-            if log_format is None or log_format == "skip":
-                log_format = detect_log_format(entry)
-                if log_format == "skip":
+            # Detect format on the first recognised entry; metadata-only and
+            # (within the sniff window) unrecognised entries are skipped.
+            if log_format is None:
+                log_format = sniffer.feed(entry)
+                if log_format is None:
                     continue
                 if log_format == "unknown":
                     raise UnsupportedLogFormatError(path, "no recognised agent log records")
@@ -612,6 +659,10 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
             elif result:
                 if session_id is None or result.session_id == session_id:
                     yield result
+
+        # File ended inside the sniff window with only unrecognised entries.
+        if log_format is None and sniffer.finish() == "unknown":
+            raise UnsupportedLogFormatError(path, "no recognised agent log records")
 
         # One-shot batch read: end-of-file legitimately means "this is
         # everything", so flush any function_call left waiting for output

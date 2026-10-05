@@ -26,7 +26,7 @@ from .cursor_source import (
     open_readonly,
 )
 from .logs import (
-    detect_log_format,
+    FormatSniffer,
     ensure_supported_log,
     parse_claude_code_entry,
     parse_moltbot_entry,
@@ -44,6 +44,7 @@ class LogWatcher:
         self.session_id = session_id
         self._position = 0
         self._log_format: str | None = None
+        self._sniffer = FormatSniffer()
         self._codex_parser: CodexParser | CopilotParser | AgyParser | None = None
         self._callbacks: list[Callable[[Action], None]] = []
 
@@ -55,9 +56,12 @@ class LogWatcher:
         """Parse an entry using the detected format. Returns list of actions."""
         if not isinstance(entry, dict):
             return []
-        if self._log_format is None or self._log_format == "skip":
-            self._log_format = detect_log_format(entry)
-            if self._log_format == "skip":
+        if self._log_format is None:
+            # Shared with parse_file()/claims(): unrecognised entries within
+            # the sniff window are skipped, not locked in (#39). The sniffer
+            # lives on the instance so the window spans successive reads.
+            self._log_format = self._sniffer.feed(entry)
+            if self._log_format is None:
                 return []
             if self._log_format == "codex":
                 self._codex_parser = CodexParser()
