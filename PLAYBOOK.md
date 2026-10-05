@@ -3554,3 +3554,49 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
   unparseable timestamps. #45 huge rates shown for sessions under 1 min.
   #46 non-action Claude entries counted as actions. #47 bare `check` picks
   the newest Claude session, not the current directory's.
+
+### Plan (board-approved 2026-10-05)
+1. **Docs PR:** draft PR `docs/agent-testing-2026-10-05` -> `develop`
+   (this section plus the research files).
+2. **#21 retarget:** ADR PR #21 `docs/network-visibility-adr` moves from
+   `main` to `develop`. Stays open as a draft; do not close it.
+3. **#48 hardening** (engineer, on `fix/unknown-log-format-39`), then CTO
+   review, then QA re-verify, then **back to the board for the merge call**.
+   Problem: a line that `detect_log_format()` calls `"unknown"` currently
+   locks the format on the spot, in three places: `sniff_jsonl_format()`
+   (`agents/base.py`, so `ClaudeCodeAdapter.claims()` rejects the file),
+   `_parse_jsonl()` (`parser/logs.py`, raises), and
+   `LogWatcher._parse_entry()` (`parser/watcher.py`, goes silent for good).
+   One stray first line makes a real Claude Code log unreadable.
+
+   Acceptance criteria:
+   - [ ] One shared constant (e.g. `FORMAT_SNIFF_LINES = 50`, matching
+         `sniff_jsonl_format`'s current `max_lines`) sets how many decoded
+         entries may be unrecognised before a file counts as unknown.
+   - [ ] Within that window, an `"unknown"` entry is skipped like `"skip"`
+         and does not lock the format, in all three places above. The first
+         recognised entry locks the format as before.
+   - [ ] A file is unsupported only when the window ends (or the file ends)
+         with at least one unknown entry and no recognised one. Files with
+         only `"skip"` entries, or empty files, stay undecided as today.
+   - [ ] `sniff_jsonl_format`, `_parse_jsonl` and `LogWatcher` agree on
+         every test input (no path where `claims()` and the parser disagree).
+   - [ ] Binary files (NUL in the first 8 KiB) are still rejected at once.
+   - [ ] `LogWatcher`: unknown entries before the first recognised one emit
+         no actions; the watcher recovers when a recognised entry arrives
+         inside the window, and goes quiet only after the window is used up.
+   - [ ] New tests in `tests/test_unknown_log_format.py`: (a) stray unknown
+         first line + valid Claude Code lines parses normally via
+         `parse_file`, `claims()` and `check`; (b) a file of only unknown
+         lines (Gemini sample) is still rejected with the existing error;
+         (c) live `LogWatcher` fed a bad first line, then valid lines,
+         emits the valid actions; (d) more than the window of unknown lines
+         followed by a valid line stays unknown.
+   - [ ] Existing PR #48 tests still pass; full suite green; `ruff check .`
+         clean. One commit on the branch, `fix(parser): ...[#39]`.
+4. **After #48 merges:** rebase `fix/discord-pattern-perf-32`, renumber its
+   PLAYBOOK section to Sprint 27, open its draft PR.
+5. **Then:** Gemini CLI adapter, then rebase `feature/opencode-adapter`
+   (renumber to Sprint 28) and check it against the live OpenCode findings.
+   It must not change #48's generic-SQLite rejection test (the opencode
+   `claims()` checks real columns, so it should not).
