@@ -3465,9 +3465,46 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
 
 ---
 
-### Sprint 25 -- Quadratic secret patterns (issue #32, 2026-10-03)
+### Sprint 25 -- #36 follow-up: context pressure measures window fill (2026-10-05)
+**Type:** bug fix
+**Branch:** `fix/efficiency-thresholds-36` (from `develop`, after PR #37)
+
+### Data (real Claude Code history on the dev machine, 24 sessions >= 2 min)
+- Fresh burn rate: median 6.7k, p90 13.1k, max 18.7k tok/min.
+  Fresh I/O ratio: median 3.3, p90 9.4, max 13.2.
+- Cumulative throughput: median 3.6M, so 15/24 sessions hit 100% of the old
+  2M budget. Per-call context (input + cache creation + cache read): peak
+  median 110k, max 252k; last call median 93k.
+
+### Acceptance Criteria
+- [x] Context pressure = latest call's context fill against the window
+      (200K, or 1M once any call exceeds 200K), not cumulative throughput
+      against 2M. Regression test fails before, passes after.
+- [x] Pressure drops after compaction (a smaller later call).
+- [x] README/docs/TUI label ("% ctx") match the new metric.
+- [x] Burn-rate and I/O thresholds unchanged (see data; board call).
+- [x] Full suite passes, `ruff check .` clean.
+
+### Result
+- Same 24 sessions: sessions at 100% pressure went from 15 to 0; pressure
+  median 34%, max 86%. Median efficiency score 66 -> 78.
+
+### Known limit
+- Window size is inferred (200K/1M). Codex models with windows in between
+  read low; Codex logs carry the real window size, future fix.
+
+### Follow-ups
+- #38: session duration wrong on current Claude Code logs (timestamp-less
+  metadata lines). Separate fix.
+- Main-checkout editable installs import `src` from the main checkout. In
+  worktrees, run tests with `PYTHONPATH=<worktree>/src`.
+
+---
+
+### Sprint 27 -- Quadratic secret patterns (issue #32, 2026-10-03)
 **Type:** bug fix (performance / denial of service)
-**Branch:** `fix/discord-pattern-perf-32` (from `develop`, after #34)
+**Branch:** `fix/discord-pattern-perf-32` (from `develop`, after #34;
+rebased onto `develop` 2026-10-06. Sprint 26 is in PR #49)
 
 ### Acceptance Criteria
 - [ ] `discord_bot_token` scans 1MB of `mysql` repeated (and any long
