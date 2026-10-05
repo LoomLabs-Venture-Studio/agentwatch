@@ -1619,3 +1619,15 @@ def test_db_url_placeholder_password_still_ignored(url):
     buf = ActionBuffer()
     buf.add(_make_action(tool_type=ToolType.BASH, command=f"psql {url}"))
     assert SecretLeakScanner().check(buf) is None
+
+
+@pytest.mark.parametrize("url,password", [
+    ("redis://:S3cretRedisPw9@cache:6379/0", "S3cretRedisPw9"),  # empty user
+    ("postgres://admin:Live@Pw5Zk@db.host/app", "Live@Pw5Zk"),  # raw "@" in password
+])
+def test_db_url_gaps_33(url, password):
+    from agentwatch.detectors.security.secret_scanner import _redact_text, redact_secrets
+
+    assert password not in redact_secrets(f"psql {url}")
+    redacted, count = _redact_text(f"psql {url}")
+    assert count == 1 and redacted == f"psql {url.replace(password, '[REDACTED]')}"

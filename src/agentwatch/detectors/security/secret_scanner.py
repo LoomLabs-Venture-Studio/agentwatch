@@ -73,8 +73,11 @@ _p(r"pk_live_[0-9a-zA-Z]{24,}", "stripe_publishable_key")
 # unbounded each "postgres://" start scans to the end of the text (quadratic
 # on long tool output); 256 chars is far beyond any real user/password. The
 # host tail stops at "@" and "\" (a raw-JSON escape such as "\n"), so it
-# never overlaps the next URL's tail.
-_URL_USERINFO = r"[^:\s]{1,256}+:[^@\s]{1,256}+@"
+# never overlaps the next URL's tail. The user may be empty (redis://:pw@h)
+# and the password may hold raw "@"s (#33). A piece after an "@" joins the
+# password only if it has no "/", "\", ":" or ";", so a host followed by a
+# glued-on second URL is never swallowed.
+_URL_USERINFO = r"[^:\s]{0,256}+:[^@\s]{1,256}+@(?:[^@\s/\:;]{1,256}+@)*+"
 _URL_TAIL = r"[^\s@\\]"
 
 # Neon DB connection string — must be before generic database pattern
@@ -699,7 +702,7 @@ _ASSIGNMENT_PREFIX_RE = re.compile(r"[^:=]*[:=]\s*['\"]?")
 
 # Connection-string patterns: only the password between ``user:`` and ``@``.
 _URL_LABELS = frozenset({"neondb_connection_string", "database_connection_string"})
-_URL_PASSWORD_RE = re.compile(r"[a-z]+://[^:\s]+:([^@\s]+)@", re.IGNORECASE)
+_URL_PASSWORD_RE = re.compile(r"[a-z]+://[^:\s]*:(\S+)@", re.IGNORECASE)
 
 
 def _value_span(m: re.Match, label: str) -> tuple[int, int]:
