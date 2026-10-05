@@ -18,6 +18,7 @@ from agentwatch.discovery import (
     find_running_agents,
 )
 from agentwatch.health import calculate_health, calculate_security_score
+from agentwatch.health.score import calculate_efficiency
 from agentwatch.llm import (
     DEFAULT_OLLAMA_MODEL,
     MAX_WARNINGS_TO_ASSESS,
@@ -205,7 +206,9 @@ def _print_goal_alignment(assessment: GoalAlignmentAssessment | None) -> None:
     click.echo()
 
 
-def print_health_report(report, security_mode: bool = False, stats=None) -> None:
+def print_health_report(
+    report, security_mode: bool = False, stats=None, efficiency=None
+) -> None:
     """Print a formatted health report to stdout.
 
     `stats` (a `SessionStats`, optional) surfaces `peak_context_tokens` --
@@ -242,8 +245,15 @@ def print_health_report(report, security_mode: bool = False, stats=None) -> None
 
     click.echo()
 
+    if efficiency is not None:
+        click.echo(
+            f"  Efficiency: {efficiency.score}% ({efficiency.status}), "
+            f"{efficiency.context_usage_pct:.0f}% ctx, "
+            f"{efficiency.cache_hit_rate * 100:.0f}% cache hit"
+        )
     if stats is not None and stats.peak_context_tokens:
         click.echo(f"  Peak context: {stats.peak_context_tokens:,} tokens (single action)")
+    if efficiency is not None or (stats is not None and stats.peak_context_tokens):
         click.echo()
 
     # Warnings
@@ -414,6 +424,8 @@ def check(
     # Calculate scores (Tier-1 only -- LLM assessment below is advisory
     # enrichment applied to warning.details after scoring, never before)
     report = calculate_health(warnings, include_security=security)
+    # Informational, like the TUI's efficiency bar: not part of the exit code.
+    efficiency = calculate_efficiency(warnings, buffer)
 
     goal_alignment: GoalAlignmentAssessment | None = None
     if llm:
@@ -428,10 +440,13 @@ def check(
 
     if json_output:
         output = report.to_dict()
+        output["efficiency"] = efficiency.to_dict()
         output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
         click.echo(json.dumps(output, indent=2))
     else:
-        print_health_report(report, security_mode=security, stats=buffer.stats)
+        print_health_report(
+            report, security_mode=security, stats=buffer.stats, efficiency=efficiency
+        )
 
         # Extra security output
         if security and report.security_warnings:

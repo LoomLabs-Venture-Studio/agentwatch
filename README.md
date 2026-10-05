@@ -263,6 +263,13 @@ agentwatch check --security
 agentwatch check --json
 ```
 
+`check` also reports session efficiency (the same numbers as the TUI's
+efficiency bar). With `--json` it is an `efficiency` object: `score`,
+`status`, `context_usage_pct`, `token_burn_rate`, `io_ratio`, `cost_total`,
+`cost_velocity`, `cache_hit_rate`, `actions_per_turn`, `duration_minutes`
+and the `penalty_*` rollups. Efficiency is informational: it does not
+change the exit code.
+
 ### Security Scan
 
 ```bash
