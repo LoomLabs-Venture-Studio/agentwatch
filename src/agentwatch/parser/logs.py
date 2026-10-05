@@ -454,28 +454,75 @@ _CODEX_EVENT_TYPES = frozenset(
 )
 
 
+class UnsupportedLogFormatError(ValueError):
+    """A log file that is not a recognised agent log (binary, or unknown JSONL)."""
+
+    def __init__(self, path: Path, reason: str):
+        self.path = path
+        self.reason = reason
+        super().__init__(f"unsupported log format: {path} ({reason})")
+
+
+# Claude Code bookkeeping lines with no session id of their own.
+_CLAUDE_METADATA_TYPES = frozenset(
+    {"file-history-snapshot", "file-history-delta", "summary", "config"}
+)
+
+
+def is_binary_file(path: Path) -> bool:
+    """True if the file's head has a NUL byte. JSONL and Markdown never do."""
+    try:
+        with open(path, "rb") as f:
+            return b"\0" in f.read(8192)
+    except OSError:
+        return False
+
+
+def ensure_supported_log(path: Path) -> None:
+    """Raise UnsupportedLogFormatError if no adapter claims *path* and its content
+    is binary or unrecognised JSONL. Empty/undecidable files pass (they may
+    still be filling up)."""
+    from agentwatch.agents import adapter_for
+    from agentwatch.agents.base import sniff_jsonl_format
+
+    if adapter_for(path) is not None:
+        return
+    if is_binary_file(path):
+        raise UnsupportedLogFormatError(path, "binary file, not a JSONL agent log")
+    if sniff_jsonl_format(path) == "unknown":
+        raise UnsupportedLogFormatError(path, "no recognised agent log records")
+
+
 def detect_log_format(first_entry: dict) -> str:
-    """Detect whether log is from Claude Code, Moltbot, or Codex.
+    """Detect which agent wrote a log from one decoded JSONL entry.
 
-    Returns "skip" for metadata-only entries (e.g. file-history-snapshot)
-    that should not lock the format decision.
+    Returns "skip" for metadata-only entries that should not lock the format
+    decision, and "unknown" when nothing matches (including non-dict JSON).
     """
-    # Claude Code metadata entries — don't lock format, wait for a real message
+    if not isinstance(first_entry, dict):
+        return "unknown"
     entry_type = first_entry.get("type", "")
-    if entry_type in ("file-history-snapshot", "summary", "config"):
-        return "skip"
+    if not isinstance(entry_type, str):
+        entry_type = ""
 
-    # Claude Code indicators — check first since its logs also have "type" keys
-    # Claude Code entries have top-level sessionId/cwd/version or
-    # message.content with tool_use blocks
-    if any(
-        key in first_entry for key in ["sessionId", "cwd", "costUSD", "cacheCreationInputTokens"]
-    ):
-        return "claude_code"
+    # Claude Code message: {type: user|assistant, message: {role/content, ...}}
     if entry_type in ("user", "assistant") and "message" in first_entry:
         msg = first_entry.get("message", {})
-        if isinstance(msg, dict) and "role" in msg:
+        if isinstance(msg, dict) and ("role" in msg or "content" in msg):
             return "claude_code"
+
+    # Older flat Claude Code entries: Claude-specific field names, or a
+    # sessionId alongside a tool name. A bare sessionId is not enough --
+    # other agents (e.g. Gemini CLI) use that key too (#39).
+    if "costUSD" in first_entry or "cacheCreationInputTokens" in first_entry:
+        return "claude_code"
+    if "sessionId" in first_entry and ("tool" in first_entry or "tool_name" in first_entry):
+        return "claude_code"
+
+    # Claude Code metadata lines (mode, last-prompt, attachment, system, ...)
+    # -- don't lock the format, wait for a real message.
+    if entry_type in _CLAUDE_METADATA_TYPES or (entry_type and "sessionId" in first_entry):
+        return "skip"
 
     # Moltbot indicators
     if "skill" in first_entry:
@@ -515,6 +562,9 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
     from .codex import CodexParser
     from .copilot import CopilotParser
 
+    if is_binary_file(path):
+        raise UnsupportedLogFormatError(path, "binary file, not a JSONL agent log")
+
     log_format = None
     codex_parser: CodexParser | CopilotParser | AgyParser | None = None
 
@@ -528,12 +578,16 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(entry, dict):
+                continue
 
             # Detect format on first valid entry (skip metadata-only entries)
             if log_format is None or log_format == "skip":
                 log_format = detect_log_format(entry)
                 if log_format == "skip":
                     continue
+                if log_format == "unknown":
+                    raise UnsupportedLogFormatError(path, "no recognised agent log records")
                 if log_format == "codex":
                     codex_parser = CodexParser()
                 elif log_format == "copilot":

@@ -85,10 +85,14 @@ def sniff_jsonl_format(path: Path, max_lines: int = 50) -> str | None:
     """Return detect_log_format() of the first non-"skip" JSONL entry.
 
     None when the file is missing/unreadable or has no decisive entry within
-    *max_lines*. Mirrors parse_file()'s own detection (same function, same
-    "skip" semantics) so claims() never disagrees with the parser.
+    *max_lines*; "unknown" for binary files. Mirrors parse_file()'s own
+    detection (same function, same "skip" semantics) so claims() never
+    disagrees with the parser.
     """
-    from agentwatch.parser.logs import detect_log_format
+    from agentwatch.parser.logs import detect_log_format, is_binary_file
+
+    if is_binary_file(path):
+        return "unknown"
 
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:

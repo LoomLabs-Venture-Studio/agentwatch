@@ -25,7 +25,12 @@ from .cursor_source import (
     fetch_composer_headers,
     open_readonly,
 )
-from .logs import detect_log_format, parse_claude_code_entry, parse_moltbot_entry
+from .logs import (
+    detect_log_format,
+    ensure_supported_log,
+    parse_claude_code_entry,
+    parse_moltbot_entry,
+)
 from .models import Action
 
 logger = logging.getLogger(__name__)
@@ -48,6 +53,8 @@ class LogWatcher:
 
     def _parse_entry(self, entry: dict) -> list[Action]:
         """Parse an entry using the detected format. Returns list of actions."""
+        if not isinstance(entry, dict):
+            return []
         if self._log_format is None or self._log_format == "skip":
             self._log_format = detect_log_format(entry)
             if self._log_format == "skip":
@@ -59,6 +66,10 @@ class LogWatcher:
             elif self._log_format == "agy":
                 self._codex_parser = AgyParser(self.session_id)
 
+        if self._log_format == "unknown":
+            # Not an agent log we understand (#39): emit nothing rather than
+            # misparse every record as Claude Code.
+            return []
         if self._log_format == "moltbot":
             result = parse_moltbot_entry(entry)
         elif self._log_format in ("codex", "copilot", "agy"):
@@ -533,6 +544,7 @@ class MultiLogWatcher:
         sid = proc.session_id if proc else None
         adapter = (get(proc.agent_type) if proc else None) or adapter_for(log_meta)
         if adapter is None:
+            ensure_supported_log(log_meta)  # raises; watch() skips the entry (#39)
             return LogWatcher(log_meta, session_id=sid)
         return adapter.make_watcher(proc if proc is not None else log_meta, sid)
 
