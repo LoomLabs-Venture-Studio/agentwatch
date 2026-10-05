@@ -245,7 +245,7 @@ class EfficiencyReport:
     cost_velocity: float  # USD/min
     cache_hit_rate: float  # 0.0-1.0
     actions_per_turn: float  # avg tool calls per model response
-    duration_minutes: float  # wall clock
+    duration_minutes: float  # active time, idle gaps capped at 30 min
     # Per-category penalty rollups (0.0 = healthy, 1.0 = full penalty)
     penalty_context: float = 0.0  # max(pressure, burn, io)
     penalty_cache: float = 0.0    # cache miss penalty
