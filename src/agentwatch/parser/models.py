@@ -103,6 +103,7 @@ class SessionStats:
     total_cache_creation: int = 0
     total_cache_read: int = 0
     peak_context_tokens: int = 0  # high-water mark of per-action context size
+    last_context_tokens: int = 0  # context size of the latest action that reported usage
     active_seconds: float = 0.0  # span covered by actions, idle gaps capped
     error_count: int = 0
     files_touched: set[str] = field(default_factory=set)
@@ -188,6 +189,9 @@ class ActionBuffer:
         action_context = action.tokens_in + action.cache_creation_tokens + action.cache_read_tokens
         if action_context > self._stats.peak_context_tokens:
             self._stats.peak_context_tokens = action_context
+        # Latest window fill; usage-less actions (e.g. tool errors) don't reset it.
+        if action_context > 0:
+            self._stats.last_context_tokens = action_context
 
         # Extend the covered span at either end. Gaps are capped so a session
         # resumed hours or days later doesn't count the idle time (#38).

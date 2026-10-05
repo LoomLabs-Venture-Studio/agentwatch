@@ -94,19 +94,68 @@ class TestContextPressure:
     def test_heavy_context_usage(self):
         buffer = ActionBuffer(max_size=2000)
         now = datetime.now()
-        # Simulate cache-heavy session: each action reads ~40k from cache
-        # 40 actions × (3k in + 40k cache_read + 1k out) = ~1.76M throughput
-        # against 2M budget → ~88% pressure
+        # Pressure is the latest call's context vs. the window (200K here,
+        # since no call exceeds 200K). Each call reads ~170K of context
+        # (3k fresh + 167k cache_read) -> ~85% of a 200K window.
         for i in range(40):
             buffer.add(_make_action(
                 tokens_in=3000,
                 tokens_out=1000,
-                cache_read_tokens=40000,
+                cache_read_tokens=167000,
                 timestamp=now + timedelta(minutes=i),
             ))
         report = calculate_efficiency([], buffer)
         assert report.context_usage_pct >= 70
         assert report.score < 85, f"Expected <85 with heavy context, got {report.score}"
+
+    def test_cached_session_does_not_saturate(self):
+        """Regression (#36): a normal 20-minute cached session re-sends ~60K
+        of context per call. Summing cache reads across calls used to hit
+        100% pressure; window fill of the latest call is ~31%."""
+        buffer = ActionBuffer(max_size=2000)
+        now = datetime.now()
+        for i in range(40):
+            buffer.add(_make_action(
+                tokens_in=2000,
+                tokens_out=500,
+                cache_read_tokens=60000,
+                timestamp=now + timedelta(seconds=i * 30),
+            ))
+        report = calculate_efficiency([], buffer)
+        assert 25 <= report.context_usage_pct <= 35, report.context_usage_pct
+
+    def test_pressure_drops_after_compaction(self):
+        buffer = ActionBuffer(max_size=2000)
+        now = datetime.now()
+        for i in range(5):
+            buffer.add(_make_action(
+                tokens_in=2000, cache_read_tokens=178000,
+                timestamp=now + timedelta(seconds=i * 30),
+            ))
+        buffer.add(_make_action(
+            tokens_in=2000, cache_read_tokens=28000,
+            timestamp=now + timedelta(seconds=300),
+        ))
+        report = calculate_efficiency([], buffer)
+        assert report.context_usage_pct == 15.0  # 30K / 200K
+
+    def test_call_above_200k_promotes_to_1m_window(self):
+        buffer = ActionBuffer(max_size=2000)
+        buffer.add(_make_action(tokens_in=10000, cache_read_tokens=240000))
+        report = calculate_efficiency([], buffer)
+        assert report.context_usage_pct == 25.0  # 250K / 1M
+
+    def test_zero_usage_action_keeps_last_context(self):
+        buffer = ActionBuffer(max_size=2000)
+        now = datetime.now()
+        buffer.add(_make_action(tokens_in=2000, cache_read_tokens=98000, timestamp=now))
+        buffer.add(_make_action(
+            tokens_in=0, tokens_out=0, success=False,
+            timestamp=now + timedelta(seconds=5),
+        ))
+        assert buffer.stats.last_context_tokens == 100000
+        report = calculate_efficiency([], buffer)
+        assert report.context_usage_pct == 50.0
 
 
 class TestCacheThrash:
@@ -233,8 +282,9 @@ class TestCacheReadsExcludedFromBurn:
         buffer = ActionBuffer(max_size=2000)
         now = datetime.now()
         # ~4 minutes, 50k cache reads per call (99% hit rate), small fresh
-        # input, modest output. ~1M cumulative keeps context pressure at ~50%
-        # so the score isolates burn/io. Old code: ~270k tok/min, io ratio ~170.
+        # input, modest output. Each call fills ~51K of a 200K window, so
+        # context pressure stays ~25% and the score isolates burn/io.
+        # Old code: ~270k tok/min, io ratio ~170.
         for i in range(20):
             buffer.add(_make_action(
                 tokens_in=200,

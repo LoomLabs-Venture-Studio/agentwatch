@@ -123,11 +123,11 @@ Pure operational resource metrics, independent of behavioral signals. Sub-metric
 
 | Category     | Sub-metrics                                              | What it tracks                                              |
 | ------------ | -------------------------------------------------------- | ----------------------------------------------------------- |
-| **Pressure** | Context pressure (30%), burn rate (20%), I/O ratio (10%) | How fast the session is consuming its token budget          |
+| **Pressure** | Context pressure (30%), burn rate (20%), I/O ratio (10%) | How full the context window is and how fast tokens are spent |
 | **Cache**    | Cache hit rate (15%)                                     | How effectively the session reuses cached context           |
 | **Pacing**   | Duration (15%), actions per turn (10%)                   | How long the session has been running and tool call density |
 
-Context pressure uses cumulative throughput against a 2M token session budget. This is monotonically increasing and survives auto-compaction and tool restarts.
+Context pressure is the latest call's context (input + cache creation + cache read) as a share of the context window: 200K, or 1M once any call exceeds 200K. It drops after auto-compaction. Burn rate and I/O ratio count fresh tokens only (cache reads excluded).
 
 Cost (estimated from token counts) is displayed as informational only and does not affect the score.
 
