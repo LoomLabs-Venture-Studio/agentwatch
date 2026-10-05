@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 21 (2026-09-30), at the end of this file.** Start there.
+> **Latest: Sprint 26 (2026-10-05), at the end of this file.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -3498,3 +3498,59 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
   metadata lines). Separate fix.
 - Main-checkout editable installs import `src` from the main checkout. In
   worktrees, run tests with `PYTHONPATH=<worktree>/src`.
+
+### Sprint 26 -- Session duration, unknown log formats, live agent testing (2026-10-05)
+**Type:** bug fixes + research
+
+### Shipped to `develop`
+- #37 (issue #36): burn rate and I/O ratio count fresh tokens only (no
+  cache reads).
+- #42 (issue #36): context pressure = latest call's window fill (Sprint 25).
+- #43 (issue #38): session duration. Root cause: current Claude Code logs
+  have untimed metadata lines (`mode`, `last-prompt`, `ai-title`, ...) that
+  were parsed as actions stamped `datetime.now()`. 31 of 32 local sessions
+  read 0 minutes (burn rate in the hundreds of millions of tok/min). Fix:
+  skip untimed entries; cap each idle gap at 30 min (`IDLE_GAP_CAP`).
+  Live `watch-all`: 560,974k -> 5.2k tok/min, $6,667/min -> $0.06/min.
+- Issues #36 and #38 closed. Suite: 1042 passed, ruff clean.
+
+### Open PR
+- #48 (issue #39): unknown or binary logs give a clear "unsupported log
+  format" error instead of being parsed as Claude Code (Gemini JSONL) or
+  crashing (OpenCode SQLite). QA approved. Before merge: one unrecognised
+  first line makes the whole file unknown (`parse_file`) and silences
+  `LogWatcher`; tolerate unknown lines for the first N lines like "skip".
+  1064 passed.
+
+### Live agent testing
+- Installed 9 CLIs (packages verified against vendor orgs): Gemini CLI,
+  Qwen Code, OpenCode, Goose, Cursor CLI, Crush, Amp, Kiro CLI, Codex.
+- Tested live: Gemini CLI and OpenCode. Neither is detected yet (no
+  adapter). Gemini: JSONL at `~/.gemini/tmp/<project>/chats/session-*.jsonl`.
+  OpenCode: SQLite at `~/.local/share/opencode/opencode.db`. Both log tool
+  calls and tokens.
+- Not tested: Qwen (0.25.0 has no free login), Codex (no subscription),
+  the rest not logged in.
+- Gemini CLI's free Google login for individuals now redirects to
+  Antigravity (agy, already supported) for new users.
+- Report and redacted samples: `docs/research/agent-live-test-2026-10-05.md`,
+  `docs/research/samples/`. Source research and adapter ranking:
+  `docs/research/agent-adapter-candidates-2026-10-05.md`.
+
+### Local branches pushed for the other machine
+- `feature/opencode-adapter` (2026-10-03, 7 commits, no PR yet). Check it
+  against the live findings above before starting OpenCode work again.
+- `fix/discord-pattern-perf-32` (issue #32, 3 commits, no PR yet). Test
+  token literal split so GitHub push protection accepts it (it is
+  Discord's public docs example).
+- Not pushed: `fix/network-host-url-leak` (superseded by #30) and
+  `backup/copilot-direct` (superseded by #29).
+
+### Follow-ups (open)
+- #39 merge (PR #48), then Gemini CLI adapter, then OpenCode (resume
+  `feature/opencode-adapter`).
+- #40 `check --json` has no efficiency numbers. #41 KDE `kquitapp6
+  plasmashell` flagged as C2 beacon. #44 parsers still stamp `now()` on
+  unparseable timestamps. #45 huge rates shown for sessions under 1 min.
+  #46 non-action Claude entries counted as actions. #47 bare `check` picks
+  the newest Claude session, not the current directory's.
