@@ -150,19 +150,13 @@ class TestLongSession:
     def test_90min_session(self):
         buffer = ActionBuffer(max_size=2000)
         now = datetime.now()
-        start = now - timedelta(minutes=90)
-        # First action sets start_time
-        buffer.add(_make_action(
-            tokens_in=200,
-            tokens_out=100,
-            timestamp=start,
-        ))
-        # A few more recent actions
-        for i in range(5):
+        # Active for 90 minutes: an action every 15 minutes (idle gaps over
+        # 30 minutes are capped, #38).
+        for i in range(7):
             buffer.add(_make_action(
                 tokens_in=200,
                 tokens_out=100,
-                timestamp=now - timedelta(minutes=5 - i),
+                timestamp=now - timedelta(minutes=90 - 15 * i),
             ))
         report = calculate_efficiency([], buffer)
         assert report.duration_minutes >= 85

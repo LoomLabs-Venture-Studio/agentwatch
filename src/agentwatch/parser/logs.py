@@ -267,6 +267,11 @@ def _parse_timestamp(entry: dict) -> datetime:
 
 def _parse_claude_code_flat(entry: dict) -> Action | None:
     """Fallback parser for flat Claude Code entries (older format)."""
+    # Current Claude Code logs interleave untimed metadata lines (last-prompt,
+    # mode, ai-title, ...). They are not actions, and stamping them
+    # datetime.now() wrecks session duration (#38).
+    if not (entry.get("timestamp") or entry.get("ts") or entry.get("time")):
+        return None
     try:
         timestamp = _parse_timestamp(entry)
 
