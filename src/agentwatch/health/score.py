@@ -279,13 +279,9 @@ _W_CACHE_HIT = 0.15
 _W_ACTIONS_TURN = 0.10
 _W_DURATION = 0.15
 
-# Session budget estimate (tokens).
-# The budget is the total throughput (input+cache creation+cache reads+output
-# summed across all turns; cache reads are intentionally included here, unlike
-# burn rate and I/O ratio) at which we consider the session fully pressured — roughly
-# 10× a 200k-token context window, to account for cache-heavy workloads
-# where the same window is refilled on every turn.
-_SESSION_BUDGET = 2_000_000
+# Context window sizes (tokens) for context pressure.
+_CONTEXT_WINDOW = 200_000
+_CONTEXT_WINDOW_1M = 1_000_000
 
 
 def _clamp01(x: float) -> float:
@@ -307,30 +303,27 @@ def calculate_efficiency(
     duration = stats.duration_minutes
     action_count = stats.action_count
 
-    # Full throughput including cache reads — used ONLY for context pressure,
-    # which deliberately measures cumulative tokens against _SESSION_BUDGET.
-    full_throughput = (
-        stats.total_input_tokens + stats.total_cache_creation
-        + stats.total_cache_read + stats.total_output_tokens
-    )
     # Fresh input excludes cache reads — used for burn rate and I/O ratio.
     # Cache reads are the whole conversation re-sent on every API call, so
     # including them makes both metrics saturate on any normal cached session.
     fresh_input = stats.total_input_tokens + stats.total_cache_creation
     fresh_throughput = fresh_input + stats.total_output_tokens
     # Fall back to total_tokens when no token breakdown is available.
-    if full_throughput == 0:
-        full_throughput = stats.total_tokens
     if fresh_throughput == 0:
         fresh_throughput = stats.total_tokens
         fresh_input = stats.total_tokens
 
     # --- 1. Context pressure (linear 0→1 as usage 0→100%) ---
-    # Uses cumulative throughput against a session budget rather than
-    # current window fill.  This is monotonically increasing — it never
-    # drops after auto-compaction or tool restart, because cumulative
-    # totals are replayed from the log.
-    context_usage_pct = min(full_throughput / _SESSION_BUDGET * 100, 100.0)
+    # Window fill of the latest call (input + cache creation + cache read),
+    # not a cumulative sum: cache reads re-send the whole conversation every
+    # call, so summing them saturates any normal session. Drops after
+    # compaction. 0 when no per-call usage was reported.
+    # ponytail: 200K/1M window inferred from peak call size (a call >200K
+    # proves a 1M-window model); upgrade path is reading the model name from the log.
+    window = (
+        _CONTEXT_WINDOW_1M if stats.peak_context_tokens > _CONTEXT_WINDOW else _CONTEXT_WINDOW
+    )
+    context_usage_pct = min(stats.last_context_tokens / window * 100, 100.0)
     pressure_penalty = _clamp01(context_usage_pct / 100.0)
 
     # --- 2. Token burn rate (0 at ≤5k tok/min, 1.0 at ≥30k) ---
