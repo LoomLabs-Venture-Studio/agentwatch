@@ -3514,13 +3514,21 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
   Live `watch-all`: 560,974k -> 5.2k tok/min, $6,667/min -> $0.06/min.
 - Issues #36 and #38 closed. Suite: 1042 passed, ruff clean.
 
-### Open PR
-- #48 (issue #39): unknown or binary logs give a clear "unsupported log
-  format" error instead of being parsed as Claude Code (Gemini JSONL) or
-  crashing (OpenCode SQLite). QA approved. Before merge: one unrecognised
-  first line makes the whole file unknown (`parse_file`) and silences
-  `LogWatcher`; tolerate unknown lines for the first N lines like "skip".
-  1064 passed.
+### Merged 2026-10-06 (squash into `develop`, board-approved)
+- #48 `0d39f32` (issue #39): unknown or binary logs give a clear
+  "unsupported log format" error instead of being parsed as Claude Code
+  (Gemini JSONL) or crashing (OpenCode SQLite). Hardened per plan item 3
+  below: unknown lines inside the first `FORMAT_SNIFF_LINES` entries are
+  skipped, not format-locking. QA re-verified.
+- #61 `91dbe48`: QA on #48 found `watch` showed metadata-only sessions
+  empty. `FormatSniffer.take_metadata_only()` is now the one end-of-input
+  rule shared by `parse_file` and `LogWatcher`. QA: 41 real logs, 0 diffs.
+  Known limits in the PR body.
+- Then, in order: #53 `c98b965`, #54 `94096c1`, #51 `1786de1`,
+  #52 `1fa635b`, #56 `5c135f8`, #50 `a04613b`, #55 `376a927`,
+  #57 `b0010b8`, #58 `f62fc08`, #59 `e30af94`, #60 `0f24a4c` (Sprint 27).
+- Branches were updated by merging `develop`, never rebased; no force
+  pushes. `develop`: 1147 passed, 1 skipped; `ruff check .` clean.
 
 ### Live agent testing
 - Installed 9 CLIs (packages verified against vendor orgs): Gemini CLI,
@@ -3547,8 +3555,12 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
   `backup/copilot-direct` (superseded by #29).
 
 ### Follow-ups (open)
-- #39 merge (PR #48), then Gemini CLI adapter, then OpenCode (resume
+- Gemini CLI adapter, then OpenCode (merge `develop` into
   `feature/opencode-adapter`).
+- New: timing test `test_redact_secrets_linear_on_pathological_input`
+  flaky on shared CI (`3 * baseline`); `find_latest_session` fallback can
+  pick a `subagents/` log; `mask_secret` length counts from the last colon
+  only (`PGPASSWORD=Ab:cd:ef` shows 5 chars, not 7; redaction correct).
 - #40 `check --json` has no efficiency numbers. #41 KDE `kquitapp6
   plasmashell` flagged as C2 beacon. #44 parsers still stamp `now()` on
   unparseable timestamps. #45 huge rates shown for sessions under 1 min.
@@ -3556,6 +3568,9 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
   the newest Claude session, not the current directory's.
 
 ### Plan (board-approved 2026-10-05)
+Status 2026-10-06: items 2-4 done (#48 merged, #32 merged as #60); item 1
+is this PR (#49); item 5 next.
+
 1. **Docs PR:** draft PR `docs/agent-testing-2026-10-05` -> `develop`
    (this section plus the research files).
 2. **#21 retarget:** ADR PR #21 `docs/network-visibility-adr` moves from
@@ -3570,29 +3585,29 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
    One stray first line makes a real Claude Code log unreadable.
 
    Acceptance criteria:
-   - [ ] One shared constant (e.g. `FORMAT_SNIFF_LINES = 50`, matching
+   - [x] One shared constant (e.g. `FORMAT_SNIFF_LINES = 50`, matching
          `sniff_jsonl_format`'s current `max_lines`) sets how many decoded
          entries may be unrecognised before a file counts as unknown.
-   - [ ] Within that window, an `"unknown"` entry is skipped like `"skip"`
+   - [x] Within that window, an `"unknown"` entry is skipped like `"skip"`
          and does not lock the format, in all three places above. The first
          recognised entry locks the format as before.
-   - [ ] A file is unsupported only when the window ends (or the file ends)
+   - [x] A file is unsupported only when the window ends (or the file ends)
          with at least one unknown entry and no recognised one. Files with
          only `"skip"` entries, or empty files, stay undecided as today.
-   - [ ] `sniff_jsonl_format`, `_parse_jsonl` and `LogWatcher` agree on
+   - [x] `sniff_jsonl_format`, `_parse_jsonl` and `LogWatcher` agree on
          every test input (no path where `claims()` and the parser disagree).
-   - [ ] Binary files (NUL in the first 8 KiB) are still rejected at once.
-   - [ ] `LogWatcher`: unknown entries before the first recognised one emit
+   - [x] Binary files (NUL in the first 8 KiB) are still rejected at once.
+   - [x] `LogWatcher`: unknown entries before the first recognised one emit
          no actions; the watcher recovers when a recognised entry arrives
          inside the window, and goes quiet only after the window is used up.
-   - [ ] New tests in `tests/test_unknown_log_format.py`: (a) stray unknown
+   - [x] New tests in `tests/test_unknown_log_format.py`: (a) stray unknown
          first line + valid Claude Code lines parses normally via
          `parse_file`, `claims()` and `check`; (b) a file of only unknown
          lines (Gemini sample) is still rejected with the existing error;
          (c) live `LogWatcher` fed a bad first line, then valid lines,
          emits the valid actions; (d) more than the window of unknown lines
          followed by a valid line stays unknown.
-   - [ ] Existing PR #48 tests still pass; full suite green; `ruff check .`
+   - [x] Existing PR #48 tests still pass; full suite green; `ruff check .`
          clean. One commit on the branch, `fix(parser): ...[#39]`.
 4. **After #48 merges:** rebase `fix/discord-pattern-perf-32`, renumber its
    PLAYBOOK section to Sprint 27, open its draft PR.
@@ -3600,3 +3615,28 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
    (renumber to Sprint 28) and check it against the live OpenCode findings.
    It must not change #48's generic-SQLite rejection test (the opencode
    `claims()` checks real columns, so it should not).
+
+---
+
+### Sprint 27 -- Quadratic secret patterns (issue #32, 2026-10-03)
+**Type:** bug fix (performance / denial of service)
+**Branch:** `fix/discord-pattern-perf-32` (from `develop`, after #34;
+merged with `develop` 2026-10-06. Sprint 26 is in PR #49)
+
+### Acceptance Criteria
+- [x] `discord_bot_token` scans 1MB of `mysql` repeated (and any long
+      alphanumeric run) in linear time.
+- [x] Every pattern in `_SECRET_PATTERNS` is swept against 1MB runs of
+      each character class (letters, digits, mixed, hex, base64, `-`/`_`,
+      dots, spaces). No pattern is quadratic; any found is fixed here.
+- [x] Real Discord tokens are still detected and masked.
+- [x] Timing regression tests use the existing subprocess + timeout
+      pattern. Full suite passes, `ruff check .` clean.
+
+### Result (2026-10-06)
+- Sweep: every `_SECRET_PATTERNS` entry on 100 KB vs 400 KB runs of
+  letters, digits, mixed, hex, base64, `-`/`_`, dots, spaces, `M`,
+  `eyJ` and `mysql`. None grows more than 6x for 4x input. The same
+  sweep against `develop`'s scanner did not finish in 10 minutes.
+- Full suite 1052 passed, 1 skipped; `ruff check .` clean.
+- Merged as #60 `0f24a4c` (2026-10-06).
