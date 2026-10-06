@@ -265,12 +265,23 @@ def _parse_timestamp(entry: dict) -> datetime | None:
     return None
 
 
+_NON_ACTION_TYPES = frozenset(
+    {"attachment", "pr-link", "file-history-delta", "continued-in"}
+)
+
+
 def _parse_claude_code_flat(entry: dict) -> Action | None:
     """Fallback parser for flat Claude Code entries (older format)."""
     # Current Claude Code logs interleave untimed metadata lines (last-prompt,
     # mode, ai-title, ...). They are not actions, and stamping them
     # datetime.now() wrecks session duration (#38).
     if not (entry.get("timestamp") or entry.get("ts") or entry.get("time")):
+        return None
+    # Timestamped bookkeeping entries and plain user prompts are not agent
+    # actions either, and no detector reads them (#46).
+    if entry.get("type") in _NON_ACTION_TYPES or (
+        entry.get("type") == "user" and isinstance(entry.get("message"), dict)
+    ):
         return None
     try:
         timestamp = _parse_timestamp(entry)
