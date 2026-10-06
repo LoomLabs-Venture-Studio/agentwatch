@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .base import Detector, Warning
+from .base import Detector, Warning, warning_dedup_key
 from .health import get_all_health_detectors
 from .security import get_all_security_detectors
 
 if TYPE_CHECKING:
-    from agentwatch.parser.models import ActionBuffer
+    from collections.abc import Iterable
+
+    from agentwatch.parser.models import Action, ActionBuffer
 
 
 class DetectorRegistry:
@@ -69,6 +71,26 @@ class DetectorRegistry:
         }
         warnings.sort(key=lambda w: severity_order.get(w.severity.value, 4))
 
+        return warnings
+
+    def scan(self, actions: "Iterable[Action]", buffer: "ActionBuffer") -> list[Warning]:
+        """Feed *actions* into *buffer* and return the session's warnings.
+
+        Security detectors only look at the last 5-50 actions, so for a
+        one-shot scan they run after every add, like the live TUI, and each
+        distinct finding is kept once (#35). Health detectors describe the
+        current state, so they run once at the end.
+        """
+        seen: dict[str, Warning] = {}
+        has_security = any(d.is_security_detector for d in self.detectors)
+        for action in actions:
+            buffer.add(action)
+            if has_security:
+                for w in self.check_security(buffer):
+                    seen.setdefault(warning_dedup_key(w), w)
+        warnings = self.check_health(buffer) + list(seen.values())
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        warnings.sort(key=lambda w: order.get(w.severity.value, 4))
         return warnings
 
     def check_health(self, buffer: "ActionBuffer") -> list[Warning]:

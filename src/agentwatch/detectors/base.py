@@ -151,6 +151,37 @@ class Warning:
         return d
 
 
+# "Identity-ish" detail keys, checked in this order, used to disambiguate
+# two simultaneously-open warnings that share the same `signal` but concern
+# different targets (e.g. two different files each independently tripping
+# the same re-read-loop detector). Deliberately excludes any key known to
+# carry a live occurrence counter (those change every tick and would defeat
+# dedup if included here).
+_IDENTITY_DETAIL_KEYS = (
+    "secret_type",
+    "channel",
+    "file_path",
+    "file",
+    "path",
+    "error_class",
+    "error_pattern",
+    "last_command",
+    "last_error",
+)
+
+
+def warning_dedup_key(warning: Warning) -> str:
+    """Stable content-based identity for *warning*, used to recognize
+    "already seen, still open" across `check_all()` calls that construct
+    an entirely new `Warning` object each time."""
+    parts = [warning.signal]
+    for key in _IDENTITY_DETAIL_KEYS:
+        value = warning.details.get(key)
+        if value:
+            parts.append(f"{key}={value}")
+    return "|".join(parts)
+
+
 class Detector(ABC):
     """Abstract base class for all detectors."""
 

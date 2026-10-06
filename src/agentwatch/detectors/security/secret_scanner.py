@@ -12,6 +12,7 @@ import tempfile
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -73,8 +74,11 @@ _p(r"pk_live_[0-9a-zA-Z]{24,}", "stripe_publishable_key")
 # unbounded each "postgres://" start scans to the end of the text (quadratic
 # on long tool output); 256 chars is far beyond any real user/password. The
 # host tail stops at "@" and "\" (a raw-JSON escape such as "\n"), so it
-# never overlaps the next URL's tail.
-_URL_USERINFO = r"[^:\s]{1,256}+:[^@\s]{1,256}+@"
+# never overlaps the next URL's tail. The user may be empty (redis://:pw@h)
+# and the password may hold raw "@"s (#33). A piece after an "@" joins the
+# password only if it has no "/", "\", ":" or ";", so a host followed by a
+# glued-on second URL is never swallowed.
+_URL_USERINFO = r"[^:\s]{0,256}+:[^@\s]{1,256}+@(?:[^@\s/\:;]{1,256}+@)*+"
 _URL_TAIL = r"[^\s@\\]"
 
 # Neon DB connection string — must be before generic database pattern
@@ -179,16 +183,20 @@ _p(r"v1\.0-[a-f0-9]{24}-[a-f0-9]{146,}", "cloudflare_api_token")
 # named group ``secret`` marks the value: only it is masked/redacted, since
 # the match also holds the context (``mysql -u root -p...``) that mask_secret
 # would otherwise mistake for the value. A value never starts with ``$``
-# (a variable reference) or ``…``/``[`` (an already-masked value).
-_SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[][^\s'\"]*)"
+# (a variable reference) or ``…``/``[`` (an already-masked value). A
+# trailing ":" is punctuation, not value ("-pXXX: Access denied", #31).
+_SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[](?:[^\s'\":]|:(?=[^\s'\"]))*+)"
 _p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env")
 # curl/mysql as a program word anywhere on a line (error text quotes
 # commands mid-line, behind prompts, bash -c, ssh, docker exec, xargs ...),
 # but not inside a path, variable or identifier -- except a bin/ directory.
 _CMD = r"(?:(?<=/bin/)|(?<![\w/.$-]))"
+# curl may sit at the end of any path (/opt/x/curl, #31): unlike mysql, a
+# directory named curl followed by "-u user:pw" is not a real case.
+_CURL_CMD = r"(?:(?<=/)|(?<![\w/.$-]))"
 
 
-def _flag_gap(word: str) -> str:
+def _flag_gap(word: str, cmd: str = _CMD) -> str:
     """1 to 40 whitespace-separated tokens between *word* and its flag.
 
     At least one: "-p" glued to the word ("mysql-python") is not a flag.
@@ -200,11 +208,14 @@ def _flag_gap(word: str) -> str:
     quadratic). Each token is possessive: otherwise a run of spaces can be
     split between tokens in exponentially many ways.
     """
-    token = rf"(?:(?!{_CMD}(?:{word})\b)[^\s;&|(`])*+"
+    token = rf"(?:(?!{cmd}(?:{word})\b)[^\s;&|(`])*+"
     return rf"\b(?:{token}[^\S\n]++(?!['\"]?(?:{word})\b)){{1,40}}?['\"]?"
 
 
-_MYSQL = r"mysql(?:dump|admin|import|show|check|sh|binlog)?|mariadb(?:-\w+)?"
+_MYSQL = (
+    r"mysql(?:dump|admin|import|show|check|sh|binlog|_secure_installation)?"
+    r"|mariadb(?:-\w+)?"
+)
 # -p is case-sensitive: mysql's -P is the port. find's -perm/-print/-prune/
 # -path are not passwords (find / -name mysql -print).
 _p(
@@ -214,7 +225,7 @@ _p(
 )
 _p(r"--password=['\"]?" + _SECRET_VALUE, "cli_password_flag")
 _p(
-    _CMD + r"curl" + _flag_gap("curl")
+    _CURL_CMD + r"curl" + _flag_gap("curl", _CURL_CMD)
     + r"(?:-u[\s'\",]*+|--user[\s=,'\"]++)[^\s:'\"]+:" + _SECRET_VALUE,
     "curl_basic_auth",
 )
@@ -501,7 +512,14 @@ def redact_truncate(text: str, limit: int) -> str:
     straddling *limit* is still masked because the window extends
     ``_REDACT_WINDOW_MARGIN`` chars past it.
     """
-    return redact_secrets(text[: limit + _REDACT_WINDOW_MARGIN])[:limit]
+    return _redact_window(text[: limit + _REDACT_WINDOW_MARGIN])[:limit]
+
+
+@lru_cache(maxsize=4096)
+def _redact_window(window: str) -> str:
+    """Memoized ``redact_secrets`` for bounded windows: detectors re-redact
+    the same commands and errors on every watch tick (#25)."""
+    return redact_secrets(window)
 
 
 # ---------------------------------------------------------------------------
@@ -705,7 +723,7 @@ _ASSIGNMENT_PREFIX_RE = re.compile(r"[^:=]*[:=]\s*['\"]?")
 
 # Connection-string patterns: only the password between ``user:`` and ``@``.
 _URL_LABELS = frozenset({"neondb_connection_string", "database_connection_string"})
-_URL_PASSWORD_RE = re.compile(r"[a-z]+://[^:\s]+:([^@\s]+)@", re.IGNORECASE)
+_URL_PASSWORD_RE = re.compile(r"[a-z]+://[^:\s]*:(\S+)@", re.IGNORECASE)
 
 
 def _value_span(m: re.Match, label: str) -> tuple[int, int]:
