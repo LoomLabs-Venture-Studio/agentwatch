@@ -454,28 +454,82 @@ _CODEX_EVENT_TYPES = frozenset(
 )
 
 
+class UnsupportedLogFormatError(ValueError):
+    """A log file that is not a recognised agent log (binary, or unknown JSONL)."""
+
+    def __init__(self, path: Path, reason: str):
+        self.path = path
+        self.reason = reason
+        super().__init__(f"unsupported log format: {path} ({reason})")
+
+
+# How many decoded dict entries may be unrecognised ("unknown") before a log
+# counts as an unsupported format. "skip" entries, undecodable lines and
+# non-dict JSON don't count. Shared by sniff_jsonl_format, _parse_jsonl and
+# LogWatcher via FormatSniffer, so claims() and the parsers always agree.
+FORMAT_SNIFF_LINES = 50
+
+
+# Claude Code bookkeeping lines with no session id of their own.
+_CLAUDE_METADATA_TYPES = frozenset(
+    {"file-history-snapshot", "file-history-delta", "summary", "config"}
+)
+
+
+def is_binary_file(path: Path) -> bool:
+    """True if the file's head has a NUL byte. JSONL and Markdown never do."""
+    try:
+        with open(path, "rb") as f:
+            return b"\0" in f.read(8192)
+    except OSError:
+        return False
+
+
+def ensure_supported_log(path: Path) -> None:
+    """Raise UnsupportedLogFormatError if no adapter claims *path* and its content
+    is binary or unrecognised JSONL. Empty/undecidable files pass (they may
+    still be filling up)."""
+    from agentwatch.agents import adapter_for
+    from agentwatch.agents.base import sniff_jsonl_format
+
+    if adapter_for(path) is not None:
+        return
+    if is_binary_file(path):
+        raise UnsupportedLogFormatError(path, "binary file, not a JSONL agent log")
+    if sniff_jsonl_format(path) == "unknown":
+        raise UnsupportedLogFormatError(path, "no recognised agent log records")
+
+
 def detect_log_format(first_entry: dict) -> str:
-    """Detect whether log is from Claude Code, Moltbot, or Codex.
+    """Detect which agent wrote a log from one decoded JSONL entry.
 
-    Returns "skip" for metadata-only entries (e.g. file-history-snapshot)
-    that should not lock the format decision.
+    Returns "skip" for metadata-only entries that should not lock the format
+    decision, and "unknown" when nothing matches (including non-dict JSON).
     """
-    # Claude Code metadata entries — don't lock format, wait for a real message
+    if not isinstance(first_entry, dict):
+        return "unknown"
     entry_type = first_entry.get("type", "")
-    if entry_type in ("file-history-snapshot", "summary", "config"):
-        return "skip"
+    if not isinstance(entry_type, str):
+        entry_type = ""
 
-    # Claude Code indicators — check first since its logs also have "type" keys
-    # Claude Code entries have top-level sessionId/cwd/version or
-    # message.content with tool_use blocks
-    if any(
-        key in first_entry for key in ["sessionId", "cwd", "costUSD", "cacheCreationInputTokens"]
-    ):
-        return "claude_code"
+    # Claude Code message: {type: user|assistant, message: {role/content, ...}}
     if entry_type in ("user", "assistant") and "message" in first_entry:
         msg = first_entry.get("message", {})
-        if isinstance(msg, dict) and "role" in msg:
+        if isinstance(msg, dict) and ("role" in msg or "content" in msg):
             return "claude_code"
+
+    # Older flat Claude Code entries: Claude-specific field names, or a
+    # sessionId alongside a tool name. A bare sessionId is not enough --
+    # other agents (e.g. Gemini CLI) use that key too (#39).
+    if "costUSD" in first_entry or "cacheCreationInputTokens" in first_entry:
+        return "claude_code"
+    if "sessionId" in first_entry and ("tool" in first_entry or "tool_name" in first_entry):
+        return "claude_code"
+
+    # Claude Code metadata lines (mode, last-prompt, attachment, system, ...)
+    # -- don't lock the format, wait for a real message.
+    if entry_type in _CLAUDE_METADATA_TYPES or (entry_type and "sessionId" in first_entry):
+        return "skip"
 
     # Moltbot indicators
     if "skill" in first_entry:
@@ -506,6 +560,54 @@ def detect_log_format(first_entry: dict) -> str:
     return "unknown"
 
 
+class FormatSniffer:
+    """Incremental log-format decision over a stream of decoded entries.
+
+    The first recognised entry locks the format. "skip" entries are ignored,
+    and so are up to FORMAT_SNIFF_LINES "unknown" ones -- a stray first line
+    must not make a real agent log unreadable (#39). Only once that many
+    unknown entries arrive with nothing recognised does the format lock to
+    "unknown". Feed it entries one at a time; state persists across calls, so
+    a live tail can feed it across reads.
+    """
+
+    def __init__(self) -> None:
+        self.format: str | None = None
+        self.unknown_seen = 0
+        # "skip" entries are Claude Code metadata. Some carry content the
+        # detectors scan (system, queue-operation), so callers replay them
+        # once the format locks to claude_code instead of dropping them.
+        self.skipped: list[dict] = []
+
+    def feed(self, entry: object) -> str | None:
+        """Return the locked format ("unknown" included), or None if undecided."""
+        if self.format is not None:
+            return self.format
+        fmt = detect_log_format(entry)
+        if fmt == "skip":
+            self.skipped.append(entry)
+            return None
+        if fmt == "unknown":
+            self.unknown_seen += 1
+            if self.unknown_seen >= FORMAT_SNIFF_LINES:
+                self.format = "unknown"
+            return self.format
+        self.format = fmt
+        return fmt
+
+    def finish(self) -> str | None:
+        """Decision at end of input: undecided input that held any unknown
+        entry (and nothing recognised) is "unknown"; skip-only stays None."""
+        if self.format is None and self.unknown_seen:
+            return "unknown"
+        return self.format
+
+    def take_skipped(self) -> list[dict]:
+        """Hand back the skipped Claude Code metadata entries, once."""
+        skipped, self.skipped = self.skipped, []
+        return skipped
+
+
 def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
     """JSONL body of parse_file (Claude Code / Moltbot / Codex / Copilot / agy, auto-detected)."""
     # Imported lazily (not at module level) to avoid a logs.py <-> codex.py
@@ -515,8 +617,23 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
     from .codex import CodexParser
     from .copilot import CopilotParser
 
+    if is_binary_file(path):
+        raise UnsupportedLogFormatError(path, "binary file, not a JSONL agent log")
+
+    sniffer = FormatSniffer()
     log_format = None
     codex_parser: CodexParser | CopilotParser | AgyParser | None = None
+
+    def parse(entry: dict) -> list[Action]:
+        if log_format == "moltbot":
+            result = parse_moltbot_entry(entry)
+        elif log_format in ("codex", "copilot", "agy"):
+            result = codex_parser.parse_line(entry)
+        else:
+            result = parse_claude_code_entry(entry)
+        if not isinstance(result, list):
+            result = [result] if result else []
+        return [a for a in result if session_id is None or a.session_id == session_id]
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -528,12 +645,17 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(entry, dict):
+                continue
 
-            # Detect format on first valid entry (skip metadata-only entries)
-            if log_format is None or log_format == "skip":
-                log_format = detect_log_format(entry)
-                if log_format == "skip":
+            # Detect format on the first recognised entry; metadata-only and
+            # (within the sniff window) unrecognised entries are skipped.
+            if log_format is None:
+                log_format = sniffer.feed(entry)
+                if log_format is None:
                     continue
+                if log_format == "unknown":
+                    raise UnsupportedLogFormatError(path, "no recognised agent log records")
                 if log_format == "codex":
                     codex_parser = CodexParser()
                 elif log_format == "copilot":
@@ -541,23 +663,21 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
                 elif log_format == "agy":
                     # agy transcripts carry no session id; tag with the requested one.
                     codex_parser = AgyParser(session_id)
+                elif log_format == "claude_code":
+                    for skipped in sniffer.take_skipped():
+                        yield from parse(skipped)
 
-            # Parse based on format
-            if log_format == "moltbot":
-                result = parse_moltbot_entry(entry)
-            elif log_format in ("codex", "copilot", "agy"):
-                result = codex_parser.parse_line(entry)
-            else:
-                result = parse_claude_code_entry(entry)
+            yield from parse(entry)
 
-            # Yield results, optionally filtering by session_id
-            if isinstance(result, list):
-                for action in result:
-                    if session_id is None or action.session_id == session_id:
-                        yield action
-            elif result:
-                if session_id is None or result.session_id == session_id:
-                    yield result
+        if log_format is None:
+            # File ended inside the sniff window with only unrecognised entries.
+            if sniffer.finish() == "unknown":
+                raise UnsupportedLogFormatError(path, "no recognised agent log records")
+            # Only Claude Code metadata (no message yet): parse it as Claude
+            # Code, as before #39.
+            log_format = "claude_code"
+            for skipped in sniffer.take_skipped():
+                yield from parse(skipped)
 
         # One-shot batch read: end-of-file legitimately means "this is
         # everything", so flush any function_call left waiting for output
