@@ -607,6 +607,12 @@ class FormatSniffer:
         skipped, self.skipped = self.skipped, []
         return skipped
 
+    def take_metadata_only(self) -> list[dict]:
+        """End-of-input rule shared by parse_file and LogWatcher: undecided
+        input holding only Claude Code metadata (no unknown entry) is parsed
+        as Claude Code. Returns those entries once, else []."""
+        return self.take_skipped() if self.finish() is None else []
+
 
 def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
     """JSONL body of parse_file (Claude Code / Moltbot / Codex / Copilot / agy, auto-detected)."""
@@ -676,7 +682,7 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
             # Only Claude Code metadata (no message yet): parse it as Claude
             # Code, as before #39.
             log_format = "claude_code"
-            for skipped in sniffer.take_skipped():
+            for skipped in sniffer.take_metadata_only():
                 yield from parse(skipped)
 
         # One-shot batch read: end-of-file legitimately means "this is
