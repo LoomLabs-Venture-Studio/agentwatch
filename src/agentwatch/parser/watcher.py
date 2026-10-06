@@ -153,6 +153,16 @@ class LogWatcher:
         except FileNotFoundError:
             pass
 
+        if self._log_format is None:
+            # Same end-of-input rule as parse_file (#39): Claude Code metadata
+            # with no message yet is emitted now, not held back. The format
+            # stays undecided; take_* drains, so nothing is replayed later.
+            for entry in self._sniffer.take_metadata_only():
+                result = parse_claude_code_entry(entry)
+                for a in result if isinstance(result, list) else [result] if result else []:
+                    if not self.session_id or a.session_id == self.session_id:
+                        actions.append(a)
+
         return actions
 
     async def watch(self) -> AsyncIterator[Action]:

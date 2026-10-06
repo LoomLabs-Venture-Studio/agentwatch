@@ -370,10 +370,47 @@ def test_unknown_lines_are_not_replayed(tmp_path):
     assert [a.tool_name for a in parse_file(p)] == ["system", "Read"]
 
 
-def test_watcher_replays_metadata_on_first_message(tmp_path):
+QUEUE_LINE = {
+    "type": "queue-operation", "sessionId": "s1", "timestamp": "2026-01-01T00:00:01Z",
+    "operation": "enqueue", "content": "/skills",
+}
+
+
+def _sig(actions):
+    return [(a.timestamp, a.tool_name) for a in actions]
+
+
+def test_watcher_emits_metadata_only_file_like_parse_file(tmp_path):
+    # A session with no message yet must not show an empty dashboard.
+    p = _write_lines(tmp_path, "s.jsonl", [SYSTEM_LINE, QUEUE_LINE])
+    expected = _sig(parse_file(p))
+    assert expected
+    assert _sig(LogWatcher(p)._read_new_lines()) == expected
+
+
+def test_watcher_emits_metadata_then_message_once_in_order(tmp_path):
+    # Was test_watcher_replays_metadata_on_first_message, which asserted the
+    # old behaviour (metadata held back until the first message). Metadata
+    # is now emitted on the first read; the message read must not replay it.
     p = _write_lines(tmp_path, "s.jsonl", [SYSTEM_LINE])
     watcher = LogWatcher(p)
+    first = watcher._read_new_lines()
+    assert _tools(first) == ["system"]
+    _append(p, [QUEUE_LINE, CLAUDE_ASSISTANT])
+    second = watcher._read_new_lines()
+    assert _sig(first + second) == _sig(parse_file(p))
     assert watcher._read_new_lines() == []
-    with open(p, "a", encoding="utf-8") as f:
-        f.write(json.dumps(CLAUDE_ASSISTANT) + "\n")
-    assert [a.tool_name for a in watcher._read_new_lines()] == ["system", "Read"]
+
+
+def test_watcher_metadata_with_unknown_line_waits(tmp_path):
+    # parse_file rejects metadata + unknown with no message; so does one read.
+    p = _write_lines(tmp_path, "s.jsonl", [SYSTEM_LINE, STRAY])
+    with pytest.raises(UnsupportedLogFormatError):
+        list(parse_file(p))
+    assert LogWatcher(p)._read_new_lines() == []
+
+
+def test_watcher_ignores_file_history_snapshot_only(tmp_path):
+    p = _write_lines(tmp_path, "s.jsonl", [{"type": "file-history-snapshot"}])
+    assert list(parse_file(p)) == []
+    assert LogWatcher(p)._read_new_lines() == []
