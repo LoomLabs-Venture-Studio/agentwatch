@@ -1631,3 +1631,18 @@ def test_db_url_gaps_33(url, password):
     assert password not in redact_secrets(f"psql {url}")
     redacted, count = _redact_text(f"psql {url}")
     assert count == 1 and redacted == f"psql {url.replace(password, '[REDACTED]')}"
+
+
+def test_redact_truncate_caches_repeat_windows(monkeypatch):
+    """#25: re-redacting the same command on every tick hits the cache."""
+    from agentwatch.detectors.security import secret_scanner
+
+    secret_scanner._redact_window.cache_clear()
+    calls = []
+    real = secret_scanner.redact_secrets
+    monkeypatch.setattr(secret_scanner, "redact_secrets", lambda t: calls.append(t) or real(t))
+    token = "ghp_" + "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2"
+    for _ in range(5):
+        out = secret_scanner.redact_truncate(f"git push https://{token}@github.com/o/r", 80)
+    assert len(calls) == 1
+    assert token not in out

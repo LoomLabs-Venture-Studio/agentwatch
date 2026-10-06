@@ -298,3 +298,27 @@ class TestCacheReadsExcludedFromBurn:
         assert report.token_burn_rate < 30_000, report.token_burn_rate
         assert report.io_ratio < 8.0, report.io_ratio
         assert report.score >= 75, f"Expected >=75, got {report.score}"
+
+
+def _report(duration_minutes: float) -> EfficiencyReport:
+    return EfficiencyReport(
+        score=90, status=get_theme().level_0, recommendation="ok",
+        context_usage_pct=10.0, token_burn_rate=725_834.0, io_ratio=1.0,
+        cost_total=0.50, cost_velocity=12.34, cache_hit_rate=0.5,
+        actions_per_turn=1.0, duration_minutes=duration_minutes,
+    )
+
+
+def test_tui_hides_rates_for_short_sessions():
+    """#45: under 2 active minutes, tok/min and $/min show "--"."""
+    from agentwatch.ui.app import EfficiencyBar
+
+    bar = EfficiencyBar()
+    bar._report = _report(0.0)
+    short = bar._build_content()
+    assert "-- tok/min" in short and "(--/min)" in short
+    assert "725.8k" not in short and "12.34" not in short
+
+    bar._report = _report(2.0)
+    warm = bar._build_content()
+    assert "725.8k tok/min" in warm and "($12.34/min)" in warm
