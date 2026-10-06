@@ -26,6 +26,7 @@ from agentwatch.llm import (
     OllamaAnalyzer,
 )
 from agentwatch.parser import ActionBuffer, find_latest_session, parse_file
+from agentwatch.parser.logs import UnsupportedLogFormatError, ensure_supported_log
 from agentwatch.siem import SiemExportError, SiemLogger
 from agentwatch.themes import (
     ascii_safe,
@@ -399,8 +400,12 @@ def check(
 
     # Parse logs
     buffer = ActionBuffer()
-    for action in parse_file(log, analytics_log=analytics_log):
-        buffer.add(action)
+    try:
+        for action in parse_file(log, analytics_log=analytics_log):
+            buffer.add(action)
+    except UnsupportedLogFormatError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
@@ -502,6 +507,11 @@ def watch(
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
+    try:
+        ensure_supported_log(log)
+    except UnsupportedLogFormatError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     app = AgentWatchApp(
         log_path=log,
@@ -845,8 +855,12 @@ def security_scan(
 
     # Parse logs
     buffer = ActionBuffer()
-    for action in parse_file(log, analytics_log=analytics_log):
-        buffer.add(action)
+    try:
+        for action in parse_file(log, analytics_log=analytics_log):
+            buffer.add(action)
+    except UnsupportedLogFormatError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
@@ -1408,7 +1422,7 @@ def audit(
             try:
                 findings = audit_log_file(jsonl_path, project_name=proj_name)
                 all_findings.extend(findings)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError, UnsupportedLogFormatError):
                 continue
 
     if sessions_scanned == 0:
