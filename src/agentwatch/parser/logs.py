@@ -248,12 +248,12 @@ def url_hostname(url: Any) -> str | None:
         return None
 
 
-def _parse_timestamp(entry: dict) -> datetime:
+def _parse_timestamp(entry: dict) -> datetime | None:
     """Extract timestamp from a log entry.
 
-    Always returns a naive datetime (tzinfo stripped) so that timestamps
-    from entries with an explicit UTC-offset string compare cleanly against
-    ones falling back to ``datetime.now()``, which is naive.
+    Returns a naive datetime (tzinfo stripped) so all parsed timestamps
+    compare cleanly, or None when it is missing or unparseable. Never
+    ``datetime.now()``: a stray "now" distorts session duration (#44).
     """
     timestamp_str = entry.get("timestamp") or entry.get("ts") or entry.get("time")
     if timestamp_str:
@@ -262,7 +262,7 @@ def _parse_timestamp(entry: dict) -> datetime:
             return parsed.replace(tzinfo=None)
         except (ValueError, AttributeError):
             pass
-    return datetime.now()
+    return None
 
 
 def _parse_claude_code_flat(entry: dict) -> Action | None:
@@ -342,16 +342,7 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
     """Parse a Moltbot/Clawdbot JSONL session log entry."""
     try:
         # Moltbot stores sessions in ~/.moltbot/agents/<id>/sessions/*.jsonl
-        timestamp_str = entry.get("ts") or entry.get("timestamp")
-        if timestamp_str:
-            try:
-                timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")).replace(
-                    tzinfo=None
-                )
-            except (ValueError, AttributeError):
-                timestamp = datetime.now()
-        else:
-            timestamp = datetime.now()
+        timestamp = _parse_timestamp(entry)
 
         # Message type detection
         msg_type = entry.get("type") or entry.get("role")
