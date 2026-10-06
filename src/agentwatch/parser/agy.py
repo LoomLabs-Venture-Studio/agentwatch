@@ -137,7 +137,7 @@ class AgyParser:
             action.success = False
             action.error_message = f"exit code {m.group(1)}"
         done = _parse_timestamp({"timestamp": entry.get("created_at")})
-        if entry.get("created_at") and action.raw.get("created_at"):
+        if done is not None and action.timestamp is not None:
             action.duration_ms = max(int((done - action.timestamp).total_seconds() * 1000), 0)
         return [action]
 
