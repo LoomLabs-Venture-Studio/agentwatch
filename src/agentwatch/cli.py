@@ -207,8 +207,35 @@ def _print_goal_alignment(assessment: GoalAlignmentAssessment | None) -> None:
     click.echo()
 
 
+def _default_log() -> tuple[Path | None, str | None]:
+    """Pick a log when --log is omitted (#47).
+
+    Prefers the newest Claude Code session for the current directory. If
+    there is none, falls back to the newest session anywhere and returns a
+    note naming that project, so reports can say so.
+    """
+    from agentwatch.cc_stats import CLAUDE_PROJECTS_DIR, cwd_to_project_dir
+
+    project_dir = cwd_to_project_dir()
+    log = find_latest_session(project_dir) if project_dir else None
+    if log is not None:
+        return log, None
+    log = find_latest_session()
+    if log is None:
+        return None, None
+    try:
+        project = log.relative_to(CLAUDE_PROJECTS_DIR).parts[0]
+    except ValueError:
+        project = str(log.parent)
+    return log, f"No session for {Path.cwd()}; using newest session from {project}"
+
+
 def print_health_report(
-    report, security_mode: bool = False, stats=None, efficiency=None
+    report,
+    security_mode: bool = False,
+    stats=None,
+    efficiency=None,
+    note: str | None = None,
 ) -> None:
     """Print a formatted health report to stdout.
 
@@ -224,6 +251,8 @@ def print_health_report(
     else:
         click.echo("  HEALTH REPORT")
     click.echo("═" * 50)
+    if note:
+        click.echo(click.style(f"  Fallback: {note}", fg="yellow"))
     click.echo()
 
     # Overall score - use theme-aware colors
@@ -401,8 +430,9 @@ def check(
 ):
     """Run a one-time health check on agent logs."""
     # Find log file
+    note = None
     if log is None:
-        log = find_latest_session()
+        log, note = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
@@ -445,12 +475,17 @@ def check(
 
     if json_output:
         output = report.to_dict()
+        output["session_fallback"] = note
         output["efficiency"] = efficiency.to_dict()
         output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
         click.echo(json.dumps(output, indent=2))
     else:
         print_health_report(
-            report, security_mode=security, stats=buffer.stats, efficiency=efficiency
+            report,
+            security_mode=security,
+            stats=buffer.stats,
+            efficiency=efficiency,
+            note=note,
         )
 
         # Extra security output
@@ -518,7 +553,7 @@ def watch(
 
     # Find log file
     if log is None:
-        log = find_latest_session()
+        log, _ = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
@@ -861,8 +896,9 @@ def security_scan(
     llm_model: str,
 ):
     """Run a security-focused scan on agent logs."""
+    note = None
     if log is None:
-        log = find_latest_session()
+        log, note = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
@@ -926,6 +962,7 @@ def security_scan(
             "action_count": len(buffer),
             "security_stats": security_stats,
             "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
+            "session_fallback": note,
         }
         click.echo(json.dumps(output, indent=2))
     else:
@@ -933,6 +970,8 @@ def security_scan(
         click.echo("═" * 50)
         click.echo("  SECURITY SCAN RESULTS")
         click.echo("═" * 50)
+        if note:
+            click.echo(click.style(f"  Fallback: {note}", fg="yellow"))
         click.echo()
 
         # Theme-driven, sharing security_status_from_score() with
