@@ -50,7 +50,7 @@ class TestCheckJsonStdoutIsCleanOnAutoDiscovery:
         # Force the `log is None` auto-discovery branch in `check` to
         # resolve to our controlled fixture, without depending on real
         # filesystem search paths (~/.claude/projects, etc.).
-        monkeypatch.setattr("agentwatch.cli.find_latest_session", lambda: log_path)
+        monkeypatch.setattr("agentwatch.cli.find_latest_session", lambda base_path=None: log_path)
 
         runner = CliRunner()
         result = runner.invoke(cli, ["check", "--json"])
@@ -71,7 +71,7 @@ class TestSecurityScanJsonStdoutIsCleanOnAutoDiscovery:
         log_path = tmp_path / "session.jsonl"
         _write_fixture_log(log_path)
 
-        monkeypatch.setattr("agentwatch.cli.find_latest_session", lambda: log_path)
+        monkeypatch.setattr("agentwatch.cli.find_latest_session", lambda base_path=None: log_path)
 
         runner = CliRunner()
         result = runner.invoke(cli, ["security-scan", "--json"])
