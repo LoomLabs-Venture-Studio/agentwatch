@@ -65,6 +65,19 @@ class TestContextRotDetector:
         assert w.signal == "context_rot"
         assert "forgotten_files" in w.details
 
+    def test_forgotten_files_order_is_deterministic(self):
+        """#33: the list came from a set, so its order (and check --json)
+        changed with PYTHONHASHSEED."""
+        det = ContextRotDetector(early_fraction=0.25, recent_window=10, min_actions=40)
+        buf = ActionBuffer()
+        files = [f"src/{c}.py" for c in "qzambk"]
+        for f in files:
+            buf.add(_make_action(ToolType.EDIT, file_path=f))
+        for i in range(40):
+            buf.add(_make_action(ToolType.READ, file_path=f"other/file{i}.py"))
+
+        assert det.check(buf).details["forgotten_files"] == sorted(files)[:5]
+
     def test_no_fire_when_early_files_still_referenced(self):
         """Doesn't fire if early files are still being touched."""
         det = ContextRotDetector(early_fraction=0.25, recent_window=15, min_actions=40)
