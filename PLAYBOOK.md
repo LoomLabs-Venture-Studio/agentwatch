@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 21 (2026-09-30), at the end of this file.** Start there.
+> **Latest: Sprint 26 (2026-10-05), at the end of this file.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -3499,6 +3499,123 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
 - Main-checkout editable installs import `src` from the main checkout. In
   worktrees, run tests with `PYTHONPATH=<worktree>/src`.
 
+### Sprint 26 -- Session duration, unknown log formats, live agent testing (2026-10-05)
+**Type:** bug fixes + research
+
+### Shipped to `develop`
+- #37 (issue #36): burn rate and I/O ratio count fresh tokens only (no
+  cache reads).
+- #42 (issue #36): context pressure = latest call's window fill (Sprint 25).
+- #43 (issue #38): session duration. Root cause: current Claude Code logs
+  have untimed metadata lines (`mode`, `last-prompt`, `ai-title`, ...) that
+  were parsed as actions stamped `datetime.now()`. 31 of 32 local sessions
+  read 0 minutes (burn rate in the hundreds of millions of tok/min). Fix:
+  skip untimed entries; cap each idle gap at 30 min (`IDLE_GAP_CAP`).
+  Live `watch-all`: 560,974k -> 5.2k tok/min, $6,667/min -> $0.06/min.
+- Issues #36 and #38 closed. Suite: 1042 passed, ruff clean.
+
+### Merged 2026-10-06 (squash into `develop`, board-approved)
+- #48 `0d39f32` (issue #39): unknown or binary logs give a clear
+  "unsupported log format" error instead of being parsed as Claude Code
+  (Gemini JSONL) or crashing (OpenCode SQLite). Hardened per plan item 3
+  below: unknown lines inside the first `FORMAT_SNIFF_LINES` entries are
+  skipped, not format-locking. QA re-verified.
+- #61 `91dbe48`: QA on #48 found `watch` showed metadata-only sessions
+  empty. `FormatSniffer.take_metadata_only()` is now the one end-of-input
+  rule shared by `parse_file` and `LogWatcher`. QA: 41 real logs, 0 diffs.
+  Known limits in the PR body.
+- Then, in order: #53 `c98b965`, #54 `94096c1`, #51 `1786de1`,
+  #52 `1fa635b`, #56 `5c135f8`, #50 `a04613b`, #55 `376a927`,
+  #57 `b0010b8`, #58 `f62fc08`, #59 `e30af94`, #60 `0f24a4c` (Sprint 27).
+- Branches were updated by merging `develop`, never rebased; no force
+  pushes. `develop`: 1147 passed, 1 skipped; `ruff check .` clean.
+
+### Live agent testing
+- Installed 9 CLIs (packages verified against vendor orgs): Gemini CLI,
+  Qwen Code, OpenCode, Goose, Cursor CLI, Crush, Amp, Kiro CLI, Codex.
+- Tested live: Gemini CLI and OpenCode. Neither is detected yet (no
+  adapter). Gemini: JSONL at `~/.gemini/tmp/<project>/chats/session-*.jsonl`.
+  OpenCode: SQLite at `~/.local/share/opencode/opencode.db`. Both log tool
+  calls and tokens.
+- Not tested: Qwen (0.25.0 has no free login), Codex (no subscription),
+  the rest not logged in.
+- Gemini CLI's free Google login for individuals now redirects to
+  Antigravity (agy, already supported) for new users.
+- Report and redacted samples: `docs/research/agent-live-test-2026-10-05.md`,
+  `docs/research/samples/`. Source research and adapter ranking:
+  `docs/research/agent-adapter-candidates-2026-10-05.md`.
+
+### Local branches pushed for the other machine
+- `feature/opencode-adapter` (2026-10-03, 7 commits, no PR yet). Check it
+  against the live findings above before starting OpenCode work again.
+- `fix/discord-pattern-perf-32` (issue #32, 3 commits, no PR yet). Test
+  token literal split so GitHub push protection accepts it (it is
+  Discord's public docs example).
+- Not pushed: `fix/network-host-url-leak` (superseded by #30) and
+  `backup/copilot-direct` (superseded by #29).
+
+### Follow-ups (open)
+- Gemini CLI adapter, then OpenCode (merge `develop` into
+  `feature/opencode-adapter`).
+- New: timing test `test_redact_secrets_linear_on_pathological_input`
+  flaky on shared CI (`3 * baseline`); `find_latest_session` fallback can
+  pick a `subagents/` log; `mask_secret` length counts from the last colon
+  only (`PGPASSWORD=Ab:cd:ef` shows 5 chars, not 7; redaction correct).
+- #40 `check --json` has no efficiency numbers. #41 KDE `kquitapp6
+  plasmashell` flagged as C2 beacon. #44 parsers still stamp `now()` on
+  unparseable timestamps. #45 huge rates shown for sessions under 1 min.
+  #46 non-action Claude entries counted as actions. #47 bare `check` picks
+  the newest Claude session, not the current directory's.
+
+### Plan (board-approved 2026-10-05)
+Status 2026-10-06: items 2-4 done (#48 merged, #32 merged as #60); item 1
+is this PR (#49); item 5 next.
+
+1. **Docs PR:** draft PR `docs/agent-testing-2026-10-05` -> `develop`
+   (this section plus the research files).
+2. **#21 retarget:** ADR PR #21 `docs/network-visibility-adr` moves from
+   `main` to `develop`. Stays open as a draft; do not close it.
+3. **#48 hardening** (engineer, on `fix/unknown-log-format-39`), then CTO
+   review, then QA re-verify, then **back to the board for the merge call**.
+   Problem: a line that `detect_log_format()` calls `"unknown"` currently
+   locks the format on the spot, in three places: `sniff_jsonl_format()`
+   (`agents/base.py`, so `ClaudeCodeAdapter.claims()` rejects the file),
+   `_parse_jsonl()` (`parser/logs.py`, raises), and
+   `LogWatcher._parse_entry()` (`parser/watcher.py`, goes silent for good).
+   One stray first line makes a real Claude Code log unreadable.
+
+   Acceptance criteria:
+   - [x] One shared constant (e.g. `FORMAT_SNIFF_LINES = 50`, matching
+         `sniff_jsonl_format`'s current `max_lines`) sets how many decoded
+         entries may be unrecognised before a file counts as unknown.
+   - [x] Within that window, an `"unknown"` entry is skipped like `"skip"`
+         and does not lock the format, in all three places above. The first
+         recognised entry locks the format as before.
+   - [x] A file is unsupported only when the window ends (or the file ends)
+         with at least one unknown entry and no recognised one. Files with
+         only `"skip"` entries, or empty files, stay undecided as today.
+   - [x] `sniff_jsonl_format`, `_parse_jsonl` and `LogWatcher` agree on
+         every test input (no path where `claims()` and the parser disagree).
+   - [x] Binary files (NUL in the first 8 KiB) are still rejected at once.
+   - [x] `LogWatcher`: unknown entries before the first recognised one emit
+         no actions; the watcher recovers when a recognised entry arrives
+         inside the window, and goes quiet only after the window is used up.
+   - [x] New tests in `tests/test_unknown_log_format.py`: (a) stray unknown
+         first line + valid Claude Code lines parses normally via
+         `parse_file`, `claims()` and `check`; (b) a file of only unknown
+         lines (Gemini sample) is still rejected with the existing error;
+         (c) live `LogWatcher` fed a bad first line, then valid lines,
+         emits the valid actions; (d) more than the window of unknown lines
+         followed by a valid line stays unknown.
+   - [x] Existing PR #48 tests still pass; full suite green; `ruff check .`
+         clean. One commit on the branch, `fix(parser): ...[#39]`.
+4. **After #48 merges:** rebase `fix/discord-pattern-perf-32`, renumber its
+   PLAYBOOK section to Sprint 27, open its draft PR.
+5. **Then:** Gemini CLI adapter, then rebase `feature/opencode-adapter`
+   (renumber to Sprint 28) and check it against the live OpenCode findings.
+   It must not change #48's generic-SQLite rejection test (the opencode
+   `claims()` checks real columns, so it should not).
+
 ---
 
 ### Sprint 27 -- Quadratic secret patterns (issue #32, 2026-10-03)
@@ -3522,3 +3639,4 @@ merged with `develop` 2026-10-06. Sprint 26 is in PR #49)
   `eyJ` and `mysql`. None grows more than 6x for 4x input. The same
   sweep against `develop`'s scanner did not finish in 10 minutes.
 - Full suite 1052 passed, 1 skipped; `ruff check .` clean.
+- Merged as #60 `0f24a4c` (2026-10-06).
