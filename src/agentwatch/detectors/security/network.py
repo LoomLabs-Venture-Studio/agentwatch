@@ -161,11 +161,12 @@ class C2CommunicationDetector(SecurityDetector):
     name = "c2_communication"
     description = "Potential C2 communication pattern detected"
 
-    # C2 beacon patterns
+    # C2 beacon patterns. Whole words only: "nc" inside "sync"/"function"
+    # and "cron" inside "synchronous" flagged a KDE restart command (#41).
     BEACON_INDICATORS = [
-        r"sleep\s+\d+\s*;.*(?:curl|wget|nc)",  # Sleep + network
-        r"while\s+true.*(?:curl|wget)",  # Loop + network
-        r"cron.*(?:curl|wget)",  # Scheduled network
+        r"\bsleep\s+\d+\s*;.*\b(?:curl|wget|nc)\b",  # Sleep + network
+        r"\bwhile\s+true\b.*\b(?:curl|wget)\b",  # Loop + network
+        r"\bcron.*\b(?:curl|wget)\b",  # Scheduled network (cron, crontab)
     ]
 
     def __init__(self, window: int = 50):
