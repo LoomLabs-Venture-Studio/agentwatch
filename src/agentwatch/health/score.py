@@ -270,6 +270,10 @@ class EfficiencyReport:
         }
 
 
+# Below this many active minutes, per-minute rates are noise: no burn/IO
+# penalty, and the TUI shows "--" instead of tok/min and $/min.
+MIN_RATE_MINUTES = 2.0
+
 # Sub-metric weights for efficiency scoring (sum to 1.0)
 # Cost is excluded — not reported in logs; displayed as informational only.
 _W_CONTEXT_PRESSURE = 0.30
@@ -330,7 +334,7 @@ def calculate_efficiency(
     # Fresh tokens only (no cache reads). Skip penalty for very short
     # sessions where rate naturally spikes.
     burn_rate = fresh_throughput / duration if duration > 0 else 0.0
-    if duration >= 2.0:
+    if duration >= MIN_RATE_MINUTES:
         burn_penalty = _clamp01((burn_rate - 5_000) / (30_000 - 5_000))
     else:
         burn_penalty = 0.0
@@ -343,7 +347,7 @@ def calculate_efficiency(
         if stats.total_output_tokens > 0
         else 0.0
     )
-    if duration >= 2.0:
+    if duration >= MIN_RATE_MINUTES:
         io_penalty = _clamp01((io_ratio - 8.0) / (20.0 - 8.0))
     else:
         io_penalty = 0.0
