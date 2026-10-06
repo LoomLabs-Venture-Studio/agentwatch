@@ -35,11 +35,12 @@ class LoopDetector(Detector):
         # NON_TOOL_ROLE_LABELS) since those mark conversation turns, not
         # repeated tool invocations, and would otherwise flag any ordinary
         # multi-turn conversation as a "loop".
-        tool_sequence = [
-            f"{a.tool_name}:{a.file_path or ''}"
-            for a in recent
-            if a.tool_name not in NON_TOOL_ROLE_LABELS
-        ]
+        # Without a file path, the command identifies the action: four
+        # different Bash commands are not a loop.
+        def key(a) -> str:
+            return f"{a.tool_name}:{a.file_path or a.command or ''}"
+
+        tool_sequence = [key(a) for a in recent if a.tool_name not in NON_TOOL_ROLE_LABELS]
         if not tool_sequence:
             return None
         counts = Counter(tool_sequence)
@@ -47,10 +48,9 @@ class LoopDetector(Detector):
         most_common, count = counts.most_common(1)[0]
 
         if count >= self.threshold:
-            tool, path = most_common.split(":", 1) if ":" in most_common else (most_common, "")
-
             # Gather the actual commands/errors for context
-            matching = [a for a in recent if f"{a.tool_name}:{a.file_path or ''}" == most_common]
+            matching = [a for a in recent if key(a) == most_common]
+            tool, path = matching[0].tool_name, matching[0].file_path or ""
             last_cmd = next((a.command for a in reversed(matching) if a.command), None)
             if last_cmd:
                 # Exported to SIEM via details/suggestion: mask secrets, and cap
