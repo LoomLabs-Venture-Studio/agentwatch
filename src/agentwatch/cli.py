@@ -18,6 +18,7 @@ from agentwatch.discovery import (
     find_running_agents,
 )
 from agentwatch.health import calculate_health, calculate_security_score
+from agentwatch.health.score import calculate_efficiency
 from agentwatch.llm import (
     DEFAULT_OLLAMA_MODEL,
     MAX_WARNINGS_TO_ASSESS,
@@ -26,6 +27,7 @@ from agentwatch.llm import (
     OllamaAnalyzer,
 )
 from agentwatch.parser import ActionBuffer, find_latest_session, parse_file
+from agentwatch.parser.logs import UnsupportedLogFormatError, ensure_supported_log
 from agentwatch.siem import SiemExportError, SiemLogger
 from agentwatch.themes import (
     ascii_safe,
@@ -205,7 +207,36 @@ def _print_goal_alignment(assessment: GoalAlignmentAssessment | None) -> None:
     click.echo()
 
 
-def print_health_report(report, security_mode: bool = False, stats=None) -> None:
+def _default_log() -> tuple[Path | None, str | None]:
+    """Pick a log when --log is omitted (#47).
+
+    Prefers the newest Claude Code session for the current directory. If
+    there is none, falls back to the newest session anywhere and returns a
+    note naming that project, so reports can say so.
+    """
+    from agentwatch.cc_stats import CLAUDE_PROJECTS_DIR, cwd_to_project_dir
+
+    project_dir = cwd_to_project_dir()
+    log = find_latest_session(project_dir) if project_dir else None
+    if log is not None:
+        return log, None
+    log = find_latest_session()
+    if log is None:
+        return None, None
+    try:
+        project = log.relative_to(CLAUDE_PROJECTS_DIR).parts[0]
+    except ValueError:
+        project = str(log.parent)
+    return log, f"No session for {Path.cwd()}; using newest session from {project}"
+
+
+def print_health_report(
+    report,
+    security_mode: bool = False,
+    stats=None,
+    efficiency=None,
+    note: str | None = None,
+) -> None:
     """Print a formatted health report to stdout.
 
     `stats` (a `SessionStats`, optional) surfaces `peak_context_tokens` --
@@ -220,6 +251,8 @@ def print_health_report(report, security_mode: bool = False, stats=None) -> None
     else:
         click.echo("  HEALTH REPORT")
     click.echo("═" * 50)
+    if note:
+        click.echo(click.style(f"  Fallback: {note}", fg="yellow"))
     click.echo()
 
     # Overall score - use theme-aware colors
@@ -242,8 +275,15 @@ def print_health_report(report, security_mode: bool = False, stats=None) -> None
 
     click.echo()
 
+    if efficiency is not None:
+        click.echo(
+            f"  Efficiency: {efficiency.score}% ({efficiency.status}), "
+            f"{efficiency.context_usage_pct:.0f}% ctx, "
+            f"{efficiency.cache_hit_rate * 100:.0f}% cache hit"
+        )
     if stats is not None and stats.peak_context_tokens:
         click.echo(f"  Peak context: {stats.peak_context_tokens:,} tokens (single action)")
+    if efficiency is not None or (stats is not None and stats.peak_context_tokens):
         click.echo()
 
     # Warnings
@@ -390,8 +430,9 @@ def check(
 ):
     """Run a one-time health check on agent logs."""
     # Find log file
+    note = None
     if log is None:
-        log = find_latest_session()
+        log, note = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
@@ -401,7 +442,11 @@ def check(
     mode = "all" if security else "health"
     registry = create_registry(mode=mode)
     buffer = ActionBuffer()
-    warnings = registry.scan(parse_file(log, analytics_log=analytics_log), buffer)
+    try:
+        warnings = registry.scan(parse_file(log, analytics_log=analytics_log), buffer)
+    except UnsupportedLogFormatError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
@@ -410,6 +455,8 @@ def check(
     # Calculate scores (Tier-1 only -- LLM assessment below is advisory
     # enrichment applied to warning.details after scoring, never before)
     report = calculate_health(warnings, include_security=security)
+    # Informational, like the TUI's efficiency bar: not part of the exit code.
+    efficiency = calculate_efficiency(warnings, buffer)
 
     goal_alignment: GoalAlignmentAssessment | None = None
     if llm:
@@ -424,10 +471,18 @@ def check(
 
     if json_output:
         output = report.to_dict()
+        output["session_fallback"] = note
+        output["efficiency"] = efficiency.to_dict()
         output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
         click.echo(json.dumps(output, indent=2))
     else:
-        print_health_report(report, security_mode=security, stats=buffer.stats)
+        print_health_report(
+            report,
+            security_mode=security,
+            stats=buffer.stats,
+            efficiency=efficiency,
+            note=note,
+        )
 
         # Extra security output
         if security and report.security_warnings:
@@ -494,10 +549,15 @@ def watch(
 
     # Find log file
     if log is None:
-        log = find_latest_session()
+        log, _ = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
+    try:
+        ensure_supported_log(log)
+    except UnsupportedLogFormatError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     app = AgentWatchApp(
         log_path=log,
@@ -832,8 +892,9 @@ def security_scan(
     llm_model: str,
 ):
     """Run a security-focused scan on agent logs."""
+    note = None
     if log is None:
-        log = find_latest_session()
+        log, note = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
@@ -842,7 +903,11 @@ def security_scan(
     # Parse logs and run only security detectors, over the whole session
     registry = create_registry(mode="security")
     buffer = ActionBuffer()
-    warnings = registry.scan(parse_file(log, analytics_log=analytics_log), buffer)
+    try:
+        warnings = registry.scan(parse_file(log, analytics_log=analytics_log), buffer)
+    except UnsupportedLogFormatError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
@@ -889,6 +954,7 @@ def security_scan(
             "action_count": len(buffer),
             "security_stats": security_stats,
             "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
+            "session_fallback": note,
         }
         click.echo(json.dumps(output, indent=2))
     else:
@@ -896,6 +962,8 @@ def security_scan(
         click.echo("═" * 50)
         click.echo("  SECURITY SCAN RESULTS")
         click.echo("═" * 50)
+        if note:
+            click.echo(click.style(f"  Fallback: {note}", fg="yellow"))
         click.echo()
 
         # Theme-driven, sharing security_status_from_score() with
@@ -1400,7 +1468,7 @@ def audit(
             try:
                 findings = audit_log_file(jsonl_path, project_name=proj_name)
                 all_findings.extend(findings)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError, UnsupportedLogFormatError):
                 continue
 
     if sessions_scanned == 0:

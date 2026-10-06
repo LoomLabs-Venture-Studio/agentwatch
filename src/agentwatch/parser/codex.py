@@ -486,8 +486,8 @@ def _extract_token_count(payload: dict, session_id: str | None, entry: dict) -> 
 def _parse_codex_timestamp(entry: dict):
     """Parse a rollout line's top-level ``timestamp`` field.
 
-    Local, tiny copy of ``logs.py::_parse_timestamp``'s ISO-parse-with-
-    ``datetime.now()``-fallback behavior, kept independent (rather than
+    Local, tiny copy of ``logs.py::_parse_timestamp`` (None when missing
+    or unparseable, never ``datetime.now()``, #44), kept independent (rather than
     imported) so this module has no module-level import of ``logs.py`` —
     ``logs.py::parse_file`` constructs a ``CodexParser`` lazily inside its
     own function body precisely to avoid a ``logs.py`` <-> ``codex.py``
@@ -503,7 +503,7 @@ def _parse_codex_timestamp(entry: dict):
             return parsed.replace(tzinfo=None)
         except (ValueError, AttributeError):
             pass
-    return datetime.now()
+    return None
 
 
 class CodexParser:
