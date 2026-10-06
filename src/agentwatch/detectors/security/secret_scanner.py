@@ -177,16 +177,20 @@ _p(r"v1\.0-[a-f0-9]{24}-[a-f0-9]{146,}", "cloudflare_api_token")
 # named group ``secret`` marks the value: only it is masked/redacted, since
 # the match also holds the context (``mysql -u root -p...``) that mask_secret
 # would otherwise mistake for the value. A value never starts with ``$``
-# (a variable reference) or ``…``/``[`` (an already-masked value).
-_SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[][^\s'\"]*)"
+# (a variable reference) or ``…``/``[`` (an already-masked value). A
+# trailing ":" is punctuation, not value ("-pXXX: Access denied", #31).
+_SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[](?:[^\s'\":]|:(?=[^\s'\"]))*+)"
 _p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env")
 # curl/mysql as a program word anywhere on a line (error text quotes
 # commands mid-line, behind prompts, bash -c, ssh, docker exec, xargs ...),
 # but not inside a path, variable or identifier -- except a bin/ directory.
 _CMD = r"(?:(?<=/bin/)|(?<![\w/.$-]))"
+# curl may sit at the end of any path (/opt/x/curl, #31): unlike mysql, a
+# directory named curl followed by "-u user:pw" is not a real case.
+_CURL_CMD = r"(?:(?<=/)|(?<![\w/.$-]))"
 
 
-def _flag_gap(word: str) -> str:
+def _flag_gap(word: str, cmd: str = _CMD) -> str:
     """1 to 40 whitespace-separated tokens between *word* and its flag.
 
     At least one: "-p" glued to the word ("mysql-python") is not a flag.
@@ -198,11 +202,14 @@ def _flag_gap(word: str) -> str:
     quadratic). Each token is possessive: otherwise a run of spaces can be
     split between tokens in exponentially many ways.
     """
-    token = rf"(?:(?!{_CMD}(?:{word})\b)[^\s;&|(`])*+"
+    token = rf"(?:(?!{cmd}(?:{word})\b)[^\s;&|(`])*+"
     return rf"\b(?:{token}[^\S\n]++(?!['\"]?(?:{word})\b)){{1,40}}?['\"]?"
 
 
-_MYSQL = r"mysql(?:dump|admin|import|show|check|sh|binlog)?|mariadb(?:-\w+)?"
+_MYSQL = (
+    r"mysql(?:dump|admin|import|show|check|sh|binlog|_secure_installation)?"
+    r"|mariadb(?:-\w+)?"
+)
 # -p is case-sensitive: mysql's -P is the port. find's -perm/-print/-prune/
 # -path are not passwords (find / -name mysql -print).
 _p(
@@ -212,7 +219,7 @@ _p(
 )
 _p(r"--password=['\"]?" + _SECRET_VALUE, "cli_password_flag")
 _p(
-    _CMD + r"curl" + _flag_gap("curl")
+    _CURL_CMD + r"curl" + _flag_gap("curl", _CURL_CMD)
     + r"(?:-u[\s'\",]*+|--user[\s=,'\"]++)[^\s:'\"]+:" + _SECRET_VALUE,
     "curl_basic_auth",
 )
