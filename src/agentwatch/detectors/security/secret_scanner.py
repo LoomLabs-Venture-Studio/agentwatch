@@ -97,8 +97,9 @@ _p(r"-----BEGIN PGP PRIVATE KEY BLOCK-----", "pgp_private_key")
 # Supabase (anon/JWT) — must be before generic JWT
 _p(r"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJpc3[a-zA-Z0-9_\-\.]+", "supabase_jwt_key")
 
-# JWT tokens (generic)
-_p(r"eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*", "jwt_token")
+# JWT tokens (generic). Starts only at the beginning of a token-char run: from
+# every eyJ inside a long run the scan went to its end (quadratic, #32).
+_p(r"(?<![\w-])eyJ[a-zA-Z0-9_-]*+\.eyJ[a-zA-Z0-9_-]*+\.[a-zA-Z0-9_-]*", "jwt_token")
 
 # Generic password assignments
 _p(r"(?:password|passwd|pwd)['\"]?\s*[:=]\s*['\"][^'\"]{8,}['\"]", "password_assignment")
@@ -109,9 +110,13 @@ _p(r"(?:bearer|token)['\"]?\s*[:=]\s*['\"]?[a-zA-Z0-9_\-]{20,}", "bearer_token")
 # Generic API key assignments
 _p(r"(?:api[_-]?key|apikey)['\"]?\s*[:=]\s*['\"]?[a-zA-Z0-9_\-]{20,}", "generic_api_key")
 
-# High-entropy hex/base64 assigned to key-like variable names
+# High-entropy hex/base64 assigned to key-like variable names. The name tail
+# stops at the next key word, so each char is scanned from one start only:
+# otherwise every key word in a long identifier scanned to its end
+# (quadratic, #32). The match starts at the name's last key word.
+_KEY_WORD = r"(?:secret|key|token|credential|auth)"
 _p(
-    r"(?:secret|key|token|credential|auth)[_-]?\w*['\"]?\s*[:=]\s*['\"]?"
+    _KEY_WORD + rf"[_-]?(?:(?!{_KEY_WORD})\w)*+['\"]?\s*[:=]\s*['\"]?"
     r"[A-Za-z0-9+/=_\-]{32,}",
     "high_entropy_secret",
 )
@@ -155,8 +160,9 @@ _p(r"r8_[a-zA-Z0-9]{36,}", "replicate_api_key")
 # Pinecone
 _p(r"pc-[a-zA-Z0-9]{32,}", "pinecone_api_key")
 
-# Discord Bot
-_p(r"[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27,}", "discord_bot_token")
+# Discord Bot. Starts only at the beginning of an alphanumeric run: from every
+# M/N inside a long run the scan went to its end (quadratic, #32).
+_p(r"(?<![A-Za-z\d])[MN][A-Za-z\d]{23,}+\.[\w-]{6}\.[\w-]{27,}", "discord_bot_token")
 
 # Doppler
 _p(r"dp\.st\.[a-zA-Z0-9_\-]{40,}", "doppler_service_token")

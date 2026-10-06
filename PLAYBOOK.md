@@ -3498,3 +3498,27 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
   metadata lines). Separate fix.
 - Main-checkout editable installs import `src` from the main checkout. In
   worktrees, run tests with `PYTHONPATH=<worktree>/src`.
+
+---
+
+### Sprint 27 -- Quadratic secret patterns (issue #32, 2026-10-03)
+**Type:** bug fix (performance / denial of service)
+**Branch:** `fix/discord-pattern-perf-32` (from `develop`, after #34;
+merged with `develop` 2026-10-06. Sprint 26 is in PR #49)
+
+### Acceptance Criteria
+- [x] `discord_bot_token` scans 1MB of `mysql` repeated (and any long
+      alphanumeric run) in linear time.
+- [x] Every pattern in `_SECRET_PATTERNS` is swept against 1MB runs of
+      each character class (letters, digits, mixed, hex, base64, `-`/`_`,
+      dots, spaces). No pattern is quadratic; any found is fixed here.
+- [x] Real Discord tokens are still detected and masked.
+- [x] Timing regression tests use the existing subprocess + timeout
+      pattern. Full suite passes, `ruff check .` clean.
+
+### Result (2026-10-06)
+- Sweep: every `_SECRET_PATTERNS` entry on 100 KB vs 400 KB runs of
+  letters, digits, mixed, hex, base64, `-`/`_`, dots, spaces, `M`,
+  `eyJ` and `mysql`. None grows more than 6x for 4x input. The same
+  sweep against `develop`'s scanner did not finish in 10 minutes.
+- Full suite 1052 passed, 1 skipped; `ruff check .` clean.
