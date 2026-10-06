@@ -18,6 +18,7 @@ from agentwatch.discovery import (
     find_running_agents,
 )
 from agentwatch.health import calculate_health, calculate_security_score
+from agentwatch.health.score import calculate_efficiency
 from agentwatch.llm import (
     DEFAULT_OLLAMA_MODEL,
     MAX_WARNINGS_TO_ASSESS,
@@ -26,6 +27,7 @@ from agentwatch.llm import (
     OllamaAnalyzer,
 )
 from agentwatch.parser import ActionBuffer, find_latest_session, parse_file
+from agentwatch.parser.logs import UnsupportedLogFormatError, ensure_supported_log
 from agentwatch.siem import SiemExportError, SiemLogger
 from agentwatch.themes import (
     ascii_safe,
@@ -229,7 +231,11 @@ def _default_log() -> tuple[Path | None, str | None]:
 
 
 def print_health_report(
-    report, security_mode: bool = False, stats=None, note: str | None = None
+    report,
+    security_mode: bool = False,
+    stats=None,
+    efficiency=None,
+    note: str | None = None,
 ) -> None:
     """Print a formatted health report to stdout.
 
@@ -269,8 +275,15 @@ def print_health_report(
 
     click.echo()
 
+    if efficiency is not None:
+        click.echo(
+            f"  Efficiency: {efficiency.score}% ({efficiency.status}), "
+            f"{efficiency.context_usage_pct:.0f}% ctx, "
+            f"{efficiency.cache_hit_rate * 100:.0f}% cache hit"
+        )
     if stats is not None and stats.peak_context_tokens:
         click.echo(f"  Peak context: {stats.peak_context_tokens:,} tokens (single action)")
+    if efficiency is not None or (stats is not None and stats.peak_context_tokens):
         click.echo()
 
     # Warnings
@@ -427,8 +440,12 @@ def check(
 
     # Parse logs
     buffer = ActionBuffer()
-    for action in parse_file(log, analytics_log=analytics_log):
-        buffer.add(action)
+    try:
+        for action in parse_file(log, analytics_log=analytics_log):
+            buffer.add(action)
+    except UnsupportedLogFormatError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
@@ -442,6 +459,8 @@ def check(
     # Calculate scores (Tier-1 only -- LLM assessment below is advisory
     # enrichment applied to warning.details after scoring, never before)
     report = calculate_health(warnings, include_security=security)
+    # Informational, like the TUI's efficiency bar: not part of the exit code.
+    efficiency = calculate_efficiency(warnings, buffer)
 
     goal_alignment: GoalAlignmentAssessment | None = None
     if llm:
@@ -457,10 +476,17 @@ def check(
     if json_output:
         output = report.to_dict()
         output["session_fallback"] = note
+        output["efficiency"] = efficiency.to_dict()
         output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
         click.echo(json.dumps(output, indent=2))
     else:
-        print_health_report(report, security_mode=security, stats=buffer.stats, note=note)
+        print_health_report(
+            report,
+            security_mode=security,
+            stats=buffer.stats,
+            efficiency=efficiency,
+            note=note,
+        )
 
         # Extra security output
         if security and report.security_warnings:
@@ -531,6 +557,11 @@ def watch(
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
             sys.exit(1)
+    try:
+        ensure_supported_log(log)
+    except UnsupportedLogFormatError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     app = AgentWatchApp(
         log_path=log,
@@ -875,8 +906,12 @@ def security_scan(
 
     # Parse logs
     buffer = ActionBuffer()
-    for action in parse_file(log, analytics_log=analytics_log):
-        buffer.add(action)
+    try:
+        for action in parse_file(log, analytics_log=analytics_log):
+            buffer.add(action)
+    except UnsupportedLogFormatError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
@@ -1441,7 +1476,7 @@ def audit(
             try:
                 findings = audit_log_file(jsonl_path, project_name=proj_name)
                 all_findings.extend(findings)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError, UnsupportedLogFormatError):
                 continue
 
     if sessions_scanned == 0:
