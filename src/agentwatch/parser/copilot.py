@@ -91,8 +91,9 @@ class CopilotParser:
                 # (raw["content"]): the secret scanner's tool_output channel and
                 # the indirect/hidden-injection detectors read it there.
                 action.raw["content"] = result["content"]
-            if entry.get("timestamp") and action.raw.get("timestamp"):
-                elapsed = _parse_timestamp(entry) - action.timestamp
+            done = _parse_timestamp(entry)
+            if done is not None and action.timestamp is not None:
+                elapsed = done - action.timestamp
                 action.duration_ms = max(int(elapsed.total_seconds() * 1000), 0)
             return [action]
 

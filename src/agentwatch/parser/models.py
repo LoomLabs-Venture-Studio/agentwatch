@@ -36,14 +36,19 @@ class ToolType(Enum):
 # tool calls, so repetition-based detectors (`detectors/health/loops.py`)
 # must exclude them from their counts to avoid flagging every multi-turn
 # conversation as a "loop".
-NON_TOOL_ROLE_LABELS = frozenset({"user_message", "assistant_message", "unknown_bubble"})
+# Claude Code's "system" and "queue-operation" entries and "text_output"
+# blocks stay actions (detectors scan their content) but are not tool calls.
+NON_TOOL_ROLE_LABELS = frozenset({
+    "user_message", "assistant_message", "unknown_bubble",
+    "system", "queue-operation", "text_output",
+})
 
 
 @dataclass
 class Action:
     """Represents a single agent action parsed from logs."""
 
-    timestamp: datetime
+    timestamp: datetime | None  # None: missing or unparseable (#44)
     tool_name: str
     tool_type: ToolType
     success: bool
@@ -197,7 +202,9 @@ class ActionBuffer:
         # resumed hours or days later doesn't count the idle time (#38).
         ts = action.timestamp
         cap = IDLE_GAP_CAP.total_seconds()
-        if self._stats.start_time is None:
+        if ts is None:
+            pass  # untimed: still counted and scanned, but adds no duration (#44)
+        elif self._stats.start_time is None:
             self._stats.start_time = self._stats.last_action_time = ts
         elif ts > self._stats.last_action_time:
             gap = (ts - self._stats.last_action_time).total_seconds()

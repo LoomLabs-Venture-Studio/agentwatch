@@ -136,3 +136,35 @@ class TestLoopDetectorSecretRedaction:
         assert len(warning.details["last_command"]) <= 200
         text = f"{warning.message}\n{warning.details}\n{warning.suggestion}"
         assert not any(token[i : i + 5] in text for i in range(len(token) - 4))
+
+
+def _bash(command: str, i: int) -> Action:
+    action = _make_action("Bash", ToolType.BASH, offset_seconds=i)
+    action.command = command
+    return action
+
+
+class TestLoopKeyUsesCommand:
+    """#46: with no file path, the command identifies the action."""
+
+    def test_different_commands_are_not_a_loop(self):
+        buf = ActionBuffer()
+        for i in range(10):
+            buf.add(_bash(f"git log -{i}", i))
+        assert LoopDetector(threshold=4, window=10).check(buf) is None
+
+    def test_same_command_is_a_loop(self):
+        buf = ActionBuffer()
+        for i in range(10):
+            buf.add(_bash("pytest" if i % 2 else f"ls {i}", i))
+        warning = LoopDetector(threshold=4, window=10).check(buf)
+        assert warning is not None
+        assert warning.details["last_command"] == "pytest"
+        assert warning.details["tool"] == "Bash" and warning.details["path"] is None
+
+    def test_claude_bookkeeping_labels_are_not_a_loop(self):
+        buf = ActionBuffer()
+        for i in range(10):
+            buf.add(_make_action(("system", "queue-operation", "text_output")[i % 3],
+                                 offset_seconds=i))
+        assert LoopDetector(threshold=4, window=10).check(buf) is None
