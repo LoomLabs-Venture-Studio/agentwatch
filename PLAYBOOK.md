@@ -3554,7 +3554,12 @@ URL tail) moves to #26, because #26 changes the same DB-URL masking code.
 - Not pushed: `fix/network-host-url-leak` (superseded by #30) and
   `backup/copilot-direct` (superseded by #29).
 
-### Follow-ups (open)
+### Follow-ups (status 2026-10-07: all closed)
+- All items below are done. #40/#41/#44/#45/#46/#47 were fixed by
+  #51/#55/#53/#50/#54/#52 (merged 2026-10-06; issues closed 2026-10-07,
+  PRs into `develop` do not auto-close). The three "New" items became
+  #62/#63/#64, merged as #66 `6b67efc`. Gemini is Sprint 28 (#68),
+  OpenCode Sprint 29 (#69).
 - Gemini CLI adapter, then OpenCode (merge `develop` into
   `feature/opencode-adapter`).
 - New: timing test `test_redact_secrets_linear_on_pathological_input`
@@ -3643,6 +3648,38 @@ merged with `develop` 2026-10-06. Sprint 26 is in PR #49)
 
 ---
 
+### Sprint 28 -- Gemini CLI adapter, Sprint 26 follow-ups (issues #62-#65, 2026-10-07)
+**Type:** feature + bug fixes. Run by the manager agent (board delegation
+2026-10-07): engineer and QA subagents, merge after CI green + manager
+diff review + QA APPROVE.
+
+### Acceptance Criteria
+- [x] #62: redaction timing tests assert growth (100k vs 400k chars, best
+      of 3, < 8x; linear ~4x, quadratic ~16x) in a subprocess with a
+      timeout, not absolute time. QA: pre-#60 scanner still fails (hang);
+      synthetic O(n^2) gives 14x; worst real ratio 5.2x under full CPU load.
+- [x] #63: `find_latest_session` skips `subagents/` logs unless nothing
+      else exists (only caller: `cli._default_log`). Live-checked.
+- [x] #64: masked length counts the whole value; `mask_secret` splits at
+      the first `=` or `:`. Redaction text unchanged.
+- [x] #65: Gemini CLI adapter (`agents/gemini.py`, `parser/gemini.py`),
+      registered last; Claude Code catch-all excludes `gemini`;
+      `test_unknown_log_format.py` uses a made-up format instead of
+      Gemini records (SQLite/binary rejection tests unchanged).
+- [ ] Live-verified: no. No `~/.gemini` on this machine and the research
+      doc's `samples/gemini.jsonl` was never committed; format checked
+      against gemini-cli 0.62.0/0.63.0 source; fixtures synthetic.
+
+### Result
+- #66 `6b67efc` (#62, #63, #64). #68 `ea1c887` (#65; QA fixes: responses
+  matched by call id, `tokens.tool` counted as input).
+- Known limits (#68 body): relaunched child process may list twice in
+  `ps`; newest session per project (no pid in file); `$rewindTo` not
+  retracted; macOS sandbox store `~/.cache/.gemini` not searched.
+- `develop` after #68: 1187 passed, 1 skipped; `ruff check .` clean.
+
+---
+
 ### Sprint 29 -- cli-agents sub-project 3: opencode (2026-10-03)
 **Type:** feature
 **Branch:** `feature/opencode-adapter` (from `develop`)
@@ -3650,15 +3687,25 @@ Built from the real session the board captured on 2026-10-01 (opencode
 1.18.34), per board decision 1 in Sprint 22.
 
 ### Acceptance Criteria
-- [ ] `agents/opencode.py` adapter + `parser/opencode.py`, registered in
+- [x] `agents/opencode.py` adapter + `parser/opencode.py`, registered in
       `ADAPTERS`; read-only access to opencode's SQLite store.
-- [ ] read/write/bash/edit tool parts map to Actions with file_path,
+- [x] read/write/bash/edit tool parts map to Actions with file_path,
       command, success/error_message; user prompts go to
       incoming_message; tool output to raw["content"]; file writes are
       secret-scanned like Copilot/agy; token counts from step-finish /
       message tokens if present.
 - [ ] `ps`, `watch-all`, `check`, `security-scan` surface a live opencode
       session; process matching by program (not args).
-- [ ] Fixture is a scrubbed copy of the real session (no home path or
+- [x] Fixture is a scrubbed copy of the real session (no home path or
       username); tests cover each tool type and the failed read.
-- [ ] Full suite passes, `ruff check .` clean; live-verified.
+- [x] Full suite passes, `ruff check .` clean; live-verified: no (no
+      opencode install on the dev machine; `ps`/`watch-all` unverified).
+
+### Result (2026-10-07)
+- `develop` merged in (no rebase); after #48 a look-alike DB raises
+  `UnsupportedLogFormatError` (opencode test updated; #48 tests
+  unchanged); `_ms()` no longer stamps `now()` (#44). QA: fixture dump
+  clean (no secrets/PII, freelist 0); matches the 2026-10-05 research.
+- Merged as #69 `6ad7788` (issue #67).
+- Follow-up #70 (low): malformed rows crash check/watch; locked DB is
+  reported as unsupported.

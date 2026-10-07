@@ -121,7 +121,7 @@ src/agentwatch/
                        call/turn is emitted once, a call when its status is
                        final); adapter in agents/gemini.py resolves the log
                        via ~/.gemini/projects.json. Fixture-verified only
-                       (gemini-cli 0.62.0 source), not live-tested
+                       (gemini-cli 0.62.0/0.63.0 source), not live-tested
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping
