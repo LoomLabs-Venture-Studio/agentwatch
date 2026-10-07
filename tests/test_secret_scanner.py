@@ -1675,3 +1675,27 @@ def test_redact_truncate_caches_repeat_windows(monkeypatch):
         out = secret_scanner.redact_truncate(f"git push https://{token}@github.com/o/r", 80)
     assert len(calls) == 1
     assert token not in out
+
+
+# --- #64: reported length counts the whole value, colons and = included ----------
+
+@pytest.mark.parametrize(
+    ("text", "shown"),
+    [
+        ("export PGPASSWORD=Ab:cd:ef", "PGPASSWORD=[hidden, 8 chars]"),
+        ("PGPASSWORD=a=b=c", "PGPASSWORD=[hidden, 5 chars]"),
+    ],
+)
+def test_masked_length_counts_whole_value(text, shown):
+    from agentwatch.detectors.security.secret_scanner import (
+        SecretLeakScanner,
+        redact_secrets,
+    )
+
+    assert shown in redact_secrets(text)
+    buf = ActionBuffer()
+    buf.add(Action(timestamp=datetime(2026, 3, 1, 12, 0), tool_name="Bash",
+                   tool_type=ToolType.BASH, success=True, command=text))
+    warning = SecretLeakScanner().check(buf)
+    assert warning is not None
+    assert warning.details["matched_prefix"] == shown.split("=", 1)[1]

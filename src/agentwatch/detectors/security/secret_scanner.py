@@ -460,6 +460,11 @@ def mask_secret(match_text: str) -> str:
             if idx != -1:
                 value = match_text[idx + 1 :].strip().strip("'\"").strip()
                 break
+    return _mask_value(value)
+
+
+def _mask_value(value: str) -> str:
+    """Display-safe form of a bare secret *value* (see ``mask_secret``)."""
     if len(value) >= _MASK_TAIL_MIN_LEN:
         return "…" + value[-_MASK_TAIL_CHARS:]
     return f"[hidden, {len(value)} chars]"
@@ -468,6 +473,14 @@ def mask_secret(match_text: str) -> str:
 def _match_value(m: re.Match) -> str:
     """The secret part of a match: its ``secret`` group if it has one."""
     return m.group("secret") if "secret" in m.re.groupindex else m.group(0)
+
+
+def _mask_match_value(m: re.Match) -> str:
+    """Masked secret of *m*. A ``secret`` group is already the bare value, so
+    it is not split again on ``=``/``:`` (#64)."""
+    if "secret" in m.re.groupindex:
+        return _mask_value(m.group("secret"))
+    return mask_secret(m.group(0))
 
 
 def _mask_match(m: re.Match, label: str) -> str:
@@ -480,7 +493,7 @@ def _mask_match(m: re.Match, label: str) -> str:
     if "secret" not in m.re.groupindex and label not in _ASSIGNMENT_LABELS:
         return mask_secret(m.group(0))
     start, end = _value_span(m, label)
-    return m.string[m.start() : start] + mask_secret(_match_value(m)) + m.string[end : m.end()]
+    return m.string[m.start() : start] + _mask_match_value(m) + m.string[end : m.end()]
 
 
 def redact_secrets(text: str) -> str:
@@ -603,7 +616,7 @@ class SecretLeakScanner(SecurityDetector):
                             "channel": channel,
                             "file_path": file_path,
                             "tool": tool_name,
-                            "matched_prefix": mask_secret(_match_value(m)),
+                            "matched_prefix": _mask_match_value(m),
                             "remediation": _REMEDIATION.get(
                                 secret_type,
                                 "Remove from file, use env var, rotate if committed to git",
@@ -695,7 +708,7 @@ def audit_log_file(
                         log_file=log_path.name,
                         session_id=session_id,
                         project_name=project_name,
-                        matched_prefix=mask_secret(_match_value(m)),
+                        matched_prefix=_mask_match_value(m),
                         severity=_SEVERITY_LABEL.get(severity, "medium"),
                         remediation=_REMEDIATION.get(
                             secret_type,
