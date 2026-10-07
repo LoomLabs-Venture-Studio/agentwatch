@@ -744,6 +744,11 @@ def find_log_files(base_path: Path | None = None) -> list[Path]:
 
 
 def find_latest_session(base_path: Path | None = None) -> Path | None:
-    """Find the most recently modified log file."""
+    """Find the most recently modified main session log.
+
+    Claude Code writes subagent transcripts under ``<session>/subagents/``;
+    those are skipped unless nothing else exists (#63).
+    """
     log_files = find_log_files(base_path)
-    return log_files[0] if log_files else None
+    main = [p for p in log_files if "subagents" not in p.parts]
+    return (main or log_files or [None])[0]
