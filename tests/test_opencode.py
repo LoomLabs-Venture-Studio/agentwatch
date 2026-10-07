@@ -23,7 +23,7 @@ from agentwatch.detectors.security.secret_scanner import (
     extract_scannable_content,
 )
 from agentwatch.discovery import AgentProcess, match_process_adapter
-from agentwatch.parser.logs import parse_file
+from agentwatch.parser.logs import UnsupportedLogFormatError, parse_file
 from agentwatch.parser.models import ActionBuffer, ToolType
 from agentwatch.parser.opencode import latest_session, message_actions, open_readonly
 from agentwatch.parser.watcher import MultiLogWatcher, OpencodeWatcher
@@ -150,7 +150,8 @@ class TestAdapter:
         conn.commit()
         conn.close()
         assert agents.adapter_for(other) is None
-        assert list(parse_file(other)) == []
+        with pytest.raises(UnsupportedLogFormatError):  # #48
+            list(parse_file(other))
 
     @pytest.mark.parametrize("cmdline", [
         ["opencode", "run", "use claude to fix codex"],
