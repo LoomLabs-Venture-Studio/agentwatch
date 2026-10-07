@@ -7,9 +7,7 @@ or the TUI.
 
 from __future__ import annotations
 
-import functools
 import json
-import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -203,33 +201,57 @@ def test_goal_alignment_synopsis_masks_commands(command):
 
 # --- QA B1: context patterns stay linear on long tool output -------------------
 
-_PATHOLOGICAL_SIZE = 1_000_000
+# Linear redaction takes ~4x as long on 4x the input; a quadratic pattern
+# ~16x. Asserting on that growth, not on absolute time against a baseline
+# measured earlier, stays meaningful on a loaded CI runner (#62).
+_SMALL_SIZE, _LARGE_SIZE = 100_000, 400_000
+_MAX_GROWTH = 8.0
 
 
-@functools.cache
-def _plain_redact_seconds() -> float:
-    from agentwatch.detectors.security.secret_scanner import redact_secrets
+def _worst_growth(units: list[str], func: str = "_redact_text") -> tuple[str, float]:
+    """(unit, large/small time ratio) for the fastest-growing of *units*.
 
-    t = time.perf_counter()
-    redact_secrets("x" * _PATHOLOGICAL_SIZE)
-    return time.perf_counter() - t
+    Each time is the best of 3 runs. Runs in a subprocess with a timeout:
+    a quadratic pattern takes minutes, and a hang must fail the test
+    rather than stall the whole suite.
+    """
+    import subprocess
+    import sys
+
+    code = "\n".join([
+        "import sys, json, time",
+        f"from agentwatch.detectors.security.secret_scanner import {func} as f",
+        "def run(u, n):",
+        "    text = u * (n // len(u)); best = float('inf')",
+        "    for _ in range(3):",
+        "        t = time.perf_counter(); f(text); best = min(best, time.perf_counter() - t)",
+        "    return best",
+        "small, large = int(sys.argv[2]), int(sys.argv[3])",
+        "g = {u: run(u, large) / run(u, small) for u in json.loads(sys.argv[1])}",
+        "worst = max(g, key=g.get)",
+        "print(json.dumps([worst, g[worst]]))",
+    ])
+    try:
+        out = subprocess.run(
+            [sys.executable, "-c", code, json.dumps(units), str(_SMALL_SIZE), str(_LARGE_SIZE)],
+            capture_output=True, text=True, timeout=120, check=True,
+        ).stdout
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"{func} hung on one of {units}")
+    unit, growth = json.loads(out)
+    return unit, growth
 
 
-@pytest.mark.parametrize(
-    "unit",
-    ["curl ", "mysql ", "(curl ", "curl -u a", "a://b:", "a.", "\n", " \n", "\n\n"],
-)
-def test_redact_secrets_linear_on_pathological_input(unit):
-    from agentwatch.detectors.security.secret_scanner import redact_secrets
+def _assert_linear(units: list[str], func: str = "_redact_text") -> None:
+    unit, growth = _worst_growth(units, func)
+    assert growth < _MAX_GROWTH, f"{unit!r}: {growth:.1f}x time for 4x input"
 
-    baseline = _plain_redact_seconds()
-    text = unit * (_PATHOLOGICAL_SIZE // len(unit))
-    t = time.perf_counter()
-    redact_secrets(text)
-    elapsed = time.perf_counter() - t
-    # Quadratic patterns take minutes here; linear ones cost about the
-    # same as plain text. The baseline term absorbs slow CI machines.
-    assert elapsed < max(1.0, 3 * baseline), f"{elapsed:.2f}s (plain {baseline:.2f}s)"
+
+def test_redact_secrets_linear_on_pathological_input():
+    _assert_linear(
+        ["curl ", "mysql ", "(curl ", "curl -u a", "a://b:", "a.", "\n", " \n", "\n\n"],
+        "redact_secrets",
+    )
 
 
 @pytest.mark.parametrize(
@@ -435,19 +457,11 @@ def test_find_primaries_after_mysql_are_not_passwords():
     assert _redact_text(text) == (text, 0)
 
 
-@pytest.mark.parametrize(
-    "unit",
-    ["'curl ", '"mysql ', "curl x ", "mysql -u -u ", "curl" + " " * 40 + "x\n"],
-)
-def test_command_gap_linear_on_pathological_input(unit):
-    from agentwatch.detectors.security.secret_scanner import redact_secrets
-
-    baseline = _plain_redact_seconds()
-    text = unit * (_PATHOLOGICAL_SIZE // len(unit))
-    t = time.perf_counter()
-    redact_secrets(text)
-    elapsed = time.perf_counter() - t
-    assert elapsed < max(1.0, 3 * baseline), f"{elapsed:.2f}s (plain {baseline:.2f}s)"
+def test_command_gap_linear_on_pathological_input():
+    _assert_linear(
+        ["'curl ", '"mysql ', "curl x ", "mysql -u -u ", "curl" + " " * 40 + "x\n"],
+        "redact_secrets",
+    )
 
 
 # --- QA N3: audit --redact removes context secrets from JSONL --------------------
@@ -520,40 +534,8 @@ _DB_URL_UNITS = [
 ]
 
 
-def _worst_redact_ratio(units: list[str]) -> tuple[str, float, float]:
-    """(unit, seconds, plain-text seconds) for the slowest 1MB *units* input.
-
-    Runs in a subprocess with a timeout: before the fix these take minutes,
-    and a hang must fail the test rather than stall the whole suite.
-    """
-    import subprocess
-    import sys
-
-    code = (
-        "import sys, json, time\n"
-        "from agentwatch.detectors.security.secret_scanner import _redact_text\n"
-        "size = int(sys.argv[2])\n"
-        "def run(text):\n"
-        "    t = time.perf_counter(); _redact_text(text); return time.perf_counter() - t\n"
-        "base = run('x' * size)\n"
-        "times = {u: run(u * (size // len(u))) for u in json.loads(sys.argv[1])}\n"
-        "worst = max(times, key=times.get)\n"
-        "print(json.dumps([worst, times[worst], base]))\n"
-    )
-    try:
-        out = subprocess.run(
-            [sys.executable, "-c", code, json.dumps(units), str(_PATHOLOGICAL_SIZE)],
-            capture_output=True, text=True, timeout=60, check=True,
-        ).stdout
-    except subprocess.TimeoutExpired:
-        pytest.fail(f"_redact_text hung on one of {units}")
-    unit, elapsed, base = json.loads(out)
-    return unit, elapsed, base
-
-
 def test_db_url_patterns_linear_on_pathological_input():
-    unit, elapsed, base = _worst_redact_ratio(_DB_URL_UNITS)
-    assert elapsed < max(1.0, 3 * base), f"{unit!r}: {elapsed:.2f}s (plain {base:.2f}s)"
+    _assert_linear(_DB_URL_UNITS)
 
 
 # A mysql:// URL (or any text) glues program words together with no
@@ -565,8 +547,7 @@ _GLUED_WORD_UNITS = [
 
 
 def test_flag_gap_linear_on_glued_program_words():
-    unit, elapsed, base = _worst_redact_ratio(_GLUED_WORD_UNITS)
-    assert elapsed < max(1.0, 3 * base), f"{unit!r}: {elapsed:.2f}s (plain {base:.2f}s)"
+    _assert_linear(_GLUED_WORD_UNITS)
 
 
 # --- #32: no pattern rescans a long alphanumeric run from every position ----------
@@ -581,8 +562,7 @@ _ALNUM_RUN_UNITS = [
 
 
 def test_patterns_linear_on_long_alphanumeric_runs():
-    unit, elapsed, base = _worst_redact_ratio(_ALNUM_RUN_UNITS)
-    assert elapsed < max(1.0, 3 * base), f"{unit!r}: {elapsed:.2f}s (plain {base:.2f}s)"
+    _assert_linear(_ALNUM_RUN_UNITS)
 
 
 _DISCORD_TOKEN = "MTk4NjIyNDgzNDcxOTI1MjQ4" ".Cl2FMQ.ZnCjm1XVW7vRze4b7Cq4se7kKWs"
