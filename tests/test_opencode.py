@@ -107,6 +107,14 @@ class TestParse:
         assert action.success is False
         assert action.error_message == "exit code 2"
 
+    def test_missing_timestamps_are_none(self):
+        # Never stamped with datetime.now() (#44).
+        part = {"type": "tool", "tool": "read", "state": {"status": "completed", "input": {}}}
+        [tool] = message_actions({"role": "assistant"}, [part], BOARD)
+        text = {"type": "text", "text": "hi"}
+        [prompt] = message_actions({"role": "user", "time": {}}, [text], BOARD)
+        assert tool.timestamp is None and prompt.timestamp is None
+
     def test_step_tokens_on_first_action(self):
         actions = list(parse_file(FIXTURE, session_id=BOARD))
         read = actions[1]

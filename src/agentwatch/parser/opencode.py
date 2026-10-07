@@ -53,10 +53,14 @@ def open_readonly(db_path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
 
 
-def _ms(value: Any) -> datetime:
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value / 1000, tz=timezone.utc).replace(tzinfo=None)
-    return datetime.now()
+def _ms(value: Any) -> datetime | None:
+    """ms epoch -> naive UTC; None when missing or bad, never ``datetime.now()`` (#44)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(value / 1000, tz=timezone.utc).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
+            return None
+    return None
 
 
 def latest_session(
