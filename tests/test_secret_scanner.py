@@ -1699,3 +1699,11 @@ def test_masked_length_counts_whole_value(text, shown):
     warning = SecretLeakScanner().check(buf)
     assert warning is not None
     assert warning.details["matched_prefix"] == shown.split("=", 1)[1]
+
+
+def test_masked_length_splits_at_first_separator():
+    """A match without a secret group splits at its first = or :, not = first."""
+    from agentwatch.detectors.security.secret_scanner import mask_secret
+
+    assert mask_secret('password: "ab=cdefg"') == "[hidden, 8 chars]"
+    assert mask_secret('password = "ab:cdefg"') == "[hidden, 8 chars]"

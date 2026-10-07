@@ -455,11 +455,9 @@ def mask_secret(match_text: str) -> str:
     if url:
         value = url.group(1)
     else:
-        for sep in ("=", ":"):
-            idx = match_text.find(sep)
-            if idx != -1:
-                value = match_text[idx + 1 :].strip().strip("'\"").strip()
-                break
+        sep = re.search(r"[=:]", match_text)  # the first separator, = or : (#64)
+        if sep:
+            value = match_text[sep.end() :].strip().strip("'\"").strip()
     return _mask_value(value)
 
 
