@@ -17,7 +17,9 @@ OpenCode (read-only SQLite `opencode.db`) is wired end-to-end; its parser
 is built from real opencode 1.18.34 sessions (scrubbed fixture) and
 matches the 2026-10-05 live research, but `ps`/`watch-all` against a
 running opencode has not been live-verified (no install on the dev
-machine). It watches an agent's session logs as they
+machine). Gemini CLI is wired end-to-end but fixture-verified only
+(format checked against the gemini-cli 0.62.0/0.63.0 source; no local
+Gemini session to live-test, 2026-10-07). It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
 result as a CLI report, a CI-friendly exit code, or a live Textual TUI. Built
@@ -49,8 +51,8 @@ src/agentwatch/
   agents/              One adapter per agent: AgentAdapter protocol +
                        BaseAdapter defaults (base.py) and the ordered
                        ADAPTERS registry (__init__.py: claude-code, aider,
-                       codex, cursor, copilot, agy, opencode). Process
-                       matching is
+                       codex, cursor, copilot, agy, opencode, gemini).
+                       Process matching is
                        first-match-wins per PID in that order; adapter_for()
                        picks the first adapter whose claims() accepts a path
   discovery.py         Finds running agent OS processes by matching each
@@ -81,7 +83,7 @@ src/agentwatch/
     models.py           Action / ActionBuffer / SessionStats / ToolType /
                        MetricResult data models
     logs.py              JSONL parsers per agent log format (Claude Code,
-                       Moltbot, Codex, Copilot, agy), sensitive-path pattern matching,
+                       Moltbot, Codex, Copilot, agy, Gemini), sensitive-path pattern matching,
                        parse_file() extension-based dispatch (.md -> aider,
                        .vscdb -> cursor_source, else JSONL auto-detect)
     aider.py             Aider Markdown chat-history + --analytics-log JSONL
@@ -114,6 +116,12 @@ src/agentwatch/
                        ~/.local/share, also on Windows) or OPENCODE_DB;
                        adapter in agents/opencode.py keys each live
                        session as <db>#<session_id>
+    gemini.py            Gemini CLI chats/session-*.jsonl parsing
+                       (GeminiParser; messages re-appended by id, so each
+                       call/turn is emitted once, a call when its status is
+                       final); adapter in agents/gemini.py resolves the log
+                       via ~/.gemini/projects.json. Fixture-verified only
+                       (gemini-cli 0.62.0 source), not live-tested
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping

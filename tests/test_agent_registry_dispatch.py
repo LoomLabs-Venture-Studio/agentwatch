@@ -66,7 +66,7 @@ def _isolate(monkeypatch, *extra):
 class TestDiscoveryViaRegistry:
     def test_agent_patterns_still_exported(self):
         assert set(discovery.AGENT_PATTERNS) == {
-            "claude-code", "aider", "codex", "copilot", "agy", "opencode",
+            "claude-code", "aider", "codex", "copilot", "agy", "opencode", "gemini",
         }
         assert discovery.AGENT_PATTERNS["codex"] == {
             "pattern": agents.get("codex").process_pattern, "exclude": None,

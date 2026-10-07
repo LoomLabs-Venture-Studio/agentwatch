@@ -520,6 +520,11 @@ def detect_log_format(first_entry: dict) -> str:
         if isinstance(msg, dict) and ("role" in msg or "content" in msg):
             return "claude_code"
 
+    # Gemini CLI session header (always line 1 of chats/session-*.jsonl).
+    # Before the Claude Code checks: it also has a sessionId (#39, #65).
+    if "projectHash" in first_entry and "sessionId" in first_entry:
+        return "gemini"
+
     # Older flat Claude Code entries: Claude-specific field names, or a
     # sessionId alongside a tool name. A bare sessionId is not enough --
     # other agents (e.g. Gemini CLI) use that key too (#39).
@@ -617,25 +622,26 @@ class FormatSniffer:
 
 
 def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
-    """JSONL body of parse_file (Claude Code / Moltbot / Codex / Copilot / agy, auto-detected)."""
+    """JSONL body of parse_file (Claude Code / Moltbot / Codex / Copilot / agy / Gemini)."""
     # Imported lazily (not at module level) to avoid a logs.py <-> codex.py
     # circular import — codex.py imports classify_tool from this module at
     # its own module level.
     from .agy import AgyParser
     from .codex import CodexParser
     from .copilot import CopilotParser
+    from .gemini import GeminiParser
 
     if is_binary_file(path):
         raise UnsupportedLogFormatError(path, "binary file, not a JSONL agent log")
 
     sniffer = FormatSniffer()
     log_format = None
-    codex_parser: CodexParser | CopilotParser | AgyParser | None = None
+    codex_parser: CodexParser | CopilotParser | AgyParser | GeminiParser | None = None
 
     def parse(entry: dict) -> list[Action]:
         if log_format == "moltbot":
             result = parse_moltbot_entry(entry)
-        elif log_format in ("codex", "copilot", "agy"):
+        elif log_format in ("codex", "copilot", "agy", "gemini"):
             result = codex_parser.parse_line(entry)
         else:
             result = parse_claude_code_entry(entry)
@@ -671,6 +677,8 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
                 elif log_format == "agy":
                     # agy transcripts carry no session id; tag with the requested one.
                     codex_parser = AgyParser(session_id)
+                elif log_format == "gemini":
+                    codex_parser = GeminiParser()
                 elif log_format == "claude_code":
                     for skipped in sniffer.take_skipped():
                         yield from parse(skipped)
