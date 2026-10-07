@@ -560,14 +560,80 @@ def test_db_url_patterns_linear_on_pathological_input():
 # whitespace; the mysql/curl flag gap scanned to the end from each one.
 _GLUED_WORD_UNITS = [
     "mysql://a:", "mysql:", "curl:", "curl@", '"mysql', "'curl", "/bin/mysql", "=mysql",
-    "mariadb:", "mysqldump:", "curl://a:", "curl", "mysql:mysql:",
-    # Not "mysql" alone: discord_bot_token is quadratic on it (separate issue).
+    "mariadb:", "mysqldump:", "curl://a:", "curl", "mysql:mysql:", "mysql",
 ]
 
 
 def test_flag_gap_linear_on_glued_program_words():
     unit, elapsed, base = _worst_redact_ratio(_GLUED_WORD_UNITS)
     assert elapsed < max(1.0, 3 * base), f"{unit!r}: {elapsed:.2f}s (plain {base:.2f}s)"
+
+
+# --- #32: no pattern rescans a long alphanumeric run from every position ----------
+
+# Each unit, repeated to 1MB, made one pattern quadratic: discord_bot_token
+# (an M/N inside a long run), jwt_token (eyJ inside a run) and
+# high_entropy_secret (a key word inside an identifier) each started a scan
+# to the run's end.
+_ALNUM_RUN_UNITS = [
+    "mysql", "M", "N0", "Ab1xY", "eyJ", "eyJa", "key_", "secret", "auth_", "tokenkey",
+]
+
+
+def test_patterns_linear_on_long_alphanumeric_runs():
+    unit, elapsed, base = _worst_redact_ratio(_ALNUM_RUN_UNITS)
+    assert elapsed < max(1.0, 3 * base), f"{unit!r}: {elapsed:.2f}s (plain {base:.2f}s)"
+
+
+_DISCORD_TOKEN = "MTk4NjIyNDgzNDcxOTI1MjQ4" ".Cl2FMQ.ZnCjm1XVW7vRze4b7Cq4se7kKWs"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [_DISCORD_TOKEN, f"Bot {_DISCORD_TOKEN}", f'DISCORD="{_DISCORD_TOKEN}"'],
+)
+def test_discord_token_still_detected_and_masked(text):
+    from agentwatch.detectors.security.secret_scanner import (
+        _first_live_match,
+        _pattern_for_secret_type,
+        redact_secrets,
+    )
+
+    pattern = _pattern_for_secret_type("discord_bot_token")
+    m = _first_live_match(pattern, "discord_bot_token", text)
+    assert m is not None and m.group(0) == _DISCORD_TOKEN
+    assert redact_secrets(text) == text.replace(_DISCORD_TOKEN, "…" + _DISCORD_TOKEN[-4:])
+
+
+_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6"
+    "IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+)
+_HIGH_ENTROPY = "q8Zr3Vt1Lw9Kx2Bn7Mf4Hd6Js0Pc5Ya1Rg8Ue3Ti"
+
+
+@pytest.mark.parametrize(
+    "label,text,expected",
+    [
+        ("jwt_token", f"Authorization: Bearer {_JWT}", _JWT),
+        ("jwt_token", f'{{"id_token":"{_JWT}"}}', _JWT),
+        ("jwt_token", f"?jwt={_JWT}&x=1", _JWT),
+        # The match starts at the name's last key word; the value is unchanged.
+        ("high_entropy_secret", f'MY_SECRET_KEY = "{_HIGH_ENTROPY}"',
+         f'KEY = "{_HIGH_ENTROPY}'),
+        ("high_entropy_secret", f"auth_token: {_HIGH_ENTROPY}", f"token: {_HIGH_ENTROPY}"),
+        ("high_entropy_secret", f"credentials={_HIGH_ENTROPY}", f"credentials={_HIGH_ENTROPY}"),
+        ("high_entropy_secret", f"client-secret={_HIGH_ENTROPY}", f"secret={_HIGH_ENTROPY}"),
+    ],
+)
+def test_jwt_and_high_entropy_still_detected(label, text, expected):
+    from agentwatch.detectors.security.secret_scanner import (
+        _first_live_match,
+        _pattern_for_secret_type,
+    )
+
+    m = _first_live_match(_pattern_for_secret_type(label), label, text)
+    assert m is not None and m.group(0) == expected
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from itertools import islice
 from typing import Any
@@ -36,14 +36,19 @@ class ToolType(Enum):
 # tool calls, so repetition-based detectors (`detectors/health/loops.py`)
 # must exclude them from their counts to avoid flagging every multi-turn
 # conversation as a "loop".
-NON_TOOL_ROLE_LABELS = frozenset({"user_message", "assistant_message", "unknown_bubble"})
+# Claude Code's "system" and "queue-operation" entries and "text_output"
+# blocks stay actions (detectors scan their content) but are not tool calls.
+NON_TOOL_ROLE_LABELS = frozenset({
+    "user_message", "assistant_message", "unknown_bubble",
+    "system", "queue-operation", "text_output",
+})
 
 
 @dataclass
 class Action:
     """Represents a single agent action parsed from logs."""
 
-    timestamp: datetime
+    timestamp: datetime | None  # None: missing or unparseable (#44)
     tool_name: str
     tool_type: ToolType
     success: bool
@@ -84,6 +89,11 @@ class Action:
         return self.network_host is not None or self.network_port is not None
 
 
+# ponytail: a fixed cap on idle gaps between actions. A single tool call that
+# runs longer than this undercounts; per-agent or user-tunable caps if needed.
+IDLE_GAP_CAP = timedelta(minutes=30)
+
+
 @dataclass
 class SessionStats:
     """Aggregated statistics for a session."""
@@ -98,6 +108,8 @@ class SessionStats:
     total_cache_creation: int = 0
     total_cache_read: int = 0
     peak_context_tokens: int = 0  # high-water mark of per-action context size
+    last_context_tokens: int = 0  # context size of the latest action that reported usage
+    active_seconds: float = 0.0  # span covered by actions, idle gaps capped
     error_count: int = 0
     files_touched: set[str] = field(default_factory=set)
 
@@ -123,7 +135,8 @@ class SessionStats:
 
     @property
     def duration_minutes(self) -> float:
-        """Wall-clock span covered by the buffered actions (last - first timestamp).
+        """Active session time: the span covered by the actions' timestamps,
+        with each idle gap capped at ``IDLE_GAP_CAP`` (see ActionBuffer.add).
 
         Deliberately derived from the actions' own timestamps rather than
         ``datetime.now()`` so that analysis of a fixed log (e.g. ``agentwatch
@@ -131,10 +144,7 @@ class SessionStats:
         depend on how long ago the session happened or how long analysis
         takes to run.
         """
-        if not self.start_time or not self.last_action_time:
-            return 0.0
-        delta = self.last_action_time - self.start_time
-        return max(delta.total_seconds() / 60, 0.0)
+        return self.active_seconds / 60
 
     @property
     def estimated_cost(self) -> float:
@@ -184,11 +194,26 @@ class ActionBuffer:
         action_context = action.tokens_in + action.cache_creation_tokens + action.cache_read_tokens
         if action_context > self._stats.peak_context_tokens:
             self._stats.peak_context_tokens = action_context
+        # Latest window fill; usage-less actions (e.g. tool errors) don't reset it.
+        if action_context > 0:
+            self._stats.last_context_tokens = action_context
 
-        if not self._stats.start_time:
-            self._stats.start_time = action.timestamp
-        if self._stats.last_action_time is None or action.timestamp >= self._stats.last_action_time:
-            self._stats.last_action_time = action.timestamp
+        # Extend the covered span at either end. Gaps are capped so a session
+        # resumed hours or days later doesn't count the idle time (#38).
+        ts = action.timestamp
+        cap = IDLE_GAP_CAP.total_seconds()
+        if ts is None:
+            pass  # untimed: still counted and scanned, but adds no duration (#44)
+        elif self._stats.start_time is None:
+            self._stats.start_time = self._stats.last_action_time = ts
+        elif ts > self._stats.last_action_time:
+            gap = (ts - self._stats.last_action_time).total_seconds()
+            self._stats.active_seconds += min(gap, cap)
+            self._stats.last_action_time = ts
+        elif ts < self._stats.start_time:
+            gap = (self._stats.start_time - ts).total_seconds()
+            self._stats.active_seconds += min(gap, cap)
+            self._stats.start_time = ts
 
         if action.file_path:
             self._file_access_counts[action.file_path] = (

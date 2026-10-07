@@ -213,10 +213,10 @@ def _extract_checkpoint_file_path(checkpoint: dict[str, Any] | None) -> str | No
 def _parse_bubble_timestamp(bubble: dict[str, Any]):
     """Parse a bubble's ``createdAt`` ISO-8601 string.
 
-    Small local copy of ``logs.py``'s ISO-parse-with-``datetime.now()``-
-    fallback pattern (see ``codex.py::_parse_codex_timestamp`` for the same
-    precedent), kept self-contained rather than importing a private helper
-    from ``logs.py``.
+    Small local copy of ``logs.py::_parse_timestamp`` (None when missing
+    or unparseable, never ``datetime.now()``, #44). Kept self-contained
+    rather than importing a private helper from ``logs.py``, like
+    ``codex.py::_parse_codex_timestamp``.
     """
     from datetime import datetime
 
@@ -227,7 +227,7 @@ def _parse_bubble_timestamp(bubble: dict[str, Any]):
             return parsed.replace(tzinfo=None)
         except ValueError:
             pass
-    return datetime.now()
+    return None
 
 
 def classify_cursor_tool(bubble: dict[str, Any]) -> ToolType:

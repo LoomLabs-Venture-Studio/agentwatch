@@ -11,6 +11,7 @@ from textual.containers import Container
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 
+from agentwatch.health.score import MIN_RATE_MINUTES
 from agentwatch.llm import DEFAULT_OLLAMA_MODEL
 from agentwatch.themes import ascii_safe, get_theme, security_status_from_score
 from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
@@ -102,12 +103,15 @@ class EfficiencyBar(Static):
         lines.append("")
 
         # Per-category mini bars with detail
-        burn_k = r.token_burn_rate / 1000
+        # Rates over a near-zero duration are meaningless (#45).
+        warm = r.duration_minutes >= MIN_RATE_MINUTES
+        burn = f"{r.token_burn_rate / 1000:.1f}k" if warm else "--"
+        cost_rate = f"${r.cost_velocity:.2f}" if warm else "--"
         categories = [
             (
                 "Pressure",
                 r.penalty_context,
-                f"{r.context_usage_pct:.0f}% ctx, {burn_k:.1f}k tok/min",
+                f"{r.context_usage_pct:.0f}% ctx, {burn} tok/min",
             ),
             ("Cache", r.penalty_cache, f"{r.cache_hit_rate * 100:.0f}% hit rate"),
             (
@@ -122,7 +126,7 @@ class EfficiencyBar(Static):
 
         lines.append("")
         # Cost is informational — not scored (no log-reported cost data yet)
-        lines.append(f"  Est. cost: ${r.cost_total:.2f} (${r.cost_velocity:.2f}/min)")
+        lines.append(f"  Est. cost: ${r.cost_total:.2f} ({cost_rate}/min)")
         lines.append(f"  {r.recommendation}")
 
         return "\n".join(lines)

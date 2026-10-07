@@ -81,20 +81,25 @@ def source_path(source: AgentProcess | Path) -> Path:
     return source.log_file
 
 
-def sniff_jsonl_format(path: Path, max_lines: int = 50) -> str | None:
-    """Return detect_log_format() of the first non-"skip" JSONL entry.
+def sniff_jsonl_format(path: Path) -> str | None:
+    """Return the format parse_file() would lock for this JSONL file.
 
-    None when the file is missing/unreadable or has no decisive entry within
-    *max_lines*. Mirrors parse_file()'s own detection (same function, same
-    "skip" semantics) so claims() never disagrees with the parser.
+    Uses the same FormatSniffer as the parser and LogWatcher: the first
+    recognised entry decides, "skip" entries and up to FORMAT_SNIFF_LINES
+    unrecognised ones are passed over. "unknown" for binary files, for files
+    that use up that window, and for files that end with only unrecognised
+    entries. None when the file is missing/unreadable, empty, or holds only
+    "skip" entries -- so claims() never disagrees with the parser.
     """
-    from agentwatch.parser.logs import detect_log_format
+    from agentwatch.parser.logs import FormatSniffer, is_binary_file
 
+    if is_binary_file(path):
+        return "unknown"
+
+    sniffer = FormatSniffer()
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
-            for i, line in enumerate(f):
-                if i >= max_lines:
-                    return None
+            for line in f:
                 line = line.strip()
                 if not line:
                     continue
@@ -104,9 +109,9 @@ def sniff_jsonl_format(path: Path, max_lines: int = 50) -> str | None:
                     continue
                 if not isinstance(entry, dict):
                     continue
-                fmt = detect_log_format(entry)
-                if fmt != "skip":
+                fmt = sniffer.feed(entry)
+                if fmt is not None:
                     return fmt
     except OSError:
         return None
-    return None
+    return sniffer.finish()

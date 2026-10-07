@@ -109,11 +109,11 @@ agentwatch stats
 
     | Metric | Weight | What it measures |
     |--------|--------|------------------|
-    | Context Pressure | 30% | Token usage vs. budget (180K default) |
-    | Token Burn Rate | 20% | Tokens consumed per minute |
+    | Context Pressure | 30% | Latest call's context vs. context window (200K, or 1M once a call exceeds 200K) |
+    | Token Burn Rate | 20% | Fresh tokens per minute (input + cache creation + output; cache reads excluded) |
     | Cache Hit Rate | 15% | How well the agent reuses cached context |
     | Duration | 15% | Session length relative to task |
-    | I/O Ratio | 10% | Balance of input vs. output tokens |
+    | I/O Ratio | 10% | Fresh input (cache reads excluded) vs. output tokens |
     | Actions Per Turn | 10% | Tool call density (thrashing detection) |
 
 ---

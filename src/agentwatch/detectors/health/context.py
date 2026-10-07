@@ -48,7 +48,9 @@ class ContextRotDetector(Detector):
         edited_early = {
             a.file_path for a in early_actions if a.is_file_edit and a.file_path
         }
-        important_forgotten = [f for f in forgotten if f in edited_early]
+        # Sorted: set order depends on PYTHONHASHSEED, and check --json must
+        # give the same output on every run (#33).
+        important_forgotten = sorted(f for f in forgotten if f in edited_early)
 
         if len(important_forgotten) >= 2:
             return Warning(

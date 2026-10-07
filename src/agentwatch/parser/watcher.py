@@ -27,7 +27,12 @@ from .cursor_source import (
     fetch_composer_headers,
     open_readonly,
 )
-from .logs import detect_log_format, parse_claude_code_entry, parse_moltbot_entry
+from .logs import (
+    FormatSniffer,
+    ensure_supported_log,
+    parse_claude_code_entry,
+    parse_moltbot_entry,
+)
 from .models import Action
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,7 @@ class LogWatcher:
         self.session_id = session_id
         self._position = 0
         self._log_format: str | None = None
+        self._sniffer = FormatSniffer()
         self._codex_parser: CodexParser | CopilotParser | AgyParser | None = None
         self._callbacks: list[Callable[[Action], None]] = []
 
@@ -50,9 +56,14 @@ class LogWatcher:
 
     def _parse_entry(self, entry: dict) -> list[Action]:
         """Parse an entry using the detected format. Returns list of actions."""
-        if self._log_format is None or self._log_format == "skip":
-            self._log_format = detect_log_format(entry)
-            if self._log_format == "skip":
+        if not isinstance(entry, dict):
+            return []
+        if self._log_format is None:
+            # Shared with parse_file()/claims(): unrecognised entries within
+            # the sniff window are skipped, not locked in (#39). The sniffer
+            # lives on the instance so the window spans successive reads.
+            self._log_format = self._sniffer.feed(entry)
+            if self._log_format is None:
                 return []
             if self._log_format == "codex":
                 self._codex_parser = CodexParser()
@@ -60,7 +71,17 @@ class LogWatcher:
                 self._codex_parser = CopilotParser()
             elif self._log_format == "agy":
                 self._codex_parser = AgyParser(self.session_id)
+            elif self._log_format == "claude_code":
+                # Claude Code metadata seen before the first message (#39).
+                replayed = [
+                    a for e in self._sniffer.take_skipped() for a in self._parse_entry(e)
+                ]
+                return replayed + self._parse_entry(entry)
 
+        if self._log_format == "unknown":
+            # Not an agent log we understand (#39): emit nothing rather than
+            # misparse every record as Claude Code.
+            return []
         if self._log_format == "moltbot":
             result = parse_moltbot_entry(entry)
         elif self._log_format in ("codex", "copilot", "agy"):
@@ -133,6 +154,16 @@ class LogWatcher:
                         continue
         except FileNotFoundError:
             pass
+
+        if self._log_format is None:
+            # Same end-of-input rule as parse_file (#39): Claude Code metadata
+            # with no message yet is emitted now, not held back. The format
+            # stays undecided; take_* drains, so nothing is replayed later.
+            for entry in self._sniffer.take_metadata_only():
+                result = parse_claude_code_entry(entry)
+                for a in result if isinstance(result, list) else [result] if result else []:
+                    if not self.session_id or a.session_id == self.session_id:
+                        actions.append(a)
 
         return actions
 
@@ -592,6 +623,7 @@ class MultiLogWatcher:
         sid = proc.session_id if proc else None
         adapter = (get(proc.agent_type) if proc else None) or adapter_for(log_meta)
         if adapter is None:
+            ensure_supported_log(log_meta)  # raises; watch() skips the entry (#39)
             return LogWatcher(log_meta, session_id=sid)
         return adapter.make_watcher(proc if proc is not None else log_meta, sid)
 
