@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 import time
 from pathlib import Path
 from typing import AsyncIterator, Callable
@@ -14,6 +15,7 @@ from watchfiles import Change, awatch
 from agentwatch.agents.base import Watcher
 from agentwatch.discovery import AgentProcess
 
+from . import opencode
 from .agy import AgyParser
 from .aider import parse_aider_sessions
 from .codex import CodexParser
@@ -404,6 +406,63 @@ class CursorWatcher:
                     callback(action)
                 except Exception:
                     pass  # Don't let callback errors stop watching
+
+
+class OpencodeWatcher:
+    """Polls opencode's SQLite store for one session's newly finished messages.
+
+    Same timer-poll shape as ``CursorWatcher``; the cursor is the set of
+    message ids already emitted (see ``parser/opencode.py``). With no
+    *session_id* it follows the most recently updated session.
+    """
+
+    def __init__(self, db_path: Path, session_id: str | None = None, poll_interval: float = 1.0):
+        self.db_path = db_path
+        self.session_id = session_id
+        self.poll_interval = poll_interval
+        self._emitted: set[str] = set()
+        self._callbacks: list[Callable[[Action], None]] = []
+
+    def on_action(self, callback: Callable[[Action], None]) -> None:
+        self._callbacks.append(callback)
+
+    async def watch_with_callbacks(self) -> None:
+        """For ``watch --log opencode.db`` (the single-agent TUI)."""
+        async for action in self.watch():
+            for callback in self._callbacks:
+                try:
+                    callback(action)
+                except Exception:
+                    pass  # Don't let callback errors stop watching
+
+    def _poll_once(self) -> list[Action]:
+        conn = opencode.open_readonly(self.db_path)
+        try:
+            if self.session_id is None:
+                self.session_id = opencode.latest_session(conn)
+                if self.session_id is None:
+                    return []
+            # ponytail: re-reads the session's message rows every tick; add a
+            # time_updated watermark if sessions with thousands of steps lag.
+            actions: list[Action] = []
+            for mid, acts in opencode.read_session(conn, self.session_id, self._emitted):
+                self._emitted.add(mid)
+                actions.extend(acts)
+            return actions
+        finally:
+            conn.close()
+
+    async def watch(self) -> AsyncIterator[Action]:
+        while True:
+            try:
+                actions = self._poll_once()
+            except sqlite3.Error:
+                # e.g. opencode mid-migration; a transient error must not end the watch.
+                logger.debug("opencode poll failed for %s", self.db_path, exc_info=True)
+                actions = []
+            for action in actions:
+                yield action
+            await asyncio.sleep(self.poll_interval)
 
 
 def _has_live_log(proc: AgentProcess) -> bool:

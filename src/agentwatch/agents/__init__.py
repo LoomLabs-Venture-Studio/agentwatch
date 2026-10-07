@@ -22,6 +22,7 @@ from .codex import CodexAdapter
 from .copilot import CopilotAdapter
 from .cursor import CursorAdapter
 from .gemini import GeminiAdapter
+from .opencode import OpencodeAdapter
 
 ADAPTERS: list[AgentAdapter] = [
     ClaudeCodeAdapter(),
@@ -30,6 +31,7 @@ ADAPTERS: list[AgentAdapter] = [
     CursorAdapter(),
     CopilotAdapter(),
     AgyAdapter(),
+    OpencodeAdapter(),
     GeminiAdapter(),
 ]
 
