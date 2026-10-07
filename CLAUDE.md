@@ -12,7 +12,9 @@ is fixture-verified only — a genuine `@openai/codex` install has now been
 confirmed reachable (2026-07-15) but no live authenticated session/rollout
 has been captured against it (no credentials in this environment — see
 Known Issues). GitHub Copilot CLI and Antigravity CLI (`agy`) are wired
-end-to-end and live-verified (Copilot 1.0.90, agy 1.2.14, 2026-10-01). It watches an agent's session logs as they
+end-to-end and live-verified (Copilot 1.0.90, agy 1.2.14, 2026-10-01). Gemini
+CLI is wired end-to-end but fixture-verified only (format checked against the
+gemini-cli 0.62.0 source; no local Gemini session to live-test, 2026-10-07). It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
 result as a CLI report, a CI-friendly exit code, or a live Textual TUI. Built
@@ -44,7 +46,7 @@ src/agentwatch/
   agents/              One adapter per agent: AgentAdapter protocol +
                        BaseAdapter defaults (base.py) and the ordered
                        ADAPTERS registry (__init__.py: claude-code, aider,
-                       codex, cursor, copilot, agy). Process matching is
+                       codex, cursor, copilot, agy, gemini). Process matching is
                        first-match-wins per PID in that order; adapter_for()
                        picks the first adapter whose claims() accepts a path
   discovery.py         Finds running agent OS processes by matching each
@@ -75,7 +77,7 @@ src/agentwatch/
     models.py           Action / ActionBuffer / SessionStats / ToolType /
                        MetricResult data models
     logs.py              JSONL parsers per agent log format (Claude Code,
-                       Moltbot, Codex, Copilot, agy), sensitive-path pattern matching,
+                       Moltbot, Codex, Copilot, agy, Gemini), sensitive-path pattern matching,
                        parse_file() extension-based dispatch (.md -> aider,
                        .vscdb -> cursor_source, else JSONL auto-detect)
     aider.py             Aider Markdown chat-history + --analytics-log JSONL
@@ -100,6 +102,12 @@ src/agentwatch/
                        no call ids, results matched by step order);
                        adapter in agents/agy.py. Live-verified
                        2026-10-01 (1.2.14)
+    gemini.py            Gemini CLI chats/session-*.jsonl parsing
+                       (GeminiParser; messages re-appended by id, so each
+                       call/turn is emitted once, a call when its status is
+                       final); adapter in agents/gemini.py resolves the log
+                       via ~/.gemini/projects.json. Fixture-verified only
+                       (gemini-cli 0.62.0 source), not live-tested
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping
