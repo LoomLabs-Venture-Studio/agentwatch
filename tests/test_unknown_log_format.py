@@ -1,9 +1,11 @@
 """Unrecognised or binary logs must give a clean "unsupported log format"
 error, never be parsed as Claude Code or crash (#39).
 
-Fixtures are synthetic: they copy only the record *shape* of a Gemini CLI
-transcript (header line with sessionId, then type="gemini" records) and of a
-SQLite store, not any real content.
+Fixtures are synthetic. The unknown JSONL is a made-up agent format (header
+line, then step records) that no adapter recognises; the binary fixture copies
+only the shape of a SQLite store. Gemini CLI transcripts were the original
+unknown example here; they are a supported format since #65 (see
+tests/test_gemini.py).
 """
 
 import asyncio
@@ -25,21 +27,16 @@ from agentwatch.parser.logs import (
 )
 from agentwatch.parser.watcher import LogWatcher, MultiLogWatcher
 
-GEMINI_HEADER = {
-    "sessionId": "00000000-0000-0000-0000-000000000001",
-    "projectHash": "abc123",
-    "startTime": "2026-01-01T00:00:00.000Z",
-    "lastUpdated": "2026-01-01T00:00:00.000Z",
-    "kind": "main",
+UNKNOWN_HEADER = {
+    "format": "some-other-agent",
+    "version": 3,
+    "started": "2026-01-01T00:00:00.000Z",
 }
-GEMINI_MESSAGE = {
-    "id": "m1",
-    "timestamp": "2026-01-01T00:00:01.000Z",
-    "type": "gemini",
-    "content": "done",
-    "tokens": {"input": 10, "output": 2, "total": 12},
-    "model": "some-model",
-    "toolCalls": [{"id": "c1", "name": "run_shell_command", "args": {"command": "ls"}}],
+UNKNOWN_RECORD = {
+    "seq": 1,
+    "at": "2026-01-01T00:00:01.000Z",
+    "kind": "step",
+    "payload": {"call": "shell", "argv": ["ls"]},
 }
 
 CLAUDE_ASSISTANT = {
@@ -55,9 +52,9 @@ CLAUDE_ASSISTANT = {
 }
 
 
-def _gemini_log(tmp_path):
+def _unknown_log(tmp_path):
     p = tmp_path / "session-2026-01-01.jsonl"
-    lines = [GEMINI_HEADER] + [dict(GEMINI_MESSAGE, id=f"m{i}") for i in range(5)]
+    lines = [UNKNOWN_HEADER] + [dict(UNKNOWN_RECORD, seq=i) for i in range(5)]
     p.write_text("".join(json.dumps(e) + "\n" for e in lines), encoding="utf-8")
     return p
 
@@ -73,9 +70,9 @@ def _sqlite_db(tmp_path):
 
 
 class TestDetect:
-    def test_gemini_records_are_unknown(self):
-        assert detect_log_format(GEMINI_HEADER) == "unknown"
-        assert detect_log_format(GEMINI_MESSAGE) == "unknown"
+    def test_unknown_records_are_unknown(self):
+        assert detect_log_format(UNKNOWN_HEADER) == "unknown"
+        assert detect_log_format(UNKNOWN_RECORD) == "unknown"
 
     @pytest.mark.parametrize("value", [42, "text", [1, 2], None, 1.5, True])
     def test_non_dict_is_unknown(self, value):
@@ -95,13 +92,13 @@ class TestDetect:
 
 
 class TestSniffAndParse:
-    def test_gemini_sniffs_unknown_and_is_unclaimed(self, tmp_path):
-        p = _gemini_log(tmp_path)
+    def test_unknown_sniffs_unknown_and_is_unclaimed(self, tmp_path):
+        p = _unknown_log(tmp_path)
         assert sniff_jsonl_format(p) == "unknown"
         assert agents.adapter_for(p) is None
 
-    def test_gemini_parse_raises(self, tmp_path):
-        p = _gemini_log(tmp_path)
+    def test_unknown_parse_raises(self, tmp_path):
+        p = _unknown_log(tmp_path)
         with pytest.raises(UnsupportedLogFormatError, match="unsupported log format"):
             list(parse_file(p))
 
@@ -129,21 +126,21 @@ class TestWatchers:
     def test_log_watcher_ignores_unknown_format(self, tmp_path):
         # A tailed file that turns out to be unknown yields nothing, never
         # Claude-Code UNKNOWN actions.
-        assert LogWatcher(_gemini_log(tmp_path))._read_new_lines() == []
+        assert LogWatcher(_unknown_log(tmp_path))._read_new_lines() == []
 
     def test_multi_watcher_skips_unknown_file(self, tmp_path):
-        gem = _gemini_log(tmp_path)
+        unk = _unknown_log(tmp_path)
         good = tmp_path / "good.jsonl"
         good.write_text(json.dumps(CLAUDE_ASSISTANT) + "\n", encoding="utf-8")
         mw = MultiLogWatcher([tmp_path])
         assert isinstance(mw._make_watcher(good), LogWatcher)
         with pytest.raises(UnsupportedLogFormatError):
-            mw._make_watcher(gem)
+            mw._make_watcher(unk)
 
 
 class TestCli:
     @pytest.mark.parametrize("command", ["check", "security-scan", "watch"])
-    @pytest.mark.parametrize("make", [_gemini_log, _sqlite_db])
+    @pytest.mark.parametrize("make", [_unknown_log, _sqlite_db])
     def test_clean_error(self, tmp_path, command, make):
         p = make(tmp_path)
         result = CliRunner().invoke(cli, [command, "--log", str(p)])
@@ -155,7 +152,7 @@ class TestCli:
     def test_audit_skips_unsupported_file(self, tmp_path, monkeypatch):
         proj = tmp_path / "proj"
         proj.mkdir()
-        _gemini_log(proj)
+        _unknown_log(proj)
         (proj / "ok.jsonl").write_text(json.dumps(CLAUDE_ASSISTANT) + "\n", encoding="utf-8")
         import agentwatch.cc_stats as cc_stats
 
@@ -232,8 +229,8 @@ class TestSniffWindow:
         p = _write(tmp_path / "s.jsonl", [STRAY] + _claude_lines())
         _all_agree_claude(p, ["Read", "Read", "Read"])
 
-    def test_stray_gemini_records_then_claude(self, tmp_path):
-        p = _write(tmp_path / "s.jsonl", [GEMINI_HEADER, GEMINI_MESSAGE] + _claude_lines(2))
+    def test_stray_unknown_records_then_claude(self, tmp_path):
+        p = _write(tmp_path / "s.jsonl", [UNKNOWN_HEADER, UNKNOWN_RECORD] + _claude_lines(2))
         _all_agree_claude(p, ["Read", "Read"])
 
     def test_check_cli_with_stray_first_line(self, tmp_path):
@@ -270,7 +267,7 @@ class TestSniffWindow:
 
     # (b) only unknown lines: still rejected with the existing error
     def test_only_unknown_lines_still_rejected(self, tmp_path):
-        _all_agree_unknown(_gemini_log(tmp_path))
+        _all_agree_unknown(_unknown_log(tmp_path))
 
     def test_single_unknown_line_file_rejected(self, tmp_path):
         _all_agree_unknown(_write(tmp_path / "s.jsonl", [STRAY]))
@@ -312,7 +309,7 @@ class TestLiveWatcherWindow:
         assert _tools(w._read_new_lines()) == ["Read", "Read"]
 
     async def test_bad_first_line_then_valid_via_watch(self, tmp_path):
-        p = _write(tmp_path / "live.jsonl", [STRAY, GEMINI_MESSAGE] + _claude_lines(2))
+        p = _write(tmp_path / "live.jsonl", [STRAY, UNKNOWN_RECORD] + _claude_lines(2))
         agen = LogWatcher(p).watch()
         try:
             got = [await asyncio.wait_for(agen.__anext__(), 5) for _ in range(2)]

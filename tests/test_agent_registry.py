@@ -27,6 +27,7 @@ _LEGACY_PATTERNS = {
     "codex": {"pattern": r"(^|[/\\])codex(\.exe|\.js)?$", "exclude": None},
     "copilot": {"pattern": r"(^|[/\\])copilot(\.exe)?(\s|$)", "exclude": r"^\S*node(\.exe)?\s"},
     "agy": {"pattern": r"(^|[/\\])agy(\.exe)?(\s|$)", "exclude": None},
+    "gemini": {"pattern": r"(^|[/\\])gemini(\.exe|\.js)?$", "exclude": None},
 }
 
 
@@ -38,7 +39,7 @@ def _write_jsonl(path: Path, entries: list[dict]) -> Path:
 class TestRegistryShape:
     def test_order(self):
         assert [a.name for a in agents.ADAPTERS] == [
-            "claude-code", "aider", "codex", "cursor", "copilot", "agy",
+            "claude-code", "aider", "codex", "cursor", "copilot", "agy", "gemini",
         ]
 
     def test_get(self):
@@ -47,7 +48,7 @@ class TestRegistryShape:
 
     def test_kinds(self):
         assert [a.name for a in agents.process_adapters()] == [
-            "claude-code", "aider", "codex", "copilot", "agy",
+            "claude-code", "aider", "codex", "copilot", "agy", "gemini",
         ]
         assert [a.name for a in agents.editor_adapters()] == ["cursor"]
 

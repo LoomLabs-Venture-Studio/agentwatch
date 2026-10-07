@@ -25,6 +25,7 @@ from .cursor_source import (
     fetch_composer_headers,
     open_readonly,
 )
+from .gemini import GeminiParser
 from .logs import (
     FormatSniffer,
     ensure_supported_log,
@@ -45,7 +46,7 @@ class LogWatcher:
         self._position = 0
         self._log_format: str | None = None
         self._sniffer = FormatSniffer()
-        self._codex_parser: CodexParser | CopilotParser | AgyParser | None = None
+        self._codex_parser: CodexParser | CopilotParser | AgyParser | GeminiParser | None = None
         self._callbacks: list[Callable[[Action], None]] = []
 
     def on_action(self, callback: Callable[[Action], None]) -> None:
@@ -69,6 +70,8 @@ class LogWatcher:
                 self._codex_parser = CopilotParser()
             elif self._log_format == "agy":
                 self._codex_parser = AgyParser(self.session_id)
+            elif self._log_format == "gemini":
+                self._codex_parser = GeminiParser()
             elif self._log_format == "claude_code":
                 # Claude Code metadata seen before the first message (#39).
                 replayed = [
@@ -82,7 +85,7 @@ class LogWatcher:
             return []
         if self._log_format == "moltbot":
             result = parse_moltbot_entry(entry)
-        elif self._log_format in ("codex", "copilot", "agy"):
+        elif self._log_format in ("codex", "copilot", "agy", "gemini"):
             # NOTE: deliberately never call self._codex_parser.flush() here.
             # parse_file()'s one-shot batch read flushes at EOF because
             # end-of-file there genuinely means "this is everything" -- but
