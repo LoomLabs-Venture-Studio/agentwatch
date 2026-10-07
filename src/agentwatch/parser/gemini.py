@@ -49,11 +49,14 @@ def _text(content: Any) -> str:
     )
 
 
-def _response(result: Any) -> dict:
-    """``functionResponse.response`` (``{"output": ...}`` or ``{"error": ...}``)."""
+def _response(result: Any, call_id: str) -> dict:
+    """``functionResponse.response`` (``{"output": ...}`` or ``{"error": ...}``)
+    for *call_id*. A synced history can hold sibling calls' responses in one
+    result, so a response carrying another call's id is skipped."""
     for part in result if isinstance(result, list) else [result]:
-        if isinstance(part, dict) and isinstance(part.get("functionResponse"), dict):
-            response = part["functionResponse"].get("response")
+        fr = part.get("functionResponse") if isinstance(part, dict) else None
+        if isinstance(fr, dict) and fr.get("id") in (call_id, None):
+            response = fr.get("response")
             if isinstance(response, dict):
                 return response
     return {}
@@ -115,7 +118,8 @@ class GeminiParser:
                 tool_name="assistant_message",  # NON_TOOL_ROLE_LABELS sentinel
                 tool_type=ToolType.UNKNOWN,
                 success=True,
-                tokens_in=max((tokens.get("input") or 0) - cached, 0),
+                # tool = toolUsePromptTokenCount, billed apart from the prompt.
+                tokens_in=max((tokens.get("input") or 0) - cached, 0) + (tokens.get("tool") or 0),
                 tokens_out=(tokens.get("output") or 0) + (tokens.get("thoughts") or 0),
                 cache_read_tokens=cached,
                 outgoing_data=_text(msg.get("content")) or None,
@@ -148,7 +152,7 @@ class GeminiParser:
             # Where the secret scanner reads Claude Code's Write/Edit input.
             raw["input"] = {"content": "\n".join(written)}
 
-        response = _response(call.get("result"))
+        response = _response(call.get("result"), call["id"])
         output = response.get("output")
         error = response.get("error")
         if isinstance(output, str):

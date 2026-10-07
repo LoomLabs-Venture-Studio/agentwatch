@@ -154,6 +154,22 @@ class TestParse:
             "user_message", "assistant_message", "run_shell_command",
         ]
 
+    def test_sibling_response_not_credited_to_wrong_call(self, tmp_path):
+        """A synced result holds every sibling's response; match by call id."""
+        shared = _fr("a", "run_shell_command", output="Exit Code: 0") + _fr(
+            "b", "run_shell_command", output="Exit Code: 2")
+        calls = [dict(SHELL_CALL, id=i, status="success", result=shared) for i in "ab"]
+        turn = dict(TURN1_PENDING, toolCalls=calls)
+        p = _write(tmp_path / "s.jsonl", [HEADER, {"$set": {"messages": [turn]}}])
+        a = _by_id(parse_file(p))
+        assert a["a"].success and not a["b"].success
+
+    def test_tool_use_prompt_tokens_count_as_input(self, tmp_path):
+        turn = dict(TURN2, tokens={"input": 100, "output": 1, "cached": 0, "tool": 40})
+        p = _write(tmp_path / "s.jsonl", [HEADER, turn])
+        (t,) = [a for a in parse_file(p) if a.tool_name == "assistant_message"]
+        assert t.tokens_in == 140
+
     def test_live_tail_emits_call_once_when_final(self, tmp_path):
         p = _write(tmp_path / "s.jsonl", [HEADER, USER, TURN1_PENDING])
         w = LogWatcher(p)
