@@ -12,7 +12,12 @@ is fixture-verified only — a genuine `@openai/codex` install has now been
 confirmed reachable (2026-07-15) but no live authenticated session/rollout
 has been captured against it (no credentials in this environment — see
 Known Issues). GitHub Copilot CLI and Antigravity CLI (`agy`) are wired
-end-to-end and live-verified (Copilot 1.0.90, agy 1.2.14, 2026-10-01). It watches an agent's session logs as they
+end-to-end and live-verified (Copilot 1.0.90, agy 1.2.14, 2026-10-01).
+OpenCode (read-only SQLite `opencode.db`) is wired end-to-end; its parser
+is built from real opencode 1.18.34 sessions (scrubbed fixture) and
+matches the 2026-10-05 live research, but `ps`/`watch-all` against a
+running opencode has not been live-verified (no install on the dev
+machine). It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
 result as a CLI report, a CI-friendly exit code, or a live Textual TUI. Built
@@ -44,7 +49,8 @@ src/agentwatch/
   agents/              One adapter per agent: AgentAdapter protocol +
                        BaseAdapter defaults (base.py) and the ordered
                        ADAPTERS registry (__init__.py: claude-code, aider,
-                       codex, cursor, copilot, agy). Process matching is
+                       codex, cursor, copilot, agy, opencode). Process
+                       matching is
                        first-match-wins per PID in that order; adapter_for()
                        picks the first adapter whose claims() accepts a path
   discovery.py         Finds running agent OS processes by matching each
@@ -100,6 +106,14 @@ src/agentwatch/
                        no call ids, results matched by step order);
                        adapter in agents/agy.py. Live-verified
                        2026-10-01 (1.2.14)
+    opencode.py          OpenCode SQLite store parsing (read-only
+                       session/message/part rows, JSON in data; a
+                       message becomes actions only once done; step
+                       tokens/cost on its first action). DB:
+                       $XDG_DATA_HOME/opencode/opencode.db (default
+                       ~/.local/share, also on Windows) or OPENCODE_DB;
+                       adapter in agents/opencode.py keys each live
+                       session as <db>#<session_id>
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping
@@ -108,7 +122,9 @@ src/agentwatch/
                        per-session emitted-count cursor on the same
                        watchfiles trigger), CursorWatcher (state.vscdb,
                        timer poll + lastUpdatedAt watermark, optional
-                       composer_id_filter), and MultiLogWatcher
+                       composer_id_filter), OpencodeWatcher (opencode.db,
+                       timer poll + emitted-message-id set), and
+                       MultiLogWatcher
                        (multi-file/DB, process/team-aware, dispatches to
                        whichever watcher the agent's adapter makes)
 
