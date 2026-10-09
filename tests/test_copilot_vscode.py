@@ -398,3 +398,17 @@ def test_replace_string_and_find_text_seen_live():
     assert (edit.tool_type, edit.file_path) == (ToolType.EDIT, str(Path("c:/proj/a.py")))
     assert (search.tool_type, search.file_path) == (ToolType.SEARCH, None)
     assert fetch.tool_type == ToolType.UNKNOWN
+
+
+def test_hold_survives_unreadable_replay(tmp_path):
+    from agentwatch.parser.watcher import CopilotVscodeWatcher
+
+    p = _prefix(tmp_path, 22)
+    full = p.read_text(encoding="utf-8")
+    w = CopilotVscodeWatcher(p)
+    assert w._read_new_actions(now=0.0) == [] and w._held
+    p.write_text('{"kind":0,"v":{"sessionId":', encoding="utf-8")  # rewrite caught mid-write
+    assert w._read_new_actions(now=0.5) == [] and w._held
+    p.write_text(full, encoding="utf-8")
+    assert len(w._read_new_actions(now=1.1)) == 6
+    assert w._read_new_actions(now=2.0) == []

@@ -312,10 +312,10 @@ class CopilotVscodeWatcher:
 
     def _read_new_actions(self, now: float | None = None) -> list[Action]:
         now = time.monotonic() if now is None else now
-        self._held = False
         state = copilot_vscode.replay(self.path)
         if state is None:
-            return []
+            return []  # e.g. a whole-file rewrite caught mid-write: keep _held
+        self._held = False
         new: list[Action] = []
         for key, action, sealed in copilot_vscode.request_actions(state, self.session_id):
             if key in self._emitted:
