@@ -103,7 +103,7 @@ class TestReplay:
 class TestFixture:
     def test_scrubbed(self):
         text = FIXTURE.read_text(encoding="utf-8")
-        assert "Zaid" not in text and "zaid-akroush" not in text
+        assert "zaid" not in text.lower() and "akroush" not in text.lower()
         assert len(_lines()) == 23
 
     def test_full_session(self):
@@ -325,3 +325,19 @@ def test_ps_columns_fit_editor_agents(capsys, tmp_path):
     rows = [line for line in capsys.readouterr().out.splitlines() if "1809276400" in line]
     assert len(rows) == 2
     assert all("1809276400  copilot-vscode  aw-vscode-test" in r for r in rows)
+
+
+def test_replace_string_and_find_text_seen_live():
+    def part(tool_id, uris, call_id):
+        return _tool_part(toolId=tool_id, toolCallId=call_id, isConfirmed={"type": 1},
+                          invocationMessage={"value": "x", "uris": uris})
+
+    got = actions(_state([
+        part("copilot_replaceString", {"file:///c%3A/proj/a.py": {}}, "c1"),
+        part("copilot_findTextInFiles", {}, "c2"),
+        part("copilot_fetchWebPage", {}, "c3"),
+    ], model_state=1))
+    edit, search, fetch = [a for _, a in got if a.tool_name != "assistant_message"]
+    assert (edit.tool_type, edit.file_path) == (ToolType.EDIT, str(Path("c:/proj/a.py")))
+    assert (search.tool_type, search.file_path) == (ToolType.SEARCH, None)
+    assert fetch.tool_type == ToolType.UNKNOWN

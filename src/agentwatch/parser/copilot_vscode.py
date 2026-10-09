@@ -31,6 +31,8 @@ _FILE_TOOLS = {
     "copilot_applyPatch": ToolType.EDIT,
     "copilot_createFile": ToolType.WRITE,
     "copilot_listDirectory": ToolType.LIST,
+    "copilot_replaceString": ToolType.EDIT,
+    "copilot_findTextInFiles": ToolType.SEARCH,  # uris usually {}: no file_path
 }
 _FINISHED = (1, 2, 3)  # ResponseModelState Complete, Cancelled, Failed
 
