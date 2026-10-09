@@ -133,9 +133,10 @@ the existing theme helpers like `ps`.
 
 ## Privacy
 
-- Reads process names, executable paths, and socket tables only. It never
-  reads command-line arguments (they can hold secrets or prompts), files,
-  or payloads.
+- Reads process names, executable paths, and socket tables. The command
+  line is read in memory only to match an existing adapter
+  (`match_process_adapter` needs the script path for interpreter-launched
+  agents) and is never stored or printed. Files and payloads are never read.
 - The only network activity is DNS resolution of the fixed domain list.
   That reveals to the user's DNS resolver that agentwatch looked up AI
   domains. Documented in the README.
