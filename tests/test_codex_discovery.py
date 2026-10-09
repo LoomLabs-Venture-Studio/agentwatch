@@ -454,3 +454,68 @@ class TestResolveCodexLogPidResolution:
 
         assert log_file == matching
         assert session_id == "sess-match"
+
+
+# ---------------------------------------------------------------------------
+# ChatGPT desktop app-server (#74): several open rollouts, meta cwd
+# ---------------------------------------------------------------------------
+
+
+class TestChatgptDesktopCodex:
+    def test_newest_of_several_open_rollouts_is_chosen(self, tmp_path, monkeypatch):
+        import os
+
+        bucket = tmp_path / "sessions" / "2026" / "10" / "09"
+        bucket.mkdir(parents=True)
+        old, new, gone = (bucket / f"rollout-{n}.jsonl" for n in ("old", "new", "gone"))
+        old.write_text("")
+        new.write_text("")
+        os.utime(old, (1_000, 1_000))
+        os.utime(new, (2_000, 2_000))
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                pass
+
+            def open_files(self):
+                return [_FakeOpenFile(str(p)) for p in (old, gone, new)]
+
+        monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
+
+        assert _find_open_codex_rollout(pid=1, sessions_root=tmp_path / "sessions") == new
+
+    def _scan(self, tmp_path, monkeypatch, meta_entries, scans=1):
+        import types
+
+        pid = 4242
+        proc = types.SimpleNamespace(
+            info={
+                "pid": pid,
+                "ppid": 1,
+                "cmdline": [str(tmp_path / "bin" / "abc123" / "codex.exe"), "app-server"],
+                "name": "codex.exe",
+                "memory_info": None,
+                "cpu_percent": 0.0,
+                "create_time": None,
+            }
+        )
+        monkeypatch.setattr(discovery.psutil, "process_iter", lambda attrs=None: iter([proc]))
+        monkeypatch.setattr(discovery, "_get_process_cwd", lambda p: tmp_path / "bin" / "abc123")
+        log = tmp_path / "rollout-x.jsonl"
+        _write_jsonl(log, meta_entries)
+        monkeypatch.setattr(discovery, "_resolve_codex_log", lambda cwd, pid=None: (log, "s"))
+
+        cache = discovery.DiscoveryCache()
+        for _ in range(scans):
+            agents = [a for a in discovery.find_running_agents(cache) if a.pid == pid]
+        assert len(agents) == 1
+        return agents[0]
+
+    def test_meta_cwd_overrides_process_cwd(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        agent = self._scan(tmp_path, monkeypatch, [_session_meta_line("s", str(project))], scans=2)
+        assert agent.working_directory == project
+
+    def test_missing_meta_keeps_process_cwd(self, tmp_path, monkeypatch):
+        agent = self._scan(tmp_path, monkeypatch, [{"type": "response_item", "payload": {}}])
+        assert agent.working_directory == tmp_path / "bin" / "abc123"
