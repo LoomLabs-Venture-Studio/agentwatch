@@ -18,6 +18,7 @@ from .agy import AgyAdapter
 from .aider import AiderAdapter
 from .base import AgentAdapter, BaseAdapter, Watcher
 from .claude_code import ClaudeCodeAdapter
+from .claude_desktop import ClaudeDesktopAdapter
 from .codex import CodexAdapter
 from .copilot import CopilotAdapter
 from .cursor import CursorAdapter
@@ -33,6 +34,7 @@ ADAPTERS: list[AgentAdapter] = [
     AgyAdapter(),
     OpencodeAdapter(),
     GeminiAdapter(),
+    ClaudeDesktopAdapter(),
 ]
 
 

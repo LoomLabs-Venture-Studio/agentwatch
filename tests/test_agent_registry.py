@@ -41,6 +41,7 @@ class TestRegistryShape:
     def test_order(self):
         assert [a.name for a in agents.ADAPTERS] == [
             "claude-code", "aider", "codex", "cursor", "copilot", "agy", "opencode", "gemini",
+            "claude-desktop",
         ]
 
     def test_get(self):
@@ -51,7 +52,7 @@ class TestRegistryShape:
         assert [a.name for a in agents.process_adapters()] == [
             "claude-code", "aider", "codex", "copilot", "agy", "opencode", "gemini",
         ]
-        assert [a.name for a in agents.editor_adapters()] == ["cursor"]
+        assert [a.name for a in agents.editor_adapters()] == ["cursor", "claude-desktop"]
 
     def test_process_patterns_match_legacy(self):
         got = {
