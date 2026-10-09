@@ -19,7 +19,11 @@ matches the 2026-10-05 live research, but `ps`/`watch-all` against a
 running opencode has not been live-verified (no install on the dev
 machine). Gemini CLI is wired end-to-end but fixture-verified only
 (format checked against the gemini-cli 0.62.0/0.63.0 source; no local
-Gemini session to live-test, 2026-10-07). It watches an agent's session logs as they
+Gemini session to live-test, 2026-10-07). The ChatGPT desktop app's
+Codex view runs the same Codex engine and writes the same rollouts as
+Codex CLI (source/asar evidence); discovery is fixed for it (#74) but no
+live rollout has been captured yet (needs one Codex task run by the
+board). It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
 result as a CLI report, a CI-friendly exit code, or a live Textual TUI. Built
@@ -412,6 +416,22 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   pattern already established at `parser/logs.py:506`. Live-verified
   against this machine's real history (4 project dirs, 65 session files):
   `stats --all` now exits 0 with correct aggregated output.
+- **ChatGPT desktop app (Codex view), #74 (2026-10-09)**: the unified
+  ChatGPT app (Store package `OpenAI.Codex`, `ChatGPT.exe`) runs Codex via a
+  bundled `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe app-server`,
+  the same binary family as Codex CLI, writing the same
+  `$CODEX_HOME|~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (openai/codex
+  `codex-rs/rollout/src/recorder.rs`, `lib.rs`; `app.asar`). The existing
+  Codex pattern already matched it; two discovery bugs fixed: working
+  directory now comes from the rollout's `session_meta.cwd` (the process
+  cwd is the bin hash dir), and `_find_open_codex_rollout` picks the most
+  recently modified of several open rollouts. One app-server serves all
+  threads, so `ps` shows one entry (the most recently active thread). Same
+  rollout format and engine as Codex CLI per source/asar evidence; no live
+  rollout captured yet (needs one Codex task run by the board). Out of
+  scope: Chat/Work views (server-side), per-thread entries, WSL mode,
+  `.jsonl.zst` cold rollouts. Spec:
+  `docs/superpowers/specs/2026-10-09-chatgpt-desktop-codex-design.md`.
 
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
