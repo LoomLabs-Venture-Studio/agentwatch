@@ -107,25 +107,42 @@ class TestRoots:
         assert cdd.claude_desktop_roots() == [mac]
 
 
+MSIX_EXE = r"C:\Program Files\WindowsApps\Claude_9.9.9.0_x64__abc123\app\claude.exe"
+DENIED = object()
+
+
 class _Proc:
-    def __init__(self, name):
-        self.info = {"name": name}
+    def __init__(self, exe):
+        self._exe = exe
+
+    @property
+    def info(self):
+        if self._exe is DENIED:
+            raise cdd.psutil.AccessDenied()
+        return {"exe": self._exe}
 
 
 class TestRunningGate:
+    # Claude Desktop and Claude Code both report the name "claude.exe"
+    # (live-checked against Desktop 2.31226), so the gate is the exe path.
     @pytest.mark.parametrize(
-        ("names", "expected"),
+        ("exes", "expected"),
         [
-            (["Claude.exe"], True),
-            (["Claude"], True),
-            (["claude.exe"], False),  # Claude Code, not the desktop app
-            (["cowork-svc.exe"], False),  # service runs with the app closed
+            ([MSIX_EXE], True),
+            ([MSIX_EXE.upper()], True),
+            ([r"C:\Users\dev\AppData\Local\AnthropicClaude\app-1.2.3\claude.exe"], True),
+            (["/Applications/Claude.app/Contents/MacOS/Claude"], True),
+            ([r"C:\Users\dev\.local\bin\claude.exe"], False),  # Claude Code
+            (["/usr/local/bin/claude"], False),  # Claude Code
+            ([MSIX_EXE.replace("claude.exe", r"resources\cowork-svc.exe")], False),
+            ([None, DENIED], False),
+            ([None, DENIED, MSIX_EXE], True),
             ([], False),
         ],
     )
-    def test_exact_name(self, monkeypatch, names, expected):
+    def test_exe_path(self, monkeypatch, exes, expected):
         monkeypatch.setattr(
-            cdd.psutil, "process_iter", lambda attrs=None: iter(_Proc(n) for n in names)
+            cdd.psutil, "process_iter", lambda attrs=None: iter(_Proc(e) for e in exes)
         )
         assert cdd.is_claude_desktop_running() is expected
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -25,9 +26,16 @@ from .discovery import AgentProcess
 # ponytail: fixed 30 min window, make it a CLI option if users need it
 ACTIVITY_WINDOW_SECONDS = 1800
 
-# Exact, case-sensitive: lowercase claude.exe is Claude Code, and
-# cowork-svc.exe is a Windows service that runs with the app closed.
-_APP_PROCESS_NAMES = {"Claude.exe", "Claude"}
+# Gate on the exe path, not the name: psutil reports Claude Desktop's
+# processes as "claude.exe", the same name as Claude Code (live-checked
+# against Desktop 2.31226). Never matches Claude Code installs or
+# cowork-svc.exe (a Windows service that runs with the app closed).
+_APP_EXE_RE = re.compile(
+    r"[\\/]WindowsApps[\\/]Claude_[^\\/]+[\\/]app[\\/]claude\.exe$"  # MSIX, verified
+    r"|[\\/]AnthropicClaude[\\/]app-[^\\/]+[\\/]claude\.exe$"  # non-Store Windows, unverified
+    r"|Claude\.app/Contents/MacOS/Claude$",  # macOS, unverified
+    re.IGNORECASE,
+)
 
 
 def claude_desktop_roots() -> list[Path]:
@@ -56,12 +64,12 @@ def claude_desktop_roots() -> list[Path]:
 def is_claude_desktop_running() -> bool:
     """Check whether the Claude Desktop app (not Claude Code) is running."""
     try:
-        for proc in psutil.process_iter(attrs=["name"]):
+        for proc in psutil.process_iter(attrs=["exe"]):
             try:
-                name = proc.info.get("name") or ""
+                exe = proc.info.get("exe") or ""
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
-            if name in _APP_PROCESS_NAMES:
+            if _APP_EXE_RE.search(exe):
                 return True
     except Exception:
         return False
