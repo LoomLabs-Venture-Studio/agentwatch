@@ -241,8 +241,8 @@ class EfficiencyReport:
     context_usage_pct: float  # 0-100
     token_burn_rate: float  # tokens/min
     io_ratio: float  # input/output token ratio
-    cost_total: float  # cumulative USD
-    cost_velocity: float  # USD/min
+    cost_total: float | None  # cumulative USD; None = no known price
+    cost_velocity: float | None  # USD/min
     cache_hit_rate: float  # 0.0-1.0
     actions_per_turn: float  # avg tool calls per model response
     duration_minutes: float  # active time, idle gaps capped at 30 min
@@ -305,7 +305,7 @@ def calculate_efficiency(
 
     stats = buffer.stats
     duration = stats.duration_minutes
-    action_count = stats.action_count
+    action_count = stats.activity_count  # token-usage records aren't actions
 
     # Fresh input excludes cache reads — used for burn rate and I/O ratio.
     # Cache reads are the whole conversation re-sent on every API call, so
@@ -324,7 +324,7 @@ def calculate_efficiency(
     # compaction. 0 when no per-call usage was reported.
     # ponytail: 200K/1M window inferred from peak call size (a call >200K
     # proves a 1M-window model); upgrade path is reading the model name from the log.
-    window = (
+    window = stats.context_window or (
         _CONTEXT_WINDOW_1M if stats.peak_context_tokens > _CONTEXT_WINDOW else _CONTEXT_WINDOW
     )
     context_usage_pct = min(stats.last_context_tokens / window * 100, 100.0)
@@ -354,13 +354,19 @@ def calculate_efficiency(
 
     # --- 4. Cost velocity (informational only — see _W_* comment above;
     #        not converted to a penalty since cost is excluded from scoring) ---
-    cost_total = stats.estimated_cost
-    cost_vel = cost_total / duration if duration > 0 else 0.0
+    cost_total = stats.estimated_cost  # None: model has no known price
+    if cost_total is None:
+        cost_vel = None
+    else:
+        cost_vel = cost_total / duration if duration > 0 else 0.0
 
     # --- 5. Cache hit rate (penalty = 1 - hit_rate; 0 if no cache data) ---
+    # Share of all prompt tokens served from cache. Fresh input counts as a
+    # miss: providers without cache writes (Codex) would otherwise read 100%.
     total_cache = stats.total_cache_creation + stats.total_cache_read
+    total_prompt = total_cache + stats.total_input_tokens
     cache_hit_rate = (
-        stats.total_cache_read / total_cache if total_cache > 0 else 0.0
+        stats.total_cache_read / total_prompt if total_cache > 0 else 0.0
     )
     cache_penalty = (1.0 - cache_hit_rate) if total_cache > 0 else 0.0
 
@@ -410,8 +416,8 @@ def calculate_efficiency(
         context_usage_pct=round(context_usage_pct, 1),
         token_burn_rate=round(burn_rate, 1),
         io_ratio=round(io_ratio, 2),
-        cost_total=round(cost_total, 4),
-        cost_velocity=round(cost_vel, 4),
+        cost_total=None if cost_total is None else round(cost_total, 4),
+        cost_velocity=None if cost_vel is None else round(cost_vel, 4),
         cache_hit_rate=round(cache_hit_rate, 3),
         actions_per_turn=round(apt, 2),
         duration_minutes=round(duration, 1),
