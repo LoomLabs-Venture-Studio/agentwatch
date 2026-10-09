@@ -64,6 +64,8 @@ def match_process_adapter(cmdline: list[str], name: str = "") -> _agents.AgentAd
             continue
         if adapter.process_exclude and re.search(adapter.process_exclude, command):
             continue
+        if adapter.process_exclude_args.intersection(cmdline[1:]):
+            continue
         return adapter
     return None
 

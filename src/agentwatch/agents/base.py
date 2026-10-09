@@ -30,6 +30,7 @@ class AgentAdapter(Protocol):
     kind: Literal["process", "editor"]
     process_pattern: str | None
     process_exclude: str | None
+    process_exclude_args: frozenset[str]
 
     def resolve_log(self, cwd: Path, pid: int | None) -> tuple[Path | None, str | None]: ...
     def discover(self) -> list[AgentProcess]: ...
@@ -48,6 +49,8 @@ class BaseAdapter:
     kind: Literal["process", "editor"] = "process"
     process_pattern: str | None = None
     process_exclude: str | None = None
+    # Exact args that mark a non-session mode of the agent's binary.
+    process_exclude_args: frozenset[str] = frozenset()
 
     def resolve_log(self, cwd: Path, pid: int | None) -> tuple[Path | None, str | None]:
         return None, None

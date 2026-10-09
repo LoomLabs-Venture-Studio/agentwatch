@@ -106,6 +106,16 @@ def test_excludes_still_apply_to_the_program():
     # Copilot's node loader (seen live) still yields to the native binary it spawns.
     assert _route(["node", "/home/u/.nvm/versions/node/v24/bin/copilot", "-p", "hi"]) is None
     assert _route(["node", f"{NVM}/@github/copilot/npm-loader.js"]) is None
+    # Claude Desktop's Windows Store install (seen live 2026-10-09).
+    desktop = r"C:\Program Files\WindowsApps\Claude_2.31226.0.0_x64__pzs8sxrjxfjjc\app"
+    assert _route([desktop + r"\claude.exe"]) is None
+    assert _route([desktop + r"\Claude.exe", "--type=renderer"]) is None
+
+
+def test_chrome_native_host_is_not_a_session():
+    # Claude in Chrome's bridge runs the CLI binary but is no session (seen live).
+    assert _route([r"C:\Users\u\.local\bin\claude.exe", "--chrome-native-host"]) is None
+    assert _route(["claude", "-p", "explain --chrome-native-host"]) == "claude-code"
 
 
 def test_pythonw_is_an_interpreter():
