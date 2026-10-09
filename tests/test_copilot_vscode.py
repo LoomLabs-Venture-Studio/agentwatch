@@ -298,3 +298,17 @@ class TestDiscovery:
         assert copilot_vscode.find_copilot_vscode_agents(user_dir=self._user_dir(tmp_path)) == []
         monkeypatch.setattr(copilot_vscode, "find_copilot_vscode_agents", lambda: ["x"])
         assert agents.get("copilot-vscode").discover() == ["x"]
+
+
+def test_create_file_and_list_directory_seen_live():
+    def part(tool_id, uri, call_id):
+        return _tool_part(toolId=tool_id, toolCallId=call_id, isConfirmed={"type": 1},
+                          invocationMessage={"value": "x", "uris": {uri: {}}})
+
+    got = actions(_state([
+        part("copilot_createFile", "file:///c%3A/proj/new.py", "c1"),
+        part("copilot_listDirectory", "file:///c%3A/proj", "c2"),
+    ], model_state=1))
+    create, listing = [a for _, a in got if a.tool_name != "assistant_message"]
+    assert (create.tool_type, create.file_path) == (ToolType.WRITE, str(Path("c:/proj/new.py")))
+    assert (listing.tool_type, listing.file_path) == (ToolType.LIST, str(Path("c:/proj")))

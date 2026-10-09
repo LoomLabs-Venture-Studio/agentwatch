@@ -26,7 +26,12 @@ from .models import Action, ToolType
 from .opencode import _ms
 
 # Only toolIds seen in a real session; add more when a real session shows them.
-_FILE_TOOLS = {"copilot_readFile": ToolType.READ, "copilot_applyPatch": ToolType.EDIT}
+_FILE_TOOLS = {
+    "copilot_readFile": ToolType.READ,
+    "copilot_applyPatch": ToolType.EDIT,
+    "copilot_createFile": ToolType.WRITE,
+    "copilot_listDirectory": ToolType.LIST,
+}
 _FINISHED = (1, 2, 3)  # ResponseModelState Complete, Cancelled, Failed
 
 
