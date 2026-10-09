@@ -244,6 +244,7 @@ agentwatch stats
 | Antigravity CLI (agy) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | Gemini CLI | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | Cursor | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| GitHub Copilot in VS Code | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 
 Each agent is an adapter in `agentwatch.agents` (ordered `ADAPTERS` registry). Running agents are
 found by scanning processes with `psutil` and matching each adapter's pattern against the *program*
@@ -254,7 +255,9 @@ grouped into teams.
 Claude Code, Aider, GitHub Copilot CLI and Antigravity CLI (agy) each have the full pipeline:
 process discovery, log-file resolution, and log parsing into actions, both one-shot (`check`,
 `security-scan`) and live (`watch`, `watch-all`). Cursor has the same pipeline, but discovery is
-gated on the Cursor process and reads composers from its `state.vscdb`. Codex is discovered and its
+gated on the Cursor process and reads composers from its `state.vscdb`. GitHub Copilot in VS Code
+works the same way: discovery is gated on the VS Code process, with one entry per recent agent-mode
+chat, read from VS Code's chat-session log. Codex is discovered and its
 rollout JSONL is parsed, but the parser is verified against fixtures only, not a live session.
 Gemini CLI has the full pipeline too, but is likewise fixture-verified only (checked against the
 gemini-cli 0.62.0 source, not a live session).
