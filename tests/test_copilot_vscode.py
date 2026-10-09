@@ -237,9 +237,49 @@ class TestWatcher:
         assert [(a.tool_name, a.command) for a in got] == [("run_in_terminal", "python hello.py")]
         with open(p, "a", encoding="utf-8") as f:
             f.write("\n".join(lines[13:]) + "\n")
-        got = w._read_new_actions()
+        assert w._read_new_actions(now=0.0) == []  # request finished: settling (#91)
+        got = w._read_new_actions(now=1.1)
         assert [a.tool_name for a in got] == ["run_in_terminal", "assistant_message"]
-        assert w._read_new_actions() == []
+        assert w._read_new_actions(now=2.0) == []
+
+    def test_torn_finishing_write_settles(self, tmp_path):
+        # Line 16 sets the terminal modelState; tokens (17-18) and the last
+        # response push (22) follow in the same append (#91).
+        from agentwatch.parser.watcher import CopilotVscodeWatcher
+
+        p = _prefix(tmp_path, 16)
+        w = CopilotVscodeWatcher(p)
+        assert "assistant_message" not in [a.tool_name for a in w._read_new_actions(now=0.0)]
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("\n".join(_lines()[17:]) + "\n")
+        got = w._read_new_actions(now=1.1)
+        msg = [a for a in got if a.tool_name == "assistant_message"]
+        assert len(msg) == 1 and (msg[0].tokens_in, msg[0].tokens_out) == (20603, 588)
+        assert "nonexistent-cmd" in [a.command for a in got]
+
+    def test_finished_request_held_then_emitted_once(self):
+        from agentwatch.parser.watcher import CopilotVscodeWatcher
+
+        w = CopilotVscodeWatcher(FIXTURE)
+        assert w._read_new_actions(now=10.0) == []
+        assert len(w._read_new_actions(now=11.1)) == 6
+        assert w._read_new_actions(now=12.0) == []
+
+    async def test_watch_yields_held_without_file_change(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from agentwatch.parser.watcher import CopilotVscodeWatcher
+
+        monkeypatch.setattr(CopilotVscodeWatcher, "SETTLE_S", 0.05)
+        w = CopilotVscodeWatcher(_prefix(tmp_path, 22))
+
+        async def first_message():
+            async for a in w.watch():
+                if a.tool_name == "assistant_message":
+                    return a
+
+        a = await asyncio.wait_for(first_message(), timeout=10)
+        assert (a.tokens_in, a.tokens_out) == (20603, 588)
 
     def test_adapter_makes_watcher(self):
         from agentwatch import agents
@@ -358,3 +398,17 @@ def test_replace_string_and_find_text_seen_live():
     assert (edit.tool_type, edit.file_path) == (ToolType.EDIT, str(Path("c:/proj/a.py")))
     assert (search.tool_type, search.file_path) == (ToolType.SEARCH, None)
     assert fetch.tool_type == ToolType.UNKNOWN
+
+
+def test_hold_survives_unreadable_replay(tmp_path):
+    from agentwatch.parser.watcher import CopilotVscodeWatcher
+
+    p = _prefix(tmp_path, 22)
+    full = p.read_text(encoding="utf-8")
+    w = CopilotVscodeWatcher(p)
+    assert w._read_new_actions(now=0.0) == [] and w._held
+    p.write_text('{"kind":0,"v":{"sessionId":', encoding="utf-8")  # rewrite caught mid-write
+    assert w._read_new_actions(now=0.5) == [] and w._held
+    p.write_text(full, encoding="utf-8")
+    assert len(w._read_new_actions(now=1.1)) == 6
+    assert w._read_new_actions(now=2.0) == []

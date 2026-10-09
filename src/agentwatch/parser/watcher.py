@@ -288,39 +288,60 @@ class CopilotVscodeWatcher:
     ``AiderLogWatcher``'s shape: on each watchfiles trigger, replay the whole
     file and emit actions whose key (``toolCallId`` / ``requestId``) was not
     emitted yet. ``added`` counts too: VS Code may rewrite the file whole.
+
+    A finished request's actions wait until it has been seen finished for
+    ``SETTLE_S``: VS Code writes the terminal ``modelState`` first in the
+    finishing append, then tokens and the last response parts, and a request
+    is never written again once finished. Emitting on the first sighting
+    could freeze a torn read's stale tokens (#91).
     """
+
+    SETTLE_S = 1.0
+    _TICK_MS = 500  # re-replay this often while something is held
 
     def __init__(self, path: Path, session_id: str | None = None):
         self.path = path
         self.session_id = session_id
         self._emitted: set[str] = set()
+        self._finished_at: dict[str, float] = {}  # request -> first seen finished
+        self._held = False
         self._callbacks: list[Callable[[Action], None]] = []
 
     def on_action(self, callback: Callable[[Action], None]) -> None:
         self._callbacks.append(callback)
 
-    def _read_new_actions(self) -> list[Action]:
+    def _read_new_actions(self, now: float | None = None) -> list[Action]:
+        now = time.monotonic() if now is None else now
         state = copilot_vscode.replay(self.path)
         if state is None:
-            return []
+            return []  # e.g. a whole-file rewrite caught mid-write: keep _held
+        self._held = False
         new: list[Action] = []
-        for key, action in copilot_vscode.actions(state, self.session_id):
-            if key not in self._emitted:
-                self._emitted.add(key)
-                new.append(action)
+        for key, action, sealed in copilot_vscode.request_actions(state, self.session_id):
+            if key in self._emitted:
+                continue
+            if sealed is not None:
+                if now - self._finished_at.setdefault(sealed, now) < self.SETTLE_S:
+                    self._held = True
+                    continue
+            self._emitted.add(key)
+            new.append(action)
         return new
 
     async def watch(self) -> AsyncIterator[Action]:
         for action in self._read_new_actions():
             yield action
 
-        async for changes in awatch(self.path.parent):
-            for change_type, changed_path in changes:
-                if Path(changed_path) == self.path and change_type in (
-                    Change.added, Change.modified,
-                ):
-                    for action in self._read_new_actions():
-                        yield action
+        async for changes in awatch(
+            self.path.parent, yield_on_timeout=True, rust_timeout=self._TICK_MS
+        ):
+            changed = any(
+                Path(p) == self.path and t in (Change.added, Change.modified)
+                for t, p in changes
+            )
+            if changed or self._held:
+                for action in self._read_new_actions():
+                    yield action
 
     async def watch_with_callbacks(self) -> None:
         async for action in self.watch():
