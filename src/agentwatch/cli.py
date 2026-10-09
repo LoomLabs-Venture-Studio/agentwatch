@@ -655,7 +655,7 @@ def _print_agents_view(agents: list[AgentProcess]) -> None:
     """Print agents as a simple list (no sub-agents present)."""
     # Table header
     click.echo(
-        f"  {'PID':<8}{'TYPE':<14}{'PROJECT':<18}{'SESSION':<10}{'CPU':>6}{'MEM':>8}{'STATUS':>10}"
+        f"  {'PID':<12}{'TYPE':<16}{'PROJECT':<18}{'SESSION':<10}{'CPU':>6}{'MEM':>8}{'STATUS':>10}"
     )
 
     for a in agents:
@@ -669,7 +669,7 @@ def _print_agents_view(agents: list[AgentProcess]) -> None:
         status = click.style("active", fg="green")
 
         click.echo(
-            f"  {a.pid:<8}{a.agent_type:<14}{project:<18}{session:<10}"
+            f"  {a.pid:<12}{a.agent_type:<16}{project:<18}{session:<10}"
             f"{cpu_str:>6}{mem_str:>8}   {status}"
         )
 
@@ -691,7 +691,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
 
         # Table header
         click.echo(
-            f"    {'PID':<8}{'TYPE':<14}{'PROJECT':<16}{'SESSION':<10}"
+            f"    {'PID':<12}{'TYPE':<16}{'PROJECT':<16}{'SESSION':<10}"
             f"{'CPU':>6}{'MEM':>8}{'ROLE':>8}"
         )
 
@@ -714,7 +714,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
             proj_col = f"{prefix}{project}"
 
             click.echo(
-                f"    {a.pid:<8}{a.agent_type:<14}{proj_col:<16}{session:<10}"
+                f"    {a.pid:<12}{a.agent_type:<16}{proj_col:<16}{session:<10}"
                 f"{cpu_str:>6}{mem_str:>8}   {role}"
             )
 

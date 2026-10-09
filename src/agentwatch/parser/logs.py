@@ -573,6 +573,17 @@ def detect_log_format(first_entry: dict) -> str:
     if "step_index" in first_entry and "source" in first_entry:
         return "agy"
 
+    # Copilot in VS Code chatSessions/*.jsonl: a mutation log whose first
+    # line is the kind 0 session snapshot (parser/copilot_vscode.py).
+    snapshot = first_entry.get("v")
+    if (
+        first_entry.get("kind") == 0
+        and isinstance(snapshot, dict)
+        and "sessionId" in snapshot
+        and "requests" in snapshot
+    ):
+        return "copilot_vscode"
+
     return "unknown"
 
 
