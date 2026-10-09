@@ -134,7 +134,10 @@ only, nothing leaves the machine unless `--siem-log` is set, no browser
 history or page content read, process names and providers only (no URLs or
 paths beyond the executable). Document this in the README.
 
-## 4. Decisions needed from the board
+## 4. Board decisions (2026-10-09)
+
+Answered: 1 yes, 2 yes, 3 defer Zed, 4 apps and CLIs only (no browser-based AI reporting).
+
 
 1. Approve the adapter order (VS Code track: Copilot + Cline first).
 2. Approve `agentwatch detect` (layers 1-3, layer 4 optional) as the next
