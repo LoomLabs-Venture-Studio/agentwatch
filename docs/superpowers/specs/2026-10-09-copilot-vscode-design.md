@@ -108,10 +108,13 @@ incremental mutation application is not worth the code.
 | `run_in_terminal` | `BASH` | `command` = `toolSpecificData.commandLine.original` |
 | `copilot_readFile` | `READ` | `file_path` = first key of `invocationMessage.uris`, as a filesystem path (none when `invocationMessage` is a string) |
 | `copilot_applyPatch` | `EDIT` | `file_path` as above |
+| `copilot_createFile` | `WRITE` | `file_path` as above |
+| `copilot_listDirectory` | `LIST` | `file_path` = the directory, as above |
 | anything else (e.g. `copilot_memory`) | `UNKNOWN` | `tool_name` = `toolId` |
 
 Only `toolId`s seen in a real session are mapped. New ones are added when a
-real session shows them.
+real session shows them. `copilot_createFile` and `copilot_listDirectory` were
+seen in the live check (2026-10-09, VS Code 1.140).
 
 **Success:**
 
