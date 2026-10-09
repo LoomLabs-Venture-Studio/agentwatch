@@ -189,14 +189,24 @@ def _tool_action(part: dict, request: dict, session_id: str | None) -> Action:
 def actions(state: dict, session_id: str | None = None) -> list[tuple[str, Action]]:
     """(key, action) for every final tool call (key ``toolCallId``) and every
     finished request's ``assistant_message`` (key ``requestId``), in order."""
+    return [(key, action) for key, action, _ in request_actions(state, session_id)]
+
+
+def request_actions(
+    state: dict, session_id: str | None = None
+) -> list[tuple[str, Action, str | None]]:
+    """``actions()`` plus, per action, its request's id when that request is
+    finished (None while it runs), so a live watcher can let it settle (#91)."""
     sid = session_id or state.get("sessionId")
-    out: list[tuple[str, Action]] = []
+    out: list[tuple[str, Action, str | None]] = []
     requests = state.get("requests")
-    for request in requests if isinstance(requests, list) else []:
+    for index, request in enumerate(requests if isinstance(requests, list) else []):
         if not isinstance(request, dict):
             continue
         model_state = request.get("modelState")
         finished = isinstance(model_state, dict) and model_state.get("value") in _FINISHED
+        rid = request.get("requestId")
+        sealed = (rid if isinstance(rid, str) else f"#{index}") if finished else None
         response = request.get("response")
         parts = [p for p in response if isinstance(p, dict)] if isinstance(response, list) else []
         for n, part in enumerate(parts):
@@ -204,7 +214,7 @@ def actions(state: dict, session_id: str | None = None) -> list[tuple[str, Actio
             if part.get("kind") != "toolInvocationSerialized" or not isinstance(call_id, str):
                 continue
             if _is_final(part, parts[n + 1:], finished):
-                out.append((call_id, _tool_action(part, request, sid)))
+                out.append((call_id, _tool_action(part, request, sid), sealed))
         if finished and isinstance(request.get("requestId"), str):
             # Tokens are overwritten mid-turn, so only read once the request is done.
             out.append((request["requestId"], Action(
@@ -217,7 +227,7 @@ def actions(state: dict, session_id: str | None = None) -> list[tuple[str, Actio
                 unpriced=True,
                 session_id=sid,
                 raw={"requestId": request["requestId"], "modelId": request.get("modelId")},
-            )))
+            ), sealed))
     return out
 
 
