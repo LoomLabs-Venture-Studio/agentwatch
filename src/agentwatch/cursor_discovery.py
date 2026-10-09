@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import zlib
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -147,11 +148,12 @@ def _synthetic_pid(composer_id: str) -> int:
     the whole IDE (not a per-session process) hosts them. ``AgentProcess.pid``
     is used elsewhere as a dict/set key for team assignment
     (``discovery.py::_assign_team_ids``/``build_teams``) and must be a
-    stable, unique int; this hash-based synthesis satisfies that without
-    claiming to be a real PID. Masked to a positive 31-bit int so it
+    stable, unique int; a CRC32 of the id satisfies that without claiming to
+    be a real PID, and unlike ``hash()`` (salted per process, #90) it is the
+    same in every process and run. Masked to a positive 31-bit int so it
     prints/sorts sanely alongside real PIDs in ``ps`` output.
     """
-    return hash(composer_id) & 0x7FFFFFFF
+    return zlib.crc32(composer_id.encode("utf-8")) & 0x7FFFFFFF
 
 
 def _cursor_synthetic_log_key(db_path: Path, composer_id: str) -> Path:
