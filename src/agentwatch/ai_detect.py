@@ -22,8 +22,9 @@ AI_PROVIDERS: dict[str, tuple[str, ...]] = {
     "anthropic": ("api.anthropic.com", "claude.ai"),
     # platform.openai.com/docs/api-reference ; chatgpt.com app
     "openai": ("api.openai.com", "chatgpt.com", "ab.chatgpt.com"),
-    # ai.google.dev/api ; cloud.google.com/vertex-ai/docs/reference/rest
-    "google": ("generativelanguage.googleapis.com", "aiplatform.googleapis.com"),
+    # Google (Gemini/Vertex) left out: its API hosts share front-end IPs with
+    # every googleapis.com service (Drive, sign-in), so IP matching can't
+    # tell AI traffic apart. Verified 2026-10-09.
     # docs.github.com/en/copilot (network settings allowlist)
     "github-copilot": ("api.githubcopilot.com", "api.individual.githubcopilot.com"),
     # docs.cursor.com (network allowlist)
@@ -54,7 +55,7 @@ BROWSER_NAMES = frozenset({
     "vivaldi", "arc", "safari", "iexplore",
 })
 
-_PROC_ERRORS = (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess)
+_PROC_ERRORS = (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError)
 
 
 @dataclass
@@ -93,8 +94,8 @@ def _resolve_ips(resolve) -> tuple[dict[str, set[str]], list[str]]:
 def _connections_by_pid(connections, process_iter):
     """[(pid, conn)] and whether the scan was partial (no global table access)."""
     try:
-        return [(c.pid, c) for c in connections(kind="inet") if c.pid], False
-    except psutil.AccessDenied:
+        return [(c.pid, c) for c in connections(kind="inet")], False
+    except (psutil.AccessDenied, OSError):
         pairs = []
         for p in process_iter():
             try:
@@ -127,6 +128,11 @@ def detect(
     found: dict[int, AiUsage] = {}
     listeners: dict[int, str] = {}
     for pid, c in pairs:
+        if not pid:
+            # Linux reports other users' sockets with pid=None (no AccessDenied).
+            if pid is None and _remote_ip(c) in ip_map:
+                partial = True
+            continue
         if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port in LOCAL_LLM_PORTS:
             listeners[pid] = LOCAL_LLM_PORTS[c.laddr.port]
             continue

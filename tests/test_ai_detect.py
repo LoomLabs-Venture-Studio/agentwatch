@@ -167,3 +167,50 @@ def test_access_denied_falls_back_per_process_and_marks_partial():
     )
     assert r.partial is True
     assert [u.pid for u in r.usages] == [1]
+
+
+def test_google_front_end_ips_not_attributed():
+    # generativelanguage.googleapis.com shares IPs with every googleapis.com
+    # service (Drive, sign-in), so a Google connection proves nothing.
+    ips = {**IPS, "generativelanguage.googleapis.com": "172.217.112.4"}
+
+    def resolve(domain, port):
+        if domain not in ips:
+            raise socket.gaierror(domain)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ips[domain], port))]
+
+    r = run([conn(10, "172.217.112.4")], [FakeProc(10, "GoogleDriveFS.exe")], resolve)
+    assert r.usages == []
+
+
+def test_unowned_ai_connection_marks_partial():
+    # Linux: other users' sockets come back with pid=None, no AccessDenied.
+    r = run([conn(None, "160.79.104.10")], [])
+    assert r.partial is True
+
+
+def test_unowned_non_ai_connection_not_partial():
+    r = run([conn(None, "1.1.1.1"), conn(0, "160.79.104.10")], [])
+    assert r.partial is False
+
+
+def test_oserror_on_global_table_falls_back_and_marks_partial():
+    def denied(kind):
+        raise PermissionError("/proc/net restricted")
+
+    r = detect(
+        resolve=fake_resolve,
+        connections=denied,
+        process_iter=lambda: [],
+        process=lambda pid: None,
+    )
+    assert r.partial is True and r.usages == []
+
+
+def test_oserror_on_exe_treated_like_access_denied():
+    class Proc(FakeProc):
+        def exe(self):
+            raise OSError(299, "partial copy")
+
+    r = run([conn(1, "160.79.104.10")], [Proc(1, "Orca.exe")])
+    assert (r.usages[0].pid, r.usages[0].exe) == (1, None)

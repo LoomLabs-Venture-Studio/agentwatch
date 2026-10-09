@@ -320,14 +320,16 @@ agentwatch detect --json
 ```
 
 `agentwatch detect` lists programs that are talking to an AI provider
-(Anthropic, OpenAI, Google, Copilot, Cursor, Mistral, xAI, DeepSeek,
-OpenRouter, Groq) or serving a local LLM (Ollama, LM Studio) right now,
+(Anthropic, OpenAI, Copilot, Cursor, Mistral, xAI, DeepSeek, OpenRouter,
+Groq) or serving a local LLM (Ollama, LM Studio) right now,
 including ones agentwatch can't monitor yet. Browsers are excluded. It is
 local and read-only: it reads process names, executable paths and socket
 tables, and its only network traffic is DNS lookups of those providers'
 domains (your DNS resolver will see them). Live-verified on Windows
 (unelevated). On macOS/Linux, other users' processes need root and the scan
-is reported as partial; this path is fixture-verified only.
+is reported as partial; this path is fixture-verified only. Attribution is
+by provider IP, so a provider whose API shares IPs with its other services
+can't be told apart; Google (Gemini) is left out for that reason.
 
 ### Token Usage Stats
 

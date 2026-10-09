@@ -46,14 +46,16 @@ Data tables (plain module-level constants; they are data, not config):
 
 - `AI_PROVIDERS: dict[str, tuple[str, ...]]` maps a provider to its API and
   app domains. v1 set: `anthropic` (`api.anthropic.com`, `claude.ai`),
-  `openai` (`api.openai.com`, `chatgpt.com`, `ab.chatgpt.com`), `google`
-  (`generativelanguage.googleapis.com`, `aiplatform.googleapis.com`),
+  `openai` (`api.openai.com`, `chatgpt.com`, `ab.chatgpt.com`),
   `github-copilot` (`api.githubcopilot.com`,
   `api.individual.githubcopilot.com`), `cursor` (`api2.cursor.sh`),
   `mistral` (`api.mistral.ai`), `xai` (`api.x.ai`), `deepseek`
   (`api.deepseek.com`), `openrouter` (`openrouter.ai`), `groq`
   (`api.groq.com`). Each entry gets a comment saying where the domain comes
   from (vendor docs URL); unconfirmed domains are left out, not guessed.
+  Google (`generativelanguage`/`aiplatform.googleapis.com`) was dropped in
+  final review: those hosts share front-end IPs with all of
+  googleapis.com, so IP matching flagged Drive and sign-in traffic as AI.
 - `LOCAL_LLM_PORTS: dict[int, str]`: `11434: "ollama"`, `1234: "lm-studio"`.
   A listener counts only if its owning process name also matches the
   runtime (e.g. contains `ollama`, or `LM Studio`/`lms`). Generic ports
