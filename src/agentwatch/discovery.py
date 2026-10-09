@@ -247,8 +247,16 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                 except Exception:
                     logger.debug("resolve_log failed for adapter %s", adapter.name, exc_info=True)
                     log_file, session_id = None, None
+                # A Codex rollout's session_meta cwd is the real project: the
+                # ChatGPT desktop app-server's own cwd is its bin\<hash> dir.
+                # Same value as the process cwd for the CLI.
+                if agent_type == "codex" and log_file is not None:
+                    meta_cwd = (_read_codex_session_meta(log_file) or {}).get("cwd")
+                    if isinstance(meta_cwd, str) and meta_cwd:
+                        cwd = Path(meta_cwd)
                 if cache is not None:
                     cache.log_by_pid[pid] = (log_file, session_id)
+                    cache.cwd_by_pid[pid] = cwd
 
             agents.append(
                 AgentProcess(
@@ -619,18 +627,22 @@ def _find_open_codex_rollout(pid: int, sessions_root: Path) -> Path | None:
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
         return None
 
+    # The ChatGPT desktop app-server serves every thread from one PID and can
+    # hold several rollouts open at once: report the most recently written.
     sessions_root = sessions_root.resolve()
+    best: tuple[float, Path] | None = None
     for f in open_files:
         path = Path(f.path)
         if path.suffix != ".jsonl" or not path.name.startswith("rollout-"):
             continue
         try:
             path.resolve().relative_to(sessions_root)
-        except ValueError:
+            mtime = path.stat().st_mtime
+        except (ValueError, OSError):
             continue
-        if path.exists():
-            return path
-    return None
+        if best is None or mtime > best[0]:
+            best = (mtime, path)
+    return best[1] if best else None
 
 
 def _resolve_codex_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, str | None]:

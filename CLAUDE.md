@@ -19,7 +19,11 @@ matches the 2026-10-05 live research, but `ps`/`watch-all` against a
 running opencode has not been live-verified (no install on the dev
 machine). Gemini CLI is wired end-to-end but fixture-verified only
 (format checked against the gemini-cli 0.62.0/0.63.0 source; no local
-Gemini session to live-test, 2026-10-07). It watches an agent's session logs as they
+Gemini session to live-test, 2026-10-07). The ChatGPT desktop app's
+Codex view runs the same Codex engine and writes the same rollouts as
+Codex CLI, and is live-verified on Windows (2026-10-09, #74): `ps`, the
+`watch-all` engine (headless) and `check` against one real code-mode
+thread. It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
 result as a CLI report, a CI-friendly exit code, or a live Textual TUI. Built
@@ -99,7 +103,10 @@ src/agentwatch/
                        `shell_command`, `view_image`, `list_mcp_resources`,
                        `list_mcp_resource_templates`, `read_mcp_resource`,
                        `tool_search`), each cited to a codex-rs source
-                       file/line -- see Known Issues
+                       file/line -- see Known Issues. Also pairs code-mode
+                       `custom_tool_call`/`custom_tool_call_output` (ChatGPT
+                       desktop app); code mode's `exec` tool is deliberately
+                       UNKNOWN (it runs a JS program that calls other tools)
     copilot.py           Copilot CLI events.jsonl parsing (CopilotParser,
                        toolCallId-buffered like codex.py); adapter in
                        agents/copilot.py. Live-verified 2026-10-01
@@ -412,6 +419,29 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   pattern already established at `parser/logs.py:506`. Live-verified
   against this machine's real history (4 project dirs, 65 session files):
   `stats --all` now exits 0 with correct aggregated output.
+- **ChatGPT desktop app (Codex view), #74 (2026-10-09)**: the unified
+  ChatGPT app (Store package `OpenAI.Codex`, `ChatGPT.exe`) runs Codex via a
+  bundled `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe app-server`,
+  the same binary family as Codex CLI, writing the same
+  `$CODEX_HOME|~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (openai/codex
+  `codex-rs/rollout/src/recorder.rs`, `lib.rs`; `app.asar`). The existing
+  Codex pattern already matched it; two discovery bugs fixed: working
+  directory now comes from the rollout's `session_meta.cwd` (the process
+  cwd is the bin hash dir), and `_find_open_codex_rollout` picks the most
+  recently modified of several open rollouts. One app-server serves all
+  threads, so `ps` shows one entry (the most recently active thread). Live
+  check (Windows, OpenAI.Codex 26.1007.2314.0, bundled codex-cli
+  0.162.0-alpha) found code mode logs tool calls as `custom_tool_call` /
+  `custom_tool_call_output` (codex-rs `protocol/src/models.rs` L1137/L1158),
+  which CodexParser ignored; fixed. After that, `ps`, the `watch-all`
+  engine (headless) and `check` all worked against one real thread with 2
+  `exec` calls. Codex CLI itself stays fixture-verified. Known gaps:
+  `item_completed`/`CommandExecution` exit codes not correlated; macOS
+  unverified; a `CODEX_HOME` set in AgentWatch's environment but not the
+  app's points discovery at the wrong home. Out of
+  scope: Chat/Work views (server-side), per-thread entries, WSL mode,
+  `.jsonl.zst` cold rollouts. Spec:
+  `docs/superpowers/specs/2026-10-09-chatgpt-desktop-codex-design.md`.
 
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
