@@ -312,3 +312,16 @@ def test_create_file_and_list_directory_seen_live():
     create, listing = [a for _, a in got if a.tool_name != "assistant_message"]
     assert (create.tool_type, create.file_path) == (ToolType.WRITE, str(Path("c:/proj/new.py")))
     assert (listing.tool_type, listing.file_path) == (ToolType.LIST, str(Path("c:/proj")))
+
+
+def test_ps_columns_fit_editor_agents(capsys, tmp_path):
+    from agentwatch.cli import _print_agents_view, _print_teams_view
+    from agentwatch.discovery import AgentProcess
+
+    proc = AgentProcess(pid=1809276400, agent_type="copilot-vscode",
+                        working_directory=tmp_path / "aw-vscode-test", team_id=1809276400)
+    _print_agents_view([proc])
+    _print_teams_view([proc])
+    rows = [line for line in capsys.readouterr().out.splitlines() if "1809276400" in line]
+    assert len(rows) == 2
+    assert all("1809276400  copilot-vscode  aw-vscode-test" in r for r in rows)
