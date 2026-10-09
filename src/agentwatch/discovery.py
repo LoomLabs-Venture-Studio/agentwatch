@@ -132,7 +132,7 @@ class AgentTeam:
 
     @property
     def name(self) -> str:
-        return f"{self.root.agent_type}:{self.root.project_name}"
+        return f"{self.root.agent_type}:{self.root.project_name or '---'}"
 
     @property
     def member_count(self) -> int:

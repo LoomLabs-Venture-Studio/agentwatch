@@ -589,3 +589,10 @@ def test_json_ps_emits_null_for_no_project(monkeypatch):
     out = CliRunner().invoke(cli.cli, ["ps", "--json"]).output
     [row] = json.loads(out)
     assert row["working_directory"] is None and row["project"] == ""
+
+
+def test_team_name_without_project():
+    from agentwatch.discovery import AgentProcess, AgentTeam
+
+    root = AgentProcess(pid=7, agent_type="codex", working_directory=None)
+    assert AgentTeam(team_id=7, root=root).name == "codex:---"
