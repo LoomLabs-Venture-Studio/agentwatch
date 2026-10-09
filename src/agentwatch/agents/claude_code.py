@@ -25,7 +25,10 @@ class ClaudeCodeAdapter(BaseAdapter):
         r"|[/\\]claude[/\\]versions[/\\][^/\\]+$"
         r"|[/\\]@anthropic-ai[/\\]claude-code[/\\]cli\.js$"
     )
-    process_exclude = r"Claude\.app|Claude Helper"
+    # Claude Desktop (macOS bundle; Windows Store install) is not the CLI.
+    process_exclude = r"Claude\.app|Claude Helper|WindowsApps[/\\]Claude_"
+    # Claude in Chrome's bridge runs the CLI binary but is no session.
+    process_exclude_args = frozenset({"--chrome-native-host"})
 
     def resolve_log(self, cwd: Path, pid: int | None) -> tuple[Path | None, str | None]:
         from agentwatch import discovery  # call-time lookup: tests monkeypatch this
