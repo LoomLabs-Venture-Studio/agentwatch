@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 26 (2026-10-05), at the end of this file.** Start there.
+> **Latest: Sprint 30 (2026-10-09), at the end of this file.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -3709,3 +3709,58 @@ Built from the real session the board captured on 2026-10-01 (opencode
 - Merged as #69 `6ad7788` (issue #67).
 - Follow-up #70 (low): malformed rows crash check/watch; locked DB is
   reported as unsupported.
+
+---
+
+### Sprint 30 -- #70 fix, desktop apps, landscape research, `agentwatch detect` (2026-10-09)
+**Type:** bug fix + features + research. Board-run session (not the
+manager agent).
+
+### Acceptance Criteria
+- [x] #70: OpenCode malformed rows are skipped instead of crashing
+      `check`/`watch`; a locked DB gives `cannot read log: ... (database
+      is locked)` instead of "unsupported"; `watch` retries until the lock
+      clears.
+- [x] #74: ChatGPT desktop app (Codex view) surfaced by `ps`, `watch-all`
+      (headless) and `check`. Live-verified on Windows (see CLAUDE.md
+      Known Issues).
+- [ ] #73: Claude Desktop adapter. Live check failed: current Cowork
+      sessions keep their data inside the VM; only older host-mode
+      sessions (32 on this machine) are readable. MCP-log parser dropped:
+      the logs are redacted since about 2026-06-27.
+- [x] Research: agent usage landscape, adapter roadmap, AI-use detection
+      proposal (`docs/research/agent-landscape-and-ai-detection-2026-10-09.md`).
+- [ ] #79: `agentwatch detect [--json]` lists programs using AI right now
+      (provider-IP attribution of socket tables, Ollama/LM Studio ports,
+      browsers excluded, maps to existing adapters). Built; not merged.
+
+### Board decisions (2026-10-09)
+1. Adapter roadmap: Copilot-in-VS-Code and Cline first.
+2. Build `agentwatch detect`.
+3. Zed adapter deferred.
+4. Detection covers apps and CLIs only, never browsers.
+
+### Result
+- #72 `6525672` (#70): 12 new tests, all red before the fix. Hand QA:
+  a crafted bad `opencode.db` crashed `check` before, exits 0 after.
+- #77 `1c9705b` (#74): rollout `session_meta.cwd` used as working dir;
+  most recently modified open rollout wins; `custom_tool_call` /
+  `custom_tool_call_output` parsed. Gaps: one `ps` entry per app, not
+  per thread; ExecCommandEnd exit codes not correlated; code-mode `exec`
+  classified unknown; macOS unverified.
+- #76 (#73): draft, not merged. Open: close, park, or merge limited to
+  host-mode sessions.
+- #78: research, draft, not merged.
+- #80 (#79): draft, CI green, held by the board (do not merge yet).
+  Final review fixes: Google dropped (shares front-end IPs with all of
+  googleapis.com, so Drive/sign-in traffic was flagged); Linux
+  `pid=None` sockets to a provider IP mark the scan partial; `OSError`
+  handled like `AccessDenied`. Deferred minors listed in the PR body.
+  Live (Windows, unelevated): Claude Code CLI and `codex.exe` shown as
+  monitored; ChatGPT, Claude Desktop and Orca shown as not monitored; no
+  browser rows. Suite 1228 passed, 1 skipped; `ruff check .` clean.
+- 46 merged remote branches deleted (board OK).
+- Open follow-ups: `ps` false positive on `claude.exe
+  --chrome-native-host`; Claude Desktop install path missing from the
+  claude-code adapter's `process_exclude`; #75 (`.`/`_` in project path
+  encoding); VS Code track (Copilot-in-VS-Code + Cline) brainstorm/spec.
