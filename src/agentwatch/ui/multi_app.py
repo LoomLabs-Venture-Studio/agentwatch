@@ -489,7 +489,7 @@ class MultiAgentWatchApp(App):
 
         stats = self.query_one("#stats-display", StatsPanel)
         stats.update_stats(
-            buffer.stats.action_count,
+            buffer.stats.activity_count,
             buffer.stats.error_count,
             buffer.stats.duration_minutes,
         )

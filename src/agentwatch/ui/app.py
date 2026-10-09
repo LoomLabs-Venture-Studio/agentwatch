@@ -106,7 +106,7 @@ class EfficiencyBar(Static):
         # Rates over a near-zero duration are meaningless (#45).
         warm = r.duration_minutes >= MIN_RATE_MINUTES
         burn = f"{r.token_burn_rate / 1000:.1f}k" if warm else "--"
-        cost_rate = f"${r.cost_velocity:.2f}" if warm else "--"
+        cost_rate = f"${r.cost_velocity:.2f}" if warm and r.cost_velocity is not None else "--"
         categories = [
             (
                 "Pressure",
@@ -126,7 +126,10 @@ class EfficiencyBar(Static):
 
         lines.append("")
         # Cost is informational — not scored (no log-reported cost data yet)
-        lines.append(f"  Est. cost: ${r.cost_total:.2f} ({cost_rate}/min)")
+        if r.cost_total is None:
+            lines.append("  Est. cost: n/a (no price for this model)")
+        else:
+            lines.append(f"  Est. cost: ${r.cost_total:.2f} ({cost_rate}/min)")
         lines.append(f"  {r.recommendation}")
 
         return "\n".join(lines)
@@ -696,7 +699,7 @@ class AgentWatchApp(App):
         # Update stats
         stats = self.query_one("#stats-display", StatsPanel)
         stats.update_stats(
-            self._buffer.stats.action_count,
+            self._buffer.stats.activity_count,
             self._buffer.stats.error_count,
             self._buffer.stats.duration_minutes,
         )

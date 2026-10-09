@@ -43,6 +43,12 @@ NON_TOOL_ROLE_LABELS = frozenset({
     "system", "queue-operation", "text_output",
 })
 
+# Token-usage-only records (Codex `token_count` events). Kept in the buffer so
+# their tokens count and `action_count` still moves (the dashboards' change
+# detection), but they are not agent activity: `activity_count` and
+# actions-per-turn leave them out (#82).
+USAGE_RECORD = "token_count"
+
 
 @dataclass
 class Action:
@@ -61,6 +67,8 @@ class Action:
     cost_usd: float = 0.0
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
+    context_window: int = 0  # model's window when the log reports it
+    unpriced: bool = False  # no known price for this model: don't estimate cost
 
     # Security-relevant fields
     incoming_message: str | None = None  # For prompt injection detection
@@ -101,6 +109,9 @@ class SessionStats:
     start_time: datetime | None = None
     last_action_time: datetime | None = None
     action_count: int = 0
+    usage_records: int = 0  # USAGE_RECORD entries included in action_count
+    context_window: int = 0  # latest log-reported window; 0 = infer
+    unpriced: bool = False
     total_tokens: int = 0
     total_cost: float = 0.0
     total_input_tokens: int = 0
@@ -147,10 +158,17 @@ class SessionStats:
         return self.active_seconds / 60
 
     @property
-    def estimated_cost(self) -> float:
+    def activity_count(self) -> int:
+        """Actions excluding token-usage-only records (#82)."""
+        return self.action_count - self.usage_records
+
+    @property
+    def estimated_cost(self) -> float | None:
         # Prefer real cost accumulated from log entries
         if self.total_cost > 0:
             return self.total_cost
+        if self.unpriced:
+            return None  # e.g. Codex: no price for its models here (#82)
         # Estimate from token breakdown using Sonnet-class pricing:
         #   Input: $3/MTok, Output: $15/MTok,
         #   Cache write: $3.75/MTok, Cache read: $0.30/MTok
@@ -184,6 +202,11 @@ class ActionBuffer:
 
         # Update stats
         self._stats.action_count += 1
+        if action.tool_name == USAGE_RECORD:
+            self._stats.usage_records += 1
+        if action.context_window:
+            self._stats.context_window = action.context_window
+        self._stats.unpriced |= action.unpriced
         self._stats.total_tokens += action.tokens_in + action.tokens_out
         self._stats.total_input_tokens += action.tokens_in
         self._stats.total_output_tokens += action.tokens_out
