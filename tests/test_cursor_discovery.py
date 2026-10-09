@@ -16,7 +16,10 @@ would be surfaced/auto-picked as a phantom empty "agent".
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -193,6 +196,21 @@ class TestSyntheticIdentity:
 
     def test_synthetic_pid_is_positive(self):
         assert _synthetic_pid("composer-abc") >= 0
+
+    def test_synthetic_pid_is_stable_across_processes(self):
+        # hash() is salted per process (#90); ps/watch-all PIDs must not be.
+        code = (
+            "from agentwatch.cursor_discovery import _synthetic_pid;"
+            "print(_synthetic_pid('some-id'))"
+        )
+        got = {
+            subprocess.run(
+                [sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+            ).stdout.strip()
+            for seed in ("1", "2")
+        }
+        assert got == {str(_synthetic_pid("some-id"))}
 
     def test_synthetic_pid_differs_across_composers(self):
         assert _synthetic_pid("composer-a") != _synthetic_pid("composer-b")
