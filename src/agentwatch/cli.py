@@ -605,7 +605,9 @@ def ps(json_output: bool):
                             "team_id": a.team_id,
                             "agent_type": a.agent_type,
                             "project": a.project_name,
-                            "working_directory": str(a.working_directory),
+                            "working_directory": (
+                                str(a.working_directory) if a.working_directory else None
+                            ),
                             "log_file": str(a.log_file) if a.log_file else None,
                             "session_id": a.session_id,
                             "cpu_percent": a.cpu_percent,
@@ -624,7 +626,7 @@ def ps(json_output: bool):
                     "parent_pid": a.parent_pid,
                     "agent_type": a.agent_type,
                     "project": a.project_name,
-                    "working_directory": str(a.working_directory),
+                    "working_directory": str(a.working_directory) if a.working_directory else None,
                     "log_file": str(a.log_file) if a.log_file else None,
                     "session_id": a.session_id,
                     "cpu_percent": a.cpu_percent,
@@ -659,7 +661,7 @@ def _print_agents_view(agents: list[AgentProcess]) -> None:
     )
 
     for a in agents:
-        project = a.project_name
+        project = a.project_name or "---"
         if len(project) > 16:
             project = project[:13] + "..."
 
@@ -703,7 +705,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
                 prefix = "  " * a.depth + "├── "
                 role = click.style(f"L{a.depth}", fg="cyan")
 
-            project = a.project_name
+            project = a.project_name or "---"
             max_proj_len = max(14 - len(prefix), 6)
             if len(project) > max_proj_len:
                 project = project[: max_proj_len - 3] + "..."
