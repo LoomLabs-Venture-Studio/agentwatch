@@ -25,7 +25,8 @@ The file is a **mutation log**, not an event log:
 - `{"kind":2,"k":[path...],"v":[...],"i":n}` — extend the array at `k` with
   `v` (`v` may be absent); when `i` is present, truncate the array to `i`
   first.
-- `{"kind":3,"k":[path...]}` — delete the key at `k`.
+- `{"kind":3,"k":[path...]}` — delete the key at `k` (VS Code sets it to
+  `undefined`, so on an array index the slot is cleared, not removed).
 - A `kind:0` line resets the state. VS Code also rewrites the whole file
   (its "replace" op), so the file can shrink.
 
@@ -110,16 +111,25 @@ incremental mutation application is not worth the code.
 | `copilot_applyPatch` | `EDIT` | `file_path` as above |
 | `copilot_createFile` | `WRITE` | `file_path` as above |
 | `copilot_listDirectory` | `LIST` | `file_path` = the directory, as above |
+| `copilot_replaceString` | `EDIT` | `file_path` as above |
+| `copilot_findTextInFiles` | `SEARCH` | `file_path` as above (its `uris` is usually empty) |
 | anything else (e.g. `copilot_memory`) | `UNKNOWN` | `tool_name` = `toolId` |
 
 Only `toolId`s seen in a real session are mapped. New ones are added when a
 real session shows them. `copilot_createFile` and `copilot_listDirectory` were
-seen in the live check (2026-10-09, VS Code 1.140).
+seen in the live check (2026-10-09, VS Code 1.140); `copilot_replaceString`
+and `copilot_findTextInFiles` in other real sessions on the same machine.
+Also seen but left `UNKNOWN`: `copilot_fetchWebPage` /
+`vscode_fetchWebPage_internal` (no URL in `invocationMessage`, so no
+`network_host` without more digging), `manage_todo_list`.
 
 **Success:**
 
 - `isConfirmed` type 0 (Denied) or `false`: failure, `error_message =
-  "denied"`. Type 5 (Skipped): failure, `"skipped"`.
+  "denied"`. Type 5 (Skipped): failure, `"skipped"` (VS Code also writes
+  Skipped for a call still waiting for post-approval).
+- `isConfirmed` still absent when the request is finished: failure,
+  `"not confirmed"` (VS Code's loader treats it as denied).
 - Else if `toolSpecificData.terminalCommandState.exitCode` exists: success iff
   `exitCode == 0`; otherwise `error_message = "exit code N"`.
 - Else failure iff `resultError` is truthy or `resultDetails.isError` is
@@ -127,15 +137,16 @@ seen in the live check (2026-10-09, VS Code 1.140).
 
 **Emit rules:**
 
-- A tool call is emitted once (key `toolCallId`), only when final:
-  `isConfirmed` is present, and one of
+- A tool call is emitted once (key `toolCallId`), only when final: its
+  request is finished, or `isConfirmed` is present and one of
   - it was denied or skipped (type 0 or 5, or `false`);
   - a result is recorded: `terminalCommandState.exitCode`, a truthy
     `resultError`, or `resultDetails`;
   - a later `thinking` or markdown part (no `kind`, or `markdownContent`)
     follows it in the same response: the model only writes again after the
-    round's tool results are back;
-  - its request is finished (`modelState.value` in 1, 2, 3).
+    round's tool results are back.
+
+  "Finished" = `modelState.value` in 1, 2, 3.
 
   `isComplete` is not used (always `true`). Most tool actions still stream
   while the turn runs; a call followed only by more tool calls waits for
@@ -203,10 +214,18 @@ route it.
   (on this machine `code` on PATH is Cursor), then `agentwatch ps`,
   `watch-all` (headless), `check`.
 
+## Known limitations
+
+- A finished call followed only by another tool call is held until the next
+  model output or the request end (seen live: `createFile` held behind a
+  terminal call waiting for confirmation).
+- A call confirmed but without a recorded result when its request is
+  cancelled is emitted as a success.
+
 ## Out of scope
 
 Flat `.json` session files (VS Code before 1.109, or
 `chat.useLogSessionStorage: false`), VS Code Insiders / VSCodium user dirs (`default_user_dir(app)` makes them a
-one-line addition), archived chats, remote/WSL windows, edit tools not yet
-seen live (`replaceString`, `createFile`, ...), Copilot credit reporting,
+one-line addition), archived chats, remote/WSL windows, tools not yet seen in a real session
+(e.g. `copilot_multiReplaceString`), web-fetch URLs, Copilot credit reporting,
 Cline (own spec).
