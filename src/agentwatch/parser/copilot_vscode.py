@@ -62,7 +62,11 @@ def _apply(state: Any, entry: dict) -> None:
             if isinstance(entry.get("v"), list):
                 target.extend(entry["v"])
         elif kind == 3:
-            del parent[key]
+            # VS Code's Delete sets undefined: a list slot is cleared, not removed.
+            if isinstance(parent, list):
+                parent[key] = None
+            else:
+                del parent[key]
     except (KeyError, IndexError, TypeError):
         pass
 

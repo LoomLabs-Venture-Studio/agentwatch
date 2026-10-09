@@ -55,6 +55,15 @@ class TestReplay:
         assert state["a"] == {"c": 3}
         assert state["arr"] == [1, 4, 5]
 
+    def test_delete_on_list_index_clears_slot(self, tmp_path):
+        # VS Code's Delete is _applySet(state, k, undefined): no shifting.
+        p = _write(tmp_path / "s.jsonl", [
+            {"kind": 0, "v": {"sessionId": "s", "requests": [], "arr": [1, 2, 3]}},
+            {"kind": 3, "k": ["arr", 1]},
+            {"kind": 3, "k": ["arr", 9]},
+        ])
+        assert replay(p)["arr"] == [1, None, 3]
+
     def test_push_without_v_truncates(self, tmp_path):
         p = _write(tmp_path / "s.jsonl", [
             {"kind": 0, "v": {"sessionId": "s", "requests": [], "arr": [1, 2, 3]}},
