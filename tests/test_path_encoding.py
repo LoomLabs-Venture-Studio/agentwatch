@@ -50,3 +50,15 @@ class TestEncodePathForClaude:
     def test_string_input_accepted_via_str_conversion(self):
         # Function takes a Path, but Path(str) round-trips consistently.
         assert encode_path_for_claude(Path("relative/dir")) == "relative-dir"
+
+    def test_every_non_alphanumeric_becomes_dash(self):
+        # Claude Code's rule is replace(/[^a-zA-Z0-9]/g, "-") (#75, read from
+        # the 2.x CLI binary); `.` and `_` were missed before.
+        assert encode_path_for_claude(Path("my_proj.v2")) == "my-proj-v2"
+
+    def test_long_path_truncated_with_hash(self):
+        # Past 200 chars the CLI keeps 200 and appends its 32-bit string hash
+        # in base 36. Expected hash computed with the CLI's own JS function.
+        name = "z\u00e9_" + "a_b.c" * 45
+        prefix = "z--" + "a-b-c" * 45
+        assert encode_path_for_claude(Path(name)) == prefix[:200] + "-8gw9cn"
