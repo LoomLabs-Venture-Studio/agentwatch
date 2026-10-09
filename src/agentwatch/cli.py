@@ -27,7 +27,11 @@ from agentwatch.llm import (
     OllamaAnalyzer,
 )
 from agentwatch.parser import ActionBuffer, find_latest_session, parse_file
-from agentwatch.parser.logs import UnsupportedLogFormatError, ensure_supported_log
+from agentwatch.parser.logs import (
+    LogUnreadableError,
+    UnsupportedLogFormatError,
+    ensure_supported_log,
+)
 from agentwatch.siem import SiemExportError, SiemLogger
 from agentwatch.themes import (
     ascii_safe,
@@ -444,7 +448,7 @@ def check(
     buffer = ActionBuffer()
     try:
         warnings = registry.scan(parse_file(log, analytics_log=analytics_log), buffer)
-    except UnsupportedLogFormatError as e:
+    except (UnsupportedLogFormatError, LogUnreadableError) as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -905,7 +909,7 @@ def security_scan(
     buffer = ActionBuffer()
     try:
         warnings = registry.scan(parse_file(log, analytics_log=analytics_log), buffer)
-    except UnsupportedLogFormatError as e:
+    except (UnsupportedLogFormatError, LogUnreadableError) as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 

@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .logs import _redact_truncate, classify_tool, url_hostname
+from .logs import LogUnreadableError, _redact_truncate, classify_tool, url_hostname
 from .models import Action, ToolType
 
 # Tool names from packages/opencode/src/tool/*.ts (v1.18.34). Only read,
@@ -49,8 +49,11 @@ _WRITE_ARGS = ("content", "newString", "patchText")
 
 
 def open_readonly(db_path: Path) -> sqlite3.Connection:
-    """Read-only connection. Still sees rows committed to opencode's WAL."""
-    return sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+    """Read-only connection. Still sees rows committed to opencode's WAL.
+
+    Waits up to 1s on a writer's lock before "database is locked".
+    """
+    return sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=1.0)
 
 
 def _ms(value: Any) -> datetime | None:
@@ -214,9 +217,11 @@ def read_session(
             "SELECT data FROM part WHERE message_id = ? ORDER BY time_created, id", (mid,)
         ):
             try:
-                parts.append(json.loads(pdata))
+                part = json.loads(pdata)
             except (TypeError, json.JSONDecodeError):
                 continue
+            if isinstance(part, dict):
+                parts.append(part)
         running = any(
             p.get("type") == "tool"
             and isinstance(p.get("state"), dict)
@@ -237,11 +242,16 @@ def read_session(
             done = (
                 include_unfinished
                 or i + 1 < len(messages)
-                or bool((message.get("time") or {}).get("completed"))
+                or (isinstance(t := message.get("time"), dict) and bool(t.get("completed")))
             )
         if not done:
             break  # keep message order: later messages wait for this one
-        out.append((mid, message_actions(message, parts, session_id, interrupted)))
+        try:
+            actions = message_actions(message, parts, session_id, interrupted)
+        except (AttributeError, TypeError, ValueError):
+            # A malformed row (wrong JSON types, #70): skip it, don't end the scan.
+            actions = []
+        out.append((mid, actions))
     return out
 
 
@@ -253,5 +263,8 @@ def parse_opencode_session(db_path: Path, session_id: str | None = None) -> list
         if sid is None:
             return []
         return [a for _, acts in read_session(conn, sid, set(), True) for a in acts]
+    except sqlite3.OperationalError as e:
+        # e.g. "database is locked" after open_readonly's busy wait (#70)
+        raise LogUnreadableError(db_path, str(e)) from e
     finally:
         conn.close()
