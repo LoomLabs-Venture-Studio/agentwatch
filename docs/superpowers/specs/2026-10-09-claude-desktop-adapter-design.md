@@ -24,9 +24,24 @@
 - `local-agent-mode-sessions/` also holds a `skills-plugin/` dir; the
   `<a>/<b>/local_*.json` scan must tolerate unrelated dirs/files.
 - Roots are returned only if they contain `local-agent-mode-sessions/`.
-- Running gate is exactly `Claude.exe` (Windows) / `Claude` (macOS,
-  unverified), case-sensitive — not `cowork-svc.exe` (a Windows service that
-  runs with the app closed), not lowercase `claude.exe` (Claude Code).
+- Running gate is the app **exe path**, not the process name: live check
+  against Desktop 2.31226 showed psutil reports its processes as
+  `claude.exe`, the same name as Claude Code. Matched case-insensitively:
+  `...\WindowsApps\Claude_*\app\claude.exe` (MSIX, live-verified),
+  `...\AnthropicClaude\app-*\claude.exe` (non-Store Windows, unverified),
+  `Claude.app/Contents/MacOS/Claude` (macOS, unverified). Never Claude Code
+  installs, never `cowork-svc.exe` (a service that runs with the app closed).
+- **Live check finding (2.31226): current Cowork sessions are not visible on
+  the host.** A Cowork task run with the app open wrote no new
+  `local_*.json` and no transcript `.jsonl` under the package root,
+  `%APPDATA%\Claude` or `~/.claude`; the only fresh writes were the VM disk
+  `vm_bundles\claudevm.bundle\sessiondata.vhdx` and
+  `local-agent-mode-sessions/<a>/<b>/remote-session-spaces.json`
+  (`{"entries":[{"sessionId","spaceId","folders":[str],"memoryEnabled"}]}`).
+  All 32 host-readable sessions have `hostLoopMode: true`, so new sessions
+  appear to run inside the VM with their transcript in the `.vhdx`. The
+  adapter only surfaces host-loop sessions; reading the `.vhdx` is out of
+  scope.
 - Removed the claim that the agent "runs inside a VM" (metadata has
   `hostLoopMode=true`). App-gating stays because there is no per-session
   host process to map.
@@ -56,8 +71,11 @@ nothing on disk is reliably parseable. ChatGPT Desktop is a separate spike.
 - Transcript: `local_<id>/.claude/projects/<dir>/<cliSessionId>.jsonl` —
   Claude Code JSONL, parsed unchanged by `_parse_jsonl`
   (`adapter_for` -> `claude-code`).
-- `Claude.exe` does not match the `claude-code` process pattern
-  (case-sensitive) — no collision.
+- **Corrected by the live check:** the app's exe is lowercase
+  `...\app\claude.exe`, which **does** match the `claude-code` process
+  pattern (`match_process_adapter` returns `claude-code` for it), so `ps`
+  can list Claude Desktop processes as Claude Code. Separate follow-up
+  (needs a `process_exclude` for the WindowsApps path); not fixed here.
 
 ## Components
 
@@ -69,8 +87,8 @@ nothing on disk is reliably parseable. ChatGPT Desktop is a separate spike.
      MSIX; **verified**)
   2. `%APPDATA%\Claude` (Windows non-Store; **unverified**)
   3. `~/Library/Application Support/Claude` (macOS; **unverified**)
-- `is_claude_desktop_running() -> bool` — any process named exactly
-  `Claude.exe` / `Claude`, same shape as `is_cursor_running`.
+- `is_claude_desktop_running() -> bool` — any process whose exe path
+  matches the app (see Revision note), same shape as `is_cursor_running`.
 - `find_claude_desktop_agents(now=None) -> list[AgentProcess]` — `[]` unless
   running; otherwise one entry per session that is not archived, has
   `lastActivityAt` within `ACTIVITY_WINDOW_SECONDS` (1800, with a
@@ -123,6 +141,7 @@ tolerated; registry order; adapter yields a working `LogWatcher`;
 
 ## Out of scope (possible follow-ups)
 
+- VM-mode Cowork sessions (transcript inside `sessiondata.vhdx`).
 - MCP logs (`logs/mcp*.log`): redacted by the app since ~2026-06-27 (see
   Revision note), no tool name/args/result to parse.
 - Subagent transcripts as child agents in the team tree.

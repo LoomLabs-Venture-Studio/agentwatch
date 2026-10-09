@@ -18,7 +18,8 @@ Spec: `docs/superpowers/specs/2026-10-09-claude-desktop-adapter-design.md`. Issu
 
 1. Roots: MSIX glob, then `%APPDATA%\Claude`, then macOS path; only roots
    with `local-agent-mode-sessions/` returned.
-2. Running gate: `Claude.exe` true; `claude.exe`, `cowork-svc.exe` false.
+2. Running gate on exe path: MSIX app exe true; Claude Code `claude.exe`
+   (same name), `cowork-svc.exe`, None/AccessDenied exe false.
 3. Not running -> `[]` with a valid session present.
 4. Happy path: one active session -> one `AgentProcess` (type, log file,
    cwd, session id, command, synthetic pid).
