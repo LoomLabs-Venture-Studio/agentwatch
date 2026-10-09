@@ -140,6 +140,17 @@ class _FunctionCallOutput:
     call_id: str | None
     is_error: bool
     error_text: str | None
+    text: str | None = None  # output body text, surfaced as incoming_message
+
+
+# Freeform ("custom") tools ride the same call_id pairing as function calls:
+# codex-rs/protocol/src/models.rs (openai/codex @ 9a59289) L1137
+# ``ResponseItem::CustomToolCall { call_id, name, input: String }`` and L1158
+# ``CustomToolCallOutput { call_id, output }``, whose output uses the same wire
+# encoding as ``function_call_output``. The ChatGPT desktop app's code mode
+# logs every tool call this way.
+_CALL_TYPES = ("function_call", "custom_tool_call")
+_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
 
 
 @dataclass
@@ -245,6 +256,13 @@ def classify_codex_tool(name: str) -> ToolType:
         return _CONFIRMED_CODEX_TOOL_TYPES[name_lower]
     if "apply_patch" in name_lower or "apply-patch" in name_lower:
         return ToolType.EDIT
+    if name_lower == "exec":
+        # Code-mode host tool (codex-rs/code-mode-protocol/src/lib.rs L54
+        # ``PUBLIC_TOOL_NAME = "exec"``; core/src/tools/code_mode/
+        # execute_spec.rs: freeform "Run JavaScript code"). Its input is a
+        # script that calls other tools, so no ToolType fits: left unmapped
+        # on purpose, rather than falling into classify_tool's "exec" -> BASH.
+        return ToolType.UNKNOWN
     return classify_tool(name)
 
 
@@ -312,7 +330,7 @@ def _extract_function_call(payload: dict, era: str) -> _FunctionCall | None:
     over-branching ahead of confirmed need would just be guessing twice.
     """
     del era  # reserved for future per-era divergence, see docstring
-    if not isinstance(payload, dict) or payload.get("type") != "function_call":
+    if not isinstance(payload, dict) or payload.get("type") not in _CALL_TYPES:
         return None
 
     call_id = payload.get("call_id") or payload.get("id")
@@ -321,7 +339,11 @@ def _extract_function_call(payload: dict, era: str) -> _FunctionCall | None:
     args = _coerce_json(payload.get("arguments"))
     file_path = None
     command = None
-    if isinstance(args, dict):
+    if payload["type"] == "custom_tool_call":
+        # Freeform tool: ``input`` is one raw string (models.rs
+        # ``CustomToolCall { input: String }``), kept whole as the command.
+        command = payload.get("input") if isinstance(payload.get("input"), str) else None
+    elif isinstance(args, dict):
         file_path = args.get("path") or args.get("file") or args.get("file_path")
         cmd = args.get("command")
         if isinstance(cmd, list):
@@ -358,11 +380,19 @@ def _extract_function_call_output(payload: dict, era: str) -> _FunctionCallOutpu
     up first.
     """
     del era  # reserved for future per-era divergence
-    if not isinstance(payload, dict) or payload.get("type") != "function_call_output":
+    if not isinstance(payload, dict) or payload.get("type") not in _OUTPUT_TYPES:
         return None
 
     call_id = payload.get("call_id") or payload.get("id")
-    return _FunctionCallOutput(call_id=call_id, is_error=False, error_text=None)
+    # Body is a plain string or a list of content items (models.rs
+    # ``FunctionCallOutputContentItem``); keep the text ones.
+    output = payload.get("output")
+    if isinstance(output, list):
+        output = "\n".join(
+            i["text"] for i in output if isinstance(i, dict) and isinstance(i.get("text"), str)
+        )
+    text = output if isinstance(output, str) and output else None
+    return _FunctionCallOutput(call_id=call_id, is_error=False, error_text=None, text=text)
 
 
 def _extract_exec_command_end(payload: dict) -> _ExecResult | None:
@@ -579,6 +609,7 @@ class CodexParser:
                         tool_type=ToolType.UNKNOWN,
                         success=not output.is_error,
                         error_message=output.error_text,
+                        incoming_message=output.text,
                         session_id=self.session_id,
                         raw=entry,
                     )
@@ -586,6 +617,7 @@ class CodexParser:
             if not pending.resolved_by_event_msg:
                 pending.action.success = not output.is_error
                 pending.action.error_message = output.error_text
+            pending.action.incoming_message = output.text
             return [pending.action]
 
         exec_result = _extract_exec_command_end(payload) or _extract_patch_apply_end(payload)

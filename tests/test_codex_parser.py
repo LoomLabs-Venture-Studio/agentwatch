@@ -764,3 +764,96 @@ class TestLogWatcherCodex:
         assert second_actions[0].command == "pytest"
         assert second_actions[0].success is True
         assert "call_3" not in watcher._codex_parser._pending
+
+
+# ---------------------------------------------------------------------------
+# ChatGPT desktop code mode (#74): custom_tool_call / custom_tool_call_output
+# (codex-rs/protocol/src/models.rs ResponseItem::CustomToolCall{,Output})
+# ---------------------------------------------------------------------------
+
+_PASSTHROUGH = {"internal_chat_message_metadata_passthrough": {"k": "v"}}
+
+
+def _custom_call(call_id: str = "call_ct1") -> dict:
+    return {
+        "timestamp": "2026-10-09T10:00:00Z",
+        "type": "response_item",
+        "payload": {
+            "type": "custom_tool_call",
+            "id": "ctc_1",
+            "status": "completed",
+            "call_id": call_id,
+            "name": "exec",
+            "input": "echo hi",
+            **_PASSTHROUGH,
+        },
+    }
+
+
+def _custom_output(output, call_id: str = "call_ct1") -> dict:
+    return {
+        "timestamp": "2026-10-09T10:00:01Z",
+        "type": "response_item",
+        "payload": {
+            "type": "custom_tool_call_output",
+            "id": "ctco_1",
+            "call_id": call_id,
+            "output": output,
+            **_PASSTHROUGH,
+        },
+    }
+
+
+class TestCustomToolCall:
+    def test_call_and_list_output_yield_one_action(self):
+        parser = CodexParser()
+        assert parser.parse_line(_custom_call()) == []
+        output = [
+            {"type": "input_text", "text": "hi"},
+            {"type": "input_text", "text": "exit 0"},
+        ]
+        actions = parser.parse_line(_custom_output(output))
+        assert len(actions) == 1
+        a = actions[0]
+        assert a.tool_name == "exec"
+        assert a.command == "echo hi"
+        assert a.incoming_message == "hi\nexit 0"
+        assert a.success is True
+        assert parser.flush() == []
+
+    def test_string_output(self):
+        parser = CodexParser()
+        parser.parse_line(_custom_call())
+        (a,) = parser.parse_line(_custom_output("hi"))
+        assert a.command == "echo hi"
+        assert a.incoming_message == "hi"
+
+    def test_exec_is_not_guessed_as_bash(self):
+        # code-mode host tool: its input is a JavaScript program that calls
+        # other tools, not a shell command.
+        assert classify_codex_tool("exec") == ToolType.UNKNOWN
+
+    def test_orphan_output_still_surfaces(self):
+        parser = CodexParser()
+        (a,) = parser.parse_line(_custom_output("hi", call_id="call_nobody"))
+        assert a.tool_name == "unknown_call"
+        assert a.incoming_message == "hi"
+
+    def test_other_desktop_line_types_are_ignored(self):
+        parser = CodexParser()
+        lines = [
+            {"type": "session_meta", "payload": {"id": "s1", "originator": "codex_work_desktop"}},
+            {"type": "turn_context", "payload": {"cwd": "/tmp/p"}},
+            {"type": "world_state", "payload": {"k": "v"}},
+            {"type": "token_usage_record", "payload": {"k": 1}},
+            {"type": "event_msg", "payload": {"type": "task_started"}},
+            {"type": "event_msg", "payload": {"type": "task_complete"}},
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "item": {"type": "CommandExecution", "command": ["echo", "hi"], "exit_code": 0},
+                },
+            },
+        ]
+        assert [a for line in lines for a in parser.parse_line(line)] == []
