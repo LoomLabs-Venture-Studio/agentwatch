@@ -44,7 +44,9 @@ def _apply(state: Any, entry: dict) -> None:
         if kind == 1:
             parent[key] = entry.get("v")
         elif kind == 2:
-            target = parent[key]
+            target = parent.get(key) if isinstance(parent, dict) else parent[key]
+            if target is None:  # VS Code's _applyPush: current[key] || []
+                target = parent[key] = []
             if not isinstance(target, list):
                 return
             if isinstance(entry.get("i"), int):

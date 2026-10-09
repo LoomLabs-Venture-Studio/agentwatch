@@ -62,6 +62,17 @@ class TestReplay:
         ])
         assert replay(p)["arr"] == []
 
+    def test_push_creates_missing_or_null_array(self, tmp_path):
+        # VS Code's _applyPush: arr = current[key] || []
+        p = _write(tmp_path / "s.jsonl", [
+            {"kind": 0, "v": {"sessionId": "s", "requests": [], "nul": None, "n": 1}},
+            {"kind": 2, "k": ["missing"], "v": [1]},
+            {"kind": 2, "k": ["nul"], "v": [2]},
+            {"kind": 2, "k": ["n"], "v": [3]},
+        ])
+        state = replay(p)
+        assert (state["missing"], state["nul"], state["n"]) == ([1], [2], 1)
+
     def test_later_kind0_resets(self, tmp_path):
         p = _write(tmp_path / "s.jsonl", [
             {"kind": 0, "v": {"sessionId": "s", "requests": [], "old": 1}},
