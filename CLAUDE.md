@@ -19,7 +19,11 @@ matches the 2026-10-05 live research, but `ps`/`watch-all` against a
 running opencode has not been live-verified (no install on the dev
 machine). Gemini CLI is wired end-to-end but fixture-verified only
 (format checked against the gemini-cli 0.62.0/0.63.0 source; no local
-Gemini session to live-test, 2026-10-07). It watches an agent's session logs as they
+Gemini session to live-test, 2026-10-07). Claude Desktop (Cowork sessions)
+is wired end-to-end and fixture-verified; the Windows MSIX path is verified
+against the real file layout, but live `ps`/`watch-all` is not yet verified
+(pending opening Claude Desktop), non-Store Windows and macOS paths are
+unverified, and its MCP logs are not parsed (redacted by the app). It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
 result as a CLI report, a CI-friendly exit code, or a live Textual TUI. Built
@@ -51,7 +55,8 @@ src/agentwatch/
   agents/              One adapter per agent: AgentAdapter protocol +
                        BaseAdapter defaults (base.py) and the ordered
                        ADAPTERS registry (__init__.py: claude-code, aider,
-                       codex, cursor, copilot, agy, opencode, gemini).
+                       codex, cursor, copilot, agy, opencode, gemini,
+                       claude-desktop).
                        Process matching is
                        first-match-wins per PID in that order; adapter_for()
                        picks the first adapter whose claims() accepts a path
@@ -70,6 +75,13 @@ src/agentwatch/
                        agent-mode composers as synthetic AgentProcess
                        entries); no OS process per composer, so pid/log_file
                        are synthetic (see module docstring)
+  claude_desktop_discovery.py  App-gated Claude Desktop Cowork discovery
+                       (exact Claude.exe/Claude running -> roots holding
+                       local-agent-mode-sessions/ -> non-archived sessions
+                       active in the last 30 min); transcript found by
+                       cliSessionId glob; synthetic pid. Adapter in
+                       agents/claude_desktop.py (editor kind, claims
+                       nothing, delegates watch/parse to claude-code)
   cc_stats.py          Parses ~/.claude/projects/*.jsonl for token-usage /
                        burn-rate stats; opens files with explicit
                        encoding="utf-8", errors="ignore" (matches
