@@ -190,3 +190,43 @@ class TestAdapter:
             "copilot_readFile", "copilot_memory", "copilot_applyPatch",
             "run_in_terminal", "run_in_terminal", "assistant_message",
         ]
+
+
+class TestWatcher:
+    def test_emits_each_key_once(self, tmp_path):
+        from agentwatch.parser.watcher import CopilotVscodeWatcher
+
+        lines = _lines()
+        p = _prefix(tmp_path, 9)
+        w = CopilotVscodeWatcher(p)
+        assert [a.tool_name for a in w._read_new_actions()] == [
+            "copilot_readFile", "copilot_memory", "copilot_applyPatch",
+        ]
+        assert w._read_new_actions() == []
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines[10:13]) + "\n")
+        got = w._read_new_actions()
+        assert [(a.tool_name, a.command) for a in got] == [("run_in_terminal", "python hello.py")]
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines[13:]) + "\n")
+        got = w._read_new_actions()
+        assert [a.tool_name for a in got] == ["run_in_terminal", "assistant_message"]
+        assert w._read_new_actions() == []
+
+    def test_adapter_makes_watcher(self):
+        from agentwatch import agents
+        from agentwatch.parser.watcher import CopilotVscodeWatcher
+
+        w = agents.get("copilot-vscode").make_watcher(FIXTURE, SESSION_ID)
+        assert isinstance(w, CopilotVscodeWatcher)
+        assert w.path == FIXTURE and w.session_id == SESSION_ID
+
+
+def test_default_user_dir(monkeypatch):
+    from agentwatch import vscode_paths
+
+    monkeypatch.setattr(vscode_paths.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", r"C:\Users\dev\AppData\Roaming")
+    assert vscode_paths.default_user_dir("Code") == (
+        Path(r"C:\Users\dev\AppData\Roaming") / "Code" / "User"
+    )

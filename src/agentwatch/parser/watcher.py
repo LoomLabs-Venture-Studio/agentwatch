@@ -15,7 +15,7 @@ from watchfiles import Change, awatch
 from agentwatch.agents.base import Watcher
 from agentwatch.discovery import AgentProcess
 
-from . import opencode
+from . import copilot_vscode, opencode
 from .agy import AgyParser
 from .aider import parse_aider_sessions
 from .codex import CodexParser
@@ -274,6 +274,55 @@ class AiderLogWatcher:
 
     async def watch_with_callbacks(self) -> None:
         """Watch and dispatch to registered callbacks."""
+        async for action in self.watch():
+            for callback in self._callbacks:
+                try:
+                    callback(action)
+                except Exception:
+                    pass  # Don't let callback errors stop watching
+
+
+class CopilotVscodeWatcher:
+    """Watches one Copilot-in-VS-Code chat-session mutation log.
+
+    ``AiderLogWatcher``'s shape: on each watchfiles trigger, replay the whole
+    file and emit actions whose key (``toolCallId`` / ``requestId``) was not
+    emitted yet. ``added`` counts too: VS Code may rewrite the file whole.
+    """
+
+    def __init__(self, path: Path, session_id: str | None = None):
+        self.path = path
+        self.session_id = session_id
+        self._emitted: set[str] = set()
+        self._callbacks: list[Callable[[Action], None]] = []
+
+    def on_action(self, callback: Callable[[Action], None]) -> None:
+        self._callbacks.append(callback)
+
+    def _read_new_actions(self) -> list[Action]:
+        state = copilot_vscode.replay(self.path)
+        if state is None:
+            return []
+        new: list[Action] = []
+        for key, action in copilot_vscode.actions(state, self.session_id):
+            if key not in self._emitted:
+                self._emitted.add(key)
+                new.append(action)
+        return new
+
+    async def watch(self) -> AsyncIterator[Action]:
+        for action in self._read_new_actions():
+            yield action
+
+        async for changes in awatch(self.path.parent):
+            for change_type, changed_path in changes:
+                if Path(changed_path) == self.path and change_type in (
+                    Change.added, Change.modified,
+                ):
+                    for action in self._read_new_actions():
+                        yield action
+
+    async def watch_with_callbacks(self) -> None:
         async for action in self.watch():
             for callback in self._callbacks:
                 try:

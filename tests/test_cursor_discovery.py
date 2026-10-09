@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from agentwatch import cursor_discovery
+from agentwatch import cursor_discovery, vscode_paths
 from agentwatch.cursor_discovery import (
     _cursor_synthetic_log_key,
     _file_uri_to_path,
@@ -125,13 +125,13 @@ class TestFileUriToPath:
 
 class TestDefaultCursorUserDir:
     def test_windows_uses_appdata_env_var(self, monkeypatch):
-        monkeypatch.setattr(cursor_discovery.sys, "platform", "win32")
+        monkeypatch.setattr(vscode_paths.sys, "platform", "win32")
         monkeypatch.setenv("APPDATA", r"C:\Users\zaid\AppData\Roaming")
         result = default_cursor_user_dir()
         assert result == Path(r"C:\Users\zaid\AppData\Roaming") / "Cursor" / "User"
 
     def test_windows_falls_back_when_appdata_unset(self, monkeypatch):
-        monkeypatch.setattr(cursor_discovery.sys, "platform", "win32")
+        monkeypatch.setattr(vscode_paths.sys, "platform", "win32")
         monkeypatch.delenv("APPDATA", raising=False)
         result = default_cursor_user_dir()
         assert result == Path.home() / "AppData" / "Roaming" / "Cursor" / "User"
@@ -140,20 +140,20 @@ class TestDefaultCursorUserDir:
         """join(homedir(), 'Library', 'Application Support') + productName,
         confirmed directly against the real VS Code source (see class
         docstring) -- not just "same convention as other forks"."""
-        monkeypatch.setattr(cursor_discovery.sys, "platform", "darwin")
+        monkeypatch.setattr(vscode_paths.sys, "platform", "darwin")
         result = default_cursor_user_dir()
         assert result == Path.home() / "Library" / "Application Support" / "Cursor" / "User"
 
     def test_linux_respects_xdg_config_home_when_set(self, monkeypatch):
         """The real bug this sprint fixed: XDG_CONFIG_HOME was previously
         ignored entirely on Linux."""
-        monkeypatch.setattr(cursor_discovery.sys, "platform", "linux")
+        monkeypatch.setattr(vscode_paths.sys, "platform", "linux")
         monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg/config")
         result = default_cursor_user_dir()
         assert result == Path("/custom/xdg/config") / "Cursor" / "User"
 
     def test_linux_falls_back_to_dot_config_when_xdg_unset(self, monkeypatch):
-        monkeypatch.setattr(cursor_discovery.sys, "platform", "linux")
+        monkeypatch.setattr(vscode_paths.sys, "platform", "linux")
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         result = default_cursor_user_dir()
         assert result == Path.home() / ".config" / "Cursor" / "User"

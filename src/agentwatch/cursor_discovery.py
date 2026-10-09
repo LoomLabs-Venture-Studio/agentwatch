@@ -21,9 +21,7 @@ the user's last real session.
 from __future__ import annotations
 
 import json
-import os
 import re
-import sys
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -32,6 +30,7 @@ import psutil
 
 from .discovery import AgentProcess, _format_etime
 from .parser.cursor_source import fetch_composer_headers, open_readonly
+from .vscode_paths import default_user_dir
 
 _CURSOR_PROCESS_RE = re.compile(r"^cursor(\.exe)?$", re.IGNORECASE)
 
@@ -84,15 +83,7 @@ def default_cursor_user_dir() -> Path:
     support. If Cursor forks these under different env var names (e.g.
     ``CURSOR_PORTABLE``), that's unconfirmed and out of scope here.
     """
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
-        return base / "Cursor" / "User"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "Cursor" / "User"
-    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg_config_home) if xdg_config_home else Path.home() / ".config"
-    return base / "Cursor" / "User"
+    return default_user_dir("Cursor")
 
 
 def _file_uri_to_path(uri: str) -> Path | None:
