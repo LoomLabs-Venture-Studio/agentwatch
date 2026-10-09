@@ -230,3 +230,60 @@ def test_default_user_dir(monkeypatch):
     assert vscode_paths.default_user_dir("Code") == (
         Path(r"C:\Users\dev\AppData\Roaming") / "Code" / "User"
     )
+
+
+class TestDiscovery:
+    def _user_dir(self, tmp_path: Path, folder: bool = True, session: str | None = None) -> Path:
+        user = tmp_path / "User"
+        ws = user / "workspaceStorage" / "hash1"
+        (ws / "chatSessions").mkdir(parents=True)
+        if folder:
+            (tmp_path / "proj").mkdir()
+            (ws / "workspace.json").write_text(
+                json.dumps({"folder": (tmp_path / "proj").as_uri()}), encoding="utf-8"
+            )
+        log = ws / "chatSessions" / f"{SESSION_ID}.jsonl"
+        log.write_text(session or FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+        return user
+
+    def _find(self, user: Path, **kw):
+        from agentwatch.agents.copilot_vscode import find_copilot_vscode_agents
+
+        return find_copilot_vscode_agents(user_dir=user, require_running=False, **kw)
+
+    def test_happy_path(self, tmp_path):
+        from agentwatch.cursor_discovery import _synthetic_pid
+
+        user = self._user_dir(tmp_path)
+        [proc] = self._find(user)
+        assert proc.agent_type == "copilot-vscode"
+        assert proc.log_file == user / "workspaceStorage/hash1/chatSessions" / f"{SESSION_ID}.jsonl"
+        assert proc.session_id == SESSION_ID
+        assert proc.pid == _synthetic_pid(SESSION_ID)
+        assert proc.working_directory == tmp_path / "proj"
+        assert proc.command == "vscode (copilot)"
+        assert proc.uptime
+
+    def test_recency_cutoff(self, tmp_path):
+        user = self._user_dir(tmp_path)
+        log = next(user.glob("workspaceStorage/*/chatSessions/*.jsonl"))
+        mtime = log.stat().st_mtime
+        assert len(self._find(user, now=mtime + 1799)) == 1
+        assert self._find(user, now=mtime + 1801) == []
+
+    def test_unresolved_workspace_skipped(self, tmp_path):
+        assert self._find(self._user_dir(tmp_path, folder=False)) == []
+
+    def test_empty_session_skipped(self, tmp_path):
+        empty = json.dumps({"kind": 0, "v": {"sessionId": SESSION_ID, "requests": []}})
+        assert self._find(self._user_dir(tmp_path, session=empty + "\n")) == []
+
+    def test_missing_dir_and_process_gate(self, tmp_path, monkeypatch):
+        from agentwatch import agents
+        from agentwatch.agents import copilot_vscode
+
+        assert self._find(tmp_path / "nope") == []
+        monkeypatch.setattr(copilot_vscode, "_vscode_running", lambda: False)
+        assert copilot_vscode.find_copilot_vscode_agents(user_dir=self._user_dir(tmp_path)) == []
+        monkeypatch.setattr(copilot_vscode, "find_copilot_vscode_agents", lambda: ["x"])
+        assert agents.get("copilot-vscode").discover() == ["x"]
