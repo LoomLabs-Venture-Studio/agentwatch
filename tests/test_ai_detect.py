@@ -131,3 +131,39 @@ def test_unresolvable_domains_reported():
     r = run([], [])
     assert "api.anthropic.com" not in r.unresolved
     assert "api.mistral.ai" in r.unresolved
+
+
+def test_ollama_listener_counted_when_name_matches():
+    r = run(
+        [conn(5, lport=11434, status="LISTEN")],
+        [FakeProc(5, "ollama.exe", r"C:\Ollama\ollama.exe")],
+    )
+    [u] = r.usages
+    assert (u.local_runtime, u.connections, u.providers) == ("ollama", 0, set())
+
+
+def test_llm_port_owned_by_unrelated_process_ignored():
+    r = run([conn(5, lport=11434, status="LISTEN")], [FakeProc(5, "node.exe")])
+    assert r.usages == []
+
+
+def test_access_denied_falls_back_per_process_and_marks_partial():
+    class Proc(FakeProc):
+        def net_connections(self, kind):
+            if self.pid == 2:
+                raise psutil.AccessDenied(self.pid)
+            return [conn(None, "160.79.104.10")]
+
+    table = {1: Proc(1, "Orca.exe"), 2: Proc(2, "secret.exe")}
+
+    def denied(kind):
+        raise psutil.AccessDenied()
+
+    r = detect(
+        resolve=fake_resolve,
+        connections=denied,
+        process_iter=lambda: list(table.values()),
+        process=lambda pid: table[pid],
+    )
+    assert r.partial is True
+    assert [u.pid for u in r.usages] == [1]
