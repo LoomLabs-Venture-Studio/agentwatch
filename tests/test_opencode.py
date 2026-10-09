@@ -23,7 +23,12 @@ from agentwatch.detectors.security.secret_scanner import (
     extract_scannable_content,
 )
 from agentwatch.discovery import AgentProcess, match_process_adapter
-from agentwatch.parser.logs import UnsupportedLogFormatError, parse_file
+from agentwatch.parser.logs import (
+    LogUnreadableError,
+    UnsupportedLogFormatError,
+    ensure_supported_log,
+    parse_file,
+)
 from agentwatch.parser.models import ActionBuffer, ToolType
 from agentwatch.parser.opencode import latest_session, message_actions, open_readonly
 from agentwatch.parser.watcher import MultiLogWatcher, OpencodeWatcher
@@ -347,3 +352,90 @@ class TestWatcher:
         assert warning.signal == "secret_leak"
         assert "github" in warning.message.lower()
         assert secret_write.file_path == "/home/user/aw-test/notes.txt"
+
+
+def _bash_step(conn):
+    """(time_created, message data, bash part data) of BOARD's last step."""
+    created, data = conn.execute(
+        "SELECT time_created, data FROM message WHERE session_id = ? "
+        "ORDER BY time_created DESC LIMIT 1", (BOARD,),
+    ).fetchone()
+    (bash,) = conn.execute(
+        "SELECT data FROM part WHERE session_id = ? AND data LIKE '%\"tool\":\"bash\"%'",
+        (BOARD,),
+    ).fetchone()
+    return created, json.loads(data), json.loads(bash)
+
+
+def _bad_part(msg, part):
+    return msg, '["x"]'
+
+
+def _bad_metadata(msg, part):
+    part["state"]["metadata"] = "z"
+    return msg, json.dumps(part)
+
+
+def _bad_time(msg, part):
+    msg["time"] = 123
+    return msg, json.dumps(part)
+
+
+def _bad_tokens(msg, part):
+    msg["tokens"]["input"] = "abc"
+    return msg, json.dumps(part)
+
+
+def _bad_cost(msg, part):
+    msg["cost"] = "free"
+    return msg, json.dumps(part)
+
+
+class TestMalformedRows:
+    """#70: schema-valid rows with malformed JSON are skipped, never fatal."""
+
+    @pytest.fixture(params=[_bad_part, _bad_metadata, _bad_time, _bad_tokens, _bad_cost])
+    def bad_db(self, request, db):
+        conn = sqlite3.connect(db)
+        created, msg, part = _bash_step(conn)
+        msg, part_data = request.param(msg, part)
+        conn.execute("INSERT INTO message VALUES ('msg_bad', ?, ?, ?, ?)",
+                     (BOARD, created + 10, created + 10, json.dumps(msg)))
+        conn.execute("INSERT INTO part VALUES ('prt_bad', 'msg_bad', ?, ?, ?, ?)",
+                     (BOARD, created + 11, created + 11, part_data))
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_check_skips_bad_row(self, bad_db):
+        actions = list(parse_file(bad_db, session_id=BOARD))
+        assert [a.tool_name for a in actions][:6] == [
+            "user_message", "read", "write", "bash", "read", "text_output",
+        ]
+
+    def test_watch_skips_bad_row(self, bad_db):
+        watcher = OpencodeWatcher(bad_db, session_id=BOARD)
+        assert len(watcher._poll_once()) >= 6
+        assert watcher._poll_once() == []
+
+
+class TestLockedDb:
+    """#70: a locked db is reported as locked, not as an unsupported format."""
+
+    @pytest.fixture
+    def locked(self, db):
+        conn = sqlite3.connect(db, isolation_level=None)  # fixture is rollback-journal
+        conn.execute("BEGIN EXCLUSIVE")
+        yield db
+        conn.execute("ROLLBACK")
+        conn.close()
+
+    def test_check_says_locked(self, locked):
+        with pytest.raises(LogUnreadableError, match="locked"):
+            ensure_supported_log(locked)
+            list(parse_file(locked, session_id=BOARD))
+
+    def test_watch_waits_out_lock(self, locked):
+        # Not rejected as unsupported: watch starts, and OpencodeWatcher's
+        # poll retries (sqlite3.Error) until the lock is released.
+        ensure_supported_log(locked)

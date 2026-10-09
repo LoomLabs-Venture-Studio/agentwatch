@@ -100,6 +100,10 @@ class OpencodeAdapter(BaseAdapter):
                 )
             finally:
                 conn.close()
+        except sqlite3.OperationalError as e:
+            # Locked by a writer: can't check the schema, so let the parser
+            # report it as locked rather than as an unsupported format (#70).
+            return "locked" in str(e)
         except sqlite3.Error:
             return False
 

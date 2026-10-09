@@ -465,6 +465,15 @@ class UnsupportedLogFormatError(ValueError):
         super().__init__(f"unsupported log format: {path} ({reason})")
 
 
+class LogUnreadableError(Exception):
+    """A recognised log that cannot be read right now (e.g. a locked SQLite db)."""
+
+    def __init__(self, path: Path, reason: str):
+        self.path = path
+        self.reason = reason
+        super().__init__(f"cannot read log: {path} ({reason})")
+
+
 # How many decoded dict entries may be unrecognised ("unknown") before a log
 # counts as an unsupported format. "skip" entries, undecodable lines and
 # non-dict JSON don't count. Shared by sniff_jsonl_format, _parse_jsonl and
