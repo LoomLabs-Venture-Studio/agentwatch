@@ -21,8 +21,8 @@ machine). Gemini CLI is wired end-to-end but fixture-verified only
 (format checked against the gemini-cli 0.62.0/0.63.0 source; no local
 Gemini session to live-test, 2026-10-07). GitHub Copilot in VS Code
 (agent-mode chats, read from VS Code's `chatSessions/*.jsonl` mutation
-logs) is wired end-to-end, built from a real VS Code 1.140 session; live
-verification pending (#87). The ChatGPT desktop app's
+logs) is wired end-to-end and live-verified on Windows (VS Code 1.140,
+2026-10-09, #87): `ps`, the `watch-all` engine (headless) and `check`. The ChatGPT desktop app's
 Codex view runs the same Codex engine and writes the same rollouts as
 Codex CLI, and is live-verified on Windows (2026-10-09, #74): `ps`, the
 `watch-all` engine (headless) and `check` against one real code-mode
@@ -142,7 +142,7 @@ src/agentwatch/
                        delete), emits each tool call once by toolCallId
                        when final, one assistant_message per finished
                        request. Built from a real VS Code 1.140 session
-                       (scrubbed fixture); live verification pending
+                       (scrubbed fixture); live-verified 2026-10-09
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping
