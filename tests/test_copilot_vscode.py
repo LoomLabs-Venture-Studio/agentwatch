@@ -163,6 +163,14 @@ class TestSuccess:
             a = self._one(_tool_part(isConfirmed=conf))
             assert (a.success, a.error_message) == (False, msg)
 
+    def test_unconfirmed_at_request_end_is_failed(self):
+        part = _tool_part()  # no isConfirmed: still waiting for the user
+        assert self._one(part) is None
+        assert self._one(part, model_state=4) is None
+        for state in (1, 2, 3):  # VS Code's loader treats it as denied
+            a = self._one(part, model_state=state)
+            assert (a.success, a.error_message) == (False, "not confirmed")
+
     def test_result_error_string(self):
         a = self._one(_tool_part(isConfirmed={"type": 1}, resultError="boom"))
         assert (a.success, a.error_message) == (False, "boom")

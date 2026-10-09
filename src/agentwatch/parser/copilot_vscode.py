@@ -11,7 +11,8 @@ gives the session state. Built from a real VS Code 1.140 session (fixture
 
 Serialized tool parts always say ``isComplete: true`` (``ChatToolInvocation.
 toJSON()`` hard-codes it), so a call is only taken as final when it has
-``isConfirmed`` and a result, a later model part, or its request finished.
+``isConfirmed`` and a result, a later model part, or its request finished. A
+call still unconfirmed when its request finishes is reported as failed.
 """
 
 from __future__ import annotations
@@ -95,7 +96,10 @@ def _int(value: Any) -> int:
 
 
 def _refusal(confirmed: Any) -> str | None:
-    """"denied" / "skipped" for a ToolConfirmKind 0 / 5 (or pre-1.104 ``false``)."""
+    """"denied" / "skipped" for a ToolConfirmKind 0 / 5 (or pre-1.104 ``false``);
+    "not confirmed" when absent (only asked once the request is finished)."""
+    if confirmed is None:
+        return "not confirmed"  # VS Code's loader treats it as denied
     if confirmed is False:
         return "denied"
     if isinstance(confirmed, dict):
@@ -111,7 +115,7 @@ def _exit_code(part: dict) -> Any:
 
 def _is_final(part: dict, later: list[dict], finished: bool) -> bool:
     if part.get("isConfirmed") is None:
-        return False  # still waiting for the user to confirm
+        return finished  # waiting for the user, unless the request already ended
     if _refusal(part["isConfirmed"]):
         return True
     if _exit_code(part) is not None or part.get("resultError") or (
