@@ -171,3 +171,22 @@ class TestSuccess:
     def test_bad_request_shapes_never_raise(self):
         assert actions({"requests": [None, {"response": "x"}, {"response": [None, 1]}]}) == []
         assert actions({"requests": "x"}) == []
+
+
+class TestAdapter:
+    def test_sniff_and_claims(self):
+        from agentwatch import agents
+        from agentwatch.agents.base import sniff_jsonl_format
+
+        assert sniff_jsonl_format(FIXTURE) == "copilot_vscode"
+        assert agents.adapter_for(FIXTURE).name == "copilot-vscode"
+        assert not agents.get("claude-code").claims(FIXTURE)
+
+    def test_parse_file(self):
+        from agentwatch.parser.logs import parse_file
+
+        got = list(parse_file(FIXTURE))
+        assert [a.tool_name for a in got] == [
+            "copilot_readFile", "copilot_memory", "copilot_applyPatch",
+            "run_in_terminal", "run_in_terminal", "assistant_message",
+        ]

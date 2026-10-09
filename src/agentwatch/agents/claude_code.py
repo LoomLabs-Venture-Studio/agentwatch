@@ -36,11 +36,11 @@ class ClaudeCodeAdapter(BaseAdapter):
         return discovery._resolve_claude_code_log(cwd, pid=pid)
 
     def claims(self, path: Path) -> bool:
-        # Every JSONL that isn't Codex/Copilot/agy/Gemini or unrecognised -- including
+        # Every JSONL that isn't another agent's or unrecognised -- including
         # missing/undecidable files, which parse_file() has always treated as
         # Claude Code/Moltbot.
         return path.suffix == ".jsonl" and sniff_jsonl_format(path) not in (
-            "codex", "copilot", "agy", "gemini", "unknown",
+            "codex", "copilot", "agy", "gemini", "copilot_vscode", "unknown",
         )
 
     def make_watcher(self, source: AgentProcess | Path, session_id: str | None) -> Watcher:
