@@ -55,6 +55,9 @@ agentwatch watch-all
 # List running agent processes
 agentwatch ps
 
+# List every program using AI right now (any app or CLI)
+agentwatch detect
+
 # Token usage stats
 agentwatch stats
 agentwatch stats --burn
@@ -305,6 +308,26 @@ agentwatch ps
 # JSON output for scripting
 agentwatch ps --json
 ```
+
+### AI-Use Detection
+
+```bash
+# Programs on this machine using AI right now, supported or not
+agentwatch detect
+
+# JSON output for scripting
+agentwatch detect --json
+```
+
+`agentwatch detect` lists programs that are talking to an AI provider
+(Anthropic, OpenAI, Google, Copilot, Cursor, Mistral, xAI, DeepSeek,
+OpenRouter, Groq) or serving a local LLM (Ollama, LM Studio) right now,
+including ones agentwatch can't monitor yet. Browsers are excluded. It is
+local and read-only: it reads process names, executable paths and socket
+tables, and its only network traffic is DNS lookups of those providers'
+domains (your DNS resolver will see them). Live-verified on Windows
+(unelevated). On macOS/Linux, other users' processes need root and the scan
+is reported as partial; this path is fixture-verified only.
 
 ### Token Usage Stats
 

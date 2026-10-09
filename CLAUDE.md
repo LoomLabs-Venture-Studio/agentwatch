@@ -48,7 +48,7 @@ want a "fitness tracker + security guard" for those agents.
 ```
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
-                       list-detectors, security-scan, themes, stats, audit.
+                       detect, list-detectors, security-scan, themes, stats, audit.
                        Entry points: `agentwatch` and `agentguard`
                        (security-first alias), both -> agentwatch.cli
   __init__.py          Public package API re-exporting detectors/health/parser/etc.
@@ -69,6 +69,12 @@ src/agentwatch/
                        Claude Code's `_find_open_jsonl` via `psutil.Process.
                        open_files()`) before falling back to cwd/mtime
                        heuristics
+  ai_detect.py         Machine-wide AI-use detection for `agentwatch detect`:
+                       resolves AI_PROVIDERS domains to IPs, attributes
+                       psutil socket-table connections to PIDs, checks
+                       Ollama/LM Studio ports, excludes browsers (board
+                       decision 2026-10-09), maps to adapters via
+                       match_process_adapter. Read-only, no admin on Windows
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess

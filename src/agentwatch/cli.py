@@ -651,6 +651,83 @@ def ps(json_output: bool):
         _print_agents_view(agents)
 
 
+@cli.command()
+@click.option(
+    "--json", "json_output",
+    is_flag=True,
+    help="Output as JSON for scripting",
+)
+def detect(json_output: bool):
+    """List programs on this machine that are using AI right now."""
+    from agentwatch import ai_detect  # call-time lookup: tests monkeypatch detect
+
+    result = ai_detect.detect()
+
+    if json_output:
+        click.echo(json.dumps({
+            "usages": [
+                {
+                    "pid": u.pid,
+                    "name": u.name,
+                    "exe": u.exe,
+                    "providers": sorted(u.providers),
+                    "connections": u.connections,
+                    "local_runtime": u.local_runtime,
+                    "adapter": u.adapter,
+                }
+                for u in result.usages
+            ],
+            "partial": result.partial,
+            "unresolved": result.unresolved,
+        }, indent=2))
+        return
+
+    click.echo()
+    click.echo("╔══════════════════════════════════════════════════╗")
+    click.echo("  AI IN USE ON THIS MACHINE")
+    click.echo("╚══════════════════════════════════════════════════╝")
+    click.echo()
+
+    all_domains = sum(len(d) for d in ai_detect.AI_PROVIDERS.values())
+    if len(result.unresolved) == all_domains:
+        click.echo(
+            "  Could not resolve any AI domain (offline?); only local runtimes were checked."
+        )
+        click.echo()
+
+    if not result.usages:
+        click.echo("  No programs using AI found.")
+    else:
+        click.echo(
+            f"  {'PID':<8}{'PROGRAM':<20}{'PROVIDERS':<22}{'CONNS':>6}  {'LOCAL':<11}SUPPORTED"
+        )
+        for u in result.usages:
+            name = u.name if len(u.name) <= 18 else u.name[:15] + "..."
+            providers = ",".join(sorted(u.providers)) or "-"
+            if len(providers) > 20:
+                providers = providers[:17] + "..."
+            supported = (
+                click.style(u.adapter, fg="green") if u.adapter
+                else click.style("no", fg="yellow")
+            )
+            click.echo(
+                f"  {u.pid:<8}{name:<20}{providers:<22}{u.connections:>6}  "
+                f"{u.local_runtime or '-':<11}{supported}"
+            )
+        unmonitored = sum(1 for u in result.usages if u.adapter is None)
+        click.echo()
+        click.echo(
+            f"  {len(result.usages)} program(s) using AI "
+            f"({unmonitored} not monitored by agentwatch)"
+        )
+
+    if result.partial:
+        click.echo("  Partial scan: run as administrator/root to see all processes")
+    if result.unresolved and len(result.unresolved) < all_domains:
+        click.echo(f"  Could not resolve: {', '.join(result.unresolved)}")
+    click.echo()
+
+
 def _print_agents_view(agents: list[AgentProcess]) -> None:
     """Print agents as a simple list (no sub-agents present)."""
     # Table header
