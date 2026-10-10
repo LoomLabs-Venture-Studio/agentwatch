@@ -144,7 +144,11 @@ src/agentwatch/
                        delete), emits each tool call once by toolCallId
                        when final, one assistant_message per finished
                        request. Built from a real VS Code 1.140 session
-                       (scrubbed fixture); live-verified 2026-10-09
+                       (scrubbed fixture); live-verified 2026-10-09,
+                       ps/check re-verified on 1.141 (2026-10-10). VS Code
+                       can hold a background window's session writes
+                       (seen once: 15 min, flushed when the window was
+                       brought up); a visible window flushed in seconds
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping
