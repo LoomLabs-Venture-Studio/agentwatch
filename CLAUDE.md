@@ -79,7 +79,9 @@ src/agentwatch/
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
                        entries); no OS process per composer, so pid/log_file
-                       are synthetic (see module docstring)
+                       are synthetic (see module docstring); synthetic pids
+                       are a crc32 of the session id, stable across runs
+                       (#90)
   vscode_paths.py      default_user_dir(app): per-OS VS Code-family User
                        dir ("Code", "Cursor")
   cc_stats.py          Parses ~/.claude/projects/*.jsonl for token-usage /
@@ -153,7 +155,8 @@ src/agentwatch/
                        timer poll + lastUpdatedAt watermark, optional
                        composer_id_filter), CopilotVscodeWatcher (VS Code
                        chat session, whole-file replay + emitted-key set on
-                       a watchfiles trigger), OpencodeWatcher (opencode.db,
+                       a watchfiles trigger; finished requests settle 1 s
+                       before emit (#91)), OpencodeWatcher (opencode.db,
                        timer poll + emitted-message-id set), and
                        MultiLogWatcher
                        (multi-file/DB, process/team-aware, dispatches to
