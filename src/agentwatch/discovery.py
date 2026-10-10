@@ -50,6 +50,17 @@ def program_path(cmdline: list[str], name: str = "") -> str:
     return cmdline[0]
 
 
+def _is_program_dir(cwd: Path, cmdline: list[str], name: str = "") -> bool:
+    """Whether *cwd* is the directory of the process's own executable."""
+    try:
+        exe_dir = Path(program_path(cmdline, name)).parent
+        if not exe_dir.is_absolute():
+            return False
+        return os.path.normcase(exe_dir.resolve()) == os.path.normcase(cwd.resolve())
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
 def match_process_adapter(cmdline: list[str], name: str = "") -> _agents.AgentAdapter | None:
     """First process adapter whose pattern matches the program.
 
@@ -64,6 +75,8 @@ def match_process_adapter(cmdline: list[str], name: str = "") -> _agents.AgentAd
             continue
         if adapter.process_exclude and re.search(adapter.process_exclude, command):
             continue
+        if adapter.process_exclude_args.intersection(cmdline[1:]):
+            continue
         return adapter
     return None
 
@@ -74,7 +87,7 @@ class AgentProcess:
 
     pid: int
     agent_type: str  # "claude-code", "aider", "codex", etc.
-    working_directory: Path
+    working_directory: Path | None  # None: no project known (#94)
     log_file: Path | None = None
     session_id: str | None = None
     cpu_percent: float = 0.0
@@ -97,8 +110,8 @@ class AgentProcess:
 
     @property
     def project_name(self) -> str:
-        """Extract project name from working directory."""
-        return self.working_directory.name
+        """Extract project name from working directory ("" when unknown)."""
+        return self.working_directory.name if self.working_directory else ""
 
     @property
     def is_root(self) -> bool:
@@ -119,7 +132,7 @@ class AgentTeam:
 
     @property
     def name(self) -> str:
-        return f"{self.root.agent_type}:{self.root.project_name}"
+        return f"{self.root.agent_type}:{self.root.project_name or '---'}"
 
     @property
     def member_count(self) -> int:
@@ -258,11 +271,17 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                     cache.log_by_pid[pid] = (log_file, session_id)
                     cache.cwd_by_pid[pid] = cwd
 
+            # Without a rollout cwd, the app-server's cwd is its own bin\<hash>
+            # dir: no project (#94). The cache keeps that cwd for resolve_log.
+            project: Path | None = cwd
+            if agent_type == "codex" and _is_program_dir(cwd, cmdline, name):
+                project = None
+
             agents.append(
                 AgentProcess(
                     pid=pid,
                     agent_type=agent_type,
-                    working_directory=cwd,
+                    working_directory=project,
                     log_file=log_file,
                     session_id=session_id,
                     cpu_percent=cpu_percent,

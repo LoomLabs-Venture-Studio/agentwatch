@@ -21,7 +21,7 @@ _LEGACY_PATTERNS = {
             r"|[/\\]claude[/\\]versions[/\\][^/\\]+$"
             r"|[/\\]@anthropic-ai[/\\]claude-code[/\\]cli\.js$"
         ),
-        "exclude": r"Claude\.app|Claude Helper",
+        "exclude": r"Claude\.app|Claude Helper|WindowsApps[/\\]Claude_",
     },
     "aider": {"pattern": r"(^|[/\\])aider(\.exe)?$", "exclude": None},
     "codex": {"pattern": r"(^|[/\\])codex(\.exe|\.js)?$", "exclude": None},
@@ -40,7 +40,8 @@ def _write_jsonl(path: Path, entries: list[dict]) -> Path:
 class TestRegistryShape:
     def test_order(self):
         assert [a.name for a in agents.ADAPTERS] == [
-            "claude-code", "aider", "codex", "cursor", "copilot", "agy", "opencode", "gemini",
+            "claude-code", "aider", "codex", "cursor", "copilot-vscode", "copilot", "agy",
+            "opencode", "gemini",
         ]
 
     def test_get(self):
@@ -51,7 +52,7 @@ class TestRegistryShape:
         assert [a.name for a in agents.process_adapters()] == [
             "claude-code", "aider", "codex", "copilot", "agy", "opencode", "gemini",
         ]
-        assert [a.name for a in agents.editor_adapters()] == ["cursor"]
+        assert [a.name for a in agents.editor_adapters()] == ["cursor", "copilot-vscode"]
 
     def test_process_patterns_match_legacy(self):
         got = {

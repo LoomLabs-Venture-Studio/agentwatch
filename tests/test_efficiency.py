@@ -182,8 +182,10 @@ class TestCacheThrash:
         buffer = ActionBuffer(max_size=2000)
         now = datetime.now()
         for i in range(10):
+            # Fresh input counts as a cache miss (#82). Real Claude Code
+            # sessions send almost none (262 of 16.1M prompt tokens).
             buffer.add(_make_action(
-                tokens_in=500,
+                tokens_in=10,
                 tokens_out=200,
                 cache_creation_tokens=100,
                 cache_read_tokens=900,

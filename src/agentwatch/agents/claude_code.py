@@ -25,7 +25,10 @@ class ClaudeCodeAdapter(BaseAdapter):
         r"|[/\\]claude[/\\]versions[/\\][^/\\]+$"
         r"|[/\\]@anthropic-ai[/\\]claude-code[/\\]cli\.js$"
     )
-    process_exclude = r"Claude\.app|Claude Helper"
+    # Claude Desktop (macOS bundle; Windows Store install) is not the CLI.
+    process_exclude = r"Claude\.app|Claude Helper|WindowsApps[/\\]Claude_"
+    # Claude in Chrome's bridge runs the CLI binary but is no session.
+    process_exclude_args = frozenset({"--chrome-native-host"})
 
     def resolve_log(self, cwd: Path, pid: int | None) -> tuple[Path | None, str | None]:
         from agentwatch import discovery  # call-time lookup: tests monkeypatch this
@@ -33,11 +36,11 @@ class ClaudeCodeAdapter(BaseAdapter):
         return discovery._resolve_claude_code_log(cwd, pid=pid)
 
     def claims(self, path: Path) -> bool:
-        # Every JSONL that isn't Codex/Copilot/agy/Gemini or unrecognised -- including
+        # Every JSONL that isn't another agent's or unrecognised -- including
         # missing/undecidable files, which parse_file() has always treated as
         # Claude Code/Moltbot.
         return path.suffix == ".jsonl" and sniff_jsonl_format(path) not in (
-            "codex", "copilot", "agy", "gemini", "unknown",
+            "codex", "copilot", "agy", "gemini", "copilot_vscode", "unknown",
         )
 
     def make_watcher(self, source: AgentProcess | Path, session_id: str | None) -> Watcher:

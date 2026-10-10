@@ -605,7 +605,9 @@ def ps(json_output: bool):
                             "team_id": a.team_id,
                             "agent_type": a.agent_type,
                             "project": a.project_name,
-                            "working_directory": str(a.working_directory),
+                            "working_directory": (
+                                str(a.working_directory) if a.working_directory else None
+                            ),
                             "log_file": str(a.log_file) if a.log_file else None,
                             "session_id": a.session_id,
                             "cpu_percent": a.cpu_percent,
@@ -624,7 +626,7 @@ def ps(json_output: bool):
                     "parent_pid": a.parent_pid,
                     "agent_type": a.agent_type,
                     "project": a.project_name,
-                    "working_directory": str(a.working_directory),
+                    "working_directory": str(a.working_directory) if a.working_directory else None,
                     "log_file": str(a.log_file) if a.log_file else None,
                     "session_id": a.session_id,
                     "cpu_percent": a.cpu_percent,
@@ -732,11 +734,11 @@ def _print_agents_view(agents: list[AgentProcess]) -> None:
     """Print agents as a simple list (no sub-agents present)."""
     # Table header
     click.echo(
-        f"  {'PID':<8}{'TYPE':<14}{'PROJECT':<18}{'SESSION':<10}{'CPU':>6}{'MEM':>8}{'STATUS':>10}"
+        f"  {'PID':<12}{'TYPE':<16}{'PROJECT':<18}{'SESSION':<10}{'CPU':>6}{'MEM':>8}{'STATUS':>10}"
     )
 
     for a in agents:
-        project = a.project_name
+        project = a.project_name or "---"
         if len(project) > 16:
             project = project[:13] + "..."
 
@@ -746,7 +748,7 @@ def _print_agents_view(agents: list[AgentProcess]) -> None:
         status = click.style("active", fg="green")
 
         click.echo(
-            f"  {a.pid:<8}{a.agent_type:<14}{project:<18}{session:<10}"
+            f"  {a.pid:<12}{a.agent_type:<16}{project:<18}{session:<10}"
             f"{cpu_str:>6}{mem_str:>8}   {status}"
         )
 
@@ -768,7 +770,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
 
         # Table header
         click.echo(
-            f"    {'PID':<8}{'TYPE':<14}{'PROJECT':<16}{'SESSION':<10}"
+            f"    {'PID':<12}{'TYPE':<16}{'PROJECT':<16}{'SESSION':<10}"
             f"{'CPU':>6}{'MEM':>8}{'ROLE':>8}"
         )
 
@@ -780,7 +782,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
                 prefix = "  " * a.depth + "├── "
                 role = click.style(f"L{a.depth}", fg="cyan")
 
-            project = a.project_name
+            project = a.project_name or "---"
             max_proj_len = max(14 - len(prefix), 6)
             if len(project) > max_proj_len:
                 project = project[: max_proj_len - 3] + "..."
@@ -791,7 +793,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
             proj_col = f"{prefix}{project}"
 
             click.echo(
-                f"    {a.pid:<8}{a.agent_type:<14}{proj_col:<16}{session:<10}"
+                f"    {a.pid:<12}{a.agent_type:<16}{proj_col:<16}{session:<10}"
                 f"{cpu_str:>6}{mem_str:>8}   {role}"
             )
 

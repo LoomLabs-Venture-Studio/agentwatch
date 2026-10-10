@@ -19,7 +19,10 @@ matches the 2026-10-05 live research, but `ps`/`watch-all` against a
 running opencode has not been live-verified (no install on the dev
 machine). Gemini CLI is wired end-to-end but fixture-verified only
 (format checked against the gemini-cli 0.62.0/0.63.0 source; no local
-Gemini session to live-test, 2026-10-07). The ChatGPT desktop app's
+Gemini session to live-test, 2026-10-07). GitHub Copilot in VS Code
+(agent-mode chats, read from VS Code's `chatSessions/*.jsonl` mutation
+logs) is wired end-to-end and live-verified on Windows (VS Code 1.140,
+2026-10-09, #87): `ps`, the `watch-all` engine (headless) and `check`. The ChatGPT desktop app's
 Codex view runs the same Codex engine and writes the same rollouts as
 Codex CLI, and is live-verified on Windows (2026-10-09, #74): `ps`, the
 `watch-all` engine (headless) and `check` against one real code-mode
@@ -55,7 +58,10 @@ src/agentwatch/
   agents/              One adapter per agent: AgentAdapter protocol +
                        BaseAdapter defaults (base.py) and the ordered
                        ADAPTERS registry (__init__.py: claude-code, aider,
-                       codex, cursor, copilot, agy, opencode, gemini).
+                       codex, cursor, copilot-vscode, copilot, agy,
+                       opencode, gemini). copilot_vscode.py also holds its
+                       discovery (Code.exe/code gate, chats written in the
+                       last 30 min, synthetic pid).
                        Process matching is
                        first-match-wins per PID in that order; adapter_for()
                        picks the first adapter whose claims() accepts a path
@@ -79,7 +85,11 @@ src/agentwatch/
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
                        entries); no OS process per composer, so pid/log_file
-                       are synthetic (see module docstring)
+                       are synthetic (see module docstring); synthetic pids
+                       are a crc32 of the session id, stable across runs
+                       (#90)
+  vscode_paths.py      default_user_dir(app): per-OS VS Code-family User
+                       dir ("Code", "Cursor")
   cc_stats.py          Parses ~/.claude/projects/*.jsonl for token-usage /
                        burn-rate stats; opens files with explicit
                        encoding="utf-8", errors="ignore" (matches
@@ -135,6 +145,16 @@ src/agentwatch/
                        final); adapter in agents/gemini.py resolves the log
                        via ~/.gemini/projects.json. Fixture-verified only
                        (gemini-cli 0.62.0/0.63.0 source), not live-tested
+    copilot_vscode.py    Copilot in VS Code chatSessions/*.jsonl: replays
+                       the mutation log (kind 0 reset/1 set/2 push/3
+                       delete), emits each tool call once by toolCallId
+                       when final, one assistant_message per finished
+                       request. Built from a real VS Code 1.140 session
+                       (scrubbed fixture); live-verified 2026-10-09,
+                       ps/check re-verified on 1.141 (2026-10-10). VS Code
+                       can hold a background window's session writes
+                       (seen once: 15 min, flushed when the window was
+                       brought up); a visible window flushed in seconds
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping
@@ -143,7 +163,10 @@ src/agentwatch/
                        per-session emitted-count cursor on the same
                        watchfiles trigger), CursorWatcher (state.vscdb,
                        timer poll + lastUpdatedAt watermark, optional
-                       composer_id_filter), OpencodeWatcher (opencode.db,
+                       composer_id_filter), CopilotVscodeWatcher (VS Code
+                       chat session, whole-file replay + emitted-key set on
+                       a watchfiles trigger; finished requests settle 1 s
+                       before emit (#91)), OpencodeWatcher (opencode.db,
                        timer poll + emitted-message-id set), and
                        MultiLogWatcher
                        (multi-file/DB, process/team-aware, dispatches to

@@ -516,6 +516,83 @@ class TestChatgptDesktopCodex:
         agent = self._scan(tmp_path, monkeypatch, [_session_meta_line("s", str(project))], scans=2)
         assert agent.working_directory == project
 
-    def test_missing_meta_keeps_process_cwd(self, tmp_path, monkeypatch):
+    def test_missing_meta_reports_no_project(self, tmp_path, monkeypatch):
+        # The app-server's cwd is its own bin dir, never a project (#94).
         agent = self._scan(tmp_path, monkeypatch, [{"type": "response_item", "payload": {}}])
-        assert agent.working_directory == tmp_path / "bin" / "abc123"
+        assert agent.working_directory is None
+
+
+class TestNoProjectForBinDir:
+    """#94: with no rollout cwd, the app-server's bin/<hash> cwd is not a project."""
+
+    def _scan(self, tmp_path, monkeypatch, exe, cwd, log=None, scans=1):
+        import types
+
+        pid = 4243
+        proc = types.SimpleNamespace(info={
+            "pid": pid, "ppid": 1, "cmdline": [str(exe), "app-server"], "name": exe.name,
+            "memory_info": None, "cpu_percent": 0.0, "create_time": None,
+        })
+        monkeypatch.setattr(discovery.psutil, "process_iter", lambda attrs=None: iter([proc]))
+        monkeypatch.setattr(discovery, "_get_process_cwd", lambda p: cwd)
+        def resolve(c, pid=None):
+            return (log(), "s") if log else (None, None)
+
+        monkeypatch.setattr(discovery, "_resolve_codex_log", resolve)
+        cache = discovery.DiscoveryCache()
+        for _ in range(scans):
+            [agent] = [a for a in discovery.find_running_agents(cache) if a.pid == pid]
+        return agent
+
+    def test_app_server_without_rollout(self, tmp_path, monkeypatch, capsys):
+        from agentwatch.cli import _print_agents_view, _print_teams_view
+
+        bin_dir = tmp_path / "bin" / "abc"
+        agent = self._scan(tmp_path, monkeypatch, bin_dir / "codex.exe", bin_dir, scans=2)
+        assert agent.working_directory is None and agent.project_name == ""
+        agent.team_id = agent.pid
+        _print_agents_view([agent])
+        _print_teams_view([agent])
+        rows = [ln for ln in capsys.readouterr().out.splitlines() if str(agent.pid) in ln]
+        assert len(rows) == 2 and all("codex           ---" in r for r in rows)
+        assert "abc" not in "".join(rows)
+
+    def test_app_server_rollout_found_on_a_later_scan(self, tmp_path, monkeypatch):
+        bin_dir, project = tmp_path / "bin" / "abc", tmp_path / "proj"
+        log = tmp_path / "rollout-x.jsonl"
+        _write_jsonl(log, [_session_meta_line("s", str(project))])
+        found = iter([None, log])  # first scan: no rollout; second: resolved
+        agent = self._scan(
+            tmp_path, monkeypatch, bin_dir / "codex.exe", bin_dir, log=lambda: next(found), scans=2
+        )
+        assert agent.working_directory == project
+
+    def test_codex_cli_cwd_unchanged(self, tmp_path, monkeypatch):
+        project = tmp_path / "proj"
+        agent = self._scan(tmp_path, monkeypatch, tmp_path / "npm" / "codex.exe", project)
+        assert agent.working_directory == project and agent.project_name == "proj"
+
+    def test_relative_program_is_not_a_bin_dir(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        agent = self._scan(tmp_path, monkeypatch, Path("codex"), tmp_path)
+        assert agent.working_directory == tmp_path
+
+
+def test_json_ps_emits_null_for_no_project(monkeypatch):
+    from click.testing import CliRunner
+
+    from agentwatch import cli
+    from agentwatch.discovery import AgentProcess
+
+    proc = AgentProcess(pid=7, agent_type="codex", working_directory=None)
+    monkeypatch.setattr(cli, "find_running_agents", lambda: [proc])
+    out = CliRunner().invoke(cli.cli, ["ps", "--json"]).output
+    [row] = json.loads(out)
+    assert row["working_directory"] is None and row["project"] == ""
+
+
+def test_team_name_without_project():
+    from agentwatch.discovery import AgentProcess, AgentTeam
+
+    root = AgentProcess(pid=7, agent_type="codex", working_directory=None)
+    assert AgentTeam(team_id=7, root=root).name == "codex:---"

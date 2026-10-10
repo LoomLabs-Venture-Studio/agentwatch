@@ -16,12 +16,15 @@ would be surfaced/auto-picked as a phantom empty "agent".
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from agentwatch import cursor_discovery
+from agentwatch import cursor_discovery, vscode_paths
 from agentwatch.cursor_discovery import (
     _cursor_synthetic_log_key,
     _file_uri_to_path,
@@ -125,13 +128,13 @@ class TestFileUriToPath:
 
 class TestDefaultCursorUserDir:
     def test_windows_uses_appdata_env_var(self, monkeypatch):
-        monkeypatch.setattr(cursor_discovery.sys, "platform", "win32")
+        monkeypatch.setattr(vscode_paths.sys, "platform", "win32")
         monkeypatch.setenv("APPDATA", r"C:\Users\zaid\AppData\Roaming")
         result = default_cursor_user_dir()
         assert result == Path(r"C:\Users\zaid\AppData\Roaming") / "Cursor" / "User"
 
     def test_windows_falls_back_when_appdata_unset(self, monkeypatch):
-        monkeypatch.setattr(cursor_discovery.sys, "platform", "win32")
+        monkeypatch.setattr(vscode_paths.sys, "platform", "win32")
         monkeypatch.delenv("APPDATA", raising=False)
         result = default_cursor_user_dir()
         assert result == Path.home() / "AppData" / "Roaming" / "Cursor" / "User"
@@ -140,20 +143,20 @@ class TestDefaultCursorUserDir:
         """join(homedir(), 'Library', 'Application Support') + productName,
         confirmed directly against the real VS Code source (see class
         docstring) -- not just "same convention as other forks"."""
-        monkeypatch.setattr(cursor_discovery.sys, "platform", "darwin")
+        monkeypatch.setattr(vscode_paths.sys, "platform", "darwin")
         result = default_cursor_user_dir()
         assert result == Path.home() / "Library" / "Application Support" / "Cursor" / "User"
 
     def test_linux_respects_xdg_config_home_when_set(self, monkeypatch):
         """The real bug this sprint fixed: XDG_CONFIG_HOME was previously
         ignored entirely on Linux."""
-        monkeypatch.setattr(cursor_discovery.sys, "platform", "linux")
+        monkeypatch.setattr(vscode_paths.sys, "platform", "linux")
         monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg/config")
         result = default_cursor_user_dir()
         assert result == Path("/custom/xdg/config") / "Cursor" / "User"
 
     def test_linux_falls_back_to_dot_config_when_xdg_unset(self, monkeypatch):
-        monkeypatch.setattr(cursor_discovery.sys, "platform", "linux")
+        monkeypatch.setattr(vscode_paths.sys, "platform", "linux")
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         result = default_cursor_user_dir()
         assert result == Path.home() / ".config" / "Cursor" / "User"
@@ -193,6 +196,21 @@ class TestSyntheticIdentity:
 
     def test_synthetic_pid_is_positive(self):
         assert _synthetic_pid("composer-abc") >= 0
+
+    def test_synthetic_pid_is_stable_across_processes(self):
+        # hash() is salted per process (#90); ps/watch-all PIDs must not be.
+        code = (
+            "from agentwatch.cursor_discovery import _synthetic_pid;"
+            "print(_synthetic_pid('some-id'))"
+        )
+        got = {
+            subprocess.run(
+                [sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+            ).stdout.strip()
+            for seed in ("1", "2")
+        }
+        assert got == {str(_synthetic_pid("some-id"))}
 
     def test_synthetic_pid_differs_across_composers(self):
         assert _synthetic_pid("composer-a") != _synthetic_pid("composer-b")

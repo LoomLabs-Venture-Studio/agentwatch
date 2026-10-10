@@ -114,7 +114,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .logs import _redact_truncate, classify_tool
-from .models import Action, ToolType
+from .models import USAGE_RECORD, Action, ToolType
 
 # Boundary between the "mid" and "new" (>=0.44) Codex rollout schema eras,
 # per codex-trace's README (three confirmed eras: new >=0.44, mid, oldest
@@ -493,21 +493,27 @@ def _extract_token_count(payload: dict, session_id: str | None, entry: dict) -> 
         return None
 
     info = payload.get("info")
-    tokens_in = 0
-    tokens_out = 0
+    tokens_in = tokens_out = cached = window = 0
     if isinstance(info, dict):
         last_usage = info.get("last_token_usage")
         if isinstance(last_usage, dict):
             tokens_in = last_usage.get("input_tokens") or 0
             tokens_out = last_usage.get("output_tokens") or 0
+            # input_tokens includes the cached part (#82); split it out so
+            # tokens_in is fresh input, as for Claude Code.
+            cached = min(last_usage.get("cached_input_tokens") or 0, tokens_in)
+        window = info.get("model_context_window") or 0
 
     return Action(
         timestamp=_parse_codex_timestamp(entry),
-        tool_name="token_count",
+        tool_name=USAGE_RECORD,
         tool_type=ToolType.UNKNOWN,
         success=True,
-        tokens_in=tokens_in,
+        tokens_in=tokens_in - cached,
         tokens_out=tokens_out,
+        cache_read_tokens=cached,
+        context_window=window if isinstance(window, int) else 0,
+        unpriced=True,
         session_id=session_id,
         raw=entry,
     )
