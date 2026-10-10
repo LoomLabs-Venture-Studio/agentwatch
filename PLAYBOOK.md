@@ -3821,7 +3821,9 @@ manager agent).
 - Known limits (Copilot in VS Code): `watch-all` TUI never run, only its
   engine; no terminal command approved live (fixture only); `check`
   doesn't wait the 1 s settle; macOS process name unverified.
-- Open: Cline adapter (board decision 1, Sprint 30); #80 `agentwatch
-  detect` held for board decision; Codex gaps (one `ps` entry per
+- #80 `e8621a5` (#79): `agentwatch detect` merged on board approval,
+  after `develop` was merged in (1279 passed, 1 skipped). Follow-up #100:
+  `Code.exe`/`Cursor.exe` shown as not monitored.
+- Open: Cline adapter (board decision 1, Sprint 30); Codex gaps (one `ps` entry per
   app-server, `ExecCommandEnd`/`item_completed` exit codes not
   correlated, code-mode `exec` unknown, macOS unverified).
