@@ -262,6 +262,8 @@ def classify_codex_tool(name: str) -> ToolType:
         # execute_spec.rs: freeform "Run JavaScript code"). Its input is a
         # script that calls other tools, so no ToolType fits: left unmapped
         # on purpose, rather than falling into classify_tool's "exec" -> BASH.
+        # The nested calls surface on their own (paginated rollouts only),
+        # see _extract_code_mode_nested (#107).
         return ToolType.UNKNOWN
     return classify_tool(name)
 
@@ -464,6 +466,74 @@ def _extract_patch_apply_end(payload: dict) -> _ExecResult | None:
     return _ExecResult(call_id=call_id, is_error=is_error, error_text=error_text)
 
 
+def _extract_code_mode_nested(payload: dict, session_id: str | None, entry: dict) -> list[Action]:
+    """Surface a tool call made *inside* a code-mode ``exec`` script (#107).
+
+    Source, openai/codex @ 6f47fcb0bea40155ba00a352fd833c2df2738076:
+
+    - Nested calls are never rollout ``function_call``/``custom_tool_call``
+      items: ``core/src/tools/code_mode/mod.rs`` L404-414 dispatches them via
+      ``handle_tool_call_with_source`` and hands ``code_mode_result()`` back to
+      the script. Only the ``exec`` cell itself is a ``custom_tool_call``.
+    - The tool's own lifecycle events still fire, keyed by the nested call id
+      ``format!("{PUBLIC_TOOL_NAME}-{uuid}")``, i.e. ``exec-<uuid>``
+      (``core/src/tools/code_mode/delegate.rs`` L323;
+      ``code-mode-protocol/src/lib.rs`` L54 ``PUBLIC_TOOL_NAME = "exec"``).
+      Direct calls use the model's ``call_id``; user shell commands a bare
+      UUID (``core/src/tasks/user_shell.rs`` L184), so the prefix only
+      matches nested calls.
+    - Paginated rollouts persist those as ``item_completed`` events
+      (``codex-rs/rollout/src/policy.rs`` L132, L250-282): ``CommandExecution``
+      (``command: Vec<String>``, ``status``, ``exit_code``,
+      ``protocol/src/items.rs`` L244-280) and ``FileChange`` (``changes:
+      HashMap<PathBuf, FileChange>``, ``status``, L411-425). Legacy-history
+      rollouts drop both (policy.rs L235-248), so nothing can be recovered
+      there without parsing the script, which this deliberately does not do.
+
+    Only these two item types are surfaced; their ``type`` is used verbatim
+    as ``tool_name`` since the nested tool's own name is not on the item.
+    """
+    if not isinstance(payload, dict) or payload.get("type") != "item_completed":
+        return []
+    item = payload.get("item")
+    if not isinstance(item, dict) or not str(item.get("id", "")).startswith("exec-"):
+        return []
+    kind = item.get("type")
+    status = item.get("status")
+
+    def action(tool_type: ToolType, success: bool, error: str | None, **kw) -> Action:
+        return Action(
+            timestamp=_parse_codex_timestamp(entry),
+            tool_name=kind,
+            tool_type=tool_type,
+            success=success,
+            error_message=error,
+            session_id=session_id,
+            raw=entry,
+            **kw,
+        )
+
+    if kind == "CommandExecution":
+        # Same status/exit_code vocabulary as exec_command_end (items.rs L201).
+        result = _extract_exec_command_end({
+            "type": "exec_command_end",
+            "call_id": item["id"],
+            "status": status,
+            "exit_code": item.get("exit_code"),
+            "stderr": item.get("aggregated_output") or "",
+        })
+        cmd = item.get("command")
+        command = " ".join(str(c) for c in cmd) if isinstance(cmd, list) else None
+        return [action(ToolType.BASH, not result.is_error, result.error_text, command=command)]
+    if kind == "FileChange":
+        failed = status in ("failed", "declined")
+        error = _redact_truncate((item.get("stderr") or "").strip(), 200) if failed else ""
+        changes = item.get("changes")
+        paths = list(changes) if isinstance(changes, dict) and changes else [None]
+        return [action(ToolType.EDIT, not failed, error or None, file_path=p) for p in paths]
+    return []
+
+
 def _extract_token_count(payload: dict, session_id: str | None, entry: dict) -> Action | None:
     """Extract a ``token_count`` ``event_msg`` payload into a synthetic
     Action carrying token totals.
@@ -625,6 +695,10 @@ class CodexParser:
                 pending.action.error_message = output.error_text
             pending.action.incoming_message = output.text
             return [pending.action]
+
+        nested = _extract_code_mode_nested(payload, self.session_id, entry)
+        if nested:
+            return nested
 
         exec_result = _extract_exec_command_end(payload) or _extract_patch_apply_end(payload)
         if exec_result is not None:

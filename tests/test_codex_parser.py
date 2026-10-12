@@ -857,3 +857,61 @@ class TestCustomToolCall:
             },
         ]
         assert [a for line in lines for a in parser.parse_line(line)] == []
+
+
+# ---------------------------------------------------------------------------
+# #107: tool calls made inside a code-mode `exec` script. openai/codex @
+# 6f47fcb0be: nested calls are dispatched straight to the tool runtime and
+# their result goes back to the script, never recorded as a ResponseItem
+# (core/src/tools/code_mode/mod.rs L404-414), but the tool's own lifecycle
+# events still fire with the nested call id "exec-<uuid>"
+# (core/src/tools/code_mode/delegate.rs L323), and paginated rollouts
+# persist the resulting item_completed (codex-rs/rollout/src/policy.rs
+# L132, L250-282).
+# ---------------------------------------------------------------------------
+
+
+def _nested_item(item: dict) -> dict:
+    return {
+        "timestamp": "2026-10-12T10:00:02Z",
+        "type": "event_msg",
+        "payload": {"type": "item_completed", "thread_id": "t1", "turn_id": "turn-1",
+                    "item": item, "completed_at_ms": 20},
+    }
+
+
+class TestCodeModeNestedCalls:
+    def test_nested_command_execution_surfaces_as_bash(self):
+        parser = CodexParser(session_id="s1")
+        parser.parse_line(_custom_call())  # the exec cell itself, pending
+        (a,) = parser.parse_line(_nested_item({
+            "type": "CommandExecution", "id": "exec-6b1c", "command": ["rm", "-rf", "build"],
+            "cwd": "/tmp", "parsed_cmd": [], "source": "unified_exec_startup",
+            "status": "failed", "exit_code": 1, "aggregated_output": "denied",
+        }))
+        assert a.tool_type == ToolType.BASH
+        assert a.command == "rm -rf build"
+        assert a.success is False
+        assert "exit 1" in a.error_message
+        assert a.session_id == "s1"
+        # the exec cell is still pending, untouched
+        assert "call_ct1" in parser._pending
+
+    def test_nested_file_change_surfaces_one_edit_per_path(self):
+        parser = CodexParser()
+        actions = parser.parse_line(_nested_item({
+            "type": "FileChange", "id": "exec-9f2a", "status": "completed",
+            "changes": {"/p/a.py": {"type": "add", "content": "x"},
+                        "/p/b.py": {"type": "update", "unified_diff": "", "move_path": None}},
+        }))
+        assert sorted(a.file_path for a in actions) == ["/p/a.py", "/p/b.py"]
+        assert all(a.tool_type == ToolType.EDIT and a.success for a in actions)
+
+    def test_non_code_mode_ids_are_not_surfaced(self):
+        # direct calls use the model's call_id; user `!` shell commands a bare
+        # UUID (core/src/tasks/user_shell.rs L184). Neither is a nested call.
+        parser = CodexParser()
+        for call_id in ("call_1", "0b7f7e9e-1111-4c4c-9999-123456789abc"):
+            item = {"type": "CommandExecution", "id": call_id, "command": ["ls"],
+                    "status": "completed", "exit_code": 0}
+            assert parser.parse_line(_nested_item(item)) == []
