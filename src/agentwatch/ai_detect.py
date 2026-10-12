@@ -14,7 +14,13 @@ from dataclasses import dataclass, field
 
 import psutil
 
+from agentwatch.agents.copilot_vscode import _CODE_PROCESS_RE
+from agentwatch.cursor_discovery import _CURSOR_PROCESS_RE
 from agentwatch.discovery import match_process_adapter
+
+# Editor adapters have no process pattern (match_process_adapter skips them),
+# so map their gate process names here (#100).
+_EDITOR_PROCESSES = ((_CODE_PROCESS_RE, "copilot-vscode"), (_CURSOR_PROCESS_RE, "cursor"))
 
 # Provider -> domains. Only domains confirmed in vendor docs; add, don't guess.
 AI_PROVIDERS: dict[str, tuple[str, ...]] = {
@@ -169,7 +175,9 @@ def detect(
         except _PROC_ERRORS:
             cmdline = []
         adapter = match_process_adapter(cmdline, name)
-        usage.adapter = adapter.name if adapter else None
+        usage.adapter = adapter.name if adapter else next(
+            (a for rx, a in _EDITOR_PROCESSES if rx.match(name)), None
+        )
         usages.append(usage)
 
     usages.sort(key=lambda u: (u.adapter is not None, -u.connections, u.pid))
