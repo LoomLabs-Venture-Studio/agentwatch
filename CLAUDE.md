@@ -26,7 +26,14 @@ logs) is wired end-to-end and live-verified on Windows (VS Code 1.140,
 Codex view runs the same Codex engine and writes the same rollouts as
 Codex CLI, and is live-verified on Windows (2026-10-09, #74): `ps`, the
 `watch-all` engine (headless) and `check` against one real code-mode
-thread. It watches an agent's session logs as they
+thread. Claude Desktop (Cowork sessions)
+is wired end-to-end and fixture-verified; Windows MSIX path verified against
+the real file layout; app gate live-verified against 2.31226, but current
+VM-mode Cowork sessions are not visible on the host (transcript inside
+sessiondata.vhdx), so only host-loop sessions surface and live
+`ps`/`watch-all` of a session was not achieved (see Known Issues);
+non-Store Windows and macOS paths unverified; MCP logs not parsed
+(redacted by the app). It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
 result as a CLI report, a CI-friendly exit code, or a live Textual TUI. Built
@@ -59,9 +66,9 @@ src/agentwatch/
                        BaseAdapter defaults (base.py) and the ordered
                        ADAPTERS registry (__init__.py: claude-code, aider,
                        codex, cursor, copilot-vscode, copilot, agy,
-                       opencode, gemini). copilot_vscode.py also holds its
-                       discovery (Code.exe/code gate, chats written in the
-                       last 30 min, synthetic pid).
+                       opencode, gemini, claude-desktop). copilot_vscode.py
+                       also holds its discovery (Code.exe/code gate, chats
+                       written in the last 30 min, synthetic pid).
                        Process matching is
                        first-match-wins per PID in that order; adapter_for()
                        picks the first adapter whose claims() accepts a path
@@ -90,6 +97,13 @@ src/agentwatch/
                        (#90)
   vscode_paths.py      default_user_dir(app): per-OS VS Code-family User
                        dir ("Code", "Cursor")
+  claude_desktop_discovery.py  App-gated Claude Desktop Cowork discovery
+                       (app exe path running -> roots holding
+                       local-agent-mode-sessions/ -> non-archived sessions
+                       active in the last 30 min); transcript found by
+                       cliSessionId glob; synthetic pid. Adapter in
+                       agents/claude_desktop.py (editor kind, claims
+                       nothing, delegates watch/parse to claude-code)
   cc_stats.py          Parses ~/.claude/projects/*.jsonl for token-usage /
                        burn-rate stats; opens files with explicit
                        encoding="utf-8", errors="ignore" (matches
@@ -471,6 +485,19 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   scope: Chat/Work views (server-side), per-thread entries, WSL mode,
   `.jsonl.zst` cold rollouts. Spec:
   `docs/superpowers/specs/2026-10-09-chatgpt-desktop-codex-design.md`.
+- **Claude Desktop Cowork: only host-loop sessions are visible** (live check,
+  Desktop 2.31226 MSIX, 2026-10-09). The app gate had to move from process
+  name to exe path: psutil reports Claude Desktop as `claude.exe`, the same
+  name as Claude Code. A Cowork task run live wrote no host-side session
+  (no new `local_*.json`, no transcript `.jsonl` under the package root,
+  `%APPDATA%\Claude` or `~/.claude`); only the VM disk
+  `vm_bundles\claudevm.bundle\sessiondata.vhdx` and
+  `remote-session-spaces.json` changed. All 32 readable sessions have
+  `hostLoopMode: true`, so current sessions appear to run inside the VM with
+  their transcript in the `.vhdx`, which agentwatch does not read. Status:
+  gate live-verified against 2.31226; current VM-mode Cowork sessions not
+  visible on the host (transcript inside sessiondata.vhdx); only host-loop
+  sessions surface; live ps/watch-all of a session not achieved.
 
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
