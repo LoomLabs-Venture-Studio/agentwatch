@@ -3764,3 +3764,66 @@ manager agent).
   --chrome-native-host`; Claude Desktop install path missing from the
   claude-code adapter's `process_exclude`; #75 (`.`/`_` in project path
   encoding); VS Code track (Copilot-in-VS-Code + Cline) brainstorm/spec.
+
+---
+
+### Sprint 31 -- GitHub Copilot in VS Code, Sprint 30 follow-ups (issues #75-#98, 2026-10-10)
+**Type:** feature + bug fixes + docs. Mostly run by the manager agent
+(board delegation): every PR merged after CI green + review + QA.
+
+### Acceptance Criteria
+- [x] #82: Codex dashboard metrics fixed (action count, cache hit rate,
+      context %, cost).
+- [x] #84: `ps` claude-code false positives dropped (`claude.exe
+      --chrome-native-host`, Claude Desktop on Windows).
+- [x] #75: Claude Code project-dir encoding matches the full rule
+      (`.`, `_` and other non-alphanumeric chars).
+- [x] #87: GitHub Copilot in VS Code adapter (`agents/copilot_vscode.py`,
+      `parser/copilot_vscode.py`): replays the
+      `workspaceStorage/*/chatSessions/*.jsonl` mutation log (kind 0
+      reset / 1 set / 2 push / 3 delete); discovery gated on `Code.exe`,
+      chats written in the last 30 min.
+- [x] Live-verified on Windows: `ps`, `watch-all` engine (headless) and
+      `check` on VS Code 1.140; `ps`/`check` re-verified on 1.141.
+- [x] #90: synthetic PIDs for editor agents stable across runs.
+- [x] #91: no stale token counts from a torn read of a finishing write.
+- [x] #94: `ps` never shows the ChatGPT app's `bin\<hash>` dir as the
+      Codex project.
+
+### Spec deviations found live (#89)
+- VS Code always writes `isComplete: true`, so "finished" is inferred
+  from approval plus a result or later output.
+- Token counts are overwritten mid-turn; the token action waits for the
+  request to end.
+- Added: `kind: 3` delete lines, whole-file rewrites, and the
+  `createFile`, `listDirectory`, `replaceString`, `findTextInFiles`
+  tool mappings.
+
+### Result
+- #83 `8ee1adf` (#82). #85 `0cd8e05` (#84). #86 `114c425` (#75).
+- #88 `93c7ef6` (spec) and #89 `aaa05bd` (adapter) for #87.
+- #92 `4bde230` (#90): `_synthetic_pid` uses `zlib.crc32` instead of
+  the salted `hash()`.
+- #93 `9a61473` (#91): a finished request's actions wait 1 s, then the
+  file is re-read before emitting.
+- #95 `5bd1c12` (#94): `ps` shows `---` when no rollout resolves. Root
+  cause on the dev machine: a stray `CODEX_HOME` pointing at a home with
+  no `sessions/`.
+- #96 `ceddebb`: README and `docs/index.md` cover Copilot in VS Code.
+  #97 `352b5d1`: CLAUDE.md notes (crc32 PIDs, 1 s settle).
+- #98 `6aa0c39`: VS Code held a background window's session writes for
+  15 min (chat finished 12:27, on disk 12:42 when the window was brought
+  up); a visible window's write landed in about 23 s. Documented in
+  README and CLAUDE.md.
+- Issues #75, #82, #84 closed by hand (closing keywords don't fire on
+  `develop`).
+- `develop` after #98: 1258 passed, 1 skipped; `ruff check .` clean.
+- Known limits (Copilot in VS Code): `watch-all` TUI never run, only its
+  engine; no terminal command approved live (fixture only); `check`
+  doesn't wait the 1 s settle; macOS process name unverified.
+- #80 `e8621a5` (#79): `agentwatch detect` merged on board approval,
+  after `develop` was merged in (1279 passed, 1 skipped). Follow-up #100:
+  `Code.exe`/`Cursor.exe` shown as not monitored.
+- Open: Cline adapter (board decision 1, Sprint 30); Codex gaps (one `ps` entry per
+  app-server, `ExecCommandEnd`/`item_completed` exit codes not
+  correlated, code-mode `exec` unknown, macOS unverified).
