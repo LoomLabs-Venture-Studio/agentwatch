@@ -118,6 +118,14 @@ def test_maps_supported_agent_and_sorts_unsupported_first():
     ]
 
 
+def test_editor_processes_map_to_editor_adapters():
+    r = run(
+        [conn(1, "160.79.104.10"), conn(2, "160.79.104.10")],
+        [FakeProc(1, "Code.exe", r"C:\x\Code.exe"), FakeProc(2, "Cursor.exe", r"C:\x\Cursor.exe")],
+    )
+    assert sorted(u.adapter for u in r.usages) == ["copilot-vscode", "cursor"]
+
+
 def test_vanished_process_skipped_and_denied_exe_is_none():
     r = run(
         [conn(1, "160.79.104.10"), conn(2, "160.79.104.10")],
