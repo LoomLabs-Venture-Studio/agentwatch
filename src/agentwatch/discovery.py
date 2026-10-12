@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -248,7 +248,9 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
             log_file = None
             session_id = None
             cache_hit = False
-            if cache is not None and pid in cache.log_by_pid:
+            # An app-server's open threads change between scans: always re-resolve (#105).
+            app_server = agent_type == "codex" and "app-server" in cmdline[1:]
+            if cache is not None and pid in cache.log_by_pid and not app_server:
                 cached_log, cached_session = cache.log_by_pid[pid]
                 if cached_log is not None and cached_log.exists():
                     log_file, session_id = cached_log, cached_session
@@ -291,6 +293,8 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                     parent_pid=ppid,
                 )
             )
+            if app_server and log_file is not None:
+                agents.extend(_codex_app_server_threads(agents[-1]))
 
     # Post-process: resolve parent-child relationships between agents
     agent_pids = {a.pid for a in agents}
@@ -630,8 +634,13 @@ def _read_codex_session_meta(path: Path, max_lines: int = 5) -> dict | None:
 
 
 def _find_open_codex_rollout(pid: int, sessions_root: Path) -> Path | None:
-    """Find which ``rollout-*.jsonl`` file under *sessions_root* a specific
-    Codex PID has open.
+    """The most recently written rollout a Codex PID has open, or ``None``."""
+    return next(iter(_find_open_codex_rollouts(pid, sessions_root)), None)
+
+
+def _find_open_codex_rollouts(pid: int, sessions_root: Path) -> list[Path]:
+    """Every ``rollout-*.jsonl`` file under *sessions_root* a specific
+    Codex PID has open, most recently written first.
 
     Mirrors ``_find_open_jsonl``'s exact approach (``psutil.Process.
     open_files()``, cross-platform, no ``lsof`` dependency) but matches
@@ -644,12 +653,12 @@ def _find_open_codex_rollout(pid: int, sessions_root: Path) -> Path | None:
     try:
         open_files = psutil.Process(pid).open_files()
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-        return None
+        return []
 
-    # The ChatGPT desktop app-server serves every thread from one PID and can
-    # hold several rollouts open at once: report the most recently written.
+    # The ChatGPT desktop app-server serves every thread from one PID and
+    # holds one rollout open per loaded thread (see _codex_app_server_threads).
     sessions_root = sessions_root.resolve()
-    best: tuple[float, Path] | None = None
+    found: dict[Path, float] = {}
     for f in open_files:
         path = Path(f.path)
         if path.suffix != ".jsonl" or not path.name.startswith("rollout-"):
@@ -659,9 +668,52 @@ def _find_open_codex_rollout(pid: int, sessions_root: Path) -> Path | None:
             mtime = path.stat().st_mtime
         except (ValueError, OSError):
             continue
-        if best is None or mtime > best[0]:
-            best = (mtime, path)
-    return best[1] if best else None
+        found[path] = mtime
+    return sorted(found, key=found.__getitem__, reverse=True)
+
+
+def _codex_sessions_root() -> Path:
+    codex_home_env = os.environ.get("CODEX_HOME")
+    codex_home = Path(codex_home_env) if codex_home_env else (Path.home() / ".codex")
+    return codex_home / "sessions"
+
+
+def _codex_app_server_threads(primary: AgentProcess) -> list[AgentProcess]:
+    """One extra entry per other rollout a Codex app-server holds open (#105).
+
+    The app-server keeps one live recorder per loaded thread, and each
+    recorder's writer task holds its rollout file open until the thread is
+    shut down (openai/codex @ 6f47fcb0bea40155ba00a352fd833c2df2738076:
+    ``codex-rs/thread-store/src/local/mod.rs`` L149 ``live_recorders:
+    HashMap<ThreadId, LiveRecorderEntry>``; ``codex-rs/rollout/src/recorder.rs``
+    L1790-1800 ``RolloutWriterState.writer``, L1880-1891 ``ensure_writer_open``
+    keeps the handle, L996-998 resume opens it at once, L984-985 a new thread
+    defers it to first materialization; ``thread-store/src/local/
+    live_writer.rs`` L169-207 ``shutdown_thread`` drops it). So open_files()
+    lists exactly the loaded, materialized threads.
+
+    Extra threads get a synthetic CRC32 pid like Cursor composers: pid keys
+    team/depth assignment and the multi-agent TUI's per-pid report maps,
+    which a shared real pid would collide in. The newest thread keeps the
+    real pid.
+    """
+    from agentwatch.cursor_discovery import _synthetic_pid
+
+    extras = []
+    for path in _find_open_codex_rollouts(primary.pid, _codex_sessions_root()):
+        if path == primary.log_file:
+            continue
+        meta = _read_codex_session_meta(path) or {}
+        session_id = meta.get("session_id") or meta.get("id")
+        cwd = meta.get("cwd")
+        extras.append(replace(
+            primary,
+            pid=_synthetic_pid(session_id or str(path)),
+            log_file=path,
+            session_id=session_id,
+            working_directory=Path(cwd) if isinstance(cwd, str) and cwd else None,
+        ))
+    return extras
 
 
 def _resolve_codex_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, str | None]:
@@ -714,9 +766,7 @@ def _resolve_codex_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, 
     content — this is Codex's own permission looseness, not something
     AgentWatch introduces or needs to work around.
     """
-    codex_home_env = os.environ.get("CODEX_HOME")
-    codex_home = Path(codex_home_env) if codex_home_env else (Path.home() / ".codex")
-    sessions_root = codex_home / "sessions"
+    sessions_root = _codex_sessions_root()
     if not sessions_root.is_dir():
         return None, None
 

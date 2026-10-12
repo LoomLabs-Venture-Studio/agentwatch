@@ -472,7 +472,9 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   directory now comes from the rollout's `session_meta.cwd` (the process
   cwd is the bin hash dir), and `_find_open_codex_rollout` picks the most
   recently modified of several open rollouts. One app-server serves all
-  threads, so `ps` shows one entry (the most recently active thread). Live
+  threads; since #105, `ps`/`watch-all` show one entry per open rollout
+  (newest keeps the real pid, others get a CRC32 synthetic pid like Cursor
+  composers), fixture-verified only, no live multi-thread run. Live
   check (Windows, OpenAI.Codex 26.1007.2314.0, bundled codex-cli
   0.162.0-alpha) found code mode logs tool calls as `custom_tool_call` /
   `custom_tool_call_output` (codex-rs `protocol/src/models.rs` L1137/L1158),
@@ -482,7 +484,7 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   `item_completed`/`CommandExecution` exit codes not correlated; macOS
   unverified; a `CODEX_HOME` set in AgentWatch's environment but not the
   app's points discovery at the wrong home. Out of
-  scope: Chat/Work views (server-side), per-thread entries, WSL mode,
+  scope: Chat/Work views (server-side), WSL mode,
   `.jsonl.zst` cold rollouts. Spec:
   `docs/superpowers/specs/2026-10-09-chatgpt-desktop-codex-design.md`.
 - **Claude Desktop Cowork: only host-loop sessions are visible** (live check,
