@@ -22,6 +22,7 @@ Fixture-verified only (no live Cline install; board decision, #104).
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -121,7 +122,7 @@ def _commands(inp: Any) -> str | None:
 
 
 def _first_path(files: Any) -> str | None:
-    """read_files' first path (N schemas.ts:57-99: path / file_path / filePath)."""
+    """read_files' first path (N schemas.ts:57-105: path / file_path / filePath)."""
     first = files[0] if isinstance(files, list) and files else files
     if isinstance(first, str):
         return first
@@ -148,7 +149,9 @@ def _tool_action(block: dict, sdk: bool, ts: Any, sid: str | None) -> Action:
         if name == "run_commands":
             action.command = _commands(inp)
         elif name == "read_files":
-            action.file_path = _first_path(d.get("files", inp))
+            # files / file_paths / paths forms: N extensions/tools/schemas.ts:88-105.
+            files = next((d[k] for k in ("files", "file_paths", "paths") if k in d), inp)
+            action.file_path = _first_path(files)
         elif name == "editor" and isinstance(d.get("path"), str):
             action.file_path = d["path"]
         elif name == "fetch_web_content":
@@ -196,7 +199,10 @@ def _usage_action(msg: dict, sdk: bool, ts: Any, sid: str | None) -> Action | No
     if sdk:
         cache_read = _int(metrics.get("cacheReadTokens"))
         cache_write = _int(metrics.get("cacheWriteTokens"))
-        tokens_in = _int(metrics.get("inputTokens")) + cache_read + cache_write
+        # SDK inputTokens is the full input, cache included (N core/src/services/
+        # agent-events.ts:122-157, apps/vscode/src/sdk/message-translator.ts:102-106);
+        # keep fresh input only, as codex.py/gemini.py do. Clamped like Cline's.
+        tokens_in = max(0, _int(metrics.get("inputTokens")) - cache_read - cache_write)
         tokens_out = _int(metrics.get("outputTokens"))
     else:
         tokens = metrics.get("tokens") if isinstance(metrics.get("tokens"), dict) else {}
@@ -221,8 +227,16 @@ def _usage_action(msg: dict, sdk: bool, ts: Any, sid: str | None) -> Action | No
     )
 
 
+def _content_key(msg: dict) -> str:
+    """Key for a message without ``id``: its content, not its index, since a
+    checkpoint restore truncates the history and later messages reuse indexes."""
+    digest = hashlib.sha1(json.dumps(msg, sort_keys=True, default=str).encode()).hexdigest()
+    return f"m:{msg.get('ts')}:{digest[:12]}"
+
+
 def actions(messages: list, sdk: bool, session_id: str | None = None) -> list[tuple[str, Action]]:
-    """(key, action) per assistant message with metrics (key ``m:<id or #i>``)
+    """(key, action) per assistant message with metrics (key ``m:<id>``, or a
+    content hash without one)
     and per tool call once its result exists (key = tool id), in order.
 
     A ``tool_use`` without a result yet is held back, not emitted.
@@ -245,7 +259,7 @@ def actions(messages: list, sdk: bool, session_id: str | None = None) -> list[tu
             mid = msg.get("id")
             usage = _usage_action(msg, sdk, ts, session_id)
             if usage is not None:
-                out.append((f"m:{mid}" if isinstance(mid, str) else f"m:#{i}", usage))
+                out.append((f"m:{mid}" if isinstance(mid, str) else _content_key(msg), usage))
             for b in blocks:
                 if b.get("type") == "tool_use" and isinstance(b.get("id"), str):
                     pending[b["id"]] = _tool_action(b, sdk, ts, session_id)

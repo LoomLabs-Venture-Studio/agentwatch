@@ -100,11 +100,12 @@ class TestSdk:
         assert got[2].file_path == "/home/dev/project/src/index.ts"
         assert got[3].network_host == "registry.example.org"  # host only, never the query
 
-    def test_tokens_include_cache(self):
+    def test_tokens_are_fresh_input_only(self):
+        # SDK inputTokens already includes cache reads/writes (900 = 500 + 300 + 100).
         usage = _usage(SDK)
         assert len(usage) == 2  # msg-3 has no metrics
         a = usage[0]
-        assert (a.tokens_in, a.tokens_out, a.cost_usd) == (1300, 60, 0.0031)
+        assert (a.tokens_in, a.tokens_out, a.cost_usd) == (500, 60, 0.0031)
         assert (a.cache_read_tokens, a.cache_creation_tokens) == (300, 100)
 
     def test_missing_cost_is_unpriced(self):
@@ -134,6 +135,20 @@ class TestSdk:
     ])
     def test_read_files_input_forms(self, files, want):
         assert cline._first_path(files) == want
+
+    @pytest.mark.parametrize("inp", [
+        {"files": ["/p"]}, {"file_paths": ["/p"]}, {"file_paths": "/p"},
+        {"paths": [{"path": "/p"}]}, {"paths": "/p"}, {"path": "/p"}, "/p",
+    ])
+    def test_read_files_top_level_forms(self, inp):
+        msgs = [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "r", "name": "read_files", "input": inp}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "r", "content": "x"}]},
+        ]
+        (a,) = [a for _, a in cline.actions(msgs, sdk=True)]
+        assert a.file_path == "/p"
 
 
 class TestLoad:
@@ -172,6 +187,56 @@ class TestWatcher:
         self._write(p, msgs)
         (fetch,) = w._read_new_actions()
         assert fetch.tool_name == "web_fetch" and fetch.network_host == "docs.example.com"
+
+    def test_rewrite_after_truncation_emits_new_usage(self, tmp_path):
+        # Checkpoint restore: history truncated, new messages reuse the indexes.
+        from agentwatch.parser.watcher import ClineWatcher
+
+        def asst(n, ts):
+            return {"role": "assistant", "ts": ts, "content": [{"type": "text", "text": n}],
+                    "metrics": {"tokens": {"prompt": n * 10, "completion": 1}, "cost": 0.1}}
+
+        user = {"role": "user", "content": "go"}
+        p = tmp_path / "api_conversation_history.json"
+        self._write(p, [user, asst(1, 1), user, asst(2, 2), user, asst(3, 3)])
+        w = ClineWatcher(p)
+        assert len(w._read_new_actions()) == 3
+        self._write(p, [user, asst(1, 1), user, asst(20, 20), user, asst(30, 30)])
+        assert [a.tokens_in for a in w._read_new_actions()] == [200, 300]
+
+    def test_torn_read_is_retried_on_tick(self, tmp_path):
+        from agentwatch.parser.watcher import ClineWatcher
+
+        p = tmp_path / f"{SID}.messages.json"
+        text = SDK.read_text(encoding="utf-8")
+        p.write_text(text[:100], encoding="utf-8")
+        w = ClineWatcher(p)
+        assert w._read_new_actions() == [] and w._held  # parent re-reads while held
+        p.write_text(text, encoding="utf-8")
+        assert len(w._read_new_actions()) == 6 and not w._held
+
+    async def test_watch_retries_torn_read_without_change(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from agentwatch.parser import cline as parser_cline
+        from agentwatch.parser.watcher import ClineWatcher
+
+        p = tmp_path / f"{SID}.messages.json"
+        p.write_text(SDK.read_text(encoding="utf-8"), encoding="utf-8")
+        real, calls = parser_cline.load, []
+
+        def flaky(path):  # first read torn, later reads whole; the file never changes
+            calls.append(path)
+            return None if len(calls) == 1 else real(path)
+
+        monkeypatch.setattr(parser_cline, "load", flaky)
+        w = ClineWatcher(p)
+
+        async def first():
+            async for a in w.watch():
+                return a
+
+        assert (await asyncio.wait_for(first(), timeout=10)) is not None
 
     def test_torn_rewrite_keeps_state(self, tmp_path):
         from agentwatch.parser.watcher import ClineWatcher

@@ -352,7 +352,6 @@ class CopilotVscodeWatcher:
                     pass  # Don't let callback errors stop watching
 
 
-
 class ClineWatcher(CopilotVscodeWatcher):
     """Watches one Cline task/session file (``parser/cline.py``).
 
@@ -360,19 +359,22 @@ class ClineWatcher(CopilotVscodeWatcher):
     ``modified``, emitted-key set), without its settle step: Cline appends
     whole messages, so a parsed file has no half-written message. The legacy
     temp-file rename shows up as ``added``. The SDK file is rewritten
-    non-atomically, so a torn read fails to parse and is skipped.
+    non-atomically, so a torn read fails to parse; it is skipped and retried
+    on the parent's ``_TICK_MS`` tick, even if no further change arrives.
     """
 
     def _read_new_actions(self, now: float | None = None) -> list[Action]:
         loaded = cline.load(self.path)
+        self._held = loaded is None  # torn mid-write: the parent's tick re-reads
         if loaded is None:
-            return []  # torn mid-write or missing: wait for the next change
+            return []
         new = []
         for key, action in cline.actions(*loaded, session_id=self.session_id):
             if key not in self._emitted:
                 self._emitted.add(key)
                 new.append(action)
         return new
+
 
 class CursorWatcher:
     """Polls a Cursor ``state.vscdb`` for new composer bubble activity.

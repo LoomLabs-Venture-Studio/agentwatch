@@ -297,8 +297,19 @@ names have not been seen in a real history yet. If one is wrong,
 `tokens_in`/`tokens_out` and `cost_usd`.
 
 - Legacy: `prompt`, `completion`, `cost`.
-- SDK: `inputTokens` + `cacheReadTokens` + `cacheWriteTokens` for input,
-  `outputTokens`, `cost`.
+- SDK: input = `max(0, inputTokens - cacheReadTokens - cacheWriteTokens)`.
+  SDK `inputTokens` is the full request input, cache reads and writes
+  included (N `sdk/packages/core/src/services/agent-events.ts:122-157`,
+  `apps/vscode/src/sdk/message-translator.ts:102-106`,
+  `sdk/packages/llms/src/providers/ai-sdk.ts:1165-1168`). Fresh input only
+  matches `codex.py` / `gemini.py`. The cache counts go to
+  `cache_read_tokens` / `cache_creation_tokens`. Output = `outputTokens`,
+  plus `cost`.
+
+**Keys.** A token action is keyed on the message `id`. Without one, the key
+is `ts` plus a hash of the message, not its index: a checkpoint restore
+truncates the history, and the messages written after it reuse the old
+indexes.
 
 `assistant_message` is in `NON_TOOL_ROLE_LABELS`, so `LoopDetector` ignores
 it (Cursor/Copilot precedent). `cost_usd` uses Cline's own reported cost.
@@ -391,6 +402,13 @@ never raises; any failure gives an empty list.
 - Legacy "active" is a recency guess. A task finished less than 30 minutes
   ago is listed.
 - The legacy error rule depends on Cline's English result strings.
+- Legacy `prompt` tokens depend on the provider. The legacy Anthropic
+  provider passes `usage.input_tokens`, which excludes cache (L
+  `core/api/providers/anthropic.ts:190-192`); other providers may include
+  it. The value is used as written.
+- `claims()` goes by file name, so `check --log` on a Roo Code or Kilo Code
+  `api_conversation_history.json` parses it as a Cline file. Discovery
+  covers only `saoudrizwan.claude-dev`. Real fork support is #117 / #118.
 
 ## Out of scope
 
