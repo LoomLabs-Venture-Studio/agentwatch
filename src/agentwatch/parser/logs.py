@@ -496,6 +496,17 @@ def is_binary_file(path: Path) -> bool:
         return False
 
 
+def is_json_array_file(path: Path) -> bool:
+    """True if the file's first non-whitespace character is ``[``: a whole-file
+    JSON array (e.g. a Roo/Kilo ``api_conversation_history.json``), never JSONL."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+    except OSError:
+        return False
+    return head.decode("utf-8-sig", errors="ignore").lstrip().startswith("[")
+
+
 def ensure_supported_log(path: Path) -> None:
     """Raise UnsupportedLogFormatError if no adapter claims *path* and its content
     is binary or unrecognised JSONL. Empty/undecidable files pass (they may
@@ -507,6 +518,8 @@ def ensure_supported_log(path: Path) -> None:
         return
     if is_binary_file(path):
         raise UnsupportedLogFormatError(path, "binary file, not a JSONL agent log")
+    if is_json_array_file(path):
+        raise UnsupportedLogFormatError(path, "a JSON array no adapter claims, not a JSONL log")
     if sniff_jsonl_format(path) == "unknown":
         raise UnsupportedLogFormatError(path, "no recognised agent log records")
 
@@ -653,6 +666,8 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
 
     if is_binary_file(path):
         raise UnsupportedLogFormatError(path, "binary file, not a JSONL agent log")
+    if is_json_array_file(path):
+        raise UnsupportedLogFormatError(path, "a JSON array no adapter claims, not a JSONL log")
 
     sniffer = FormatSniffer()
     log_format = None

@@ -521,7 +521,10 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   XML parsing); legacy failures are detected from Cline's English result
   strings; legacy store read from VS Code stable only (Insiders/VSCodium/
   Cursor/Windsurf: #116); Roo Code and Kilo Code are separate (#117, #118),
-  and `check --log` on their task files currently parses them as Cline;
+  and `check --log` routes an `api_conversation_history.json` by its
+  `globalStorage/<extension id>/` parent, so Roo/Kilo task files are not
+  parsed as Cline, but a copy outside globalStorage (or a Roo
+  `customStoragePath` store) still falls back to Cline;
   non-default VS Code profiles and remote/WSL windows are out of scope;
   `agentwatch detect` credits VS Code traffic to copilot-vscode, never
   Cline; whether the Cline CLI's recorded pid is the CLI or a shared
