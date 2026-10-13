@@ -1,0 +1,12 @@
+[
+  {
+    "id": "1760000000000",
+    "ts": 1760000009000,
+    "task": "Fix the failing test",
+    "tokensIn": 8100,
+    "tokensOut": 265,
+    "totalCost": 0.0279,
+    "cwdOnTaskInitialization": "/home/dev/project",
+    "modelId": "claude-sonnet-4-5"
+  }
+]
