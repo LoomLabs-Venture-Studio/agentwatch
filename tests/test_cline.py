@@ -276,6 +276,24 @@ class TestRouting:
         assert not agents.get("claude-code").claims(SDK)
         assert len(list(parse_file(SDK))) == 6
 
+    @pytest.mark.parametrize("ext_id,want", [
+        ("saoudrizwan.claude-dev", "cline"),
+        ("rooveterinaryinc.roo-cline", None),  # Roo Code (#117)
+        ("kilocode.kilo-code", None),  # Kilo Code (#118)
+    ])
+    def test_legacy_routes_by_extension_id(self, tmp_path, ext_id, want):
+        task = tmp_path / "User" / "globalStorage" / ext_id / "tasks" / TASK_ID
+        task.mkdir(parents=True)
+        log = task / "api_conversation_history.json"
+        shutil.copy(LEGACY, log)
+        got = agents.adapter_for(log)
+        assert (got.name if got else None) == want
+
+    def test_legacy_outside_global_storage_is_cline(self, tmp_path):
+        log = tmp_path / "api_conversation_history.json"  # e.g. a copied file
+        shutil.copy(LEGACY, log)
+        assert agents.adapter_for(log).name == "cline"
+
     def test_does_not_claim_jsonl(self):
         cp = Path(__file__).parent / "fixtures" / "copilot_vscode"
         for p in cp.glob("*.jsonl"):

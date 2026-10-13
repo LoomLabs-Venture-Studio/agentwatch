@@ -67,6 +67,16 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+def _storage_owner(path: Path) -> str | None:
+    """``<ext-id>`` of a ``.../globalStorage/<ext-id>/tasks/<id>/<file>`` path,
+    else None. Cline forks (Roo Code #117, Kilo Code #118) use the same file
+    names under their own extension id."""
+    p = path.parents
+    if len(p) > 3 and p[1].name == "tasks" and p[3].name.lower() == "globalstorage":
+        return p[2].name.lower()
+    return None
+
+
 def _legacy_agents(user_dir: Path, now: float) -> list[AgentProcess]:
     from agentwatch.cursor_discovery import _synthetic_pid
     from agentwatch.discovery import AgentProcess
@@ -170,7 +180,8 @@ class ClineAdapter(BaseAdapter):
 
     def claims(self, path: Path) -> bool:
         if path.name == "api_conversation_history.json":
-            return True
+            # Outside globalStorage (e.g. a copied file) there is no owner to check.
+            return _storage_owner(path) in (None, LEGACY_EXTENSION_ID)
         if not path.name.endswith(".messages.json"):
             return False
         from agentwatch.parser.cline import load
