@@ -294,6 +294,50 @@ class TestRouting:
         shutil.copy(LEGACY, log)
         assert agents.adapter_for(log).name == "cline"
 
+    def test_mixed_case_global_storage_and_id(self, tmp_path):
+        roo = tmp_path / "GlobalStorage" / "RooVeterinaryInc.Roo-Cline" / "tasks" / TASK_ID
+        cl = tmp_path / "GLOBALSTORAGE" / "SaoudRizwan.Claude-Dev" / "tasks" / TASK_ID
+        for d in (roo, cl):
+            d.mkdir(parents=True)
+            shutil.copy(LEGACY, d / "api_conversation_history.json")
+        assert agents.adapter_for(roo / "api_conversation_history.json") is None
+        assert agents.adapter_for(cl / "api_conversation_history.json").name == "cline"
+
+    def test_windows_path_owner(self):
+        from pathlib import PureWindowsPath
+
+        p = PureWindowsPath(
+            r"C:\Users\u\AppData\Roaming\Code\User\globalStorage"
+            r"\kilocode.kilo-code\tasks\1\api_conversation_history.json"
+        )
+        assert cline_agent._storage_owner(p) == "kilocode.kilo-code"
+
+    def test_relative_path_inside_roo_dir_is_rejected(self, tmp_path, monkeypatch):
+        ext = tmp_path / "globalStorage" / "rooveterinaryinc.roo-cline"
+        (ext / "tasks" / TASK_ID).mkdir(parents=True)
+        shutil.copy(LEGACY, ext / "tasks" / TASK_ID / "api_conversation_history.json")
+        monkeypatch.chdir(ext)
+        rel = Path("tasks") / TASK_ID / "api_conversation_history.json"
+        assert not agents.get("cline").claims(rel)
+
+    def test_rejected_fork_file_is_unsupported(self, tmp_path):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+        from agentwatch.parser.logs import UnsupportedLogFormatError, ensure_supported_log
+
+        task = tmp_path / "globalStorage" / "rooveterinaryinc.roo-cline" / "tasks" / TASK_ID
+        task.mkdir(parents=True)
+        log = task / "api_conversation_history.json"
+        log.write_text("\n  " + LEGACY.read_text(encoding="utf-8"), encoding="utf-8")
+        with pytest.raises(UnsupportedLogFormatError):
+            ensure_supported_log(log)
+        result = CliRunner().invoke(cli, ["check", "--log", str(log)])
+        assert result.exit_code == 1
+        assert "unsupported log format" in result.output
+        assert "No actions found" not in result.output
+        ensure_supported_log(LEGACY)  # Cline's own file is claimed: unaffected
+
     def test_does_not_claim_jsonl(self):
         cp = Path(__file__).parent / "fixtures" / "copilot_vscode"
         for p in cp.glob("*.jsonl"):

@@ -71,7 +71,8 @@ def _storage_owner(path: Path) -> str | None:
     """``<ext-id>`` of a ``.../globalStorage/<ext-id>/tasks/<id>/<file>`` path,
     else None. Cline forks (Roo Code #117, Kilo Code #118) use the same file
     names under their own extension id."""
-    p = path.parents
+    # Resolve a relative tasks/<id>/<file> so it still has an owner.
+    p = (path if path.is_absolute() else path.absolute()).parents
     if len(p) > 3 and p[1].name == "tasks" and p[3].name.lower() == "globalstorage":
         return p[2].name.lower()
     return None
