@@ -1,0 +1,148 @@
+Implementation Plan: Live Network Visibility for AgentWatch
+=============================================================
+
+Problem
+-------
+AgentWatch currently has no real network visibility. Its security detectors
+(NetworkAnomalyDetector, DataExfiltrationDetector, C2CommunicationDetector)
+read Action.network_host / Action.network_port, but those fields are only
+populated by the Moltbot log parser. The Claude Code log parser
+(parser/logs.py::parse_claude_code_entry) never sets them, so for Claude Code
+sessions -- the primary supported agent -- host/port-based detection silently
+never fires. The only signal AgentWatch has today is regex string-matching
+against bash command text (e.g. curl, wget, -d), which is easy to miss.
+
+Goal
+----
+Give AgentWatch a way to see, in real time, exactly which hosts/URLs an agent
+process is actually talking to -- independent of what the agent chooses to
+log about itself.
+
+Approach
+--------
+Run the monitored agent as a child process through a local TLS-intercepting
+proxy (mitmproxy/mitmdump). The proxy decrypts and logs each outbound request
+(host, port, url, method, status, size, timestamp) to a side channel.
+AgentWatch tails that channel, converts entries into Action objects with real
+network_host/network_port values, and merges them into the existing
+ActionBuffer timeline alongside tool-call actions.
+
+This introduces a custom, ephemeral root CA trusted only by the wrapped child
+process for the duration of that session (see ADR's Threat Model section for
+the full trust-boundary discussion). It is opt-in via a new `agentwatch run`
+subcommand -- existing check/watch/security-scan behavior is unaffected.
+
+Components
+-----------
+
+1. Proxy launcher (`agentwatch run -- <agent command>`)
+   New CLI subcommand that:
+   - Starts mitmdump on a free local port with a custom addon script.
+   - Generates/uses a session-scoped CA cert, installed only into the child
+     process's trust config (not the system trust store).
+   - Launches the agent as a subprocess with HTTP_PROXY/HTTPS_PROXY set to
+     the local mitmdump port, scoped only to that child process's
+     environment.
+   - Sets the appropriate CA-trust env var for the child's runtime:
+     * Python (requests/httpx): REQUESTS_CA_BUNDLE / SSL_CERT_FILE
+     * Node (most Claude Code-style CLIs): NODE_EXTRA_CA_CERTS
+     * Go binaries: SSL_CERT_FILE (works if using the system cert pool path)
+   - Lifecycle/cleanup: tears down the mitmdump process and deletes the
+     session CA cert on child exit -- clean exit, non-zero exit, AND
+     ungraceful termination (SIGKILL, ctrl-C, crash). Use a signal handler /
+     atexit plus a PID-liveness check on startup to reap any orphaned
+     mitmdump instance from a previous crashed run before binding a new port.
+   - Windows: flagged as an open decision (see below) -- not implemented in
+     v1 build order; `agentwatch run` should detect the platform and print a
+     clear "not yet supported on Windows" message rather than silently
+     failing partway through.
+
+2. mitmproxy addon script (`network_capture_addon.py`)
+   - Hooks the response event.
+   - Writes one JSON line per completed request to a local file (or Unix
+     socket) AgentWatch already knows the path to: host, port, url, method,
+     status_code, request_bytes, response_bytes, timestamp.
+   - URL scrubbing (default, always on): query strings and known
+     secret-shaped path segments (tokens, API keys, presigned-URL
+     signatures) are stripped/redacted before the URL is written, in both
+     metadata and full-capture modes -- a full URL is logged data now, and
+     query strings routinely carry credentials even when "no bodies" are
+     captured. Log host + path with a "?<redacted>" marker when a query
+     string was present.
+   - Two logging modes: metadata (default -- no bodies) and full (opt-in,
+     includes request/response bodies) to avoid silently capturing secrets.
+
+3. Ingestion (`parser/network_capture.py`, new)
+   - Tails the addon's output file/socket like LogWatcher already tails
+     session logs.
+   - Converts each line into an Action with tool_name="network_request",
+     tool_type=ToolType.NETWORK (new enum value), and real
+     network_host/network_port set.
+   - Feeds these into the same ActionBuffer used by the session-log parser,
+     tagged with the same session_id so they interleave correctly on the
+     timeline.
+
+4. Detector integration
+   - No changes needed to NetworkAnomalyDetector / DataExfiltrationDetector
+     / C2CommunicationDetector -- they already key off network_host/
+     network_port/is_network. They start working correctly once real data
+     flows in.
+   - New detector: UnexpectedHostDetector -- flags any host not on an
+     allowlist (e.g. api.anthropic.com, pypi.org). Cheap to build once
+     ground-truth host data exists, and doubles as an end-to-end validation
+     signal for the whole pipeline (see Build Order).
+
+5. `watch` TUI
+   - Add a "Network" panel showing the last N hosts contacted, live.
+
+Open Decisions (need Zaid's input before/while building)
+----------------------------------------------------------
+- Multi-agent support: each agent gets its own mitmdump instance/port for
+  isolation (recommended -- avoids cross-contamination in watch-all mode).
+- Body logging default: metadata-only by default; --capture-bodies opt-in
+  flag required for bodies, independent of URL scrubbing which always
+  applies.
+- Subprocess propagation: agent-internal shell-outs (e.g. its own curl) that
+  clear env vars won't be captured. This is now a measured go/no-go check in
+  step 1 of Build Order, not just a documented limitation -- if a large
+  fraction of real traffic is missed this way, the design needs revisiting
+  before further investment.
+- Windows support: mitmproxy CA installation and per-runtime trust env vars
+  are less consistent on Windows and may require admin rights. Not solved
+  in v1 -- `agentwatch run` should explicitly detect and refuse cleanly on
+  Windows rather than partially working.
+
+Build Order
+-----------
+1. Feasibility measurement (do this first, not last): mitmproxy addon
+   script + manual test against a real Claude Code session. Confirm JSON
+   output for known requests, and measure what fraction of actual agent
+   network activity is captured vs missed due to subprocess env-var
+   clearing. This is a go/no-go checkpoint before building the rest.
+2. `agentwatch run` wrapper launching a dummy curl command through it,
+   confirm env vars, cert trust, and cleanup-on-crash (kill -9 the wrapper
+   mid-run, confirm no orphaned mitmdump process/port) work end-to-end.
+3. Ingestion module turning addon output into Actions + wiring into
+   ActionBuffer.
+4. Confirm existing network detectors fire correctly against captured data;
+   build UnexpectedHostDetector as the first consumer of real host data.
+5. `watch` TUI network panel (optional / stretch for v1).
+
+Validation Plan
+---------------
+- Unit test the addon's JSON line format against a fixed set of recorded
+  mitmproxy flows (no live network needed).
+- Unit test URL scrubbing: fixed set of URLs with query-string secrets (API
+  keys, presigned S3 signatures) -> assert redaction in both metadata and
+  full-capture modes.
+- Integration test: launch a trivial script that does one curl and one
+  requests.get() through the wrapper; assert the resulting ActionBuffer
+  contains the expected host/port for both.
+- Integration test: kill the wrapped process ungracefully mid-request;
+  assert mitmdump process and CA cert are cleaned up and the port is free.
+- Manual test: run an actual Claude Code session through `agentwatch run`
+  and confirm `agentwatch security-scan` correctly flags a connection to a
+  deliberately "suspicious" test host (e.g. a local ngrok tunnel).
+- Confirm metadata-only mode never writes bodies to disk (grep the log file
+  for a known secret string used only in a body, not headers) and never
+  writes an unredacted query-string secret to the URL field.

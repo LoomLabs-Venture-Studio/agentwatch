@@ -25,8 +25,12 @@ class ClaudeCodeAdapter(BaseAdapter):
         r"|[/\\]claude[/\\]versions[/\\][^/\\]+$"
         r"|[/\\]@anthropic-ai[/\\]claude-code[/\\]cli\.js$"
     )
-    # Claude Desktop (macOS bundle; Windows Store install) is not the CLI.
-    process_exclude = r"Claude\.app|Claude Helper|WindowsApps[/\\]Claude_"
+    # Claude Desktop is not the CLI: macOS bundle, Windows Store (MSIX) install, and
+    # the non-Store Squirrel install `AnthropicClaude\app-<ver>\claude.exe`
+    # (anthropics/claude-code#36079).
+    process_exclude = (
+        r"Claude\.app|Claude Helper|WindowsApps[/\\]Claude_|AnthropicClaude[/\\]app-"
+    )
     # Claude in Chrome's bridge runs the CLI binary but is no session.
     process_exclude_args = frozenset({"--chrome-native-host"})
 
