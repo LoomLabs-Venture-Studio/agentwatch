@@ -262,8 +262,9 @@ chat, read from VS Code's chat-session log. Codex is discovered and its
 rollout JSONL is parsed, but the parser is verified against fixtures only, not a live session.
 Gemini CLI has the full pipeline too, but is likewise fixture-verified only (checked against the
 gemini-cli 0.62.0 source, not a live session).
-Cline is read from two stores: the legacy VS Code extension's `globalStorage` tasks (gated on
-the VS Code process) and the SDK store `~/.cline/data/sessions`, shared by the new extension and
+Cline is read from two stores: the legacy VS Code extension's `globalStorage` tasks (in VS Code,
+VS Code Insiders, VSCodium and Cursor, each gated on its own editor process; the forks are
+source-verified, not live; Windsurf is not supported) and the SDK store `~/.cline/data/sessions`, shared by the new extension and
 the Cline CLI. It is fixture-verified only; live testing was not approved.
 Moltbot has a log parser but no process discovery, so you point it at a log file directly. An Aider
 `--analytics-log` JSONL sidecar backfills token and cost data.
