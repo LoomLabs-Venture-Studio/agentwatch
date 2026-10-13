@@ -3832,7 +3832,8 @@ manager agent).
 
 ### Sprint 32 -- #100/#73 merged, Cline spec, Codex gaps, #109, ADR rebuild (2026-10-12/13)
 **Type:** bug fixes + feature spec + docs. Run by the manager agent (board
-delegation). Batch PRs are drafts; nothing in the batch is merged.
+delegation). Batch merged on board approval 2026-10-13, except the Cline
+implementation (in progress).
 
 ### Merged on board approval (2026-10-12)
 - [x] #101 `f96c095` (#100): `agentwatch detect` maps `Code.exe` /
@@ -3847,7 +3848,7 @@ delegation). Batch PRs are drafts; nothing in the batch is merged.
 ### Acceptance Criteria (this batch)
 - [ ] #104 Cline adapter: spec done (#112, cited to cline/cline `main`
       @ `a484089` and `legacy-extension` @ `7761370`); implementation
-      waits on board scope answers (below).
+      scope decided (below); implementation in progress.
 - [x] #105 Codex app-server: one `ps` entry per open rollout (#111).
       Fixture-verified.
 - [x] #106 Codex `item_completed` `CommandExecution`/`FileChange` results
@@ -3910,20 +3911,18 @@ delegation). Batch PRs are drafts; nothing in the batch is merged.
 1. #73 accepted as fixture-verified (live session not achievable: VM-mode
    Cowork; MCP logs redacted). Merged as #102.
 
-### Board decisions needed
-1. Cline (#112): legacy extension, new SDK extension, or both
-   (recommended: both)?
-2. Cline CLI in scope now (free with the SDK format)? Live-test it?
-3. Which editors' globalStorage for legacy Cline: VS Code stable only, or
-   also Insiders, VSCodium, Cursor, Windsurf (all unverified)?
-4. Roo Code / Kilo Code forks: part of #104 or separate issues?
-5. Legacy XML-mode tool calls: parse XML from assistant text, or token
-   counts only?
-6. May we install Cline / obtain provider or Codex credentials for live
-   verification?
-7. Non-default VS Code profiles and remote/WSL windows: in or out?
-8. Merge order for #113/#114 (one-hunk conflict either way).
-9. #21 and #78 (old drafts): close #21 once #103 is accepted.
+### Board decisions (2026-10-13)
+1. Batch merged (squash): #113 `7d818b7`, #103 `26e6dbf`, #110 `4636501`,
+   #111 `4594364`, #114 `b64def7` (merge-from-develop resolved the one-hunk
+   #113/#114 conflict, keeping both). #21 closed as superseded by #103.
+2. Cline: support both formats (legacy globalStorage and
+   `~/.cline/data/sessions/`); Cline CLI included; legacy editors VS Code
+   only (forks: separate issue); Roo Code / Kilo Code: separate issues;
+   legacy XML tool calls: token counts only; profiles and remote/WSL out
+   of scope.
+3. Live verification not approved: no Cline install, no provider or Codex
+   credentials. Cline ships fixture-verified.
+4. #78 (research draft) still open; no decision taken.
 
 ### Open threads
 - #108 macOS Codex verification; #109 needs a real non-Store Windows
