@@ -245,6 +245,7 @@ agentwatch stats
 | Gemini CLI | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | Cursor | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | GitHub Copilot in VS Code | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| Cline (VS Code extension and CLI) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 
 Each agent is an adapter in `agentwatch.agents` (ordered `ADAPTERS` registry). Running agents are
 found by scanning processes with `psutil` and matching each adapter's pattern against the *program*
@@ -261,6 +262,9 @@ chat, read from VS Code's chat-session log. Codex is discovered and its
 rollout JSONL is parsed, but the parser is verified against fixtures only, not a live session.
 Gemini CLI has the full pipeline too, but is likewise fixture-verified only (checked against the
 gemini-cli 0.62.0 source, not a live session).
+Cline is read from two stores: the legacy VS Code extension's `globalStorage` tasks (gated on
+the VS Code process) and the SDK store `~/.cline/data/sessions`, shared by the new extension and
+the Cline CLI. It is fixture-verified only; live testing was not approved.
 Moltbot has a log parser but no process discovery, so you point it at a log file directly. An Aider
 `--analytics-log` JSONL sidecar backfills token and cost data.
 

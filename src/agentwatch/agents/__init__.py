@@ -20,6 +20,7 @@ from .aider import AiderAdapter
 from .base import AgentAdapter, BaseAdapter, Watcher
 from .claude_code import ClaudeCodeAdapter
 from .claude_desktop import ClaudeDesktopAdapter
+from .cline import ClineAdapter
 from .codex import CodexAdapter
 from .copilot import CopilotAdapter
 from .copilot_vscode import CopilotVscodeAdapter
@@ -38,6 +39,7 @@ ADAPTERS: list[AgentAdapter] = [
     OpencodeAdapter(),
     GeminiAdapter(),
     ClaudeDesktopAdapter(),
+    ClineAdapter(),
 ]
 
 

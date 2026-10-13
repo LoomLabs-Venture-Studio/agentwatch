@@ -33,7 +33,10 @@ VM-mode Cowork sessions are not visible on the host (transcript inside
 sessiondata.vhdx), so only host-loop sessions surface and live
 `ps`/`watch-all` of a session was not achieved (see Known Issues);
 non-Store Windows and macOS paths unverified; MCP logs not parsed
-(redacted by the app). It watches an agent's session logs as they
+(redacted by the app). Cline (VS Code extension
+`saoudrizwan.claude-dev`, both the legacy globalStorage store and the SDK
+store `~/.cline/data/sessions/`, plus the Cline CLI) is wired end-to-end
+but fixture-verified only; live testing not approved (#104). It watches an agent's session logs as they
 stream, detects problems like loops, thrashing, context rot, error spirals,
 credential leaks, prompt injection, and data exfiltration, and surfaces the
 result as a CLI report, a CI-friendly exit code, or a live Textual TUI. Built
@@ -66,7 +69,10 @@ src/agentwatch/
                        BaseAdapter defaults (base.py) and the ordered
                        ADAPTERS registry (__init__.py: claude-code, aider,
                        codex, cursor, copilot-vscode, copilot, agy,
-                       opencode, gemini, claude-desktop). copilot_vscode.py
+                       opencode, gemini, claude-desktop, cline).
+                       agents/cline.py discovers both Cline stores
+                       (legacy: VS Code running; SDK: status not done
+                       and recorded pid alive). copilot_vscode.py
                        also holds its discovery (Code.exe/code gate, chats
                        written in the last 30 min, synthetic pid).
                        Process matching is
@@ -169,6 +175,10 @@ src/agentwatch/
                        can hold a background window's session writes
                        (seen once: 15 min, flushed when the window was
                        brought up); a visible window flushed in seconds
+    cline.py             Cline task parsing: legacy
+                       api_conversation_history.json and SDK
+                       <id>.messages.json (Anthropic-style tool_use/
+                       tool_result pairs). Fixture-verified only (#104)
     cursor_source.py     Read-only state.vscdb access (composerHeaders,
                        cursorDiskKV bubbleId:*/checkpointId:* rows) +
                        bubble-to-Action mapping
@@ -501,6 +511,17 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   gate live-verified against 2.31226; current VM-mode Cowork sessions not
   visible on the host (transcript inside sessiondata.vhdx); only host-loop
   sessions surface; live ps/watch-all of a session not achieved.
+- **Cline adapter is fixture-verified only** (#104, PR #112, 2026-10-13;
+  live testing not approved by the board). Limits: legacy-extension tasks
+  that write tool calls as XML in assistant text get token counts only (no
+  XML parsing); legacy failures are detected from Cline's English result
+  strings; legacy store read from VS Code stable only (Insiders/VSCodium/
+  Cursor/Windsurf: #116); Roo Code and Kilo Code are separate (#117, #118),
+  and `check --log` on their task files currently parses them as Cline;
+  non-default VS Code profiles and remote/WSL windows are out of scope;
+  `agentwatch detect` credits VS Code traffic to copilot-vscode, never
+  Cline; whether the Cline CLI's recorded pid is the CLI or a shared
+  "auto"-mode host is unverified.
 
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.

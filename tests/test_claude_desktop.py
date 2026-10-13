@@ -215,7 +215,7 @@ class TestFindAgents:
 class TestAdapter:
     def test_registered_after_gemini(self):
         names = [a.name for a in agents.ADAPTERS]
-        assert names[-2:] == ["gemini", "claude-desktop"]
+        assert names[names.index("gemini") + 1] == "claude-desktop"
         assert agents.get("claude-desktop").kind == "editor"
 
     def test_discover_delegates(self, monkeypatch):

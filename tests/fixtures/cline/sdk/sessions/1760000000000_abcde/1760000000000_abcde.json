@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "session_id": "1760000000000_abcde",
+  "source": "cli",
+  "pid": 4242,
+  "started_at": "2026-10-12T10:00:00.000Z",
+  "status": "running",
+  "interactive": true,
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-5",
+  "cwd": "/home/dev/project",
+  "workspace_root": "/home/dev/project",
+  "enable_tools": true,
+  "enable_spawn": false,
+  "enable_teams": false,
+  "prompt": "Fix the failing test",
+  "metadata": {
+    "title": "Fix the failing test"
+  },
+  "messages_path": "/home/dev/.cline/data/sessions/1760000000000_abcde/1760000000000_abcde.messages.json"
+}
