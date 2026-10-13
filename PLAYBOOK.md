@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 30 (2026-10-09), at the end of this file.** Start there.
+> **Latest: Sprint 32 (2026-10-13), at the end of this file.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -3827,3 +3827,106 @@ manager agent).
 - Open: Cline adapter (board decision 1, Sprint 30); Codex gaps (one `ps` entry per
   app-server, `ExecCommandEnd`/`item_completed` exit codes not
   correlated, code-mode `exec` unknown, macOS unverified).
+
+---
+
+### Sprint 32 -- #100/#73 merged, Cline spec, Codex gaps, #109, ADR rebuild (2026-10-12/13)
+**Type:** bug fixes + feature spec + docs. Run by the manager agent (board
+delegation). Batch merged on board approval 2026-10-13, except the Cline
+implementation (in progress).
+
+### Merged on board approval (2026-10-12)
+- [x] #101 `f96c095` (#100): `agentwatch detect` maps `Code.exe` /
+      `Cursor.exe` to the `copilot-vscode` / `cursor` adapters via their
+      gate regexes (`match_process_adapter` skips editor adapters).
+- [x] #99 `e53b815`: PLAYBOOK Sprint 31.
+- [x] #102 `d3b70d5` (#73): Claude Desktop Cowork adapter. Replay of #76
+      onto `develop` as a new branch (no force push); code identical to
+      #76, conflicts with copilot-vscode/ChatGPT docs resolved. #76 closed
+      as superseded; #100 and #73 closed.
+
+### Acceptance Criteria (this batch)
+- [ ] #104 Cline adapter: spec done (#112, cited to cline/cline `main`
+      @ `a484089` and `legacy-extension` @ `7761370`); implementation
+      scope decided (below); implementation in progress.
+- [x] #105 Codex app-server: one `ps` entry per open rollout (#111).
+      Fixture-verified.
+- [x] #106 Codex `item_completed` `CommandExecution`/`FileChange` results
+      correlated by call id (#113). Fixture-verified.
+- [x] #107 Code-mode `exec` nested calls surfaced as their own actions
+      (#114). Fixture-verified.
+- [x] #108 Codex macOS unverified: tracking issue only, no code.
+- [x] #109 Squirrel Claude Desktop (`AnthropicClaude\app-<ver>\claude.exe`)
+      excluded from claude-code matching (#110). Not verified on a real
+      non-Store install.
+- [x] #21 network-visibility ADR rebuilt onto `develop` (#103); content
+      unchanged, commented on #21.
+
+### Result
+- #103 (#21): the old branch was cut from `main` with 3 unrelated revert
+  commits (80-file diff vs `develop`); the ADR commit cherry-picked
+  cleanly. Docs only.
+- #110 (#109): `process_exclude` gains `AnthropicClaude[/\\]app-`.
+  Evidence: anthropics/claude-code#36079 (Claude Code's own `/desktop`
+  expects that path), #59824, file.net. New test red before the fix.
+- #111 (#105): openai/codex @ `6f47fcb` shows one live recorder per
+  loaded thread holding its rollout open (`thread-store/src/local/
+  mod.rs` L149, `rollout/src/recorder.rs` L1790-1800, L1880-1891), so
+  `open_files()` lists the loaded threads. Every app-server thread gets a
+  stable CRC32 synthetic pid. QA caught a first cut where the newest
+  thread kept the real pid: the multi-agent TUI records a row's pid once,
+  so a newly opened thread collided with the existing row (fixed in
+  `4a8eb30`, regression test added). A brand-new thread appears only
+  after its first write.
+- #113 (#106): **`exec_command_end` is transient and never written to
+  rollouts** (`rollout/src/policy.rs` L164, already at 4657ab06c6), and
+  `patch_apply_end` is legacy-history only (L149), so the Sprint 9
+  correlation likely never fired on current rollouts. Paginated history
+  (local default since openai/codex#47900) persists `item_completed`
+  items whose `id` is the call id (`core/src/tools/events.rs` L571,
+  L611). Legacy-history rollouts carry no exit-code signal at all.
+- #114 (#107): nested calls are not rollout call items
+  (`core/src/tools/code_mode/mod.rs` L404-414) but their `item_completed`
+  events persist with id `exec-<uuid>` (`code_mode/delegate.rs` L323).
+  Surfaced as BASH/EDIT actions; `exec` stays UNKNOWN; no JS parsing.
+- #112 (#104): Cline ships two stores at once (since 4.1.0, a PostHog
+  rollout flag picks per window): legacy
+  `globalStorage/saoudrizwan.claude-dev/tasks/<id>/*.json` (atomic whole
+  rewrites, no `is_error`, recency is the only "active" signal) and the
+  SDK store `~/.cline/data/sessions/<id>/` (manifest with `status`/`pid`/
+  `cwd`, real `is_error`), shared with the Cline CLI.
+- QA (independent agent, upstream source spot-checked): #113, #114 PASS;
+  #111 FAIL then fixed. #113 and #114 conflict on one `parse_line` hunk;
+  the combined suite passes (1318) after the obvious resolution (nested
+  check first). After both land, #114's synthetic `exec_command_end`
+  payload should call `_exec_status_result` directly.
+- CI green on #103, #110-#114.
+
+### Verification status
+- Live: nothing new this batch (dev machine is Linux; no Codex
+  credentials, no Cline install, no non-Store Claude Desktop).
+- Fixture/source-verified: #105, #106, #107, #109, Cline spec.
+
+### Board decisions recorded
+1. #73 accepted as fixture-verified (live session not achievable: VM-mode
+   Cowork; MCP logs redacted). Merged as #102.
+
+### Board decisions (2026-10-13)
+1. Batch merged (squash): #113 `7d818b7`, #103 `26e6dbf`, #110 `4636501`,
+   #111 `4594364`, #114 `b64def7` (merge-from-develop resolved the one-hunk
+   #113/#114 conflict, keeping both). #21 closed as superseded by #103.
+2. Cline: support both formats (legacy globalStorage and
+   `~/.cline/data/sessions/`); Cline CLI included; legacy editors VS Code
+   only (forks: separate issue); Roo Code / Kilo Code: separate issues;
+   legacy XML tool calls: token counts only; profiles and remote/WSL out
+   of scope.
+3. Live verification not approved: no Cline install, no provider or Codex
+   credentials. Cline ships fixture-verified.
+4. #78 (research draft) still open; no decision taken.
+
+### Open threads
+- #108 macOS Codex verification; #109 needs a real non-Store Windows
+  install to confirm.
+- Codex: MCP tool-call `item_completed` items not read; legacy-history
+  rollouts give no exit codes; app-server scan calls `open_files()`
+  twice (reuse would change `resolve_log`'s signature).
