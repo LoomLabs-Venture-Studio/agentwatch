@@ -112,6 +112,13 @@ def test_excludes_still_apply_to_the_program():
     assert _route([desktop + r"\Claude.exe", "--type=renderer"]) is None
 
 
+def test_claude_desktop_squirrel_install_is_not_claude_code():
+    # Non-Store (Squirrel) Claude Desktop, anthropics/claude-code#36079 (#109).
+    squirrel = r"C:\Users\u\AppData\Local\AnthropicClaude\app-1.7196.1\claude.exe"
+    assert match_process_adapter([squirrel], "claude.exe") is None
+    assert _route([r"C:\Users\u\.local\bin\claude.exe"]) == "claude-code"
+
+
 def test_chrome_native_host_is_not_a_session():
     # Claude in Chrome's bridge runs the CLI binary but is no session (seen live).
     assert _route([r"C:\Users\u\.local\bin\claude.exe", "--chrome-native-host"]) is None
