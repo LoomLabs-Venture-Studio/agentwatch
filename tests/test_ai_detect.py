@@ -9,7 +9,9 @@ import socket
 from types import SimpleNamespace
 
 import psutil
+import pytest
 
+from agentwatch import agents
 from agentwatch.ai_detect import detect
 
 IPS = {
@@ -53,6 +55,21 @@ class FakeProc:
 
     def cmdline(self):
         return self._cmdline
+
+
+@pytest.fixture(autouse=True)
+def no_editor_sessions(monkeypatch):
+    """Editor discovery reads real stores; default every editor adapter to idle."""
+    calls = []
+    for a in agents.editor_adapters():
+        monkeypatch.setattr(a, "discover", lambda n=a.name: calls.append(n) or [])
+    return calls
+
+
+def live(monkeypatch, name, *commands):
+    """Give adapter *name* live sessions with these AgentProcess.command values."""
+    sessions = [SimpleNamespace(command=c) for c in commands]
+    monkeypatch.setattr(agents.get(name), "discover", lambda: sessions)
 
 
 def run(conns, procs, resolve=fake_resolve):
@@ -124,6 +141,57 @@ def test_editor_processes_map_to_editor_adapters():
         [FakeProc(1, "Code.exe", r"C:\x\Code.exe"), FakeProc(2, "Cursor.exe", r"C:\x\Cursor.exe")],
     )
     assert sorted(u.adapter for u in r.usages) == ["copilot-vscode", "cursor"]
+
+
+def code():
+    return run([conn(1, "160.79.104.10")], [FakeProc(1, "Code.exe", r"C:\x\Code.exe")])
+
+
+@pytest.mark.parametrize("command", ["vscode (cline)", "cline (vscode)"])
+def test_code_with_only_cline_live_is_cline(monkeypatch, command):
+    # #119: legacy-store task, or SDK-store session with source "vscode".
+    live(monkeypatch, "cline", command)
+    assert code().usages[0].adapter == "cline"
+
+
+def test_code_with_cline_cli_session_only_keeps_default(monkeypatch):
+    # A Cline CLI session doesn't run inside VS Code.
+    live(monkeypatch, "cline", "cline (cli)")
+    assert code().usages[0].adapter == "copilot-vscode"
+
+
+def test_code_with_both_live_lists_both_in_registry_order(monkeypatch):
+    live(monkeypatch, "cline", "vscode (cline)")
+    live(monkeypatch, "copilot-vscode", "vscode (copilot)")
+    assert code().usages[0].adapter == "copilot-vscode, cline"
+
+
+def test_cursor_label_unchanged_and_not_discovered(monkeypatch, no_editor_sessions):
+    live(monkeypatch, "cline", "vscode (cline)")
+    r = run([conn(2, "160.79.104.10")], [FakeProc(2, "Cursor.exe", r"C:\x\Cursor.exe")])
+    assert r.usages[0].adapter == "cursor"
+    assert no_editor_sessions == []
+
+
+def test_editor_discovery_raising_falls_back(monkeypatch):
+    def boom():
+        raise RuntimeError("store unreadable")
+
+    monkeypatch.setattr(agents.get("copilot-vscode"), "discover", boom)
+    monkeypatch.setattr(agents.get("cline"), "discover", boom)
+    assert code().usages[0].adapter == "copilot-vscode"
+    live(monkeypatch, "cline", "vscode (cline)")
+    assert code().usages[0].adapter == "cline"
+
+
+def test_editor_discovery_once_per_run_and_only_when_needed(no_editor_sessions):
+    run([conn(1, "160.79.104.10")], [FakeProc(1, "Orca.exe")])
+    assert no_editor_sessions == []
+    run(
+        [conn(1, "160.79.104.10"), conn(2, "160.79.104.10")],
+        [FakeProc(1, "Code.exe"), FakeProc(2, "code")],
+    )
+    assert sorted(no_editor_sessions) == ["cline", "copilot-vscode"]
 
 
 def test_vanished_process_skipped_and_denied_exe_is_none():
