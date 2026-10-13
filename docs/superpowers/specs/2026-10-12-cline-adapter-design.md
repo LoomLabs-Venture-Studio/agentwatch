@@ -3,8 +3,9 @@
 **Date:** 2026-10-12
 **Branch:** `feature/cline-adapter` (from `develop` @ `d3b70d5`)
 **Issue:** #104
-**Status:** Draft. Waiting on the board's answers to the open questions at
-the end. Nothing is implemented yet.
+**Status:** Approved by the board, 2026-10-13 (see "Board decisions").
+Fixture-verified only. Live testing was not approved, so nothing here has
+been checked against a real Cline install.
 
 ## Goal
 
@@ -217,8 +218,8 @@ the watcher re-parses the whole file on each change and emits by key
 
 ## Components
 
-1. **Adapter** `cline` in `agents/cline.py`. Editor kind, registered in
-   `ADAPTERS` after `copilot-vscode`.
+1. **Adapter** `cline` in `agents/cline.py`. Editor kind, appended to the
+   end of `ADAPTERS`.
    - `discover()` = `find_cline_agents()` (below).
    - `claims(path)`: `path.name == "api_conversation_history.json"`, or
      `path.name.endswith(".messages.json")` whose top level has
@@ -278,7 +279,7 @@ block.params.absolutePath` (L
 `core/task/tools/handlers/WriteToFileToolHandler.ts:32-36`), `command`,
 `regex`, `url`. Native `input` values are copied into `params` (L
 `core/task/StreamResponseHandler.ts:208`). `path` is relative to the
-workspace, so it is resolved against the task cwd when one is known. These
+workspace and is reported as written (not resolved against the cwd). These
 names have not been seen in a real history yet. If one is wrong,
 `file_path` is just empty; nothing breaks.
 
@@ -316,7 +317,8 @@ never raises; any failure gives an empty list.
 1. Gate: `_vscode_running()` (`Code.exe` / `code`).
 2. Scan
    `default_user_dir("Code")/globalStorage/saoudrizwan.claude-dev/tasks/*/api_conversation_history.json`.
-3. Keep files modified within `CLINE_ACTIVE_WINDOW_S = 1800` s. Nothing on
+3. Keep files modified within the 1800 s window Copilot uses
+   (`COPILOT_VSCODE_ACTIVE_WINDOW_S`, reused). Nothing on
    disk marks a task as active, so recency is the only signal (same
    reasoning as Copilot).
 4. Project = `cwdOnTaskInitialization` of the matching `HistoryItem` in
@@ -328,9 +330,12 @@ never raises; any failure gives an empty list.
 
 **SDK source** (no editor gate, because the CLI has no editor):
 
-1. Data dir from agentwatch's own environment (`CLINE_SESSION_DATA_DIR` /
-   `CLINE_DATA_DIR` / `CLINE_DIR`, else `~/.cline/data`), as opencode does
-   with `OPENCODE_DB`.
+1. Sessions dir from agentwatch's own environment, resolved the way Cline
+   resolves it: `CLINE_SESSION_DATA_DIR`, else `CLINE_DATA_DIR/sessions`,
+   else `CLINE_DIR/data/sessions`, else `~/.cline/data/sessions` (N
+   `sdk/packages/shared/src/storage/paths.ts:158-167`, `186-200`). Each
+   value is trimmed and ignored when empty, as Cline does. This is the same
+   approach opencode takes with `OPENCODE_DB`.
 2. Read each `sessions/*/<id>.json` manifest. Keep it if `status` is
    non-terminal **and** `psutil.pid_exists(pid)`, which is Cline's own
    liveness rule. Also apply the 1800 s mtime window on `messages.json`,
@@ -338,7 +343,9 @@ never raises; any failure gives an empty list.
    `idle` forever.
 3. Root sessions only (the `<id>.messages.json` named after the dir).
    Subagent/teammate files are skipped in v1.
-4. Entry: `log_file` = `messages_path` or the default path; `pid =
+4. Entry: `log_file` = `<dir>/<id>.messages.json`. The manifest's
+   absolute `messages_path` is not followed, so a manifest cannot point
+   agentwatch outside the sessions dir. `pid =
    _synthetic_pid(session_id)`. Several sessions share one extension-host
    pid, and `AgentProcess.pid` must be unique, so the real `pid` is used
    only for the liveness check. `working_directory = cwd`; `command =
@@ -385,34 +392,31 @@ never raises; any failure gives an empty list.
   ago is listed.
 - The legacy error rule depends on Cline's English result strings.
 
-## Out of scope (pending board answers)
+## Out of scope
 
-VS Code forks and other editors, VS Code Insiders/VSCodium, non-default VS
-Code profiles (`<User>/profiles/<id>/globalStorage`, V
-`userDataProfile.ts:196`), remote/WSL extension hosts, `ui_messages.json`,
-subagent/teammate transcripts, XML-mode tool parsing, Roo Code / Kilo Code,
-JetBrains-specific paths, `sessions.db`.
+- Legacy tasks in editors other than VS Code stable: Insiders, VSCodium,
+  Cursor, Windsurf (#116).
+- Roo Code (#117) and Kilo Code (#118).
+- Non-default VS Code profiles (`<User>/profiles/<id>/globalStorage`, V
+  `userDataProfile.ts:196`).
+- Remote / WSL extension hosts.
+- Parsing XML-in-text tool calls in legacy tasks. Those tasks show token
+  actions only.
+- Live verification: installing Cline or getting credentials was not
+  approved.
+- `ui_messages.json`, subagent/teammate transcripts, JetBrains-specific
+  paths, `sessions.db`.
 
-## Open questions for the board
+## Board decisions (2026-10-13)
 
-1. **Which bundle(s)?** Legacy (most users today, but frozen on a branch),
-   SDK (the future, and the same format as the CLI/JetBrains), or both?
-   Recommendation: both. The shared mapper keeps the extra cost to one
-   reader plus one tool table.
-2. **Cline CLI.** It writes the same SDK store, so supporting the SDK
-   bundle covers it for free. Should it be in scope for #104 (and live-tested
-   if we install it) or deferred?
-3. **Which editors' `globalStorage`** for the legacy bundle? VS Code stable
-   only, or also Insiders (`Code - Insiders`), VSCodium (`VSCodium`),
-   Cursor (`Cursor`), Windsurf (`Windsurf`)? Each is a
-   `default_user_dir(app)` call plus a process gate, but none has been
-   verified, and the process names for the gate are unknown.
-4. **Roo Code / Kilo Code** (Cline forks with their own extension ids and
-   possibly drifted formats): separate issues, or part of this one? Not
-   researched here.
-5. **XML-mode tool calls** in legacy tasks: parse the XML from assistant
-   text, or accept token-only coverage?
-6. **Live verification:** may we install the Cline extension and/or CLI
-   and run a task with a provider key? Without that, the result is
-   fixture-only.
-7. **Non-default VS Code profiles and remote/WSL:** in or out?
+1. Support both formats: the legacy `globalStorage` task store and the SDK
+   `~/.cline/data/sessions` store, with the env overrides resolved as in
+   Cline's source.
+2. The Cline CLI is in scope. It shares the SDK store, and the manifest's
+   `source` tells it apart.
+3. Legacy editors: VS Code stable only. Other editors are tracked in #116.
+4. Roo Code (#117) and Kilo Code (#118) are not part of #104.
+5. Legacy XML-in-text tool calls get token counts only, with no XML
+   parsing. The code marks this with a `ponytail:` comment.
+6. Live testing is not approved. Ship as fixture-verified only.
+7. Non-default VS Code profiles and remote/WSL windows are out of scope.
