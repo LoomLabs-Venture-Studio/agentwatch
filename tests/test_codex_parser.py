@@ -557,6 +557,120 @@ class TestPatchApplyEndCorrelation:
 
 
 # ---------------------------------------------------------------------------
+# #106: item_completed (paginated rollouts). openai/codex @ 6f47fcb0be:
+# codex-rs/rollout/src/policy.rs L132/L250-282 persist ItemCompleted in
+# paginated history (L164: ExecCommandEnd is transient; L149: PatchApplyEnd is
+# legacy-only). Wire shape from protocol/src/protocol.rs L1461 (EventMsg,
+# snake_case tag) and L2057 (ItemCompletedEvent.item), protocol/src/items.rs
+# L44 (TurnItem tag "type", variant names verbatim), L244-280
+# (CommandExecutionItem: id/status/exit_code/aggregated_output), L411-425
+# (FileChangeItem: id/status/stderr). id == the tool call_id
+# (core/src/tools/events.rs L571, L611).
+# ---------------------------------------------------------------------------
+
+
+def _item_completed(item: dict) -> dict:
+    return {
+        "timestamp": "2026-10-12T10:00:03Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "item_completed",
+            "thread_id": "t1",
+            "turn_id": "turn-1",
+            "item": item,
+            "completed_at_ms": 20,
+        },
+    }
+
+
+def _command_execution(call_id: str, status: str, exit_code: int, **extra) -> dict:
+    return _item_completed(
+        {
+            "type": "CommandExecution",
+            "id": call_id,
+            "command": ["ls"],
+            "cwd": "/tmp",
+            "parsed_cmd": [],
+            "source": "agent",
+            "status": status,
+            "exit_code": exit_code,
+            "aggregated_output": "",
+            **extra,
+        }
+    )
+
+
+def _file_change(call_id: str, status: str | None, **extra) -> dict:
+    item = {"type": "FileChange", "id": call_id, "changes": {}, **extra}
+    if status is not None:
+        item["status"] = status
+    return _item_completed(item)
+
+
+class TestItemCompletedCorrelation:
+    def test_failed_command_execution_marks_pending_call_failed(self):
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        result = parser.parse_line(
+            _command_execution("call_1", "failed", 2, aggregated_output="no such file")
+        )
+        assert result == []
+        pending = parser._pending["call_1"]
+        assert pending.action.success is False
+        assert pending.resolved_by_event_msg is True
+        assert "exit 2" in pending.action.error_message
+        assert "no such file" in pending.action.error_message
+
+    def test_completed_command_execution_marks_success(self):
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        parser.parse_line(_command_execution("call_1", "completed", 0))
+        assert parser._pending["call_1"].action.success is True
+        assert parser._pending["call_1"].resolved_by_event_msg is True
+
+    def test_function_call_output_does_not_clobber_item_completed_failure(self):
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        parser.parse_line(_command_execution("call_1", "declined", -1))
+        (action,) = parser.parse_line(
+            {
+                "timestamp": "2026-10-12T10:00:04Z",
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "call_id": "call_1", "output": "x"},
+            }
+        )
+        assert action.success is False
+        assert parser.flush() == []
+
+    def test_unmatched_item_completed_yields_nothing(self):
+        parser = CodexParser()
+        assert parser.parse_line(_command_execution("call_never_seen", "failed", 1)) == []
+        assert parser._pending == {}
+
+    def test_failed_file_change_marks_apply_patch_failed(self):
+        parser = CodexParser()
+        parser.parse_line(CODEX_FIXTURE_LINES[0])
+        parser.parse_line(CODEX_FIXTURE_LINES[5])  # function_call call_2 apply_patch
+        parser.parse_line(_file_change("call_2", "failed", stderr="hunk mismatch"))
+        pending = parser._pending["call_2"]
+        assert pending.action.success is False
+        assert "hunk mismatch" in pending.action.error_message
+
+    def test_file_change_without_status_is_not_a_signal(self):
+        parser = CodexParser()
+        parser.parse_line(CODEX_FIXTURE_LINES[0])
+        parser.parse_line(CODEX_FIXTURE_LINES[5])
+        parser.parse_line(_file_change("call_2", None))
+        assert parser._pending["call_2"].resolved_by_event_msg is False
+
+    def test_other_turn_items_are_ignored(self):
+        parser = CodexParser()
+        _shell_call_setup(parser)
+        parser.parse_line(_item_completed({"type": "AgentMessage", "id": "call_1"}))
+        assert parser._pending["call_1"].resolved_by_event_msg is False
+
+
+# ---------------------------------------------------------------------------
 # _extract_exec_command_end / _extract_patch_apply_end unit coverage
 # ---------------------------------------------------------------------------
 
@@ -857,3 +971,61 @@ class TestCustomToolCall:
             },
         ]
         assert [a for line in lines for a in parser.parse_line(line)] == []
+
+
+# ---------------------------------------------------------------------------
+# #107: tool calls made inside a code-mode `exec` script. openai/codex @
+# 6f47fcb0be: nested calls are dispatched straight to the tool runtime and
+# their result goes back to the script, never recorded as a ResponseItem
+# (core/src/tools/code_mode/mod.rs L404-414), but the tool's own lifecycle
+# events still fire with the nested call id "exec-<uuid>"
+# (core/src/tools/code_mode/delegate.rs L323), and paginated rollouts
+# persist the resulting item_completed (codex-rs/rollout/src/policy.rs
+# L132, L250-282).
+# ---------------------------------------------------------------------------
+
+
+def _nested_item(item: dict) -> dict:
+    return {
+        "timestamp": "2026-10-12T10:00:02Z",
+        "type": "event_msg",
+        "payload": {"type": "item_completed", "thread_id": "t1", "turn_id": "turn-1",
+                    "item": item, "completed_at_ms": 20},
+    }
+
+
+class TestCodeModeNestedCalls:
+    def test_nested_command_execution_surfaces_as_bash(self):
+        parser = CodexParser(session_id="s1")
+        parser.parse_line(_custom_call())  # the exec cell itself, pending
+        (a,) = parser.parse_line(_nested_item({
+            "type": "CommandExecution", "id": "exec-6b1c", "command": ["rm", "-rf", "build"],
+            "cwd": "/tmp", "parsed_cmd": [], "source": "unified_exec_startup",
+            "status": "failed", "exit_code": 1, "aggregated_output": "denied",
+        }))
+        assert a.tool_type == ToolType.BASH
+        assert a.command == "rm -rf build"
+        assert a.success is False
+        assert "exit 1" in a.error_message
+        assert a.session_id == "s1"
+        # the exec cell is still pending, untouched
+        assert "call_ct1" in parser._pending
+
+    def test_nested_file_change_surfaces_one_edit_per_path(self):
+        parser = CodexParser()
+        actions = parser.parse_line(_nested_item({
+            "type": "FileChange", "id": "exec-9f2a", "status": "completed",
+            "changes": {"/p/a.py": {"type": "add", "content": "x"},
+                        "/p/b.py": {"type": "update", "unified_diff": "", "move_path": None}},
+        }))
+        assert sorted(a.file_path for a in actions) == ["/p/a.py", "/p/b.py"]
+        assert all(a.tool_type == ToolType.EDIT and a.success for a in actions)
+
+    def test_non_code_mode_ids_are_not_surfaced(self):
+        # direct calls use the model's call_id; user `!` shell commands a bare
+        # UUID (core/src/tasks/user_shell.rs L184). Neither is a nested call.
+        parser = CodexParser()
+        for call_id in ("call_1", "0b7f7e9e-1111-4c4c-9999-123456789abc"):
+            item = {"type": "CommandExecution", "id": call_id, "command": ["ls"],
+                    "status": "completed", "exit_code": 0}
+            assert parser.parse_line(_nested_item(item)) == []

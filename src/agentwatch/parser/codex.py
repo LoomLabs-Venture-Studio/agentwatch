@@ -74,6 +74,15 @@ already use (see ``_extract_exec_command_end``/``_extract_patch_apply_end``
 and ``_PendingCall.resolved_by_event_msg`` below for how the two signals
 are reconciled without either duplicating or clobbering each other).
 
+**#106 (2026-10-12, openai/codex @ 6f47fcb0be)**: current rollouts never
+contain ``exec_command_end`` (``codex-rs/rollout/src/policy.rs`` L164 lists
+it as transient; it already was at 4657ab06c6, 2026-07-13) and
+``patch_apply_end`` is legacy-history only (L149). Paginated rollouts (the
+local default since #47900) persist the result as an ``item_completed``
+``CommandExecution``/``FileChange`` item instead, correlated by the same
+call id -- see ``_extract_item_completed``. Legacy-history rollouts persist
+neither, so exec calls there carry no exit-code signal at all.
+
 **Still genuinely open, even with this source access**: whether
 ``exec_command_end``/``patch_apply_end`` always co-occurs with a
 ``function_call_output`` for the same call, or can arrive alone with no
@@ -262,6 +271,8 @@ def classify_codex_tool(name: str) -> ToolType:
         # execute_spec.rs: freeform "Run JavaScript code"). Its input is a
         # script that calls other tools, so no ToolType fits: left unmapped
         # on purpose, rather than falling into classify_tool's "exec" -> BASH.
+        # The nested calls surface on their own (paginated rollouts only),
+        # see _extract_code_mode_nested (#107).
         return ToolType.UNKNOWN
     return classify_tool(name)
 
@@ -412,10 +423,17 @@ def _extract_exec_command_end(payload: dict) -> _ExecResult | None:
     """
     if not isinstance(payload, dict) or payload.get("type") != "exec_command_end":
         return None
+    detail = payload.get("stderr") or payload.get("formatted_output") or ""
+    return _exec_status_result(
+        payload.get("call_id"), payload.get("status"), payload.get("exit_code"), detail
+    )
 
-    call_id = payload.get("call_id")
-    status = payload.get("status")
-    exit_code = payload.get("exit_code")
+
+def _exec_status_result(call_id, status, exit_code, detail: str) -> _ExecResult:
+    """Shared status/exit_code mapping for ``exec_command_end`` and the
+    paginated-history ``CommandExecution`` item (same status vocabulary:
+    protocol/src/items.rs L201 ``CommandExecutionStatus`` is
+    ``ExecCommandStatus`` plus ``in_progress``)."""
     if status in ("failed", "declined"):
         is_error = True
     elif status == "completed":
@@ -428,7 +446,7 @@ def _extract_exec_command_end(payload: dict) -> _ExecResult | None:
 
     error_text = None
     if is_error:
-        detail = (payload.get("stderr") or payload.get("formatted_output") or "").strip()
+        detail = detail.strip()
         prefix = f"exit {exit_code}: " if isinstance(exit_code, int) else ""
         error_text = (prefix + _redact_truncate(detail, 200)) or None
 
@@ -462,6 +480,120 @@ def _extract_patch_apply_end(payload: dict) -> _ExecResult | None:
         error_text = _redact_truncate(detail, 200) or None
 
     return _ExecResult(call_id=call_id, is_error=is_error, error_text=error_text)
+
+
+def _extract_code_mode_nested(payload: dict, session_id: str | None, entry: dict) -> list[Action]:
+    """Surface a tool call made *inside* a code-mode ``exec`` script (#107).
+
+    Source, openai/codex @ 6f47fcb0bea40155ba00a352fd833c2df2738076:
+
+    - Nested calls are never rollout ``function_call``/``custom_tool_call``
+      items: ``core/src/tools/code_mode/mod.rs`` L404-414 dispatches them via
+      ``handle_tool_call_with_source`` and hands ``code_mode_result()`` back to
+      the script. Only the ``exec`` cell itself is a ``custom_tool_call``.
+    - The tool's own lifecycle events still fire, keyed by the nested call id
+      ``format!("{PUBLIC_TOOL_NAME}-{uuid}")``, i.e. ``exec-<uuid>``
+      (``core/src/tools/code_mode/delegate.rs`` L323;
+      ``code-mode-protocol/src/lib.rs`` L54 ``PUBLIC_TOOL_NAME = "exec"``).
+      Direct calls use the model's ``call_id``; user shell commands a bare
+      UUID (``core/src/tasks/user_shell.rs`` L184), so the prefix only
+      matches nested calls.
+    - Paginated rollouts persist those as ``item_completed`` events
+      (``codex-rs/rollout/src/policy.rs`` L132, L250-282): ``CommandExecution``
+      (``command: Vec<String>``, ``status``, ``exit_code``,
+      ``protocol/src/items.rs`` L244-280) and ``FileChange`` (``changes:
+      HashMap<PathBuf, FileChange>``, ``status``, L411-425). Legacy-history
+      rollouts drop both (policy.rs L235-248), so nothing can be recovered
+      there without parsing the script, which this deliberately does not do.
+
+    Only these two item types are surfaced; their ``type`` is used verbatim
+    as ``tool_name`` since the nested tool's own name is not on the item.
+    """
+    if not isinstance(payload, dict) or payload.get("type") != "item_completed":
+        return []
+    item = payload.get("item")
+    if not isinstance(item, dict) or not str(item.get("id", "")).startswith("exec-"):
+        return []
+    kind = item.get("type")
+    status = item.get("status")
+
+    def action(tool_type: ToolType, success: bool, error: str | None, **kw) -> Action:
+        return Action(
+            timestamp=_parse_codex_timestamp(entry),
+            tool_name=kind,
+            tool_type=tool_type,
+            success=success,
+            error_message=error,
+            session_id=session_id,
+            raw=entry,
+            **kw,
+        )
+
+    if kind == "CommandExecution":
+        # Same status/exit_code vocabulary as exec_command_end (items.rs L201).
+        result = _extract_exec_command_end({
+            "type": "exec_command_end",
+            "call_id": item["id"],
+            "status": status,
+            "exit_code": item.get("exit_code"),
+            "stderr": item.get("aggregated_output") or "",
+        })
+        cmd = item.get("command")
+        command = " ".join(str(c) for c in cmd) if isinstance(cmd, list) else None
+        return [action(ToolType.BASH, not result.is_error, result.error_text, command=command)]
+    if kind == "FileChange":
+        failed = status in ("failed", "declined")
+        error = _redact_truncate((item.get("stderr") or "").strip(), 200) if failed else ""
+        changes = item.get("changes")
+        paths = list(changes) if isinstance(changes, dict) and changes else [None]
+        return [action(ToolType.EDIT, not failed, error or None, file_path=p) for p in paths]
+    return []
+
+
+def _extract_item_completed(payload: dict) -> _ExecResult | None:
+    """Extract the success/failure signal from an ``item_completed``
+    ``event_msg`` carrying a ``CommandExecution`` or ``FileChange`` item (#106).
+
+    Source, openai/codex @ 6f47fcb0bea40155ba00a352fd833c2df2738076:
+
+    - ``codex-rs/rollout/src/policy.rs`` L132, L250-282: ``ItemCompleted`` is
+      persisted (every item) in ``ThreadHistoryMode::Paginated`` rollouts; in
+      ``Legacy`` only FunctionCallOutput/Plan/Sleep/SubAgentActivity items
+      (L235-248). L164: ``ExecCommandEnd`` is transient (never persisted), and
+      L149: ``PatchApplyEnd`` is legacy-only. Local threads default to
+      paginated (``thread-store/src/local/mod.rs`` L481-483, since #47900,
+      2026-09-24), so in current rollouts this item is the only persisted
+      exit-code/patch-status signal.
+    - Wire shape: ``EventMsg`` is ``tag = "type", rename_all = "snake_case"``
+      (``protocol/src/protocol.rs`` L1461), ``ItemCompletedEvent { thread_id,
+      turn_id, item: TurnItem, ... }`` (L2057-2068). ``TurnItem`` is
+      ``tag = "type"`` with verbatim variant names (``protocol/src/items.rs``
+      L44-53, L75). ``CommandExecutionItem``: ``id: String``,
+      ``status: CommandExecutionStatus``, ``exit_code: Option<i32>``,
+      ``aggregated_output: Option<String>`` (L244-280). ``FileChangeItem``:
+      ``id``, ``status: Option<PatchApplyStatus>`` (completed/failed/declined,
+      protocol.rs L3859), ``stderr: Option<String>`` (L411-425).
+    - ``id`` is the tool call's ``call_id``: ``core/src/tools/events.rs``
+      L571 (exec end) and L611 (patch end) set ``id: ctx.call_id``.
+    """
+    if not isinstance(payload, dict) or payload.get("type") != "item_completed":
+        return None
+    item = payload.get("item")
+    if not isinstance(item, dict):
+        return None
+    kind = item.get("type")
+    if kind == "CommandExecution":
+        return _exec_status_result(
+            item.get("id"),
+            item.get("status"),
+            item.get("exit_code"),
+            item.get("aggregated_output") or "",
+        )
+    if kind == "FileChange" and item.get("status") in ("completed", "failed", "declined"):
+        is_error = item["status"] != "completed"
+        detail = _redact_truncate((item.get("stderr") or "").strip(), 200) if is_error else ""
+        return _ExecResult(call_id=item.get("id"), is_error=is_error, error_text=detail or None)
+    return None
 
 
 def _extract_token_count(payload: dict, session_id: str | None, entry: dict) -> Action | None:
@@ -626,7 +758,15 @@ class CodexParser:
             pending.action.incoming_message = output.text
             return [pending.action]
 
-        exec_result = _extract_exec_command_end(payload) or _extract_patch_apply_end(payload)
+        nested = _extract_code_mode_nested(payload, self.session_id, entry)
+        if nested:
+            return nested
+
+        exec_result = (
+            _extract_exec_command_end(payload)
+            or _extract_patch_apply_end(payload)
+            or _extract_item_completed(payload)
+        )
         if exec_result is not None:
             pending = self._pending.get(exec_result.call_id) if exec_result.call_id else None
             if pending is not None:
