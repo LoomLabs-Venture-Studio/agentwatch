@@ -294,7 +294,7 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                 )
             )
             if app_server and log_file is not None:
-                agents.extend(_codex_app_server_threads(agents[-1]))
+                agents[-1:] = _codex_app_server_threads(agents[-1])
 
     # Post-process: resolve parent-child relationships between agents
     agent_pids = {a.pid for a in agents}
@@ -679,7 +679,7 @@ def _codex_sessions_root() -> Path:
 
 
 def _codex_app_server_threads(primary: AgentProcess) -> list[AgentProcess]:
-    """One extra entry per other rollout a Codex app-server holds open (#105).
+    """One entry per rollout a Codex app-server holds open (#105).
 
     The app-server keeps one live recorder per loaded thread, and each
     recorder's writer task holds its rollout file open until the thread is
@@ -692,28 +692,29 @@ def _codex_app_server_threads(primary: AgentProcess) -> list[AgentProcess]:
     live_writer.rs`` L169-207 ``shutdown_thread`` drops it). So open_files()
     lists exactly the loaded, materialized threads.
 
-    Extra threads get a synthetic CRC32 pid like Cursor composers: pid keys
-    team/depth assignment and the multi-agent TUI's per-pid report maps,
-    which a shared real pid would collide in. The newest thread keeps the
-    real pid.
+    Every thread gets a stable synthetic CRC32 pid like Cursor composers: pid
+    keys team/depth assignment and the multi-agent TUI's per-pid report maps,
+    which the TUI stores once per row, so a shared real pid (or one that
+    moves to whichever thread is newest) would collide. ``parent_pid`` stays
+    the app-server's real PPID. With no open rollout, *primary*'s fallback
+    log gets the same treatment.
     """
     from agentwatch.cursor_discovery import _synthetic_pid
 
-    extras = []
-    for path in _find_open_codex_rollouts(primary.pid, _codex_sessions_root()):
-        if path == primary.log_file:
-            continue
+    paths = _find_open_codex_rollouts(primary.pid, _codex_sessions_root())
+    threads = []
+    for path in paths or [primary.log_file]:
         meta = _read_codex_session_meta(path) or {}
         session_id = meta.get("session_id") or meta.get("id")
         cwd = meta.get("cwd")
-        extras.append(replace(
+        threads.append(replace(
             primary,
             pid=_synthetic_pid(session_id or str(path)),
             log_file=path,
             session_id=session_id,
             working_directory=Path(cwd) if isinstance(cwd, str) and cwd else None,
         ))
-    return extras
+    return threads
 
 
 def _resolve_codex_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, str | None]:

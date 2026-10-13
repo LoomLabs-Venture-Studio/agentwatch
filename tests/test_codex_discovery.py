@@ -504,10 +504,11 @@ class TestChatgptDesktopCodex:
         log = tmp_path / "rollout-x.jsonl"
         _write_jsonl(log, meta_entries)
         monkeypatch.setattr(discovery, "_resolve_codex_log", lambda cwd, pid=None: (log, "s"))
+        monkeypatch.setattr(discovery, "_find_open_codex_rollouts", lambda pid, root: [])
 
         cache = discovery.DiscoveryCache()
         for _ in range(scans):
-            agents = [a for a in discovery.find_running_agents(cache) if a.pid == pid]
+            agents = [a for a in discovery.find_running_agents(cache) if a.agent_type == "codex"]
         assert len(agents) == 1
         return agents[0]
 
@@ -564,13 +565,20 @@ class TestAppServerPerThread:
         assert [a.session_id for a in agents] == ["new", "old"]
         assert [a.working_directory for a in agents] == [tmp_path / "proj1", tmp_path / "proj0"]
         assert agents[0].log_file != agents[1].log_file
-        assert agents[0].pid == 4244 and agents[1].pid != 4244
+        assert agents[0].pid != agents[1].pid and 4244 not in {a.pid for a in agents}
         assert all(a.depth == 0 and a.team_id == a.pid for a in agents)
 
     def test_one_open_rollout_gives_one_entry(self, tmp_path, monkeypatch):
         [agent] = self._scan(tmp_path, monkeypatch, [("only", 1_000)])
-        assert agent.pid == 4244 and agent.session_id == "only"
+        assert agent.session_id == "only"
         assert agent.working_directory == tmp_path / "proj0"
+
+    def test_thread_pid_stable_when_a_newer_thread_opens(self, tmp_path, monkeypatch):
+        # The TUI stores a row's pid once; a newer thread must not take it (#111 QA).
+        [a1] = self._scan(tmp_path, monkeypatch, [("A", 1_000)])
+        agents = self._scan(tmp_path, monkeypatch, [("A", 1_000), ("B", 2_000)])
+        pids = {a.session_id: a.pid for a in agents}
+        assert pids["A"] == a1.pid and pids["A"] != pids["B"]
 
 
 class TestNoProjectForBinDir:
@@ -590,9 +598,12 @@ class TestNoProjectForBinDir:
             return (log(), "s") if log else (None, None)
 
         monkeypatch.setattr(discovery, "_resolve_codex_log", resolve)
+        monkeypatch.setattr(discovery, "_find_open_codex_rollouts", lambda pid, root: [])
         cache = discovery.DiscoveryCache()
         for _ in range(scans):
-            [agent] = [a for a in discovery.find_running_agents(cache) if a.pid == pid]
+            [agent] = [
+                a for a in discovery.find_running_agents(cache) if a.agent_type == "codex"
+            ]
         return agent
 
     def test_app_server_without_rollout(self, tmp_path, monkeypatch, capsys):
