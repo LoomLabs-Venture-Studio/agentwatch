@@ -14,13 +14,41 @@ from dataclasses import dataclass, field
 
 import psutil
 
+from agentwatch import agents
 from agentwatch.agents.copilot_vscode import _CODE_PROCESS_RE
 from agentwatch.cursor_discovery import _CURSOR_PROCESS_RE
 from agentwatch.discovery import match_process_adapter
 
 # Editor adapters have no process pattern (match_process_adapter skips them),
-# so map their gate process names here (#100).
-_EDITOR_PROCESSES = ((_CODE_PROCESS_RE, "copilot-vscode"), (_CURSOR_PROCESS_RE, "cursor"))
+# so map their gate process names here (#100). One editor can host several
+# adapters (#119); candidates are in registry order, first is the default.
+_EDITOR_PROCESSES = (
+    (_CODE_PROCESS_RE, ("copilot-vscode", "cline")),
+    (_CURSOR_PROCESS_RE, ("cursor",)),
+)
+# Cline sessions that run inside VS Code: the legacy store, or an SDK-store
+# session with source "vscode" (agents/cline.py command strings). CLI etc. don't.
+_CLINE_IN_VSCODE = ("vscode (cline)", "cline (vscode)")
+
+
+def _has_live_session(name: str) -> bool:
+    try:
+        sessions = agents.get(name).discover()
+    except Exception:
+        return False
+    if name == "cline":
+        return any(s.command in _CLINE_IN_VSCODE for s in sessions)
+    return bool(sessions)
+
+
+def _editor_label(candidates: tuple[str, ...], live: dict[str, bool]) -> str:
+    """Comma-joined candidates with live sessions; the first candidate if none."""
+    if len(candidates) == 1:
+        return candidates[0]
+    for name in candidates:
+        if name not in live:
+            live[name] = _has_live_session(name)
+    return ", ".join(n for n in candidates if live[n]) or candidates[0]
 
 # Provider -> domains. Only domains confirmed in vendor docs; add, don't guess.
 AI_PROVIDERS: dict[str, tuple[str, ...]] = {
@@ -132,6 +160,7 @@ def detect(
     pairs, partial = _connections_by_pid(connections, process_iter)
 
     found: dict[int, AiUsage] = {}
+    live: dict[str, bool] = {}  # editor adapter -> has live sessions, per run
     listeners: dict[int, str] = {}
     for pid, c in pairs:
         if not pid:
@@ -175,9 +204,11 @@ def detect(
         except _PROC_ERRORS:
             cmdline = []
         adapter = match_process_adapter(cmdline, name)
-        usage.adapter = adapter.name if adapter else next(
-            (a for rx, a in _EDITOR_PROCESSES if rx.match(name)), None
-        )
+        if adapter:
+            usage.adapter = adapter.name
+        else:
+            candidates = next((c for rx, c in _EDITOR_PROCESSES if rx.match(name)), None)
+            usage.adapter = candidates and _editor_label(candidates, live)
         usages.append(usage)
 
     usages.sort(key=lambda u: (u.adapter is not None, -u.connections, u.pid))

@@ -93,7 +93,11 @@ src/agentwatch/
                        psutil socket-table connections to PIDs, checks
                        Ollama/LM Studio ports, excludes browsers (board
                        decision 2026-10-09), maps to adapters via
-                       match_process_adapter. Read-only, no admin on Windows
+                       match_process_adapter. Editor processes are labelled
+                       with every editor adapter that has live sessions
+                       there (Code -> "copilot-vscode, cline"), falling
+                       back to the first candidate; AiUsage.adapter stays
+                       a string (#119). Read-only, no admin on Windows
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess

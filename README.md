@@ -333,6 +333,11 @@ domains (your DNS resolver will see them). Live-verified on Windows
 is reported as partial; this path is fixture-verified only. Attribution is
 by provider IP, so a provider whose API shares IPs with its other services
 can't be told apart; Google (Gemini) is left out for that reason.
+The SUPPORTED column (`adapter` in `--json`, a string) names the agentwatch
+adapter for each program. One VS Code process can host both GitHub Copilot
+and Cline, so `Code.exe`/`code` is labelled with every one of them that has a
+live session (e.g. `copilot-vscode, cline`), or `copilot-vscode` if neither
+does. Connections are not split between them.
 
 ### Token Usage Stats
 
