@@ -26,6 +26,7 @@ from .copilot import CopilotAdapter
 from .copilot_vscode import CopilotVscodeAdapter
 from .cursor import CursorAdapter
 from .gemini import GeminiAdapter
+from .kilo import KiloAdapter
 from .opencode import OpencodeAdapter
 
 ADAPTERS: list[AgentAdapter] = [
@@ -36,6 +37,7 @@ ADAPTERS: list[AgentAdapter] = [
     CopilotVscodeAdapter(),
     CopilotAdapter(),
     AgyAdapter(),
+    KiloAdapter(),  # before opencode: its claims() takes any opencode-schema db
     OpencodeAdapter(),
     GeminiAdapter(),
     ClaudeDesktopAdapter(),
