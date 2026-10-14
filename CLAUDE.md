@@ -104,6 +104,13 @@ src/agentwatch/
                        editor gates from agents/cline.py, #127), falling
                        back to the first candidate; AiUsage.adapter stays
                        a string (#119). Read-only, no admin on Windows
+  egress.py            Per-agent egress sampler (#130): tree_sockets()
+                       (generic per-process-tree socket collector, LISTEN
+                       kept), is_local_address(), is_agent_pid() (skips
+                       synthetic pids via match_process_adapter), allow-list
+                       = AI_PROVIDERS + action-declared hosts. Run every 2 s
+                       by multi_app in process + security mode only; fills
+                       ActionBuffer.egress
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
@@ -218,7 +225,10 @@ src/agentwatch/
                        errors, context, repetition, behavioral, progress,
                        constraints
     security/*.py        Security detectors: credentials, injection,
-                       network, privilege, supply_chain, secret_scanner
+                       network, privilege, supply_chain, secret_scanner.
+                       network.py's UndeclaredEgressDetector reads observed
+                       endpoints from ActionBuffer.egress (None outside
+                       watch-all --security process mode -> no-op)
 
   health/
     score.py             calculate_health / calculate_efficiency /

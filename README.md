@@ -188,7 +188,7 @@ This scaling only affects progress/stall metrics. Behavioral signals (repetition
 | `context_pressure`        | Context window filling up                             |
 | `rediscovery`             | Agent re-discovering previously learned information   |
 
-## Security Detectors (20)
+## Security Detectors (21)
 
 | Detector               | What It Catches                                           |
 | ---------------------- | --------------------------------------------------------- |
@@ -203,6 +203,7 @@ This scaling only affects progress/stall metrics. Behavioral signals (repetition
 | `data_exfiltration`    | File reads followed by network activity                   |
 | `c2_communication`     | Potential C2 communication pattern                        |
 | `dns_exfiltration`     | Potential DNS exfiltration/tunneling                      |
+| `undeclared_egress`    | Live connection no action explains (`watch-all --security`, process mode) |
 | `privilege_escalation` | sudo, chmod +s, etc.                                      |
 | `dangerous_command`    | rm -rf /, fork bombs                                      |
 | `mass_file_operation`  | Mass file operation detected                              |
@@ -213,7 +214,7 @@ This scaling only affects progress/stall metrics. Behavioral signals (repetition
 | `skill_chain`          | Suspicious skill chaining                                 |
 | `skill_install`        | New skill being installed                                 |
 
-AgentWatch registers **35 detectors total** (15 health + 20 security), enumerated at runtime via `agentwatch.detectors.registry.get_all_health_detectors()` / `get_all_security_detectors()` — this is the source of truth if the numbers above ever drift.
+AgentWatch registers **36 detectors total** (15 health + 21 security), enumerated at runtime via `agentwatch.detectors.registry.get_all_health_detectors()` / `get_all_security_detectors()` — this is the source of truth if the numbers above ever drift.
 
 Security categories and weights:
 
