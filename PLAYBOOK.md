@@ -4052,3 +4052,21 @@ Nothing run live.
 - #129 and #130 open as drafts; #130's sampler and detector not started.
 - Cline live test approved, not run. CLAUDE.md says Cline 4.1.24; the
   extension on disk is `saoudrizwan.claude-dev-4.1.23`.
+
+### Sprint 34 -- Scrub skill: `agentwatch scrub`, `audit --pii`, Claude Code skill (2026-10-15)
+**Type:** feature. Branch `feature/agentwatch-skill` from `develop` @
+`57f9204`. Spec: `docs/superpowers/specs/2026-10-15-agentwatch-scrub-skill-design.md`.
+Plan: `docs/superpowers/plans/2026-10-15-agentwatch-scrub-skill.md`.
+**Harness:** PLAYBOOK standalone; TDD per task.
+
+### Acceptance Criteria
+- [ ] Spec ACs 1-14 (PII patterns + look-alikes, `scrub` copy/in-place/
+      dry-run/json/exit codes, PEM bodies, `audit --pii` low severity,
+      no PII in live `SecretLeakScanner`, `SKILL.md` live-tested once in
+      Claude Code, README, ruff + pytest green).
+
+### Board decisions (2026-10-15)
+1. Target user: developers using AI coding agents. Consumer version
+   parked.
+2. Claude Desktop dropped from v1 (sandbox cannot see host files;
+   uploading defeats the purpose). Skill ships for Claude Code only.
