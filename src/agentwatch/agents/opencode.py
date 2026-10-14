@@ -24,18 +24,6 @@ _COLUMNS = {
 }
 
 
-def opencode_db() -> Path:
-    """opencode's database path (see ``parser/opencode.py`` for the source).
-
-    ``OPENCODE_DB`` is read from agentwatch's own environment, not the
-    opencode process's.
-    """
-    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "opencode"
-    override = os.environ.get("OPENCODE_DB")
-    # ponytail: non-release channels' opencode-<channel>.db is not looked for.
-    return data / override if override else data / "opencode.db"
-
-
 def session_key(db: Path, session_id: str) -> Path:
     """``<db>#<session>``: MultiLogWatcher keys agents by log_file, and every
     opencode session shares one db (Cursor's synthetic-key precedent). Never
@@ -54,6 +42,23 @@ class OpencodeAdapter(BaseAdapter):
     # every platform, seen live 1.18.34).
     process_pattern = r"(^|[/\\])opencode(\.exe)?$"
     process_exclude = None
+    # Forks (agents/kilo.py) share the store format but not its location.
+    app = "opencode"
+    db_env = "OPENCODE_DB"
+
+    def db_path(self) -> Path:
+        """``$XDG_DATA_HOME/<app>/<app>.db``, or ``$<db_env>`` (absolute, or
+        relative to the data dir). xdg-basedir has no per-OS branch, so the
+        default is ``~/.local/share`` on Windows and macOS too (see
+        ``parser/opencode.py`` for the source).
+
+        ``db_env`` is read from agentwatch's own environment, not the agent
+        process's.
+        """
+        data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / self.app
+        override = os.environ.get(self.db_env)
+        # ponytail: non-release channels' <app>-<channel>.db is not looked for.
+        return data / override if override else data / f"{self.app}.db"
 
     def resolve_log(self, cwd: Path, pid: int | None) -> tuple[Path | None, str | None]:
         """Newest top-level session whose directory is the process cwd and
@@ -68,7 +73,7 @@ class OpencodeAdapter(BaseAdapter):
         """
         from agentwatch.parser.opencode import latest_session, open_readonly
 
-        db = opencode_db()
+        db = self.db_path()
         if not db.exists():
             return None, None
         since_ms = 0

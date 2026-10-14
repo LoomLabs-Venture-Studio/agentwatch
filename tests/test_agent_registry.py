@@ -32,6 +32,10 @@ _LEGACY_PATTERNS = {
     },
     "copilot": {"pattern": r"(^|[/\\])copilot(\.exe)?(\s|$)", "exclude": r"^\S*node(\.exe)?\s"},
     "agy": {"pattern": r"(^|[/\\])agy(\.exe)?(\s|$)", "exclude": None},
+    "kilo-code": {
+        "pattern": r"(^|[/\\])\.?kilo(\.exe)?$",
+        "exclude": r"(^|[/\\])(node|nodejs|bun)(\.exe)?\s",
+    },
     "opencode": {"pattern": r"(^|[/\\])opencode(\.exe)?$", "exclude": None},
     "gemini": {"pattern": r"(^|[/\\])gemini(\.exe|\.js)?$", "exclude": None},
 }
@@ -46,7 +50,7 @@ class TestRegistryShape:
     def test_order(self):
         assert [a.name for a in agents.ADAPTERS] == [
             "claude-code", "aider", "codex", "cursor", "copilot-vscode", "copilot", "agy",
-            "opencode", "gemini", "claude-desktop", "cline",
+            "kilo-code", "opencode", "gemini", "claude-desktop", "cline",
         ]
 
     def test_get(self):
@@ -55,7 +59,8 @@ class TestRegistryShape:
 
     def test_kinds(self):
         assert [a.name for a in agents.process_adapters()] == [
-            "claude-code", "aider", "codex", "copilot", "agy", "opencode", "gemini",
+            "claude-code", "aider", "codex", "copilot", "agy", "kilo-code", "opencode",
+            "gemini",
         ]
         assert [a.name for a in agents.editor_adapters()] == [
             "cursor", "copilot-vscode", "claude-desktop", "cline",
