@@ -26,7 +26,10 @@ _LEGACY_PATTERNS = {
         ),
     },
     "aider": {"pattern": r"(^|[/\\])aider(\.exe)?$", "exclude": None},
-    "codex": {"pattern": r"(^|[/\\])codex(\.exe|\.js)?$", "exclude": None},
+    "codex": {
+        "pattern": r"(^|[/\\])codex(-(aarch64|x86_64)-[\w-]+)?(\.exe|\.js)?$",
+        "exclude": None,
+    },
     "copilot": {"pattern": r"(^|[/\\])copilot(\.exe)?(\s|$)", "exclude": r"^\S*node(\.exe)?\s"},
     "agy": {"pattern": r"(^|[/\\])agy(\.exe)?(\s|$)", "exclude": None},
     "opencode": {"pattern": r"(^|[/\\])opencode(\.exe)?$", "exclude": None},
