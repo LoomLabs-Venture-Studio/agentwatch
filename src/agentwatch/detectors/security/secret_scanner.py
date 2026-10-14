@@ -673,6 +673,7 @@ def audit_log_file(
     log_path: Path,
     *,
     project_name: str = "",
+    patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
 ) -> list[AuditFinding]:
     """Scan a single JSONL log file for secret leaks. Returns all findings."""
     from agentwatch.parser import parse_file
@@ -686,7 +687,7 @@ def audit_log_file(
         ts_str = ts.isoformat() if ts else None
 
         for text, channel, file_path in extract_scannable_content(action):
-            for pattern, secret_type in _SECRET_PATTERNS:
+            for pattern, secret_type in patterns:
                 m = _first_live_match(pattern, secret_type, text, file_path)
                 if m is None:
                     continue
@@ -811,16 +812,19 @@ def _first_live_match(
     return None
 
 
-def _redact_text(text: str) -> tuple[str, int]:
-    """Redact secret values in *text*. Returns (new_text, real_redaction_count).
+def _find_spans(
+    text: str, patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS
+) -> list[tuple[int, int, str]]:
+    """Merged (start, end, label) value spans of every real match in *text*.
 
     Every pattern is matched against the original text and overlapping value
     spans are merged before anything is replaced: replacing pattern by
     pattern let one replacement hide another value ("sk-proj-...api_key=V"
-    became "[REDACTED]_key=V", which no pattern matches).
+    became "[REDACTED]_key=V", which no pattern matches). A merged span keeps
+    the label of its first (leftmost) span.
     """
-    spans: list[tuple[int, int]] = []
-    for pattern, label in _SECRET_PATTERNS:
+    spans: list[tuple[int, int, str]] = []
+    for pattern, label in patterns:
         for m in _iter_matches(pattern, label, text):
             # Leave placeholders/test data alone; they are not real redactions.
             if _is_placeholder(m, label):
@@ -830,30 +834,40 @@ def _redact_text(text: str) -> tuple[str, int]:
             # re-runs). A value that merely contains it ("hunter-[REDACTED]!")
             # still gets fully redacted so no fragment of it is left behind.
             if vstart < vend and text[vstart:vend] != _REDACTED:
-                spans.append((vstart, vend))
-    merged: list[list[int]] = []
-    for start, end in sorted(spans):
+                spans.append((vstart, vend, label))
+    merged: list[list] = []
+    for start, end, label in sorted(spans, key=lambda s: (s[0], s[1])):
         if merged and start <= merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], end)
         else:
-            merged.append([start, end])
+            merged.append([start, end, label])
+    return [(start, end, label) for start, end, label in merged]
+
+
+def _redact_text(
+    text: str, patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS
+) -> tuple[str, int]:
+    """Redact secret values in *text*. Returns (new_text, real_redaction_count)."""
+    merged = _find_spans(text, patterns)
     pieces: list[str] = []
     pos = 0
-    for start, end in merged:
+    for start, end, _label in merged:
         pieces += [text[pos:start], _REDACTED]
         pos = end
     return "".join(pieces) + text[pos:], len(merged)
 
 
-def _redact_json_value(obj: Any) -> tuple[Any, int]:
+def _redact_json_value(
+    obj: Any, patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS
+) -> tuple[Any, int]:
     """Redact secrets inside every string value of a parsed JSON document."""
     if isinstance(obj, str):
-        return _redact_text(obj)
+        return _redact_text(obj, patterns)
     if isinstance(obj, list):
         total = 0
         out_list = []
         for item in obj:
-            new_item, n = _redact_json_value(item)
+            new_item, n = _redact_json_value(item, patterns)
             out_list.append(new_item)
             total += n
         return out_list, total
@@ -861,7 +875,7 @@ def _redact_json_value(obj: Any) -> tuple[Any, int]:
         total = 0
         out_dict = {}
         for k, v in obj.items():
-            new_v, n = _redact_json_value(v)
+            new_v, n = _redact_json_value(v, patterns)
             out_dict[k] = new_v
             total += n
         return out_dict, total
@@ -891,7 +905,9 @@ def _json_skeleton(text: str) -> Any:
         return _NOT_JSON
 
 
-def _redact_line(line: str) -> tuple[str, int]:
+def _redact_line(
+    line: str, patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS
+) -> tuple[str, int]:
     """Redact one JSONL line (without its newline).
 
     Invariant: a line that was valid JSON stays valid JSON with the same keys
@@ -900,17 +916,17 @@ def _redact_line(line: str) -> tuple[str, int]:
     two string values), fall back to redacting the parsed string values and
     re-serializing that one line.
     """
-    new_line, count = _redact_text(line)
+    new_line, count = _redact_text(line, patterns)
     before = _json_skeleton(line)
     if before is _NOT_JSON:
         return (new_line, count) if count else (line, 0)
     if count and _json_skeleton(new_line) != before:
-        obj, count = _redact_json_value(json.loads(line))
+        obj, count = _redact_json_value(json.loads(line), patterns)
         return (_dump_json_line(obj, line), count) if count else (line, 0)
     # Some secrets only show once JSON escapes are decoded (a command after
     # "\n" reads "...nmysql -p..." in the raw text). Re-check the decoded
     # values so nothing a finding was reported for is left behind.
-    obj, extra = _redact_json_value(json.loads(new_line))
+    obj, extra = _redact_json_value(json.loads(new_line), patterns)
     if extra:
         return _dump_json_line(obj, line), count + extra
     return (new_line, count) if count else (line, 0)
@@ -941,7 +957,12 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:
         raise
 
 
-def redact_log_file(log_path: Path, backups: list[Path] | None = None) -> int:
+def redact_log_file(
+    log_path: Path,
+    backups: list[Path] | None = None,
+    *,
+    patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
+) -> int:
     """Replace the values of detected secrets in a JSONL log file with [REDACTED].
 
     Works line-by-line on the raw bytes (decoded with ``surrogateescape`` so
@@ -962,7 +983,7 @@ def redact_log_file(log_path: Path, backups: list[Path] | None = None) -> int:
     new_lines: list[str] = []
 
     for line in original.decode("utf-8", errors="surrogateescape").split("\n"):
-        new_line, count = _redact_line(line)
+        new_line, count = _redact_line(line, patterns)
         new_lines.append(new_line)
         total_replacements += count
 
