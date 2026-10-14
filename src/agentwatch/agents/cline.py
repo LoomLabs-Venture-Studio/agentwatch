@@ -190,7 +190,7 @@ class ClineAdapter(BaseAdapter):
             # core/task-persistence/TaskHistoryStore.ts:160-170, 551-563);
             # Cline never does (cline/cline GlobalFileNames, v3.20.0..main).
             # ponytail: Kilo 5.x and Roo < 3.49 have no such marker, still read as Cline.
-            return not path.with_name("history_item.json").exists()
+            return not os.path.exists(path.with_name("history_item.json"))  # never raises
         if not path.name.endswith(".messages.json"):
             return False
         from agentwatch.parser.cline import load
