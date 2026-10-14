@@ -8,6 +8,9 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- Per-agent adapter registry. Discovery, `parse_file`, `watch-all` and the
+  TUI dispatch through it, and a failing adapter is skipped. Adds the GitHub
+  Copilot CLI and Antigravity CLI (`agy`) adapters (PR #29).
 - OpenCode adapter: reads the SQLite `opencode.db` store read-only (#67, PR #69).
 - Gemini CLI adapter: parses `chats/session-*.jsonl` (#65, PR #68).
 - GitHub Copilot in VS Code adapter: parses the `chatSessions/*.jsonl` mutation
@@ -83,6 +86,13 @@ numbers refer to the GitHub repository.
 - Health: burn rate and io ratio exclude cache reads (#36, PR #37).
 - Health: context pressure measures how full the window is, not the
   cumulative budget (#36, PR #42).
+- Security: the remaining secret leak sinks are closed. Hostnames, error
+  text and LLM prompts are masked, and more secret forms are detected
+  (`PGPASSWORD=`, `mysql -p`, `--password=`, `curl -u`, URL credentials,
+  `Authorization: Bearer`) (#24, PR #30).
+- Security: DB-URL redaction no longer runs past the password, a placeholder
+  no longer hides a live URL after it, and masking never reveals password
+  characters. Stock-default passwords are no longer reported (#26, PR #34).
 - Security: DB URL scanner gaps are fixed, and `check --json` output is
   stable (#33, PR #58).
 - Security: follow-ups from the secret scanner QA (#31, PR #59).
@@ -102,4 +112,5 @@ numbers refer to the GitHub repository.
   agent landscape, adapter roadmap and AI-use detection (PR #78).
 - ADR proposing a TLS-intercepting proxy for network visibility (PR #103).
 
-Earlier history is in the git log and in the PyPI releases up to `v0.1.6`.
+Earlier unreleased develop work since `v0.1.6` (PRs up to #28) is in the git
+log. Released history is in the PyPI releases up to `v0.1.6`.
