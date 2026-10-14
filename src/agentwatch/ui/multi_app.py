@@ -26,6 +26,13 @@ from agentwatch.health import (
 )
 from agentwatch.health.rot import RotScorer
 from agentwatch.llm import DEFAULT_OLLAMA_MODEL
+from agentwatch.net_sampler import (
+    NOT_ATTRIBUTABLE,
+    NetSampler,
+    attach,
+    attributable,
+    endpoint_summary,
+)
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.themes import ascii_safe, get_theme
 from agentwatch.ui.app import EfficiencyBar, HealthBar, SecurityStatus, StatsPanel, WarningsList
@@ -252,6 +259,7 @@ class MultiAgentWatchApp(App):
         self.selected_path: Path | None = None
         self._alerted_signals: set[str] = set()
         self._process_mode = agent_processes is not None
+        self._net_sampler = NetSampler()
 
         if agent_processes is not None:
             self._initial_processes = agent_processes
@@ -315,6 +323,12 @@ class MultiAgentWatchApp(App):
             "llm_assessor": LiveLlmAssessor(self.llm_model) if self.llm else None,
         }
 
+    def _track_net(self, state: dict, proc: AgentProcess | None) -> None:
+        """Sample *proc*'s sockets if it is a real per-agent process."""
+        if proc and attributable(proc):
+            self._net_sampler.track(proc.pid)
+            state["net_sampled"] = True
+
     def on_mount(self) -> None:
         """Called when app starts."""
         self.title = "AgentWatch - Multi-Agent Dashboard"
@@ -339,6 +353,7 @@ class MultiAgentWatchApp(App):
 
         # Periodic process re-scan if in process mode
         if self._process_mode:
+            self._net_sampler.start()  # --all-logs has no pids: no sampling
             self.set_interval(5.0, self._refresh_processes)
 
     async def _watch_loop(self) -> None:
@@ -380,6 +395,7 @@ class MultiAgentWatchApp(App):
                         log_path=log_path,
                         agent_type=proc.agent_type if proc else None,
                     )
+                    self._track_net(self.agents[log_path], proc)
                     if agent_pid is not None and agent_team_id is not None:
                         self._team_by_pid[agent_pid] = agent_team_id
 
@@ -395,7 +411,12 @@ class MultiAgentWatchApp(App):
             elif event_type == "action":
                 action, path = data
                 if path in self.agents:
-                    self.agents[path]["buffer"].add(action)
+                    state = self.agents[path]
+                    if state.get("net_sampled"):
+                        state["net_prev_end"] = attach(
+                            self._net_sampler, state["pid"], action, state.get("net_prev_end")
+                        )
+                    state["buffer"].add(action)
                     # The 1s interval timer handles refreshes — don't pile up
                     # extra calls that cause sporadic update behaviour.
 
@@ -492,6 +513,8 @@ class MultiAgentWatchApp(App):
             buffer.stats.activity_count,
             buffer.stats.error_count,
             buffer.stats.duration_minutes,
+            endpoint_summary(buffer.actions) if agent_data.get("net_sampled")
+            else NOT_ATTRIBUTABLE,
         )
 
         # Update sidebar status for all OTHER agents (selected one already done above)
@@ -637,7 +660,9 @@ class MultiAgentWatchApp(App):
             )
 
     def on_unmount(self) -> None:
-        """Flush and release every agent's SIEM log file handle on app exit."""
+        """Flush and release every agent's SIEM log file handle on app exit,
+        and stop the net sampler."""
+        self._net_sampler.stop()
         for data in self.agents.values():
             siem_exporter: LiveSiemExporter | None = data.get("siem_exporter")
             if siem_exporter is not None:
@@ -721,6 +746,7 @@ class MultiAgentWatchApp(App):
                     log_path=proc.log_file,
                     agent_type=proc.agent_type,
                 )
+                self._track_net(self.agents[proc.log_file], proc)
                 if proc.pid is not None and proc.team_id is not None:
                     self._team_by_pid[proc.pid] = proc.team_id
                 agent_list.append(item)
@@ -740,6 +766,8 @@ class MultiAgentWatchApp(App):
                 reaped_pid = agent_data.get("pid")
                 if reaped_pid is not None:
                     self._team_by_pid.pop(reaped_pid, None)
+                    if not any(d.get("pid") == reaped_pid for d in self.agents.values()):
+                        self._net_sampler.untrack(reaped_pid)
             if self.selected_path == log_path:
                 self.selected_path = next(iter(self.agents), None)
 

@@ -220,3 +220,10 @@ def test_thread_samples_survives_errors_and_stops():
     n = len(calls)
     time.sleep(0.03)
     assert len(calls) == n
+
+
+def test_sample_with_nothing_tracked_reads_no_socket_table():
+    def boom(kind="inet"):
+        raise AssertionError("socket table read with nothing tracked")
+
+    NetSampler(connections=boom).sample()

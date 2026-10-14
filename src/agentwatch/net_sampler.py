@@ -77,6 +77,8 @@ class NetSampler:
         now = self._clock()
         with self._lock:
             roots = list(self._started)
+        if not roots:
+            return  # nothing tracked: don't read the machine's socket table
         trees: dict[int, list] = {}
         for root in roots:
             try:
@@ -165,6 +167,23 @@ def window(action, previous_ts: float | None) -> tuple[float, float]:
     else:
         start = previous_ts if previous_ts is not None else end
     return max(end - IDLE_GAP_CAP.total_seconds(), min(start, end)), end
+
+
+NOT_ATTRIBUTABLE = "Net: n/a (not attributable)"
+
+
+def attach(sampler: NetSampler, pid: int, action, previous_ts: float | None) -> float:
+    """Set *action*.observed_endpoints for its window; return the window end,
+    the next action's *previous_ts*."""
+    start, end = window(action, previous_ts)
+    action.observed_endpoints = sampler.endpoints(pid, start, end)
+    return end
+
+
+def endpoint_summary(actions) -> str:
+    """Stats-line text: distinct (ip, port) across *actions*."""
+    n = len({ep for a in actions for ep in a.observed_endpoints or ()})
+    return f"Net: {n} endpoints"
 
 
 def attributable(proc) -> bool:
