@@ -279,3 +279,55 @@ def test_detector_fires_on_undeclared_endpoint():
 def test_detector_registered():
     from agentwatch.detectors.security import get_all_security_detectors
     assert "undeclared_egress" in [d.name for d in get_all_security_detectors()]
+
+
+# --- multi_app merge path --------------------------------------------------
+
+async def test_multi_app_samples_off_loop_and_merges(monkeypatch):
+    from agentwatch.detectors import create_registry
+    from agentwatch.discovery import AgentProcess
+    from agentwatch.health.rot import RotScorer
+    from agentwatch.ui import multi_app
+    from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
+
+    calls = []
+
+    def fake_sample(targets, tracked, verdicts):
+        calls.append((targets, tracked))
+        return {targets[0][0]: ({("203.0.113.9", 443)}, frozenset({"160.79.104.10"}))}
+
+    monkeypatch.setattr(multi_app.egress, "sample", fake_sample)
+
+    app = MultiAgentWatchApp(agent_processes=[], security_mode=True)
+    async with app.run_test():
+        real, synthetic, gone = Path("real.jsonl"), Path("cursor.vscdb#x"), Path("gone.jsonl")
+        metas = {
+            real: AgentProcess(pid=10, agent_type="claude-code", working_directory=None),
+            synthetic: AgentProcess(pid=3000000001, agent_type="cursor", working_directory=None),
+        }
+        monkeypatch.setattr(app.watcher, "get_process_meta", metas.get)
+        for path in (real, synthetic, gone):
+            buf = ActionBuffer()
+            buf.add(_act(tool="WebFetch", network_host="example.com"))
+            app.agents[path] = {
+                "buffer": buf, "registry": create_registry(mode="all"),
+                "item": AgentItem(path), "rot_scorer": RotScorer(), "pid": None,
+                "team_id": None, "_last_count": 1, "_last_report": object(),
+            }
+
+        await app._sample_egress()
+
+        targets, tracked = calls[0]
+        assert tracked == {10, 3000000001}
+        assert [(t[0], t[1], t[2]) for t in targets] == [
+            (real, 10, "claude-code"), (synthetic, 3000000001, "cursor")]
+        assert targets[0][3] == {"example.com"}
+        assert app.agents[real]["buffer"].egress.undeclared().keys() == {("203.0.113.9", 443)}
+        assert app.agents[real]["_last_count"] == -1          # forces a recompute
+        assert app.agents[synthetic]["buffer"].egress is None  # never sampled
+        assert app.agents[gone]["buffer"].egress is None
+
+        # Security off: no sampling at all.
+        app.security_mode = False
+        await app._sample_egress()
+        assert len(calls) == 1

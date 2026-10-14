@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Footer, Header, Label, ListItem, ListView
 
+from agentwatch import egress
 from agentwatch.detectors import create_registry
 from agentwatch.discovery import (
     AgentProcess,
@@ -248,6 +250,8 @@ class MultiAgentWatchApp(App):
         self._team_by_pid: dict[int, int] = {}  # pid -> team_id, kept in sync with self.agents
         self._refreshing = False
         self._scanning = False
+        self._sampling = False
+        self._egress_verdicts: dict = {}  # touched only by the (single) sampler thread
         self._discovery_cache = DiscoveryCache()
         self.selected_path: Path | None = None
         self._alerted_signals: set[str] = set()
@@ -340,6 +344,7 @@ class MultiAgentWatchApp(App):
         # Periodic process re-scan if in process mode
         if self._process_mode:
             self.set_interval(5.0, self._refresh_processes)
+            self.set_interval(2.0, self._sample_egress)
 
     async def _watch_loop(self) -> None:
         """Background loop to process events from the multi-watcher."""
@@ -742,6 +747,41 @@ class MultiAgentWatchApp(App):
                     self._team_by_pid.pop(reaped_pid, None)
             if self.selected_path == log_path:
                 self.selected_path = next(iter(self.agents), None)
+
+    async def _sample_egress(self) -> None:
+        """Sample each tracked agent's live endpoints (#130), security mode only.
+
+        psutil and DNS run in a thread that only returns results; buffers
+        are updated here on the event loop.
+        """
+        if not self.security_mode or self._sampling:
+            return
+        targets = []
+        for path, data in self.agents.items():
+            proc = self.watcher.get_process_meta(path)
+            if proc is not None and proc.pid is not None:
+                hosts = egress.declared_hosts(data["buffer"].actions)
+                targets.append((path, proc.pid, proc.agent_type, hosts))
+        if not targets:
+            return
+        tracked = {t[1] for t in targets}
+        self._sampling = True
+        try:
+            results = await asyncio.to_thread(
+                egress.sample, targets, tracked, self._egress_verdicts
+            )
+        finally:
+            self._sampling = False
+        now = datetime.now(timezone.utc)
+        for path, (observed, allowed) in results.items():
+            data = self.agents.get(path)
+            if data is None:
+                continue  # reaped while sampling
+            buffer = data["buffer"]
+            if buffer.egress is None:
+                buffer.egress = egress.Egress()
+            if buffer.egress.merge(observed, allowed, now):
+                data["_last_count"] = -1  # endpoints changed: rescore on the next tick
 
     def action_toggle_security(self) -> None:
         """Toggle security mode across all agents."""
