@@ -188,7 +188,7 @@ This scaling only affects progress/stall metrics. Behavioral signals (repetition
 | `context_pressure`        | Context window filling up                             |
 | `rediscovery`             | Agent re-discovering previously learned information   |
 
-## Security Detectors (20)
+## Security Detectors (21)
 
 | Detector               | What It Catches                                           |
 | ---------------------- | --------------------------------------------------------- |
@@ -203,6 +203,7 @@ This scaling only affects progress/stall metrics. Behavioral signals (repetition
 | `data_exfiltration`    | File reads followed by network activity                   |
 | `c2_communication`     | Potential C2 communication pattern                        |
 | `dns_exfiltration`     | Potential DNS exfiltration/tunneling                      |
+| `undeclared_egress`    | Live: agent connected somewhere no action declared        |
 | `privilege_escalation` | sudo, chmod +s, etc.                                      |
 | `dangerous_command`    | rm -rf /, fork bombs                                      |
 | `mass_file_operation`  | Mass file operation detected                              |
@@ -213,7 +214,7 @@ This scaling only affects progress/stall metrics. Behavioral signals (repetition
 | `skill_chain`          | Suspicious skill chaining                                 |
 | `skill_install`        | New skill being installed                                 |
 
-AgentWatch registers **35 detectors total** (15 health + 20 security), enumerated at runtime via `agentwatch.detectors.registry.get_all_health_detectors()` / `get_all_security_detectors()` — this is the source of truth if the numbers above ever drift.
+AgentWatch registers **36 detectors total** (15 health + 21 security), enumerated at runtime via `agentwatch.detectors.registry.get_all_health_detectors()` / `get_all_security_detectors()` — this is the source of truth if the numbers above ever drift.
 
 Security categories and weights:
 
@@ -302,6 +303,27 @@ agentwatch watch --security
 # All running agents
 agentwatch watch-all
 ```
+
+While `watch` / `watch-all` run, AgentWatch polls each agent process's
+sockets (and its child processes') about once a second, unprivileged, and
+records which remote endpoints (IP, port) were open during each action. The
+stats line shows `Net: N endpoints`. With `--security`, the
+`undeclared_egress` detector warns when the agent connects to an address
+that no action declared (a WebFetch host) and that is not a known LLM
+provider (the `detect` list) or agent vendor host (Claude Code telemetry
+and updates). Typical hit: a Bash `npm install` or a script phoning home.
+Loopback and link-local addresses are ignored; private (LAN) addresses are
+flagged. Its only network traffic is DNS lookups of those hosts.
+
+Limits: connections that open and close within one poll (about 1 s) are
+missed; there are no byte counts; matching is by IP, so a CDN address shared
+with an allowed host hides an undeclared one, and behind a proxy or VPN
+every connection goes to the proxy. Editor-hosted sessions (Cursor, Copilot
+in VS Code, Cline, Claude Desktop, ChatGPT-app Codex threads, `kilo serve`)
+share one process with other sessions, so they are not sampled
+(`Net: n/a (not attributable)`), nor is `watch-all --all-logs`. One-shot
+`check` / `security-scan` never sample. Aider log times are local, so on a
+non-UTC machine its action windows are offset.
 
 ### Process Discovery
 

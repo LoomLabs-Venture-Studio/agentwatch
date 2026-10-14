@@ -104,6 +104,16 @@ src/agentwatch/
                        editor gates from agents/cline.py, #127), falling
                        back to the first candidate; AiUsage.adapter stays
                        a string (#119). Read-only, no admin on Windows
+  net_sampler.py       Per-agent endpoint sampler for watch/watch-all
+                       (#130): NetSampler thread polls psutil sockets of
+                       each tracked root pid + children(recursive) ~1 s,
+                       reusing ai_detect._connections_by_pid (global table,
+                       per-process fallback, global not retried once
+                       denied); spans per (ip, port); endpoints(pid, start,
+                       end) -> Action.observed_endpoints (None = not
+                       sampled). window() treats naive timestamps as UTC.
+                       attributable(): process-kind adapters only, minus
+                       Codex app-server threads and `kilo serve`
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
@@ -555,5 +565,20 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   `codex`; the pattern also matches unrenamed release binaries
   `codex-<triple>[.exe]`. Open: app-server cwd, standalone
   `codex-app-server`, and `open_files()` on a real Mac.
+- **Network tracking limits** (#130, Sprint 34): endpoints only, no byte
+  counts (privileged ETW/eBPF/nettop backend deferred to a later opt-in
+  sprint). Connections shorter than the ~1 s poll are missed. Matching in
+  `UndeclaredEgressDetector` (`detectors/security/network.py`) is by IP:
+  CDN-shared IPs can hide an undeclared host; a proxy/VPN makes all traffic
+  look undeclared; allowed IPs only accumulate within a session (5 min DNS
+  refresh, unioned). DNS runs on daemon threads, never in one-shot scans.
+  `KNOWN_AGENT_HOSTS` holds Claude Code's Datadog telemetry and
+  `downloads.claude.ai`, observed live 2026-10-15; other agents' vendor
+  telemetry is not listed and will be flagged. Editor-hosted sessions and
+  `--all-logs` are not sampled. Aider's naive local timestamps offset its
+  windows on non-UTC machines. `watch` resolves its pid once at mount.
+  Live smoke-tested on Windows 10 unelevated (2026-10-15); macOS/Linux
+  fixture-tested only. `tests/conftest.py` stubs `AgentWatchApp.
+  _find_own_process` so TUI tests never scan real processes.
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
