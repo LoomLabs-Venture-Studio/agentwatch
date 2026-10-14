@@ -246,3 +246,40 @@ class DNSExfiltrationDetector(SecurityDetector):
                 )
 
         return None
+
+
+class UndeclaredEgressDetector(SecurityDetector):
+    """Flags endpoints seen on the wire that no action explains (#130).
+
+    Data comes from the egress sampler (``watch-all --security`` in process
+    mode); without it ``buffer.egress`` is None and this is a no-op.
+    """
+
+    category = Category.NETWORK
+    name = "undeclared_egress"
+    description = "Connection not explained by any action"
+
+    def check(self, buffer: ActionBuffer) -> Warning | None:
+        if buffer.egress is None:
+            return None
+        flagged = sorted(buffer.egress.undeclared().items(), key=lambda kv: kv[1][1], reverse=True)
+        if not flagged:
+            return None
+        return Warning(
+            category=self.category,
+            severity=Severity.LOW,
+            signal="undeclared_egress",
+            message=f"Undeclared egress: {len(flagged)} endpoint(s) not explained by any action",
+            suggestion="Check which tool, script or package opened these connections",
+            details={
+                "endpoints": [
+                    {
+                        "endpoint": f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}",
+                        "first_seen": first.isoformat(),
+                        "last_seen": last.isoformat(),
+                    }
+                    for (ip, port), (first, last) in flagged[:5]
+                ],
+                "count": len(flagged),
+            },
+        )

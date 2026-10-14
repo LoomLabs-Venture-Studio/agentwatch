@@ -7,13 +7,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from itertools import islice
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .security_patterns import (
     is_credential_like_path,
     is_injection_like,
     is_privilege_command,
 )
+
+if TYPE_CHECKING:
+    from agentwatch.egress import Egress
 
 
 class ToolType(Enum):
@@ -192,6 +195,8 @@ class ActionBuffer:
         self._file_access_counts: dict[str, int] = {}
         self._error_messages: list[str] = []
         self._stats = SessionStats()
+        # Observed endpoints; set only by watch-all's egress sampler (#130).
+        self.egress: Egress | None = None
 
     def __len__(self) -> int:
         return len(self.actions)
