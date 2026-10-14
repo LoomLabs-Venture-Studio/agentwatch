@@ -99,7 +99,9 @@ src/agentwatch/
                        decision 2026-10-09), maps to adapters via
                        match_process_adapter. Editor processes are labelled
                        with every editor adapter that has live sessions
-                       there (Code -> "copilot-vscode, cline"), falling
+                       there (Code -> "copilot-vscode, cline", Cursor ->
+                       "cursor, cline", Insiders/VSCodium -> "cline";
+                       editor gates from agents/cline.py, #127), falling
                        back to the first candidate; AiUsage.adapter stays
                        a string (#119). Read-only, no admin on Windows
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
@@ -538,9 +540,8 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   Code 3.49.0+) is rejected, while Kilo Code 5.x and older Roo tasks have
   no clean marker and still fall back to Cline; non-default VS Code
   profiles and remote/WSL windows are out of scope; `agentwatch detect`
-  labels a stable `Code` process "copilot-vscode, cline" when both have
-  live sessions (#120) but does not yet credit Cline to Insiders/VSCodium/
-  Cursor processes; whether the Cline CLI's recorded pid is the CLI or a
+  credits Cline per editor (#120, #127), but SDK-store Cline sessions
+  don't record their fork, so they count for stable `Code` only; whether the Cline CLI's recorded pid is the CLI or a
   shared "auto"-mode host is unverified.
 - **Kilo Code 7.x limits** (#118, PR #123): `kilo serve`'s cwd is the
   first workspace folder, so Agent Manager worktree and multi-root
