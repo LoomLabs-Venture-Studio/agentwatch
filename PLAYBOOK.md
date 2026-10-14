@@ -3846,9 +3846,9 @@ implementation (in progress).
       as superseded; #100 and #73 closed.
 
 ### Acceptance Criteria (this batch)
-- [ ] #104 Cline adapter: spec done (#112, cited to cline/cline `main`
-      @ `a484089` and `legacy-extension` @ `7761370`); implementation
-      scope decided (below); implementation in progress.
+- [x] #104 Cline adapter: spec and implementation merged as #112
+      `b0edbae` (2026-10-13; cited to cline/cline `main` @ `a484089` and
+      `legacy-extension` @ `7761370`). Fixture-verified only, not run live.
 - [x] #105 Codex app-server: one `ps` entry per open rollout (#111).
       Fixture-verified.
 - [x] #106 Codex `item_completed` `CommandExecution`/`FileChange` results
@@ -3930,3 +3930,116 @@ implementation (in progress).
 - Codex: MCP tool-call `item_completed` items not read; legacy-history
   rollouts give no exit codes; app-server scan calls `open_files()`
   twice (reuse would change `resolve_log`'s signature).
+
+---
+
+### Sprint 33 -- Kilo Code 7.x, Cline on VS Code forks, detect attribution, macOS Codex review (2026-10-13/14)
+**Type:** feature + bug fixes + docs + research. Follow-ups from Sprint 32
+(#116-#118 from its board decisions, #119 from the #112 review, #108).
+Nothing run live.
+
+### Acceptance Criteria
+- [x] #119 `detect` labels an editor process with every candidate editor
+      adapter that has live sessions (`Code` -> `copilot-vscode, cline`),
+      falling back to the first candidate (#120). Monkeypatch-verified.
+- [x] #117 Roo Code: researched from source; closed as not planned
+      (upstream shut down, see Result). Nothing built.
+- [x] #118 Kilo Code 7.x adapter (#123). Fixture-verified.
+- [x] #116 Cline legacy store read from VS Code Insiders, VSCodium and
+      Cursor, each gated on its own process (#124). Source-verified, not
+      live. Windsurf dropped.
+- [x] #127 `detect` credits Cline to Insiders, VSCodium and Cursor
+      processes (#128). Monkeypatch-verified.
+- [ ] #108 macOS Codex: source review done, release-binary pattern fixed
+      (#122); issue stays open for a real-Mac check.
+- [x] CLAUDE.md records #122-#125 and #120 (#126).
+
+### Result
+- #120 `9e42fa3` (#119, merged 2026-10-13): candidates per editor in
+  registry order; Cline counts only for legacy-store or SDK
+  `source: vscode` sessions, not Cline CLI. `AiUsage.adapter` stays a
+  string (e.g. `"copilot-vscode, cline"`), so `--json` is unchanged.
+- #121 `fcf44c9` (#117/#118, merged 2026-10-13): `ClineAdapter.claims()`
+  takes `api_conversation_history.json` only under
+  `globalStorage/saoudrizwan.claude-dev/tasks/<id>/` or outside any
+  `globalStorage/<ext>/tasks/` layout. Roo
+  (`rooveterinaryinc.roo-cline`) and Kilo (`kilocode.kilo-code`) task
+  files now route to nothing instead of being misparsed as Cline.
+- #125 `e8b250c` (follow-up to #121): outside globalStorage, a task with
+  a sibling `history_item.json` (Roo Code 3.49.0+, RooCodeInc/Roo-Code @
+  `b867ec9`) is not claimed as Cline. Cline never writes that file
+  (`disk.ts:48-74` @ `7761370`). Source-verified, not live.
+- #117 closed not planned (2026-10-13): Roo Code was shut down upstream
+  (repo archived; `README.md:66` @ `b867ec9`: "The Roo Code Extension was
+  shut down on May 15th"). A ZooCode adapter can be a new issue if
+  requested.
+- #123 `a82c537` (#118): Kilo 7.x is an OpenCode fork with the same
+  SQLite store, so `KiloAdapter(OpencodeAdapter)` (`app="kilo"`,
+  `db_env="KILO_DB"`, `~/.local/share/kilo/kilo.db`) reuses the OpenCode
+  parser and watcher. Process pattern: native `kilo` / `.kilo` /
+  `kilo.exe`, node/bun wrappers excluded; registered before `opencode`;
+  claims only `kilo*.db`. Cited to Kilo-Org/kilocode @ `ff20ca7`.
+  Fixture-verified (synthetic DB from Kilo's schema); no Kilo install.
+- #124 `21ae030` (#116): one (label, User folder, process regex) row per
+  editor: `Code - Insiders` (microsoft/vscode @ `1985b99`, vscode-docs @
+  `78bab45`, vscode-test @ `d661ec1`), `VSCodium` (VSCodium/vscodium @
+  `f33df00`), `Cursor` (existing helpers). Fork pids seeded
+  `"<editor>:<task_id>"`; commands read e.g. `cursor (cline)`. VS Code
+  stable unchanged. Windsurf dropped: closed source, no public source for
+  its User folder.
+- #122 `4c585bc` (#108): source-only macOS review (openai/codex @
+  `6f47fcb`; findings in the #108 comment). Fix: the Codex pattern now
+  matches unrenamed release binaries `codex-<aarch64|x86_64>-<triple>`;
+  `codex-code-mode-host` stays excluded. Confirmed no change needed:
+  `CODEX_HOME` default and `sessions/YYYY/MM/DD` layout, npm/Homebrew/
+  `Codex.app` binary names, `open_files()` fallback. README Codex rows say
+  "macOS: source-reviewed, not live (#108)".
+- #126 `97e5fcf`: CLAUDE.md updated for Kilo Code, Cline forks, the Roo
+  marker, the #120 detect label and the macOS Codex review. Docs only.
+- #128 `b7be61c` (#127): the detect editor table is built from
+  `agents/cline.py`'s `_legacy_editors()`. `Cursor` -> `cursor, cline`;
+  Insiders/VSCodium -> `cline` with no discovery. A Cline task counts
+  only for the editor whose store it came from; an SDK `source: vscode`
+  session is credited to stable Code only. Answers #124's board call.
+- Issues #116, #118, #119, #127 closed by hand (closing keywords don't
+  fire on `develop`).
+- `develop` @ `b7be61c`: 1452 passed, 1 skipped; `ruff check .` clean
+  (local run, 2026-10-14).
+
+### Verification status
+- Live: nothing. No Mac (#122), no Kilo install (#123), no Cline install
+  in any editor (#124, #125); #120 and #128 not run live.
+- Fixture-verified: #121, #123. Monkeypatch-verified: #120, #128.
+  Source-verified: #122, #124, #125.
+
+### Board decisions recorded
+1. #118: Kilo Code 7.x only; 5.x (archived `kilocode-legacy`) out of
+   scope (2026-10-13, #118 comment).
+
+### Board decisions (2026-10-14)
+1. #129 (CHANGELOG for `develop` since 2026-10-03) approved for merge to
+   `develop` after review fixes.
+2. #130 network-tracking spike: the goal is security ("where", not "how
+   much"). Build order: an unprivileged per-agent endpoint sampler
+   (psutil `net_connections` over the agent's process tree) plus an
+   "undeclared egress" detector first. Byte counts (ETW / eBPF /
+   `nettop`) not pursued now.
+
+### Open threads
+- #108 macOS Codex needs a real Mac: app-server cwd (a `/` cwd shows `/`
+  as the project), the standalone `codex-app-server` binary (unmatched),
+  `open_files()` under the hardened runtime, the app's launch command
+  line.
+- #109 non-Store (Squirrel) Claude Desktop needs a real install to
+  confirm.
+- Kilo Code: `kilo serve` cwd is the window's first workspace folder, so
+  Agent Manager worktree and multi-root sessions are missed;
+  `kilo-<channel>.db` not looked for; a `KILO_DB` not named `kilo*.db` is
+  labelled opencode; antirez's `kilo` editor matches the pattern.
+- Cline forks: whether `saoudrizwan.claude-dev` installs in VSCodium or
+  Cursor (Open VSX) is unchecked. Kilo 5.x and Roo < 3.49 tasks outside
+  globalStorage have no clean marker and still fall back to Cline.
+- detect: the label names the live adapters in an editor, not which one
+  made each connection (provider-domain split not done); Cline sessions
+  are filtered by `AgentProcess.command` text.
+- #129 and #130 open as drafts; #130's sampler and detector not started.
