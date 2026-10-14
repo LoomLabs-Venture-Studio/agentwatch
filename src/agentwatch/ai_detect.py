@@ -15,40 +15,47 @@ from dataclasses import dataclass, field
 import psutil
 
 from agentwatch import agents
-from agentwatch.agents.copilot_vscode import _CODE_PROCESS_RE
-from agentwatch.cursor_discovery import _CURSOR_PROCESS_RE
+from agentwatch.agents.cline import _legacy_editors
 from agentwatch.discovery import match_process_adapter
 
 # Editor adapters have no process pattern (match_process_adapter skips them),
 # so map their gate process names here (#100). One editor can host several
-# adapters (#119); candidates are in registry order, first is the default.
-_EDITOR_PROCESSES = (
-    (_CODE_PROCESS_RE, ("copilot-vscode", "cline")),
-    (_CURSOR_PROCESS_RE, ("cursor",)),
+# adapters (#119): its own adapter first, then Cline, whose legacy store is
+# read for every editor in _legacy_editors() (#124, #127). First is default.
+_OWN_ADAPTER = {"vscode": "copilot-vscode", "cursor": "cursor"}
+_EDITOR_PROCESSES = tuple(
+    (rx, label, (_OWN_ADAPTER[label], "cline") if label in _OWN_ADAPTER else ("cline",))
+    for label, _, rx in _legacy_editors()
 )
-# Cline sessions that run inside VS Code: the legacy store, or an SDK-store
-# session with source "vscode" (agents/cline.py command strings). CLI etc. don't.
-_CLINE_IN_VSCODE = ("vscode (cline)", "cline (vscode)")
 
 
-def _has_live_session(name: str) -> bool:
-    try:
-        sessions = agents.get(name).discover()
-    except Exception:
-        return False
-    if name == "cline":
-        return any(s.command in _CLINE_IN_VSCODE for s in sessions)
-    return bool(sessions)
+def _commands(name: str, cache: dict[str, list[str]]) -> list[str]:
+    """Live session commands of adapter *name*; discovered once per run."""
+    if name not in cache:
+        try:
+            cache[name] = [s.command for s in agents.get(name).discover()]
+        except Exception:
+            cache[name] = []
+    return cache[name]
 
 
-def _editor_label(candidates: tuple[str, ...], live: dict[str, bool]) -> str:
-    """Comma-joined candidates with live sessions; the first candidate if none."""
+def _is_live(name: str, editor: str, cache: dict[str, list[str]]) -> bool:
+    commands = _commands(name, cache)
+    if name != "cline":
+        return bool(commands)
+    # Cline counts only for a task from this editor's legacy store
+    # (agents/cline.py command strings). An SDK-store session's source
+    # "vscode" doesn't say which fork, so it is credited to stable Code only.
+    hosted = {f"{editor} (cline)"} | ({"cline (vscode)"} if editor == "vscode" else set())
+    return any(c in hosted for c in commands)
+
+
+def _editor_label(editor: str, candidates: tuple[str, ...], cache: dict[str, list[str]]) -> str:
+    """Comma-joined candidates live in *editor*; the first candidate if none."""
     if len(candidates) == 1:
         return candidates[0]
-    for name in candidates:
-        if name not in live:
-            live[name] = _has_live_session(name)
-    return ", ".join(n for n in candidates if live[n]) or candidates[0]
+    return ", ".join(n for n in candidates if _is_live(n, editor, cache)) or candidates[0]
+
 
 # Provider -> domains. Only domains confirmed in vendor docs; add, don't guess.
 AI_PROVIDERS: dict[str, tuple[str, ...]] = {
@@ -160,7 +167,7 @@ def detect(
     pairs, partial = _connections_by_pid(connections, process_iter)
 
     found: dict[int, AiUsage] = {}
-    live: dict[str, bool] = {}  # editor adapter -> has live sessions, per run
+    sessions: dict[str, list[str]] = {}  # editor adapter -> live commands, per run
     listeners: dict[int, str] = {}
     for pid, c in pairs:
         if not pid:
@@ -207,8 +214,8 @@ def detect(
         if adapter:
             usage.adapter = adapter.name
         else:
-            candidates = next((c for rx, c in _EDITOR_PROCESSES if rx.match(name)), None)
-            usage.adapter = candidates and _editor_label(candidates, live)
+            editor = next((e for e in _EDITOR_PROCESSES if e[0].match(name)), None)
+            usage.adapter = editor and _editor_label(editor[1], editor[2], sessions)
         usages.append(usage)
 
     usages.sort(key=lambda u: (u.adapter is not None, -u.connections, u.pid))

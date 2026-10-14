@@ -166,10 +166,39 @@ def test_code_with_both_live_lists_both_in_registry_order(monkeypatch):
     assert code().usages[0].adapter == "copilot-vscode, cline"
 
 
-def test_cursor_label_unchanged_and_not_discovered(monkeypatch, no_editor_sessions):
-    live(monkeypatch, "cline", "vscode (cline)")
-    r = run([conn(2, "160.79.104.10")], [FakeProc(2, "Cursor.exe", r"C:\x\Cursor.exe")])
-    assert r.usages[0].adapter == "cursor"
+def cursor():
+    return run([conn(2, "160.79.104.10")], [FakeProc(2, "Cursor.exe", r"C:\x\Cursor.exe")])
+
+
+def test_cursor_with_live_cline_task_is_cursor_and_cline(monkeypatch):
+    # #127: Cline's legacy store is read for Cursor since #124.
+    live(monkeypatch, "cline", "cursor (cline)")
+    live(monkeypatch, "cursor", "cursor")
+    assert cursor().usages[0].adapter == "cursor, cline"
+
+
+def test_cursor_without_cline_task_is_cursor():
+    assert cursor().usages[0].adapter == "cursor"
+
+
+@pytest.mark.parametrize("command", ["vscode (cline)", "cline (vscode)"])
+def test_stable_code_cline_sessions_not_credited_to_cursor(monkeypatch, command):
+    live(monkeypatch, "cline", command)
+    assert cursor().usages[0].adapter == "cursor"
+
+
+def test_cursor_cline_session_not_credited_to_stable_code(monkeypatch):
+    live(monkeypatch, "cline", "cursor (cline)")
+    assert code().usages[0].adapter == "copilot-vscode"
+
+
+@pytest.mark.parametrize(
+    "name", ["Code - Insiders.exe", "code-insiders", "Code - Insiders", "VSCodium.exe", "codium"]
+)
+def test_insiders_and_vscodium_processes_are_cline(name, no_editor_sessions):
+    # Cline is the only adapter for these editors: labelled without discovery.
+    r = run([conn(3, "160.79.104.10")], [FakeProc(3, name)])
+    assert r.usages[0].adapter == "cline"
     assert no_editor_sessions == []
 
 
@@ -192,6 +221,14 @@ def test_editor_discovery_once_per_run_and_only_when_needed(no_editor_sessions):
         [FakeProc(1, "Code.exe"), FakeProc(2, "code")],
     )
     assert sorted(no_editor_sessions) == ["cline", "copilot-vscode"]
+
+
+def test_cline_discovered_once_across_editors(no_editor_sessions):
+    run(
+        [conn(1, "160.79.104.10"), conn(2, "160.79.104.10"), conn(3, "160.79.104.10")],
+        [FakeProc(1, "Code.exe"), FakeProc(2, "Cursor.exe"), FakeProc(3, "cursor")],
+    )
+    assert sorted(no_editor_sessions) == ["cline", "copilot-vscode", "cursor"]
 
 
 def test_vanished_process_skipped_and_denied_exe_is_none():

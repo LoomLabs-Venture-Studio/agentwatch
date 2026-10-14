@@ -335,10 +335,15 @@ is reported as partial; this path is fixture-verified only. Attribution is
 by provider IP, so a provider whose API shares IPs with its other services
 can't be told apart; Google (Gemini) is left out for that reason.
 The SUPPORTED column (`adapter` in `--json`, a string) names the agentwatch
-adapter for each program. One VS Code process can host both GitHub Copilot
-and Cline, so `Code.exe`/`code` is labelled with every one of them that has a
-live session (e.g. `copilot-vscode, cline`), or `copilot-vscode` if neither
-does. Connections are not split between them.
+adapter for each program. One editor process can host its own adapter and
+Cline, so it is labelled with every one of them that has a live session in
+that editor (e.g. `copilot-vscode, cline` for `Code.exe`/`code`,
+`cursor, cline` for `Cursor.exe`/`cursor`), or its own adapter if neither
+does. VS Code Insiders and VSCodium processes are labelled `cline`, the only
+adapter that monitors them. A Cline task counts only for the editor whose
+store it is in; a Cline SDK-store session with source `vscode` doesn't name
+the fork, so it counts for stable VS Code only. Connections are not split
+between adapters.
 
 ### Token Usage Stats
 
