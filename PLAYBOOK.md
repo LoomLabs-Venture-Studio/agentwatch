@@ -4052,3 +4052,47 @@ Nothing run live.
 - #129 and #130 open as drafts; #130's sampler and detector not started.
 - Cline live test approved, not run. CLAUDE.md says Cline 4.1.24; the
   extension on disk is `saoudrizwan.claude-dev-4.1.23`.
+
+---
+
+### Sprint 34 -- Per-agent egress sampler + undeclared-egress detector (#130 decision 2, 2026-10-15)
+**Type:** feature. Run by the manager agent (board delegation).
+**Branch:** `feature/egress-sampler` (from `develop`).
+**Spec:** `docs/research/network-tracking-2026-10-14.md` (#130), option 1
+only. Goal is security ("where"), not bytes.
+
+### Acceptance Criteria
+- [ ] New `src/agentwatch/egress.py`: unprivileged sampler. For one agent
+      pid, reads `net_connections(kind="inet")` for the pid and its
+      descendants, skipping descendants that are themselves tracked agent
+      pids. Returns remote `(ip, port)` pairs; loopback, unspecified,
+      link-local and multicast addresses dropped; `::ffff:` prefix stripped.
+      Vanished/denied processes are skipped, never raised.
+- [ ] Synthetic pids (Cursor, Copilot in VS Code, Cline, Cowork, Codex
+      app-server threads, ...) are never sampled: a pid is sampled only if
+      `match_process_adapter(cmdline, name)` on the real process returns
+      the agent's own adapter. Result cached per pid.
+- [ ] Allowed set: IPs of `ai_detect.AI_PROVIDERS` domains (resolved once,
+      off the event loop) plus IPs of every host declared by the agent's
+      actions (`network_host`, and `http(s)://` hosts in `command`).
+      DNS lookups cached per host; failures ignored.
+- [ ] New `UndeclaredEgressDetector` (security, `Category.NETWORK`,
+      signal `undeclared_egress`, `Severity.LOW`): fires when an observed
+      endpoint is not in the allowed set. Details list endpoints
+      (`ip:port`, first/last seen) and a count. No sampler data on the
+      buffer (`check`, `watch`, non-process `watch-all`) -> returns None.
+- [ ] `watch-all` in process mode with `--security` samples every tracked
+      real-pid agent about every 2 s off the event loop (one in flight at
+      a time); results merged into each agent's buffer on the event loop.
+- [ ] Tests: sampler (fake psutil), synthetic-pid skip, allow-list,
+      detector fires/doesn't fire, no-sampler-data no-op, multi_app merge.
+- [ ] Live probe on the Windows dev machine: sampler run read-only against
+      a real `claude.exe`; observed endpoints and any false positives
+      reported in the PR.
+- [ ] README security-detector list and CLAUDE.md updated.
+- [ ] All existing tests pass; `ruff check .` clean; no new security
+      issues (no cmdline or payload stored or logged).
+
+### Out of scope
+Byte counts (ETW/eBPF/`nettop`), per-action endpoint attachment, reverse
+DNS, `watch` single-agent mode, `detect` changes.
