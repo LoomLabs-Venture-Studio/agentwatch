@@ -17,7 +17,9 @@ class CodexAdapter(BaseAdapter):
     name = "codex"
     kind = "process"
     # Program path: the native binary, or node running `.bin/codex` / `bin/codex.js`.
-    process_pattern = r"(^|[/\\])codex(\.exe|\.js)?$"
+    # GitHub release archives ship it unrenamed as `codex-<target-triple>[.exe]`
+    # (openai/codex README L55-64 @ 6f47fcb; rust-v0.162.1 assets): `codex-aarch64-apple-darwin`.
+    process_pattern = r"(^|[/\\])codex(-(aarch64|x86_64)-[\w-]+)?(\.exe|\.js)?$"
     process_exclude = None
 
     def resolve_log(self, cwd: Path, pid: int | None) -> tuple[Path | None, str | None]:

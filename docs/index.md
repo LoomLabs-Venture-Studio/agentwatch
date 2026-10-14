@@ -246,6 +246,7 @@ agentwatch stats
 | Cursor | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | GitHub Copilot in VS Code | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 | Cline (VS Code extension and CLI) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| Kilo Code 7.x (CLI and VS Code extension) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 
 Each agent is an adapter in `agentwatch.agents` (ordered `ADAPTERS` registry). Running agents are
 found by scanning processes with `psutil` and matching each adapter's pattern against the *program*
@@ -266,6 +267,8 @@ Cline is read from two stores: the legacy VS Code extension's `globalStorage` ta
 VS Code Insiders, VSCodium and Cursor, each gated on its own editor process; the forks are
 source-verified, not live; Windsurf is not supported) and the SDK store `~/.cline/data/sessions`, shared by the new extension and
 the Cline CLI. It is fixture-verified only; live testing was not approved.
+Kilo Code 7.x is an OpenCode fork and is read from its SQLite store `~/.local/share/kilo/kilo.db`
+with OpenCode's parser. It is fixture-verified only (no live install); Kilo 5.x is not supported.
 Moltbot has a log parser but no process discovery, so you point it at a log file directly. An Aider
 `--analytics-log` JSONL sidecar backfills token and cost data.
 
