@@ -15,6 +15,7 @@ from .network import (
     DataExfiltrationDetector,
     DNSExfiltrationDetector,
     NetworkAnomalyDetector,
+    UndeclaredEgressDetector,
 )
 from .privilege import (
     DangerousCommandDetector,
@@ -46,6 +47,7 @@ __all__ = [
     "DataExfiltrationDetector",
     "C2CommunicationDetector",
     "DNSExfiltrationDetector",
+    "UndeclaredEgressDetector",
     # Privilege detectors
     "PrivilegeEscalationDetector",
     "DangerousCommandDetector",
@@ -77,6 +79,7 @@ def get_all_security_detectors():
         DataExfiltrationDetector(),
         C2CommunicationDetector(),
         DNSExfiltrationDetector(),
+        UndeclaredEgressDetector(),
         # Privilege
         PrivilegeEscalationDetector(),
         DangerousCommandDetector(),
