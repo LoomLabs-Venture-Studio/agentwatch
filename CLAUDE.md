@@ -17,7 +17,11 @@ OpenCode (read-only SQLite `opencode.db`) is wired end-to-end; its parser
 is built from real opencode 1.18.34 sessions (scrubbed fixture) and
 matches the 2026-10-05 live research, but `ps`/`watch-all` against a
 running opencode has not been live-verified (no install on the dev
-machine). Gemini CLI is wired end-to-end but fixture-verified only
+machine). Kilo Code 7.x (an OpenCode fork: CLI `kilo` and the VS Code
+extension's bundled `kilo serve`) reuses the OpenCode adapter/parser on
+`~/.local/share/kilo/kilo.db`; fixture-verified only against
+Kilo-Org/kilocode @ ff20ca7 (no install). Kilo 5.x is out of scope (board,
+#118). Gemini CLI is wired end-to-end but fixture-verified only
 (format checked against the gemini-cli 0.62.0/0.63.0 source; no local
 Gemini session to live-test, 2026-10-07). GitHub Copilot in VS Code
 (agent-mode chats, read from VS Code's `chatSessions/*.jsonl` mutation
@@ -69,7 +73,7 @@ src/agentwatch/
                        BaseAdapter defaults (base.py) and the ordered
                        ADAPTERS registry (__init__.py: claude-code, aider,
                        codex, cursor, copilot-vscode, copilot, agy,
-                       opencode, gemini, claude-desktop, cline).
+                       kilo-code, opencode, gemini, claude-desktop, cline).
                        agents/cline.py discovers both Cline stores
                        (legacy: VS Code running; SDK: status not done
                        and recorded pid alive). copilot_vscode.py
@@ -163,6 +167,9 @@ src/agentwatch/
                        ~/.local/share, also on Windows) or OPENCODE_DB;
                        adapter in agents/opencode.py keys each live
                        session as <db>#<session_id>
+    (agents/kilo.py)     KiloAdapter(OpencodeAdapter): app=kilo, KILO_DB,
+                       native `kilo`/`.kilo`/`kilo.exe` (node wrapper
+                       excluded); claims kilo*.db
     gemini.py            Gemini CLI chats/session-*.jsonl parsing
                        (GeminiParser; messages re-appended by id, so each
                        call/turn is emitted once, a call when its status is
@@ -516,19 +523,36 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   visible on the host (transcript inside sessiondata.vhdx); only host-loop
   sessions surface; live ps/watch-all of a session not achieved.
 - **Cline adapter is fixture-verified only** (#104, PR #112, 2026-10-13;
-  live testing not approved by the board). Limits: legacy-extension tasks
-  that write tool calls as XML in assistant text get token counts only (no
-  XML parsing); legacy failures are detected from Cline's English result
-  strings; legacy store read from VS Code stable only (Insiders/VSCodium/
-  Cursor/Windsurf: #116); Roo Code and Kilo Code are separate (#117, #118),
-  and `check --log` routes an `api_conversation_history.json` by its
-  `globalStorage/<extension id>/` parent, so Roo/Kilo task files are not
-  parsed as Cline, but a copy outside globalStorage (or a Roo
-  `customStoragePath` store) still falls back to Cline;
-  non-default VS Code profiles and remote/WSL windows are out of scope;
-  `agentwatch detect` credits VS Code traffic to copilot-vscode, never
-  Cline; whether the Cline CLI's recorded pid is the CLI or a shared
-  "auto"-mode host is unverified.
-
+  live testing approved by the board 2026-10-14 but not yet run: Cline
+  4.1.24 is installed in VS Code on the dev machine, no task run yet).
+  Limits: legacy-extension tasks that write tool calls as XML in assistant
+  text get token counts only (no XML parsing); legacy failures are
+  detected from Cline's English result strings; legacy store read from VS
+  Code, VS Code Insiders, VSCodium and Cursor, each gated on its own
+  process (forks source-verified, not live; Windsurf dropped, no public
+  source for its User folder, #116); Roo Code is discontinued (#117, closed)
+  and Kilo Code 5.x is out of scope (#118); `check --log` routes an
+  `api_conversation_history.json` by its `globalStorage/<extension id>/`
+  parent, and outside globalStorage (a copy, or a fork's
+  `customStoragePath` store) a task with a sibling `history_item.json` (Roo
+  Code 3.49.0+) is rejected, while Kilo Code 5.x and older Roo tasks have
+  no clean marker and still fall back to Cline; non-default VS Code
+  profiles and remote/WSL windows are out of scope; `agentwatch detect`
+  labels a stable `Code` process "copilot-vscode, cline" when both have
+  live sessions (#120) but does not yet credit Cline to Insiders/VSCodium/
+  Cursor processes; whether the Cline CLI's recorded pid is the CLI or a
+  shared "auto"-mode host is unverified.
+- **Kilo Code 7.x limits** (#118, PR #123): `kilo serve`'s cwd is the
+  first workspace folder, so Agent Manager worktree and multi-root
+  sessions are not surfaced; dev-channel `kilo-<channel>.db` is not looked
+  for; a `KILO_DB` not named `kilo*.db` is labelled opencode by `check
+  --log`; antirez's `kilo` editor would match the process pattern.
+- **macOS Codex / ChatGPT app: source-reviewed, not live** (#108, PR
+  #122). `CODEX_HOME` defaults to `~/.codex` with the same
+  `sessions/YYYY/MM/DD` layout; npm, Homebrew and
+  `/Applications/Codex.app/Contents/Resources/codex` all run a plain
+  `codex`; the pattern also matches unrenamed release binaries
+  `codex-<triple>[.exe]`. Open: app-server cwd, standalone
+  `codex-app-server`, and `open_files()` on a real Mac.
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
