@@ -50,6 +50,16 @@ def test_arguments_do_not_steal_pid(argv, expected):
         (["node", f"{NVM}/@openai/codex/bin/codex.js"], "codex"),
         ([f"{NVM}/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"], "codex"),
         (["codex", "exec", "fix it"], "codex"),
+        # macOS (#108, source-reviewed): npm darwin vendor binary (codex-cli/bin/codex.js
+        # L88-93), Homebrew cask `binary "bin/codex"`, the ChatGPT app's bundled binary
+        # (learn.chatgpt.com/docs/reference/troubleshooting), and the GitHub release
+        # archives' unrenamed binaries (openai/codex README L55-64 @ 6f47fcb, rust-v0.162.1).
+        ([f"{NVM}/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"], "codex"),
+        (["/opt/homebrew/Caskroom/codex/0.162.1/bin/codex"], "codex"),
+        (["/Applications/Codex.app/Contents/Resources/codex", "app-server"], "codex"),
+        (["/Users/u/Downloads/codex-aarch64-apple-darwin"], "codex"),
+        (["./codex-x86_64-apple-darwin", "exec", "hi"], "codex"),
+        ([r"C:\Users\u\Downloads\codex-x86_64-pc-windows-msvc.exe"], "codex"),
         (["python", "-m", "aider", "--model", "gpt-4o"], "aider"),
         (["aider"], "aider"),
         (["agy", "--dangerously-skip-permissions", "-p", "hi"], "agy"),
@@ -70,6 +80,7 @@ def test_real_invocations_route_to_their_adapter(argv, expected):
         ["npm", "exec", "@openai/codex", "--version"],
         ["sh", "-c", "'codex'", "--version"],
         [f"{NVM}/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex-code-mode-host"],
+        ["/Users/u/Downloads/codex-code-mode-host-aarch64-apple-darwin"],
         # Shells and scripts that merely mention an agent.
         ["/bin/bash", "-c", "source ~/.claude/shell-snapshots/s.sh && agentwatch ps"],
         ["python", "-c", "print('claude')"],
