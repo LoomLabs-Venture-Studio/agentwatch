@@ -3922,7 +3922,8 @@ implementation (in progress).
    of scope.
 3. Live verification not approved: no Cline install, no provider or Codex
    credentials. Cline ships fixture-verified.
-4. #78 (research draft) still open; no decision taken.
+4. #78 (research draft) still open; no decision taken. (Later merged as
+   `17b221c` on 2026-10-13.)
 
 ### Open threads
 - #108 macOS Codex verification; #109 needs a real non-Store Windows
@@ -4008,7 +4009,9 @@ Nothing run live.
 
 ### Verification status
 - Live: nothing. No Mac (#122), no Kilo install (#123), no Cline install
-  in any editor (#124, #125); #120 and #128 not run live.
+  in a VS Code fork (#124, #125); #120 and #128 not run live. Cline is
+  installed in VS Code stable on the dev machine, but no task has been
+  run.
 - Fixture-verified: #121, #123. Monkeypatch-verified: #120, #128.
   Source-verified: #122, #124, #125.
 
@@ -4024,6 +4027,10 @@ Nothing run live.
    (psutil `net_connections` over the agent's process tree) plus an
    "undeclared egress" detector first. Byte counts (ETW / eBPF /
    `nettop`) not pursued now.
+3. Cline live testing approved, on the dev machine's VS Code stable
+   install. Not yet run: running a task needs a provider credential, and
+   per CLAUDE.md env vars and credentials need board approval. Reverses
+   Sprint 32 decision 3.
 
 ### Open threads
 - #108 macOS Codex needs a real Mac: app-server cwd (a `/` cwd shows `/`
@@ -4043,3 +4050,5 @@ Nothing run live.
   made each connection (provider-domain split not done); Cline sessions
   are filtered by `AgentProcess.command` text.
 - #129 and #130 open as drafts; #130's sampler and detector not started.
+- Cline live test approved, not run. CLAUDE.md says Cline 4.1.24; the
+  extension on disk is `saoudrizwan.claude-dev-4.1.23`.
