@@ -295,6 +295,20 @@ class TestRouting:
         shutil.copy(LEGACY, log)
         assert agents.adapter_for(log).name == "cline"
 
+    def test_roo_custom_storage_dir_is_not_cline(self, tmp_path):
+        # roo-cline.customStoragePath: <custom>/tasks/<id>/, no globalStorage parent.
+        roo = tmp_path / "custom" / "tasks" / TASK_ID
+        roo.mkdir(parents=True)
+        for name in ("api_conversation_history.json", "ui_messages.json",
+                     "task_metadata.json", "history_item.json"):
+            shutil.copy(LEGACY, roo / name)
+        assert agents.adapter_for(roo / "api_conversation_history.json") is None
+
+    def test_cline_shaped_copied_dir_is_cline(self, tmp_path):
+        task = tmp_path / "copy" / "tasks" / TASK_ID
+        shutil.copytree(LEGACY.parent, task)
+        assert agents.adapter_for(task / "api_conversation_history.json").name == "cline"
+
     def test_mixed_case_global_storage_and_id(self, tmp_path):
         roo = tmp_path / "GlobalStorage" / "RooVeterinaryInc.Roo-Cline" / "tasks" / TASK_ID
         cl = tmp_path / "GLOBALSTORAGE" / "SaoudRizwan.Claude-Dev" / "tasks" / TASK_ID

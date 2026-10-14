@@ -226,8 +226,16 @@ class ClineAdapter(BaseAdapter):
 
     def claims(self, path: Path) -> bool:
         if path.name == "api_conversation_history.json":
-            # Outside globalStorage (e.g. a copied file) there is no owner to check.
-            return _storage_owner(path) in (None, LEGACY_EXTENSION_ID)
+            owner = _storage_owner(path)
+            if owner is not None:
+                return owner == LEGACY_EXTENSION_ID
+            # No owner (a copy, or a fork's customStoragePath store). Roo Code
+            # >= 3.49.0 writes history_item.json beside every task file
+            # (RooCodeInc/Roo-Code @ b867ec9 src/shared/globalFileNames.ts:7,
+            # core/task-persistence/TaskHistoryStore.ts:160-170, 551-563);
+            # Cline never does (cline/cline GlobalFileNames, v3.20.0..main).
+            # ponytail: Kilo 5.x and Roo < 3.49 have no such marker, still read as Cline.
+            return not os.path.exists(path.with_name("history_item.json"))  # never raises
         if not path.name.endswith(".messages.json"):
             return False
         from agentwatch.parser.cline import load
