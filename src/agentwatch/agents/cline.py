@@ -2,8 +2,8 @@
 ``docs/superpowers/specs/2026-10-12-cline-adapter-design.md``.
 
 - Legacy VS Code extension: ``<VS Code User>/globalStorage/
-  saoudrizwan.claude-dev/tasks/<id>/api_conversation_history.json``. VS Code
-  stable only (other editors: #116).
+  saoudrizwan.claude-dev/tasks/<id>/api_conversation_history.json``, read
+  from each editor in ``_legacy_editors()`` whose process is running (#116).
 - SDK store, shared by the new VS Code extension, the Cline CLI, JetBrains
   and Cline desktop: ``~/.cline/data/sessions/<id>/``. The manifest's
   ``source`` tells them apart.
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections.abc import Iterator
 from datetime import datetime
@@ -24,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 import psutil
 
 from .base import BaseAdapter, Watcher, source_path
-from .copilot_vscode import COPILOT_VSCODE_ACTIVE_WINDOW_S, _vscode_running
+from .copilot_vscode import _CODE_PROCESS_RE, COPILOT_VSCODE_ACTIVE_WINDOW_S
 
 if TYPE_CHECKING:
     from agentwatch.discovery import AgentProcess
@@ -35,6 +36,39 @@ LEGACY_EXTENSION_ID = "saoudrizwan.claude-dev"
 # Non-terminal session statuses: cline/cline main @ a484089
 # sdk/packages/core/src/types/common.ts:7-11.
 _LIVE_STATUSES = ("idle", "running", "pending")
+
+
+def _legacy_editors() -> tuple[tuple[str, str, re.Pattern[str]], ...]:
+    """(label, User-data folder, main-process regex) per editor (#116).
+    Folder = product ``nameShort`` fed to VS Code's getDefaultUserDataPath
+    (microsoft/vscode @ 1985b99 src/main.ts:60). Source-verified, not live:
+    - Code - Insiders: vscode-docs @ 78bab45 docs/configure/profiles.md:413;
+      exes ``Code - Insiders.exe``/``code-insiders``/``Code - Insiders``
+      (microsoft/vscode-test @ d661ec1 lib/util.ts:156-162, 170-172).
+    - VSCodium: VSCodium/vscodium @ f33df00 prepare_vscode.sh:96-98,
+      docs/migration.md:22-24; ``VSCodium.exe`` (docs/troubleshooting.md:142),
+      ``codium`` (linuxExecutableName = applicationName, vscode build/lib/
+      electron.ts:239), macOS ``VSCodium`` (darwinExecutable = nameShort, :148).
+    - Cursor: see cursor_discovery.default_cursor_user_dir.
+    Windsurf is left out: no public source for its User folder (#116)."""
+    from agentwatch.cursor_discovery import _CURSOR_PROCESS_RE  # lazy: import cycle
+
+    return (
+        ("vscode", "Code", _CODE_PROCESS_RE),
+        ("vscode-insiders", "Code - Insiders",
+         re.compile(r"^code(-| - )insiders(\.exe)?$", re.IGNORECASE)),
+        ("vscodium", "VSCodium", re.compile(r"^(vs)?codium(\.exe)?$", re.IGNORECASE)),
+        ("cursor", "Cursor", _CURSOR_PROCESS_RE),
+    )
+
+
+def _running_editors() -> set[str]:
+    """Labels of ``_legacy_editors()`` with a live process; empty on error."""
+    try:
+        names = {p.info.get("name") or "" for p in psutil.process_iter(attrs=["name"])}
+    except Exception:
+        return set()
+    return {label for label, _, rx in _legacy_editors() if any(rx.match(n) for n in names)}
 
 
 def _env(name: str) -> str:
@@ -78,7 +112,7 @@ def _storage_owner(path: Path) -> str | None:
     return None
 
 
-def _legacy_agents(user_dir: Path, now: float) -> list[AgentProcess]:
+def _legacy_agents(user_dir: Path, now: float, editor: str = "vscode") -> list[AgentProcess]:
     from agentwatch.cursor_discovery import _synthetic_pid
     from agentwatch.discovery import AgentProcess
 
@@ -99,12 +133,14 @@ def _legacy_agents(user_dir: Path, now: float) -> list[AgentProcess]:
         task_id = log.parent.name
         cwd = cwds.get(task_id)
         agents.append(AgentProcess(
-            pid=_synthetic_pid(task_id),
+            # Editor in the seed so one task id under two editors can't collide;
+            # not for stable, whose pids predate #116.
+            pid=_synthetic_pid(task_id if editor == "vscode" else f"{editor}:{task_id}"),
             agent_type="cline",
             working_directory=Path(cwd) if cwd else None,
             log_file=log,
             session_id=task_id,
-            command="vscode (cline)",
+            command=f"{editor} (cline)",
         ))
     return agents
 
@@ -155,14 +191,23 @@ def find_cline_agents(
     require_running: bool = True,
     now: float | None = None,
 ) -> list[AgentProcess]:
-    """Recent Cline tasks from both stores, one entry per task. Never raises."""
+    """Recent Cline tasks from both stores, one entry per task. Never raises.
+    *user_dir* overrides the legacy store with one VS Code stable User dir."""
     now = time.time() if now is None else now
     agents: list[AgentProcess] = []
     try:
-        if not require_running or _vscode_running():
-            from agentwatch.vscode_paths import default_user_dir
+        from agentwatch.vscode_paths import default_user_dir
 
-            agents += _legacy_agents(user_dir or default_user_dir("Code"), now)
+        running = _running_editors() if require_running else None
+        for label, folder, _ in _legacy_editors():
+            if (user_dir is not None and label != "vscode") or (
+                running is not None and label not in running
+            ):
+                continue
+            try:
+                agents += _legacy_agents(user_dir or default_user_dir(folder), now, label)
+            except Exception:
+                pass
     except Exception:
         pass
     try:

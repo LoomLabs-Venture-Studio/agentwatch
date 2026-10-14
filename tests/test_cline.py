@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -378,13 +379,86 @@ class TestDiscovery:
         assert a.working_directory is None
 
     def test_legacy_process_gate(self, legacy_user, tmp_path, monkeypatch):
-        monkeypatch.setattr(cline_agent, "_vscode_running", lambda: False)
+        monkeypatch.setattr(cline_agent, "_running_editors", lambda: set())
         empty = tmp_path / "no-sessions"
         assert cline_agent.find_cline_agents(user_dir=legacy_user, sessions_dir=empty) == []
         got = cline_agent.find_cline_agents(
             user_dir=legacy_user, sessions_dir=empty, require_running=False, now=1e12
         )
         assert got == []  # gate bypassed, but everything is outside the window
+
+    def _editor_store(self, legacy_user, base, folder):
+        user = base / folder / "User"
+        shutil.copytree(legacy_user, user)
+        return next(user.glob("globalStorage/*/tasks/*/api_conversation_history.json"))
+
+    def test_editors_across_two_stores(self, legacy_user, tmp_path, monkeypatch):
+        from agentwatch.cursor_discovery import _synthetic_pid
+
+        base = tmp_path / "xdg"
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(base))
+        stable = self._editor_store(legacy_user, base, "Code")
+        cursor = self._editor_store(legacy_user, base, "Cursor")
+        monkeypatch.setattr(cline_agent, "_running_editors", lambda: {"vscode", "cursor"})
+        got = cline_agent.find_cline_agents(
+            sessions_dir=tmp_path / "none", now=stable.stat().st_mtime + 10
+        )
+        by_cmd = {a.command: a for a in got}
+        assert set(by_cmd) == {"vscode (cline)", "cursor (cline)"}
+        # Stable pid/command unchanged by #116; same task id elsewhere can't collide.
+        assert by_cmd["vscode (cline)"].pid == _synthetic_pid(TASK_ID)
+        assert by_cmd["cursor (cline)"].pid == _synthetic_pid(f"cursor:{TASK_ID}")
+        assert by_cmd["cursor (cline)"].log_file == cursor
+        # Gate is per editor: Cursor closed -> only stable.
+        monkeypatch.setattr(cline_agent, "_running_editors", lambda: {"vscode"})
+        got = cline_agent.find_cline_agents(
+            sessions_dir=tmp_path / "none", now=stable.stat().st_mtime + 10
+        )
+        assert [a.command for a in got] == ["vscode (cline)"]
+
+    @pytest.mark.parametrize("platform,env,base", [
+        ("linux", {"XDG_CONFIG_HOME": "/x"}, "/x"),
+        ("win32", {"APPDATA": "C:/Users/u/AppData/Roaming"}, "C:/Users/u/AppData/Roaming"),
+        ("darwin", {}, "HOME/Library/Application Support"),
+    ])
+    def test_editor_user_dirs(self, platform, env, base, monkeypatch, tmp_path):
+        from agentwatch.vscode_paths import default_user_dir
+
+        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        root = Path(base.replace("HOME", str(tmp_path)))
+        folders = {label: folder for label, folder, _ in cline_agent._legacy_editors()}
+        assert folders == {
+            "vscode": "Code", "vscode-insiders": "Code - Insiders",
+            "vscodium": "VSCodium", "cursor": "Cursor",
+        }
+        for folder in folders.values():
+            assert default_user_dir(folder) == root / folder / "User"
+
+    @pytest.mark.parametrize("name,label", [
+        ("code", "vscode"), ("Code.exe", "vscode"), ("Code", "vscode"),
+        ("code-insiders", "vscode-insiders"), ("Code - Insiders.exe", "vscode-insiders"),
+        ("Code - Insiders", "vscode-insiders"),
+        ("codium", "vscodium"), ("VSCodium.exe", "vscodium"), ("VSCodium", "vscodium"),
+        ("cursor", "cursor"), ("Cursor.exe", "cursor"),
+        ("windsurf", None), ("Windsurf.exe", None), ("code-oss", None),
+    ])
+    def test_editor_process_gate(self, name, label, monkeypatch):
+        class P:
+            info = {"name": name}
+
+        monkeypatch.setattr(cline_agent.psutil, "process_iter", lambda attrs: [P()])
+        assert cline_agent._running_editors() == ({label} if label else set())
+
+    def test_running_editors_never_raises(self, monkeypatch):
+        def boom(attrs):
+            raise OSError
+
+        monkeypatch.setattr(cline_agent.psutil, "process_iter", boom)
+        assert cline_agent._running_editors() == set()
 
     @pytest.fixture
     def sessions(self, tmp_path, monkeypatch):
