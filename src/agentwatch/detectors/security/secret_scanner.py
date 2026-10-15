@@ -19,6 +19,7 @@ from typing import Any
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
+from .pii import _PII_VALIDATORS
 
 # ---------------------------------------------------------------------------
 # Pattern registry — each entry: (compiled regex, secret_type label)
@@ -805,6 +806,9 @@ def _is_placeholder(m: re.Match, label: str, file_path: str | None = None) -> bo
     if label in _URL_LABELS:
         start, end = _value_span(m, label)
         return _is_false_positive(m.string[start:end], file_path)
+    validator = _PII_VALIDATORS.get(label)
+    if validator is not None and not validator(_match_value(m)):
+        return True
     return _is_false_positive(_match_value(m), file_path)
 
 
