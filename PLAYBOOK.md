@@ -4060,10 +4060,26 @@ Plan: `docs/superpowers/plans/2026-10-15-agentwatch-scrub-skill.md`.
 **Harness:** PLAYBOOK standalone; TDD per task.
 
 ### Acceptance Criteria
-- [ ] Spec ACs 1-14 (PII patterns + look-alikes, `scrub` copy/in-place/
+- [x] Spec ACs 1-14 (PII patterns + look-alikes, `scrub` copy/in-place/
       dry-run/json/exit codes, PEM bodies, `audit --pii` low severity,
       no PII in live `SecretLeakScanner`, `SKILL.md` live-tested once in
-      Claude Code, README, ruff + pytest green).
+      Claude Code, README, ruff + pytest green). QA PASS 2026-10-15:
+      1508 passed / 1 skipped; `audit` without `--pii` byte-identical to
+      develop; AC12 live via headless Claude Code 2.1.300 (project-scope
+      skill).
+
+### Result
+- `a272a93` patterns threaded through redaction + `_find_spans`;
+  `496fda7` PEM bodies; `ce4b6ac` `pii.py`; `0d2298b` `scrub`;
+  `fbd2639` `audit --pii`; `0a7fe48` skill + README.
+
+### Open threads
+- `audit` (develop too) does not scan user prompts or tool results, so
+  `audit --redact --pii` leaves PII a user typed into a prompt. `scrub`
+  on a log copy catches it. Board: widen `audit`'s channels, or have the
+  skill also offer `scrub` for logs?
+- `scrub` on `.jsonl`: a value only visible after JSON-escape decoding
+  is redacted and counted but not listed in findings.
 
 ### Board decisions (2026-10-15)
 1. Target user: developers using AI coding agents. Consumer version
