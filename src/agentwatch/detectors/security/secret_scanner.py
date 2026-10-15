@@ -93,6 +93,15 @@ _p(
 # Private keys
 _p(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", "private_key")
 _p(r"-----BEGIN PGP PRIVATE KEY BLOCK-----", "pgp_private_key")
+# The whole key: the header-only patterns above leave the body behind on
+# redaction. The body is lazy and bounded, so an unterminated BEGIN scans
+# at most 20000 chars; [\s\S] spans real newlines and JSON "\n" escapes.
+_p(
+    r"-----BEGIN (?P<kind>(?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?"
+    r"PRIVATE KEY(?: BLOCK)?)-----"
+    r"(?P<secret>[\s\S]{1,20000}?)-----END (?P=kind)-----",
+    "private_key_block",
+)
 
 # Supabase (anon/JWT) — must be before generic JWT
 _p(r"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJpc3[a-zA-Z0-9_\-\.]+", "supabase_jwt_key")
@@ -383,6 +392,7 @@ _REMEDIATION: dict[str, str] = {
     ),
     "private_key": "Remove from file, regenerate key pair, never commit private keys",
     "pgp_private_key": "Remove from file, regenerate PGP key pair",
+    "private_key_block": "Remove from file, regenerate key pair, never commit private keys",
     "jwt_token": "Remove from file, tokens may need regeneration if leaked",
     "password_assignment": "Remove hardcoded password, use env var or secret manager",
     "bearer_token": "Remove from file, rotate token, use env var",
