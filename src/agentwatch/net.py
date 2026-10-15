@@ -89,11 +89,12 @@ def _addr(a) -> tuple:
 
 
 def tree_sockets(root_pid: int, exclude: set[int] = frozenset(),
-                 process=psutil.Process) -> list[SocketInfo]:
+                 process=psutil.Process, pids: set[int] | None = None) -> list[SocketInfo]:
     """Every inet socket (LISTEN included) of *root_pid* and its descendants.
 
     Descendants in *exclude*, and their subtrees, are skipped. Vanished or
-    denied processes are skipped.
+    denied processes are skipped. *pids*, if given, gets every walked pid,
+    including those whose sockets couldn't be read.
     """
     # ponytail: on Windows psutil builds each process's net_connections() from
     # the whole system table, so one poll costs a full read per tree process
@@ -116,6 +117,8 @@ def tree_sockets(root_pid: int, exclude: set[int] = frozenset(),
     for p in (root, *kids):
         if p.pid in skip:
             continue
+        if pids is not None:
+            pids.add(p.pid)
         try:
             get = getattr(p, "net_connections", None) or p.connections
             conns = get(kind="inet")
@@ -424,19 +427,20 @@ class Tracker:
         new, listeners, accepted = [], [], []
         for t in targets:
             self._names.setdefault(t.pid, t.process)
-            socks = tree_sockets(t.pid, process=self._process)
+            tree = {t.pid}  # walked pids: a denied child's connection is still internal
+            socks = tree_sockets(t.pid, process=self._process, pids=tree)
             listening = {s.laddr for s in socks
                          if s.status == "LISTEN" and s.kind == "tcp" and s.laddr}
-            tree = {t.pid} | {s.pid for s in socks}
+            tree |= {s.pid for s in socks}
             for s in socks:
                 if s.status == "LISTEN":
                     if s.kind == "tcp" and s.laddr:
                         self._listener(t, s, now, listeners)
                     continue
-                if (s.kind == "tcp" and s.status == "ESTABLISHED" and s.raddr and s.laddr
-                        and _accepted(s.laddr, listening)):
-                    accepted.append((t, tree, s))  # incoming, not outgoing
-                    continue
+                if s.kind == "tcp" and s.raddr and s.laddr and _accepted(s.laddr, listening):
+                    if s.status == "ESTABLISHED":  # FIN_WAIT2, CLOSE_WAIT...: not a client
+                        accepted.append((t, tree, s))
+                    continue  # incoming, never outgoing
                 if not s.raddr or not _flaggable(s.raddr[0]):  # loopback etc.
                     continue
                 ip, port = s.raddr
@@ -467,6 +471,8 @@ class Tracker:
         pairs, _ = _connections_by_pid(self._connections, self._process_iter)
         owners: dict[tuple, int | None] = {}
         for pid, c in pairs:
+            if c.type == socket.SOCK_DGRAM:  # a UDP socket on the same ip:port isn't the client
+                continue
             a = _addr(c.laddr)
             if a and (pid or a not in owners):  # a real pid beats 0/None (TIME_WAIT etc.)
                 owners[a] = pid

@@ -628,14 +628,18 @@ def sock(pid, laddr, raddr=(), status="ESTABLISHED", kind="tcp"):
 
 
 def global_table(rows, calls=None, deny=False, procs=()):
-    """Fake (net_connections, process_iter); rows are (pid, laddr ip, laddr port)."""
+    """Fake (net_connections, process_iter); rows are (pid, laddr ip, laddr port)
+    for TCP, or (pid, ip, port, "udp")."""
     def connections(kind):
         if calls is not None:
             calls.append(kind)
         if deny:
             raise psutil.AccessDenied()
-        return [SimpleNamespace(pid=pid, laddr=SimpleNamespace(ip=ip, port=port), raddr=())
-                for pid, ip, port in rows]
+        return [SimpleNamespace(
+            pid=pid, laddr=SimpleNamespace(ip=ip, port=port), raddr=(),
+            type=socket.SOCK_DGRAM if udp else socket.SOCK_STREAM,
+            status="NONE" if udp else "ESTABLISHED")
+            for pid, ip, port, *udp in rows]
     return connections, lambda: list(procs)
 
 
@@ -703,12 +707,23 @@ def test_local_client_named_by_process_via_global_table(monkeypatch):
 
 def test_global_table_denied_falls_back_to_per_process(monkeypatch):
     curl = FakeProc(4321, "curl.exe", [SimpleNamespace(
-        laddr=SimpleNamespace(ip="127.0.0.1", port=52001), raddr=(), status="ESTABLISHED")])
+        laddr=SimpleNamespace(ip="127.0.0.1", port=52001), raddr=(), status="ESTABLISHED",
+        type=socket.SOCK_STREAM)])
     trees = {10: [LISTEN, sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52001))]}
     tracker = incoming_tracker(monkeypatch, trees, names={4321: "curl.exe"}, deny=True,
                                procs=[curl])
     [c] = clients_of(tracker.poll([SERVE], T0))
     assert (c.scope, c.pid, c.process) == ("local", 4321, "curl.exe")
+
+
+@pytest.mark.parametrize("order", [1, -1])
+def test_udp_socket_on_same_ip_port_does_not_steal_client(monkeypatch, order):
+    trees = {10: [LISTEN, sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52001))]}
+    rows = [(4321, "127.0.0.1", 52001), (999, "127.0.0.1", 52001, "udp")][::order]
+    tracker = incoming_tracker(monkeypatch, trees, rows=rows,
+                               names={4321: "curl.exe", 999: "dns.exe"})
+    [c] = clients_of(tracker.poll([SERVE], T0))
+    assert (c.pid, c.process) == (4321, "curl.exe")
 
 
 def test_loopback_client_with_unseen_owner_is_still_local(monkeypatch):
@@ -736,6 +751,39 @@ def test_internal_client_skipped_other_target_client_listed(monkeypatch):
     clients = clients_of(tracker.poll([SERVE, net.Target(20, "ollama", "ollama.exe")], T0))
     assert [(c.target_pid, c.listener_port, c.pid, c.process) for c in clients] == [
         (10, 11434, 20, "ollama.exe")]
+
+
+def test_tree_sockets_reports_walked_pids_even_when_denied():
+    class Denied(FakeProc):
+        def net_connections(self, kind):
+            raise psutil.AccessDenied(self.pid)
+
+    root = FakeProc(10, "r", [conn("1.1.1.1")], kids=[Denied(11, "d"), FakeProc(12, "x")])
+    pids = set()
+    net.tree_sockets(10, process=table(root)[1], pids=pids)
+    assert pids == {10, 11, 12}
+    assert {s.pid for s in net.tree_sockets(10, process=table(root)[1])} == {10}
+
+
+def test_denied_child_connection_is_internal_not_a_client():
+    # llama-server child(11) can't be read; its connection to serve(10) is
+    # still internal: the walk, not the socket owners, defines the tree.
+    class Denied(FakeProc):
+        def net_connections(self, kind):
+            raise psutil.AccessDenied(self.pid)
+
+    def tcp(lip, lport, rip=None, rport=0, status="ESTABLISHED"):
+        return SimpleNamespace(laddr=SimpleNamespace(ip=lip, port=lport),
+                               raddr=SimpleNamespace(ip=rip, port=rport) if rip else (),
+                               status=status, type=socket.SOCK_STREAM)
+
+    root = FakeProc(10, "ollama.exe", [tcp("127.0.0.1", 11434, status="LISTEN"),
+                                       tcp("127.0.0.1", 11434, "127.0.0.1", 52300)],
+                    kids=[Denied(11, "llama-server.exe")])
+    connections, process_iter = global_table([(11, "127.0.0.1", 52300)])
+    tracker = net.Tracker(FakeNamer(), process=table(root)[1], connections=connections,
+                          process_iter=process_iter)
+    assert clients_of(tracker.poll([SERVE], T0)) == []
 
 
 def test_remote_client_named_and_tagged_lan(monkeypatch):
@@ -787,6 +835,16 @@ def test_summary_renames_endpoints_and_clients_in_one_wait(monkeypatch):
     assert waits == [(["104.18.1.1", "192.168.1.20"], 0)]
     _, [c] = tracker.incoming()
     assert c.host == "late-192.168.1.20" and len(waits) == 1
+
+
+@pytest.mark.parametrize("status", ["FIN_WAIT2", "CLOSE_WAIT", "SYN_RECV", "LAST_ACK"])
+def test_accepted_socket_in_other_states_is_neither_client_nor_outgoing(monkeypatch, status):
+    calls = []
+    trees = {10: [sock(10, ("0.0.0.0", 11434), status="LISTEN"),
+                  sock(10, ("192.168.1.5", 11434), ("192.168.1.20", 60001), status=status)]}
+    tracker = incoming_tracker(monkeypatch, trees, calls=calls)
+    assert clients_of(tracker.poll([SERVE], T0)) == []
+    assert tracker.endpoints == {} and tracker.clients == {} and calls == []
 
 
 def test_client_must_match_listener_ip_unless_unspecified(monkeypatch):
