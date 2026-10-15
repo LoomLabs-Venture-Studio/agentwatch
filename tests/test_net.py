@@ -15,8 +15,9 @@ import pytest
 from click.testing import CliRunner
 
 from agentwatch import net
-from agentwatch.ai_detect import LOCAL_LLM_PORTS, LOCAL_RUNTIMES, runtime_of
+from agentwatch.ai_detect import AI_PROVIDERS, LOCAL_LLM_PORTS, LOCAL_RUNTIMES, runtime_of
 from agentwatch.cli import cli
+from agentwatch.detectors.security.network import KNOWN_AGENT_HOSTS, _flaggable
 
 T0 = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
 
@@ -129,6 +130,65 @@ def test_targets_dedup_ancestor_and_extra_pid():
                      net.Target(9, "pid", "claude.exe")]
 
 
+# -- collector (moved from closed PR #132's egress.py) ---------------------------
+
+def test_tree_sockets_returns_full_records_including_listen():
+    child = FakeProc(11, "c", [conn("::ffff:93.184.215.14", 80),
+                               conn("8.8.8.8", 53, status="NONE", udp=True)])
+    root = FakeProc(10, "r", [conn("160.79.104.10"), conn(None, status="LISTEN", lport=11434)],
+                    kids=[child])
+    assert set(net.tree_sockets(10, process=table(root, child)[1])) == {
+        net.SocketInfo(10, ("10.0.0.2", 50000), ("160.79.104.10", 443), "ESTABLISHED", "tcp"),
+        net.SocketInfo(10, ("10.0.0.2", 11434), (), "LISTEN", "tcp"),
+        net.SocketInfo(11, ("10.0.0.2", 50000), ("93.184.215.14", 80), "ESTABLISHED", "tcp"),
+        net.SocketInfo(11, ("10.0.0.2", 50000), ("8.8.8.8", 53), "NONE", "udp"),
+    }
+
+
+def test_excluded_child_and_its_subtree_are_skipped():
+    sub_tool = FakeProc(21, "t", [conn("8.8.4.4")])
+    sub_agent = FakeProc(20, "a", [conn("8.8.8.8")], kids=[sub_tool])
+    root = FakeProc(10, "r", [conn("160.79.104.10")], kids=[sub_agent])
+    assert {s.pid for s in net.tree_sockets(10, {20}, table(root)[1])} == {10}
+
+
+def test_vanished_or_denied_process_is_skipped():
+    class Gone(FakeProc):
+        def net_connections(self, kind):
+            raise psutil.NoSuchProcess(self.pid)
+
+    class Denied(FakeProc):
+        def net_connections(self, kind):
+            raise psutil.AccessDenied(self.pid)
+
+    root = FakeProc(10, "r", [conn("160.79.104.10")],
+                    kids=[Gone(11, "g"), Denied(12, "d", [conn("1.1.1.1")])])
+    assert {s.pid for s in net.tree_sockets(10, process=table(root)[1])} == {10}
+    assert net.tree_sockets(99, process=table(root)[1]) == []
+
+
+def test_falls_back_to_connections_on_old_psutil():
+    class OldProc(FakeProc):
+        net_connections = None
+
+        def connections(self, kind):
+            return self._conns
+
+    [s] = net.tree_sockets(10, process=table(OldProc(10, "o", [conn("1.1.1.1")]))[1])
+    assert s.raddr == ("1.1.1.1", 443)
+
+
+
+def test_local_addresses_are_never_endpoints():
+    # net reuses the detector's _flaggable(): exactly "not loopback/unspecified/
+    # link-local/multicast" (unparseable counts as local).
+    for ip in ("127.0.0.1", "::1", "0.0.0.0", "::", "169.254.1.1", "fe80::1",
+               "224.0.0.251", "ff02::fb", "not-an-ip"):
+        assert not _flaggable(ip), ip
+    for ip in ("160.79.104.10", "2001:db8::5", "192.168.1.1"):
+        assert _flaggable(ip), ip
+
+
 # -- outgoing ------------------------------------------------------------------
 
 class FakeNamer:
@@ -162,6 +222,19 @@ def test_poll_filters_local_tags_lan_and_tracks_seen(monkeypatch):
     ep = tracker.endpoints[(2, 3, "104.18.1.1", 443, "tcp")]
     assert (ep.first_seen, ep.last_seen) == (T0, later)
     assert len(tracker.namer.calls) == 3  # named once per endpoint
+
+
+def test_allow_listed_hosts_are_still_reported():
+    # Board 2026-10-15: KNOWN_AGENT_HOSTS / AI_PROVIDERS never hide anything here.
+    assert "downloads.claude.ai" in KNOWN_AGENT_HOSTS and "api.anthropic.com" in (
+        AI_PROVIDERS["anthropic"])
+    names = {"34.36.57.103": "downloads.claude.ai", "160.79.104.10": "api.anthropic.com"}
+    root = FakeProc(2, "ollama.exe", [conn(ip) for ip in names])
+    tracker = net.Tracker(net.Namer(dns_cache=lambda: names, rdns=no_rdns),
+                          process=table(root)[1])
+    new = tracker.poll([net.Target(2, "ollama", "ollama.exe")], T0)
+    assert {(e.ip, e.host, e.host_source) for e in new} == {
+        (ip, host, "dns-cache") for ip, host in names.items()}
 
 
 def test_vanished_owner_named_question_mark():
@@ -256,11 +329,9 @@ def test_powershell_called_with_fixed_argument_list():
 # -- CLI -----------------------------------------------------------------------
 
 def fake_cli(monkeypatch, targets, sockets=()):
-    from agentwatch.egress import SocketInfo
-
     monkeypatch.setattr(net, "find_targets", lambda pids: list(targets))
     monkeypatch.setattr(net, "tree_sockets", lambda pid, **kw: [
-        SocketInfo(pid, ("10.0.0.2", 50000), raddr, "ESTABLISHED", "tcp") for raddr in sockets])
+        net.SocketInfo(pid, ("10.0.0.2", 50000), raddr, "ESTABLISHED", "tcp") for raddr in sockets])
     namer = net.Namer
     monkeypatch.setattr(net, "Namer", lambda: namer(
         dns_cache=lambda: {"104.18.1.1": "registry.ollama.ai"}, rdns=no_rdns))

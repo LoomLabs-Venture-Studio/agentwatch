@@ -2,9 +2,10 @@
 
 Answers "does a LOCAL AI talk to external servers, and if so, to whom?".
 Targets are runtime processes matched by name (ai_detect.LOCAL_RUNTIMES)
-plus any --pid; each target's process tree is sampled with
-egress.tree_sockets. Nothing is allow-listed: every non-local remote
-endpoint is reported, private (LAN) ones tagged. Unprivileged.
+plus any --pid; each target's process tree is sampled with tree_sockets
+(moved here from closed PR #132). Nothing is allow-listed: every non-local
+remote endpoint is reported, private (LAN) ones tagged; KNOWN_AGENT_HOSTS
+and AI_PROVIDERS never hide one (board 2026-10-15). Unprivileged.
 
 # ponytail: polling misses connections shorter than one interval and never
 # sees ICMP or unconnected UDP; DoH/VPN/proxy hide hostnames (the proxy or
@@ -26,7 +27,7 @@ from datetime import datetime, timezone
 import psutil
 
 from agentwatch.ai_detect import _PROC_ERRORS, LOCAL_RUNTIMES, runtime_of
-from agentwatch.egress import is_local_address, tree_sockets
+from agentwatch.detectors.security.network import _flaggable
 
 NO_RUNTIME = (
     f"No local AI runtime running ({', '.join(LOCAL_RUNTIMES)}). "
@@ -38,6 +39,58 @@ _PS_DNS = [
     "powershell", "-NoProfile", "-NonInteractive", "-Command",
     "Get-DnsClientCache | Select-Object Entry,Data,Type | ConvertTo-Json -Compress",
 ]
+
+
+@dataclass(frozen=True)
+class SocketInfo:
+    """One inet socket of a process tree. Addresses are (ip, port) or ()."""
+
+    pid: int
+    laddr: tuple
+    raddr: tuple
+    status: str
+    kind: str  # "tcp" | "udp"
+
+
+def _addr(a) -> tuple:
+    return (a.ip.removeprefix("::ffff:"), a.port) if a else ()
+
+
+def tree_sockets(root_pid: int, exclude: set[int] = frozenset(),
+                 process=psutil.Process) -> list[SocketInfo]:
+    """Every inet socket (LISTEN included) of *root_pid* and its descendants.
+
+    Descendants in *exclude*, and their subtrees, are skipped. Vanished or
+    denied processes are skipped.
+    """
+    try:
+        root = process(root_pid)
+        kids = root.children(recursive=True)
+    except _PROC_ERRORS:
+        return []
+    skip: set[int] = set()
+    for kid in kids:
+        if kid.pid in exclude:
+            skip.add(kid.pid)
+            try:
+                skip.update(g.pid for g in kid.children(recursive=True))
+            except _PROC_ERRORS:
+                pass
+    found: list[SocketInfo] = []
+    for p in (root, *kids):
+        if p.pid in skip:
+            continue
+        try:
+            get = getattr(p, "net_connections", None) or p.connections
+            conns = get(kind="inet")
+        except _PROC_ERRORS:
+            continue
+        found.extend(
+            SocketInfo(p.pid, _addr(c.laddr), _addr(c.raddr), c.status,
+                       "udp" if c.type == socket.SOCK_DGRAM else "tcp")
+            for c in conns
+        )
+    return found
 
 
 @dataclass(frozen=True)
@@ -176,7 +229,7 @@ class Tracker:
         for t in targets:
             self._names.setdefault(t.pid, t.process)
             for s in tree_sockets(t.pid, process=self._process):
-                if not s.raddr or is_local_address(s.raddr[0]):
+                if not s.raddr or not _flaggable(s.raddr[0]):  # loopback etc.
                     continue
                 ip, port = s.raddr
                 key = (t.pid, s.pid, ip, port, s.kind)

@@ -831,6 +831,7 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...]):
             click.echo()
             _print_net_summary(endpoints)
 
+
 def _print_agents_view(agents: list[AgentProcess]) -> None:
     """Print agents as a simple list (no sub-agents present)."""
     # Table header
