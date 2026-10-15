@@ -135,7 +135,9 @@ def find_targets(extra_pids=(), *, process_iter=psutil.process_iter,
     for t, p in found.values():
         try:
             ancestors = {a.pid for a in p.parents()}
-        except _PROC_ERRORS:
+        except psutil.NoSuchProcess:  # ZombieProcess too: exiting, e.g. a model unloading
+            continue
+        except _PROC_ERRORS:  # denied: can't prove a target ancestor, keep it
             ancestors = set()
         if not ancestors & found.keys():
             targets.append(t)

@@ -130,6 +130,27 @@ def test_targets_dedup_ancestor_and_extra_pid():
                      net.Target(9, "pid", "claude.exe")]
 
 
+def test_exiting_process_is_not_promoted_to_target():
+    # Live 2026-10-15: Ollama's llama-server child, exiting as the model
+    # unloaded, failed its parent lookup and showed up as its own target.
+    class Exiting(FakeProc):
+        def parents(self):
+            raise psutil.NoSuchProcess(self.pid)
+
+    class Zombie(FakeProc):
+        def parents(self):
+            raise psutil.ZombieProcess(self.pid)
+
+    class Denied(FakeProc):
+        def parents(self):
+            raise psutil.AccessDenied(self.pid)
+
+    procs = [Exiting(3, "llama-server.exe"), Zombie(4, "ollama.exe"), Denied(5, "lms.exe")]
+    by_pid, process = table(*procs)
+    found = net.find_targets(process_iter=lambda: list(by_pid.values()), process=process)
+    assert found == [net.Target(5, "lm-studio", "lms.exe")]  # denied: kept
+
+
 # -- collector (moved from closed PR #132's egress.py) ---------------------------
 
 def test_tree_sockets_returns_full_records_including_listen():
