@@ -744,12 +744,22 @@ def _proc(name: str, pid: int) -> str:
     return f"{_printable(name)}({pid})"
 
 
+def _ai_warn(text: str) -> str:
+    return click.style(text, fg="yellow", bold=True)
+
+
 def _net_line(ep) -> str:
     lan = " LAN" if ep.lan else ""
+    flag = _ai_warn(f" AI-PROVIDER {ep.ai_provider}") if ep.ai_provider else ""
     return (
         f"{_clock(ep.first_seen)}  OUT  {ep.runtime}  {_proc(ep.process, ep.pid)} -> "
-        f"{ep.host} [{ep.host_source}] {_hostport(ep.ip, ep.port)} {ep.kind}{lan}"
+        f"{ep.host} [{ep.host_source}] {_hostport(ep.ip, ep.port)} {ep.kind}{lan}{flag}"
     )
+
+
+def _unwatched_line(unwatched) -> str:
+    return (f"{len(unwatched)} editor-hosted agent(s) not watched (they run inside the "
+            "editor process; use --pid <editor pid>)")
 
 
 def _print_net_summary(endpoints, targets) -> None:
@@ -758,16 +768,24 @@ def _print_net_summary(endpoints, targets) -> None:
     if not endpoints:
         click.echo("  No outgoing connections seen.")
         return
-    rows = [("RUNTIME", "PROCESS", "HOST", "ENDPOINT", "FIRST SEEN", "LAST SEEN")] + [
-        (e.runtime, _proc(e.process, e.pid),
-         f"{e.host} [{e.host_source}]" + (" LAN" if e.lan else ""),
-         f"{_hostport(e.ip, e.port)}/{e.kind}", _clock(e.first_seen), _clock(e.last_seen))
-        for e in endpoints
-    ]
-    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
-    for r in rows:
-        click.echo("  " + "  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+    head, *lines = _table_lines(
+        [("RUNTIME", "PROCESS", "HOST", "ENDPOINT", "FIRST SEEN", "LAST SEEN")] + [
+            (e.runtime, _proc(e.process, e.pid),
+             f"{e.host} [{e.host_source}]" + (" LAN" if e.lan else "")
+             + (f" AI-PROVIDER {e.ai_provider}" if e.ai_provider else ""),
+             f"{_hostport(e.ip, e.port)}/{e.kind}", _clock(e.first_seen), _clock(e.last_seen))
+            for e in endpoints])
+    click.echo(head)
+    for e, line in zip(endpoints, lines):
+        click.echo(_ai_warn(line) if e.ai_provider else line)
     click.echo(f"\n  {len(endpoints)} outgoing endpoint(s)")
+    flagged = [e for e in endpoints if e.ai_provider]
+    if flagged:
+        names = {t.pid: t.process for t in targets}
+        sources = dict.fromkeys(f"{e.runtime} {_proc(names.get(e.target_pid, '?'), e.target_pid)}"
+                                for e in flagged)
+        click.echo("  " + _ai_warn(f"{len(flagged)} connection(s) to cloud AI providers "
+                                   f"(from {', '.join(sources)})"))
 
 
 def _warn(listener, text: str) -> str:
@@ -842,8 +860,11 @@ def _print_incoming(listeners, clients) -> None:
                    "is the System Idle Process on Windows)")
 @click.option("--duration", type=click.FloatRange(min=0, min_open=True), default=None,
               help="Stop after this many seconds and print the summary (headless runs)")
+@click.option("--local", is_flag=True,
+              help="Also watch running agents with their own process (Claude Code, Aider, "
+                   "...); their AI-provider traffic is flagged, like every target's")
 def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
-        duration: float | None):
+        duration: float | None, local: bool):
     """Show which external servers local AI runtimes (Ollama, LM Studio, ...) talk to,
     and which of their listeners are reachable from other machines."""
     import signal
@@ -856,10 +877,21 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
     if once and duration is not None:
         raise click.UsageError("--duration has no effect with --once; use one of them")
     tracker = netmod.Tracker(netmod.Namer())
+    agents = netmod.LocalAgents() if local else None
+    no_target = netmod.NO_TARGET_LOCAL if local else netmod.NO_RUNTIME
+
+    def find_targets():
+        if agents is None:
+            return netmod.find_targets(pids)
+        agents.scan()
+        return netmod.find_targets(pids, agents.targets)
+
+    def unwatched() -> list[str]:
+        return agents.unwatched if agents else []
 
     if once:
         missing = netmod.missing_pids(pids)
-        targets = netmod.find_targets(pids)
+        targets = find_targets()
         tracker.poll(targets)
         endpoints = tracker.summary(wait=0)  # poll() already waited for rDNS
         listeners, clients = tracker.incoming()
@@ -867,18 +899,21 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
             doc = {"targets": [asdict(t) for t in targets],
                    "outgoing": [e.to_dict() for e in endpoints],
                    "listeners": [r.to_dict() for r in listeners],
-                   "clients": [r.to_dict() for r in clients], "missing_pids": missing}
+                   "clients": [r.to_dict() for r in clients], "missing_pids": missing,
+                   "unwatched_agents": unwatched()}
             if not targets:
-                doc["message"] = netmod.NO_RUNTIME
+                doc["message"] = no_target
             click.echo(json.dumps(doc, indent=2))
             return
         for pid in missing:
             click.echo(f"pid {pid} not found", err=True)
         if not targets:
-            click.echo(netmod.NO_RUNTIME)
+            click.echo(no_target)
         else:
             _print_net_summary(endpoints, targets)
             _print_incoming(listeners, clients)
+        if unwatched():
+            click.echo("\n  " + _unwatched_line(unwatched()))
         return
 
     def emit(event: str, text: str, **fields) -> None:
@@ -898,17 +933,23 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
                 pass
 
     if not json_output:
-        click.echo("Watching connections of local AI runtimes (Ctrl+C for summary)")
+        click.echo("Watching connections of local AI runtimes" + (" and agents" if local else "")
+                   + " (Ctrl+C for summary)")
     current: dict[int, object] = {}
     watched: dict[int, object] = {}
     missing: set[int] = set()
     waiting = False
+    told_unwatched = False
     deadline = time.monotonic() + duration if duration else None
     try:
         while True:
             gone = set(netmod.missing_pids(pids)) - missing
-            targets = netmod.find_targets(pids)
+            targets = find_targets()
             now = datetime.now(timezone.utc)
+            if unwatched() and not told_unwatched:  # once: the count, not every change
+                told_unwatched = True
+                emit("unwatched", _unwatched_line(unwatched()), time=now.isoformat(),
+                     unwatched_agents=unwatched())
             if gone:
                 missing |= gone
                 if json_output:
@@ -927,8 +968,7 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
             current = seen
             watched.update(seen)
             if not targets and not waiting:
-                emit("waiting", f"{netmod.NO_RUNTIME} Waiting for one to start...",
-                     message=netmod.NO_RUNTIME)
+                emit("waiting", f"{no_target} Waiting for one to start...", message=no_target)
             waiting = not targets
             for rec in tracker.poll(targets, now):
                 if isinstance(rec, netmod.Listener):
@@ -954,7 +994,7 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
         emit("summary", "", targets=[asdict(t) for t in watched.values()],
              outgoing=[e.to_dict() for e in endpoints],
              listeners=[r.to_dict() for r in listeners], clients=[r.to_dict() for r in clients],
-             missing_pids=sorted(missing))
+             missing_pids=sorted(missing), unwatched_agents=unwatched())
     else:
         click.echo()
         _print_net_summary(endpoints, list(watched.values()))

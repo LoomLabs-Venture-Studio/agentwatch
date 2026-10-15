@@ -1,5 +1,5 @@
 """Outgoing and incoming connections of local AI runtimes (`agentwatch net`,
-Sprint 34 B1 outgoing, B2 incoming).
+Sprint 34 B1 outgoing, B2 incoming, B3 `--local` agents).
 
 Answers "does a LOCAL AI talk to external servers, and if so, to whom?".
 Targets are runtime processes matched by name (ai_detect.LOCAL_RUNTIMES)
@@ -8,7 +8,10 @@ plus any --pid; each target's process tree is sampled with tree_sockets
 remote endpoint is reported, private (LAN) ones tagged; KNOWN_AGENT_HOSTS
 and AI_PROVIDERS never hide one (board 2026-10-15). Incoming: every TCP
 listener in the tree (`exposed` unless loopback-only) and its clients, local
-ones by owning process. Unprivileged.
+ones by owning process. `--local` adds running agents that have their own
+OS process (LocalAgents); every outgoing endpoint whose IP belongs to an
+AI_PROVIDERS domain carries `ai_provider` (flagged, still reported).
+Unprivileged.
 
 # ponytail: polling misses connections shorter than one interval and never
 # sees ICMP or unconnected UDP; DoH/VPN/proxy hide hostnames (the proxy or
@@ -38,12 +41,19 @@ from agentwatch.ai_detect import (
     runtime_of,
 )
 from agentwatch.detectors.security.network import KNOWN_AGENT_HOSTS, _flaggable
+from agentwatch.discovery import DiscoveryCache, find_running_agents, match_process_adapter
 
 NO_RUNTIME = (
     f"No local AI runtime running ({', '.join(LOCAL_RUNTIMES)}). "
     "Use --pid N to watch any other process."
 )
+NO_TARGET_LOCAL = (
+    f"No local AI runtime ({', '.join(LOCAL_RUNTIMES)}) or agent with its own process "
+    "running. Use --pid N to watch any other process."
+)
 DNS_REFRESH_S = 5.0
+AGENT_SLOW_S = 0.5  # a find_running_agents() slower than this...
+AGENT_REFRESH_S = 5.0  # ...runs at most this often (1.2 s measured on Windows)
 KNOWN_REFRESH_S = 300.0  # CDN IPs rotate
 RDNS_WAIT_S = 2.0  # per poll, for all its new endpoints' reverse lookups
 RDNS_WORKERS = 4
@@ -55,6 +65,7 @@ KNOWN_HOSTS: tuple[str, ...] = tuple(sorted(
     | set(KNOWN_AGENT_HOSTS)
     | {h for rt in LOCAL_RUNTIMES.values() for h in rt.hosts}
 ))
+_PROVIDER_OF = {d: p for p, ds in AI_PROVIDERS.items() for d in ds}
 # Fixed argument list: nothing from the network or the process table goes in.
 _PS_DNS = [
     "powershell", "-NoProfile", "-NonInteractive", "-Command",
@@ -121,13 +132,14 @@ def tree_sockets(root_pid: int, exclude: set[int] = frozenset(),
 @dataclass(frozen=True)
 class Target:
     pid: int
-    runtime: str  # LOCAL_RUNTIMES key, or "pid" for --pid
+    runtime: str  # LOCAL_RUNTIMES key, "agent:<agent_type>" (--local), or "pid" for --pid
     process: str
 
 
-def find_targets(extra_pids=(), *, process_iter=psutil.process_iter,
+def find_targets(extra_pids=(), agents=(), *, process_iter=psutil.process_iter,
                  process=psutil.Process) -> list[Target]:
-    """Local AI runtime processes running now, plus *extra_pids*.
+    """Local AI runtime processes running now, plus *agents* ((pid, runtime
+    label) pairs, LocalAgents.targets) and *extra_pids*.
 
     A target whose ancestor is also a target is dropped: the ancestor's
     tree_sockets walk already covers it (e.g. Ollama's llama-server child).
@@ -141,11 +153,11 @@ def find_targets(extra_pids=(), *, process_iter=psutil.process_iter,
         runtime = runtime_of(name, p)
         if runtime:
             found[p.pid] = (Target(p.pid, runtime, name), p)
-    for pid in extra_pids:
+    for pid, runtime in (*agents, *((pid, "pid") for pid in extra_pids)):
         if pid not in found:
             try:
                 p = process(pid)
-                found[pid] = (Target(pid, "pid", p.name()), p)
+                found[pid] = (Target(pid, runtime, p.name()), p)
             except _PROC_ERRORS:
                 continue
     targets = []
@@ -229,7 +241,7 @@ class Namer:
         threading.Thread(target=lookup, name="agentwatch-rdns", daemon=True).start()
         return done
 
-    def _known_name(self, ip: str) -> str | None:
+    def _refresh_known(self) -> None:
         # ponytail: resolves every known host serially on refresh (blocking,
         # after sampling); thread it if the list grows.
         if self._known_at is None or self._clock() - self._known_at >= KNOWN_REFRESH_S:
@@ -242,6 +254,9 @@ class Namer:
                 for info in infos:
                     addr = info[4][0].removeprefix("::ffff:").lower()
                     self._known.setdefault(addr, set()).add(host)
+
+    def _known_name(self, ip: str) -> str | None:
+        self._refresh_known()
         hosts = self._known.get(ip)
         return "|".join(sorted(hosts)) if hosts else None  # shared CDN IP: all of them
 
@@ -260,6 +275,14 @@ class Namer:
     def _from_rdns(self, ip: str) -> tuple[str, str]:
         host = self._rdns_cache.get(ip)  # absent: lookup still running
         return (_printable(host), "rdns") if host else (ip, "ip")
+
+    def providers(self, ip: str) -> str | None:
+        """AI_PROVIDERS name(s) of *ip* ("|"-joined), from the known forward
+        lookups (the AI_PROVIDERS domains are known hosts) or its DNS-cache
+        name; None otherwise. A flag only: nothing is hidden."""
+        self._refresh_known()
+        hosts = self._known.get(ip, set()) | {self._names.get(ip, "").lower()}
+        return "|".join(sorted({_PROVIDER_OF[h] for h in hosts if h in _PROVIDER_OF})) or None
 
     def name(self, ip: str) -> tuple[str, str]:
         return self.name_many([ip])[ip]
@@ -300,6 +323,7 @@ class Endpoint:
     lan: bool
     first_seen: datetime
     last_seen: datetime
+    ai_provider: str | None = None  # Namer.providers(): flagged, never hidden
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -469,6 +493,8 @@ class Tracker:
         names = self.namer.name_many([ep.ip for ep in endpoints], wait)
         for ep in endpoints:
             ep.host, ep.host_source = names[ep.ip]
+            if isinstance(ep, Endpoint):
+                ep.ai_provider = self.namer.providers(ep.ip)
 
     def summary(self, wait: float = RDNS_WAIT_S) -> list[Endpoint]:
         """All endpoints, oldest first; names of endpoints and remote clients
@@ -485,3 +511,58 @@ class Tracker:
             sorted(self.clients.values(),
                    key=lambda c: (c.first_seen, c.runtime, c.listener_port, c.ip, c.port)),
         )
+
+
+class LocalAgents:
+    """`--local`: running agents (discovery.find_running_agents) that have
+    their own OS process, as find_targets() *agents*.
+
+    A pid counts only if it is alive and its own cmdline/name match the
+    adapter it was discovered as. That rules out synthetic pids (Cursor,
+    Copilot in VS Code, Cline, Claude Desktop/Cowork, Codex app-server
+    threads), which are counted in *unwatched* instead. Not
+    net_sampler.attributable(): that also drops Aider and `opencode serve`
+    for timestamp reasons, and Aider on Ollama is the case --local is for.
+    """
+
+    def __init__(self, find=None, process=psutil.Process, clock=time.monotonic):
+        if find is None:
+            cache = DiscoveryCache()
+
+            def find():
+                return find_running_agents(cache)
+
+        self._find, self._process, self._clock = find, process, clock
+        self._verdicts: dict[tuple[int, float], str | None] = {}  # adapter name
+        self._due = 0.0
+        self.targets: list[tuple[int, str]] = []  # (pid, "agent:<agent_type>")
+        self.unwatched: list[str] = []  # agent_type of each agent not watched
+
+    def is_agent_pid(self, pid: int, agent_type: str) -> bool:
+        try:
+            p = self._process(pid)
+            key = (pid, p.create_time())  # a reused pid gets a new verdict
+        except _PROC_ERRORS:
+            return False
+        if key not in self._verdicts:
+            try:  # cmdline is read in memory only: never stored or logged
+                adapter = match_process_adapter(p.cmdline(), p.name())
+                self._verdicts[key] = adapter.name if adapter else None
+            except _PROC_ERRORS:  # denied: can't prove it is the agent's own process
+                self._verdicts[key] = None
+        return self._verdicts[key] == agent_type
+
+    def scan(self) -> None:
+        """Re-discover, unless the last discovery was slow and is younger
+        than AGENT_REFRESH_S."""
+        start = self._clock()
+        if start < self._due:
+            return
+        agents = self._find()
+        if self._clock() - start >= AGENT_SLOW_S:
+            self._due = start + AGENT_REFRESH_S
+        real = [a for a in agents if self.is_agent_pid(a.pid, a.agent_type)]
+        self.targets = [(a.pid, f"agent:{a.agent_type}") for a in real]
+        self.unwatched = sorted(a.agent_type for a in agents if a not in real)
+        live = {a.pid for a in agents}
+        self._verdicts = {k: v for k, v in self._verdicts.items() if k[0] in live}
