@@ -170,6 +170,23 @@ class TestParse:
         (t,) = [a for a in parse_file(p) if a.tool_name == "assistant_message"]
         assert t.tokens_in == 140
 
+    def test_web_fetch_declares_hostname_only(self, tmp_path):
+        """web_fetch args are {"prompt": "<text with URLs>"}; a url arg wins."""
+        calls = [
+            {"id": "f1", "name": "web_fetch", "status": "success",
+             "args": {"prompt": "Summarize https://docs.example.com/a/b?token=x and "
+                                "https://other.example.org/"}},
+            {"id": "f2", "name": "some_tool", "status": "success",
+             "args": {"url": "https://api.example.net/v1?k=1"}},
+            {"id": "f3", "name": "read_file", "status": "success",
+             "args": {"prompt": "https://not.a.fetch/"}},
+        ]
+        p = _write(tmp_path / "s.jsonl", [HEADER, dict(TURN1_PENDING, toolCalls=calls)])
+        a = _by_id(parse_file(p))
+        assert a["f1"].network_host == "docs.example.com"
+        assert a["f2"].network_host == "api.example.net"
+        assert a["f3"].network_host is None
+
     def test_live_tail_emits_call_once_when_final(self, tmp_path):
         p = _write(tmp_path / "s.jsonl", [HEADER, USER, TURN1_PENDING])
         w = LogWatcher(p)
