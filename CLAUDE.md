@@ -110,7 +110,7 @@ src/agentwatch/
                        exe token, ports, by-design hosts); runtime_of()
                        matches it and
                        LOCAL_LLM_PORTS is derived from it
-  net.py               `agentwatch net` (Sprint 34 B1): find_targets()
+  net.py               `agentwatch net` (Sprint 34 B1/B2): find_targets()
                        (runtime_of + --pid, ancestor dedup), tree_sockets()
                        (per-process-tree socket collector, LISTEN kept;
                        moved here from closed #132), Tracker.poll() (sample
@@ -122,7 +122,17 @@ src/agentwatch/
                        gethostbyaddr (daemon threads, name_many() waits
                        <= 2 s per poll) -> IP, cached per IP). Nothing is
                        allow-listed: KNOWN_AGENT_HOSTS and AI_PROVIDERS
-                       never hide an endpoint (board 2026-10-15)
+                       never hide an endpoint (board 2026-10-15).
+                       Incoming (B2): Listener per LISTEN tcp socket in the
+                       tree, keyed (target, pid, ip, port), exposed unless
+                       loopback (listener_scope: all interfaces / lan /
+                       loopback); Client per ESTABLISHED socket accepted on
+                       a tree listener (not outgoing), owner from ONE
+                       _connections_by_pid read per poll (only if clients),
+                       local -> pid + name, in-tree owner = internal,
+                       skipped; remote named via Namer, lan/public; keyed
+                       (target, listener port, ip, owner pid | port).
+                       Tracker.incoming() for the summary
   net_sampler.py       Per-agent endpoint sampler for watch/watch-all
                        (#130): NetSampler thread polls psutil sockets of
                        each tracked root pid + children(recursive) ~1 s,
