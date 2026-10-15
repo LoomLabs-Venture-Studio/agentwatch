@@ -392,6 +392,10 @@ agentwatch net --pid 1234 --pid 5678 --interval 2
 
 # Headless: run 10 minutes, then print the summary (or the JSON summary event)
 agentwatch net --json --duration 600
+
+# Also watch running agents (Claude Code, Aider, opencode, ...) with their own process
+agentwatch net --local
+agentwatch net --local --once --json
 ```
 
 Ctrl+C, SIGTERM and (Windows) Ctrl+Break or closing the console all print
@@ -441,12 +445,38 @@ process, however many ports it reconnects on. The summary adds LISTENERS and
 CLIENTS tables (`listeners` / `clients` in JSON) and ends with
 `N listener(s) reachable from other machines` when any was exposed.
 
+AI providers: an outgoing endpoint, of any target, whose IP belongs to an AI
+provider domain (the `detect` list: `api.anthropic.com`, `api.openai.com`,
+...; matched by the known-host lookups or the DNS-cache name) is flagged
+`AI-PROVIDER <name>` (`"ai_provider": "anthropic"`, else `null`). The summary
+adds `N connection(s) to cloud AI providers (from ...)`. Flagged is not
+hidden: every endpoint is still reported, and agent vendor hosts (Datadog
+intake, `downloads.claude.ai`) are reported and named but not flagged.
+
+`--local` adds running agents that `agentwatch ps` finds, as targets
+`agent:<type>` (e.g. `agent:aider`, `agent:claude-code`), for agents on
+local models (Aider or opencode pointed at Ollama, ...). Their cloud
+AI-provider traffic is flagged, not allowed. An agent counts only if its
+pid is its own process (the process's command line, read in memory and
+never stored, matches that agent). Agents are re-discovered every poll, or at
+most every 5 s when discovery is slow. An agent's connection to a watched
+runtime (Aider -> Ollama on `127.0.0.1:11434`) shows as a local client of
+that runtime, by process name. Editor-hosted agents (Cursor, Copilot in VS
+Code, Cline, Claude Desktop/Cowork, Codex app-server threads) have no
+process of their own, so they aren't watched. They are counted once:
+`N editor-hosted agent(s) not watched (...; use --pid <editor pid>)`,
+`unwatched_agents` in JSON.
+
 Known limits:
 - No ICMP (needs admin); unconnected UDP isn't seen either.
 - Connections opened and closed within one poll interval are missed.
 - DoH, a VPN or a proxy hides hostnames: you see the proxy or resolver IP,
   and the DNS client cache may be empty (the name falls back to rdns or IP).
-- Agents hosted in an editor (Cline, Copilot) attribute to the editor process.
+- Agents hosted in an editor (Cursor, Copilot, Cline, Claude Desktop) attribute
+  to the editor process: `--local` skips them, so watch the editor with
+  `--pid <editor pid>` (its own traffic is mixed in).
+- `--local` can't verify an agent whose command line it may not read (another
+  user's or an elevated process); it is counted as not watched.
 - LM Studio's `lms` starts the app detached, so the app is matched by its own
   name, not through `lms`'s process tree.
 - Ollama CLI calls (`ollama run`, `ollama list`, ...) are their own short-lived

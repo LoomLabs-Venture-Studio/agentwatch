@@ -4230,7 +4230,7 @@ Byte counts stay out of scope.
       internal and not listed; remote clients named as in B1.
 - [x] Stream/once/json include listeners and clients. Tests.
 **B3 `--local`**
-- [ ] `--local` adds real-pid agents (`find_running_agents` +
+- [x] `--local` adds real-pid agents (`find_running_agents` +
       `is_agent_pid`) as targets; their endpoints to `AI_PROVIDERS` IPs
       are flagged with the provider name. Tests.
 **B4 live test + docs**
