@@ -58,7 +58,7 @@ agentwatch ps
 # List every program using AI right now (any app or CLI)
 agentwatch detect
 
-# Who do local AI runtimes (Ollama, LM Studio, ...) talk to?
+# Who do local AI runtimes (Ollama, LM Studio, ...) talk to, and who can reach them?
 agentwatch net
 
 # Token usage stats
@@ -377,7 +377,7 @@ between adapters.
 ### Local AI Network Activity
 
 ```bash
-# Live: one line per new outgoing endpoint; Ctrl+C prints a summary
+# Live: one line per new outgoing endpoint, listener or client; Ctrl+C prints a summary
 agentwatch net
 
 # One sample, summary table
@@ -426,6 +426,21 @@ runtime is running it says so and, in stream mode, waits for one to start.
 Unprivileged and read-only; its only network traffic is DNS lookups: the
 known hosts, and reverse lookups of the IPs it finds.
 
+Incoming: every TCP listener in a runtime's tree is listed. One bound to all
+interfaces (`0.0.0.0` / `::`) or to any non-loopback address is flagged
+`EXPOSED` (`"exposed": true`, `scope` `all interfaces` or `lan`), because
+other machines can reach it (an exposed Ollama API is a known risk). A
+loopback-only listener is listed as `loopback` and not flagged. Clients
+connected to a listener are listed too. A local client is shown by process
+name and pid (`curl.exe(4321) [local]`), found in the system socket table.
+A remote client is named like an outgoing endpoint and tagged `lan` or
+`public`. A client inside the runtime's own tree is internal and not listed
+(e.g. `ollama serve` talking to its `llama-server` child). One in another
+tree, such as the `ollama run` CLI, is listed. A local client counts once per
+process, however many ports it reconnects on. The summary adds LISTENERS and
+CLIENTS tables (`listeners` / `clients` in JSON) and ends with
+`N listener(s) reachable from other machines` when any was exposed.
+
 Known limits:
 - No ICMP (needs admin); unconnected UDP isn't seen either.
 - Connections opened and closed within one poll interval are missed.
@@ -445,6 +460,13 @@ Known limits:
 - A runtime's embedded browser shows up under that runtime with its own
   process name (e.g. the Ollama app's `msedgewebview2.exe` UI, talking to
   Microsoft hosts).
+- Short client requests (`ollama list`, a one-shot `curl`) are usually over
+  within one poll and missed, like short outgoing connections.
+- A client on this machine that connects through one of its LAN IPs is still
+  found in the system socket table and shown as local. Without access to that
+  table (macOS without root) each process is read instead, so other users'
+  client processes can be missed: a loopback one still shows as `[local]`
+  without a name, and a LAN-IP one shows as a `lan` client.
 
 ### Token Usage Stats
 

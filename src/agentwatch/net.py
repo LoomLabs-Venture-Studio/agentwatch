@@ -1,11 +1,14 @@
-"""Outgoing connections of local AI runtimes (`agentwatch net`, Sprint 34 B1).
+"""Outgoing and incoming connections of local AI runtimes (`agentwatch net`,
+Sprint 34 B1 outgoing, B2 incoming).
 
 Answers "does a LOCAL AI talk to external servers, and if so, to whom?".
 Targets are runtime processes matched by name (ai_detect.LOCAL_RUNTIMES)
 plus any --pid; each target's process tree is sampled with tree_sockets
 (moved here from closed PR #132). Nothing is allow-listed: every non-local
 remote endpoint is reported, private (LAN) ones tagged; KNOWN_AGENT_HOSTS
-and AI_PROVIDERS never hide one (board 2026-10-15). Unprivileged.
+and AI_PROVIDERS never hide one (board 2026-10-15). Incoming: every TCP
+listener in the tree (`exposed` unless loopback-only) and its clients, local
+ones by owning process. Unprivileged.
 
 # ponytail: polling misses connections shorter than one interval and never
 # sees ICMP or unconnected UDP; DoH/VPN/proxy hide hostnames (the proxy or
@@ -27,7 +30,13 @@ from datetime import datetime, timezone
 
 import psutil
 
-from agentwatch.ai_detect import _PROC_ERRORS, AI_PROVIDERS, LOCAL_RUNTIMES, runtime_of
+from agentwatch.ai_detect import (
+    _PROC_ERRORS,
+    AI_PROVIDERS,
+    LOCAL_RUNTIMES,
+    _connections_by_pid,
+    runtime_of,
+)
 from agentwatch.detectors.security.network import KNOWN_AGENT_HOSTS, _flaggable
 
 NO_RUNTIME = (
@@ -69,11 +78,12 @@ def _addr(a) -> tuple:
 
 
 def tree_sockets(root_pid: int, exclude: set[int] = frozenset(),
-                 process=psutil.Process) -> list[SocketInfo]:
+                 process=psutil.Process, pids: set[int] | None = None) -> list[SocketInfo]:
     """Every inet socket (LISTEN included) of *root_pid* and its descendants.
 
     Descendants in *exclude*, and their subtrees, are skipped. Vanished or
-    denied processes are skipped.
+    denied processes are skipped. *pids*, if given, gets every walked pid,
+    including those whose sockets couldn't be read.
     """
     # ponytail: on Windows psutil builds each process's net_connections() from
     # the whole system table, so one poll costs a full read per tree process
@@ -96,6 +106,8 @@ def tree_sockets(root_pid: int, exclude: set[int] = frozenset(),
     for p in (root, *kids):
         if p.pid in skip:
             continue
+        if pids is not None:
+            pids.add(p.pid)
         try:
             get = getattr(p, "net_connections", None) or p.connections
             conns = get(kind="inet")
@@ -298,12 +310,76 @@ class Endpoint:
         return d
 
 
-class Tracker:
-    """Outgoing endpoints across polls, keyed (target pid, pid, ip, port, kind)."""
+def listener_scope(ip: str) -> str:
+    """"all interfaces" (0.0.0.0 / ::), "loopback", or "lan": any other bind
+    address (LAN, public or link-local; unparseable too, so it is flagged)."""
+    try:
+        a = ipaddress.ip_address(ip.removeprefix("::ffff:"))
+    except ValueError:
+        return "lan"
+    if a.is_unspecified:
+        return "all interfaces"
+    return "loopback" if a.is_loopback else "lan"
 
-    def __init__(self, namer: Namer, process=psutil.Process):
+
+@dataclass
+class Listener:
+    """A LISTEN TCP socket in a target's tree; exposed unless loopback-only."""
+
+    runtime: str
+    target_pid: int
+    pid: int
+    process: str
+    ip: str
+    port: int
+    exposed: bool
+    scope: str  # listener_scope()
+    first_seen: datetime
+    last_seen: datetime
+    to_dict = Endpoint.to_dict
+
+
+@dataclass
+class Client:
+    """A connection accepted by a listener in a target's tree.
+
+    listener_ip/port: the local address the client reached; ip/port: the
+    client (port as first seen: a local client is keyed by its process).
+    """
+
+    runtime: str
+    target_pid: int
+    listener_ip: str
+    listener_port: int
+    ip: str
+    port: int
+    scope: str  # "local" | "lan" | "public"
+    pid: int | None  # local owner; None when remote or not visible
+    process: str | None  # "?" for a local owner that isn't visible
+    host: str | None  # remote only, named like an outgoing endpoint
+    host_source: str | None
+    first_seen: datetime
+    last_seen: datetime
+    to_dict = Endpoint.to_dict
+
+
+def _accepted(laddr: tuple, listening: set[tuple]) -> bool:
+    return any(laddr[1] == port and (laddr[0] == ip or listener_scope(ip) == "all interfaces")
+               for ip, port in listening)
+
+
+class Tracker:
+    """Outgoing endpoints across polls, keyed (target pid, pid, ip, port, kind);
+    listeners keyed (target pid, pid, ip, port); clients keyed (target pid,
+    listener port, client ip, owner pid, client port if no owner pid)."""
+
+    def __init__(self, namer: Namer, process=psutil.Process,
+                 connections=psutil.net_connections, process_iter=psutil.process_iter):
         self.namer, self._process = namer, process
+        self._connections, self._process_iter = connections, process_iter
         self.endpoints: dict[tuple, Endpoint] = {}
+        self.listeners: dict[tuple, Listener] = {}
+        self.clients: dict[tuple, Client] = {}
         self._names: dict[int, str] = {}
 
     def _name(self, pid: int) -> str:
@@ -314,18 +390,33 @@ class Tracker:
                 self._names[pid] = "?"
         return self._names[pid]
 
-    def poll(self, targets: list[Target], now: datetime | None = None) -> list[Endpoint]:
-        """Sample every target's tree once; returns the endpoints not seen before.
+    def poll(self, targets: list[Target], now: datetime | None = None) -> list:
+        """Sample every target's tree once; returns the endpoints, listeners
+        and clients not seen before, in that order.
 
         All trees are read first (owner names at once, before short-lived
-        owners exit), then the new endpoints are named: a slow reverse lookup
-        never delays a socket read.
+        owners exit), then the global socket table for client owners (only
+        if there are clients), then the new endpoints are named: a slow
+        reverse lookup never delays a socket read.
         """
         now = now or datetime.now(timezone.utc)
-        new = []
+        new, listeners, accepted = [], [], []
         for t in targets:
             self._names.setdefault(t.pid, t.process)
-            for s in tree_sockets(t.pid, process=self._process):
+            tree = {t.pid}  # walked pids: a denied child's connection is still internal
+            socks = tree_sockets(t.pid, process=self._process, pids=tree)
+            listening = {s.laddr for s in socks
+                         if s.status == "LISTEN" and s.kind == "tcp" and s.laddr}
+            tree |= {s.pid for s in socks}
+            for s in socks:
+                if s.status == "LISTEN":
+                    if s.kind == "tcp" and s.laddr:
+                        self._listener(t, s, now, listeners)
+                    continue
+                if s.kind == "tcp" and s.raddr and s.laddr and _accepted(s.laddr, listening):
+                    if s.status == "ESTABLISHED":  # FIN_WAIT2, CLOSE_WAIT...: not a client
+                        accepted.append((t, tree, s))
+                    continue  # incoming, never outgoing
                 if not s.raddr or not _flaggable(s.raddr[0]):  # loopback etc.
                     continue
                 ip, port = s.raddr
@@ -337,8 +428,48 @@ class Tracker:
                               ip, "ip", _is_lan(ip), now, now)
                 self.endpoints[key] = ep
                 new.append(ep)
-        self._rename(new)
-        return new
+        clients = self._clients(accepted, now) if accepted else []
+        self._rename(new + [c for c in clients if c.host_source])
+        return new + listeners + clients
+
+    def _listener(self, t: Target, s: SocketInfo, now: datetime, out: list) -> None:
+        key = (t.pid, s.pid, *s.laddr)
+        if key in self.listeners:
+            self.listeners[key].last_seen = now
+            return
+        scope = listener_scope(s.laddr[0])
+        self.listeners[key] = lst = Listener(t.runtime, t.pid, s.pid, self._name(s.pid),
+                                             *s.laddr, scope != "loopback", scope, now, now)
+        out.append(lst)
+
+    def _clients(self, accepted, now: datetime) -> list[Client]:
+        # One global-table read per poll: who owns each client's (ip, port).
+        pairs, _ = _connections_by_pid(self._connections, self._process_iter)
+        owners: dict[tuple, int | None] = {}
+        for pid, c in pairs:
+            if c.type == socket.SOCK_DGRAM:  # a UDP socket on the same ip:port isn't the client
+                continue
+            a = _addr(c.laddr)
+            if a and (pid or a not in owners):  # a real pid beats 0/None (TIME_WAIT etc.)
+                owners[a] = pid
+        out = []
+        for t, tree, s in accepted:
+            ip, port = s.raddr
+            pid = owners.get(s.raddr) or None
+            if pid in tree:  # e.g. ollama serve <-> its llama-server child
+                continue
+            key = (t.pid, s.laddr[1], ip, pid, None if pid else port)
+            if key in self.clients:
+                self.clients[key].last_seen = now
+                continue
+            if s.raddr in owners or listener_scope(ip) == "loopback":
+                scope, process, host, source = "local", self._name(pid) if pid else "?", None, None
+            else:
+                scope, process, host, source = "lan" if _is_lan(ip) else "public", None, ip, "ip"
+            self.clients[key] = c = Client(t.runtime, t.pid, *s.laddr, ip, port, scope, pid,
+                                           process, host, source, now, now)
+            out.append(c)
+        return out
 
     def _rename(self, endpoints, wait: float = RDNS_WAIT_S) -> None:
         names = self.namer.name_many([ep.ip for ep in endpoints], wait)
@@ -346,8 +477,17 @@ class Tracker:
             ep.host, ep.host_source = names[ep.ip]
 
     def summary(self, wait: float = RDNS_WAIT_S) -> list[Endpoint]:
-        """All endpoints, oldest first; names retried (the DNS cache or a
-        finished reverse lookup may have them now), waiting at most *wait* s."""
-        self._rename([ep for ep in self.endpoints.values() if ep.host_source != "dns-cache"],
-                     wait)
+        """All endpoints, oldest first; names of endpoints and remote clients
+        retried (the DNS cache or a finished reverse lookup may have them
+        now), waiting at most *wait* s in all."""
+        self._rename([r for r in (*self.endpoints.values(), *self.clients.values())
+                      if r.host_source and r.host_source != "dns-cache"], wait)
         return sorted(self.endpoints.values(), key=lambda e: (e.first_seen, e.runtime, e.ip))
+
+    def incoming(self) -> tuple[list[Listener], list[Client]]:
+        """All listeners and clients, oldest first (summary() renames clients)."""
+        return (
+            sorted(self.listeners.values(), key=lambda r: (r.first_seen, r.runtime, r.port, r.ip)),
+            sorted(self.clients.values(),
+                   key=lambda c: (c.first_seen, c.runtime, c.listener_port, c.ip, c.port)),
+        )

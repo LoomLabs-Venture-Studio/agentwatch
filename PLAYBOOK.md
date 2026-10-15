@@ -4221,14 +4221,14 @@ Byte counts stay out of scope.
       gate, `.exe`), target dedup, outgoing filter, naming fallback order,
       CLI `--once --json` shape. `detect` tests still pass.
 **B2 incoming**
-- [ ] LISTEN sockets in the target tree: bound to unspecified or a
+- [x] LISTEN sockets in the target tree: bound to unspecified or a
       non-loopback address -> flagged `exposed`; loopback-only listed
       as local.
-- [ ] Clients: established sockets on a listener port; loopback client
+- [x] Clients: established sockets on a listener port; loopback client
       -> owning local process (pid + name) via the global table with the
       per-process fallback; clients inside the target's own tree are
       internal and not listed; remote clients named as in B1.
-- [ ] Stream/once/json include listeners and clients. Tests.
+- [x] Stream/once/json include listeners and clients. Tests.
 **B3 `--local`**
 - [ ] `--local` adds real-pid agents (`find_running_agents` +
       `is_agent_pid`) as targets; their endpoints to `AI_PROVIDERS` IPs
