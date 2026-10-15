@@ -688,6 +688,16 @@ def test_remote_client_named_and_tagged_lan(monkeypatch):
     assert tracker.endpoints == {}  # an accepted connection is not outgoing
 
 
+def test_client_on_this_machines_lan_ip_is_local(monkeypatch):
+    trees = {10: [sock(10, ("0.0.0.0", 11434), status="LISTEN"),
+                  sock(10, ("192.168.1.5", 11434), ("192.168.1.5", 60010))]}
+    tracker = incoming_tracker(monkeypatch, trees, rows=[(4321, "192.168.1.5", 60010)],
+                               names={4321: "curl.exe"})
+    [c] = clients_of(tracker.poll([SERVE], T0))
+    assert (c.scope, c.pid, c.process, c.host) == ("local", 4321, "curl.exe", None)
+    assert tracker.namer.calls == []
+
+
 def test_client_must_match_listener_ip_unless_unspecified(monkeypatch):
     # Listener on 127.0.0.1:11434 only: a socket on 10.0.0.2:11434 is no client.
     calls = []
