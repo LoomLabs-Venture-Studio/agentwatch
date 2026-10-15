@@ -95,7 +95,8 @@ src/agentwatch/
   ai_detect.py         Machine-wide AI-use detection for `agentwatch detect`:
                        resolves AI_PROVIDERS domains to IPs, attributes
                        psutil socket-table connections to PIDs, checks
-                       Ollama/LM Studio ports, excludes browsers (board
+                       local runtime ports (port AND exact name), excludes
+                       browsers (board
                        decision 2026-10-09), maps to adapters via
                        match_process_adapter. Editor processes are labelled
                        with every editor adapter that has live sessions
@@ -103,7 +104,25 @@ src/agentwatch/
                        "cursor, cline", Insiders/VSCodium -> "cline";
                        editor gates from agents/cline.py, #127), falling
                        back to the first candidate; AiUsage.adapter stays
-                       a string (#119). Read-only, no admin on Windows
+                       a string (#119). Read-only, no admin on Windows.
+                       LOCAL_RUNTIMES is the one local-LLM runtime table
+                       (exact fnmatch names, weak names gated by cmdline/
+                       exe token, ports, by-design hosts); runtime_of()
+                       matches it and
+                       LOCAL_LLM_PORTS is derived from it
+  net.py               `agentwatch net` (Sprint 34 B1): find_targets()
+                       (runtime_of + --pid, ancestor dedup), tree_sockets()
+                       (per-process-tree socket collector, LISTEN kept;
+                       moved here from closed #132), Tracker.poll() (sample
+                       every tree first, then name the new endpoints; every
+                       non-local remote endpoint, LAN tagged, first/last
+                       seen), Namer (Windows Get-DnsClientCache -> "known"
+                       = forward lookups of KNOWN_HOSTS (AI_PROVIDERS +
+                       KNOWN_AGENT_HOSTS + LOCAL_RUNTIMES hosts, 300 s) ->
+                       gethostbyaddr (daemon threads, name_many() waits
+                       <= 2 s per poll) -> IP, cached per IP). Nothing is
+                       allow-listed: KNOWN_AGENT_HOSTS and AI_PROVIDERS
+                       never hide an endpoint (board 2026-10-15)
   net_sampler.py       Per-agent endpoint sampler for watch/watch-all
                        (#130): NetSampler thread polls psutil sockets of
                        each tracked root pid + children(recursive) ~1 s,

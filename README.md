@@ -58,6 +58,9 @@ agentwatch ps
 # List every program using AI right now (any app or CLI)
 agentwatch detect
 
+# Who do local AI runtimes (Ollama, LM Studio, ...) talk to?
+agentwatch net
+
 # Token usage stats
 agentwatch stats
 agentwatch stats --burn
@@ -350,7 +353,8 @@ agentwatch detect --json
 
 `agentwatch detect` lists programs that are talking to an AI provider
 (Anthropic, OpenAI, Copilot, Cursor, Mistral, xAI, DeepSeek, OpenRouter,
-Groq) or serving a local LLM (Ollama, LM Studio) right now,
+Groq) or serving a local LLM (Ollama, LM Studio, llama.cpp, Jan, GPT4All,
+Msty) right now,
 including ones agentwatch can't monitor yet. Browsers are excluded. It is
 local and read-only: it reads process names, executable paths and socket
 tables, and its only network traffic is DNS lookups of those providers'
@@ -369,6 +373,78 @@ adapter that monitors them. A Cline task counts only for the editor whose
 store it is in; a Cline SDK-store session with source `vscode` doesn't name
 the fork, so it counts for stable VS Code only. Connections are not split
 between adapters.
+
+### Local AI Network Activity
+
+```bash
+# Live: one line per new outgoing endpoint; Ctrl+C prints a summary
+agentwatch net
+
+# One sample, summary table
+agentwatch net --once
+
+# NDJSON events (stream) or one JSON document (--once)
+agentwatch net --json
+agentwatch net --once --json
+
+# Also watch any other process tree; poll every 2 s
+agentwatch net --pid 1234 --pid 5678 --interval 2
+
+# Headless: run 10 minutes, then print the summary (or the JSON summary event)
+agentwatch net --json --duration 600
+```
+
+Ctrl+C, SIGTERM and (Windows) Ctrl+Break or closing the console all print
+the summary, the only place with a final last-seen time. A headless
+background run on Windows can't be stopped gracefully (`taskkill` without
+`/F` refuses), so use `--duration` there.
+
+`agentwatch net` answers "does a local AI talk to external servers, and if
+so, to whom?". It finds local LLM runtimes by exact process name: Ollama
+(`ollama`, `ollama app`), llama.cpp (`llama-server`), llama-cpp-python
+(`python*` running `llama_cpp.server`), LM Studio (`LM Studio`, `llmster`,
+`lms`), Jan (`Jan-Desktop`, `jan`, `jan-llama-worker`), GPT4All (`gpt4all`,
+or `chat` from a `gpt4all` install), and Msty (`msty`, `Msty Studio`,
+`msty-local`, `MstySidecar*`). `--pid N` adds any other process (a pid with
+no process is reported: `pid N not found` on stderr, `missing_pids` in JSON;
+`--pid 0` is refused). Each
+target's whole process tree is sampled every `--interval` seconds (default
+1). Nothing is allow-listed, not even the AI-provider and agent-vendor
+hosts that `detect` and `undeclared_egress` accept: every remote endpoint
+that isn't loopback, link-local or multicast is reported with the owning
+process, first/last seen, tcp/udp, and a name. Names are tried in order:
+1. the Windows DNS client cache (`dns-cache`);
+2. `known`: a guess. The IP matches a forward lookup of a known host: the AI
+   providers, agent vendor hosts (Datadog intake, `downloads.claude.ai`) and
+   each runtime's by-design hosts (e.g. `registry.ollama.ai`,
+   `huggingface.co`, `lmstudio.ai`). The lookups are refreshed every 5 min. A
+   CDN IP shared by several known hosts lists all of them (`a|b`);
+3. reverse DNS (`rdns`);
+4. the bare IP (`ip`).
+Private (LAN) addresses are kept and tagged `LAN` (`"lan": true`). If no
+runtime is running it says so and, in stream mode, waits for one to start.
+Unprivileged and read-only; its only network traffic is DNS lookups: the
+known hosts, and reverse lookups of the IPs it finds.
+
+Known limits:
+- No ICMP (needs admin); unconnected UDP isn't seen either.
+- Connections opened and closed within one poll interval are missed.
+- DoH, a VPN or a proxy hides hostnames: you see the proxy or resolver IP,
+  and the DNS client cache may be empty (the name falls back to rdns or IP).
+- Agents hosted in an editor (Cline, Copilot) attribute to the editor process.
+- LM Studio's `lms` starts the app detached, so the app is matched by its own
+  name, not through `lms`'s process tree.
+- Ollama CLI calls (`ollama run`, `ollama list`, ...) are their own short-lived
+  `ollama.exe` processes, so each shows up as a target with a STARTED/STOPPED
+  pair; their traffic goes to the local server on loopback and isn't listed.
+- Reverse lookups run concurrently, at most ~2 s per poll. A slower one shows
+  the bare IP at first, and the summary picks up the name once it arrives.
+- Reverse DNS often names the cloud host, not the service: e.g. `ollama.com`
+  shows as `15.133.36.34.bc.googleusercontent.com [rdns]` when no known-host
+  lookup matches.
+- A runtime's embedded browser shows up under that runtime with its own
+  process name (e.g. the Ollama app's `msedgewebview2.exe` UI, talking to
+  Microsoft hosts).
 
 ### Token Usage Stats
 
