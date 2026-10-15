@@ -321,9 +321,12 @@ with an allowed host hides an undeclared one, and behind a proxy or VPN
 every connection goes to the proxy. Editor-hosted sessions (Cursor, Copilot
 in VS Code, Cline, Claude Desktop, ChatGPT-app Codex threads, `kilo serve`)
 share one process with other sessions, so they are not sampled
-(`Net: n/a (not attributable)`), nor is `watch-all --all-logs`. One-shot
-`check` / `security-scan` never sample. Aider log times are local, so on a
-non-UTC machine its action windows are offset.
+(`Net: n/a (not attributable)`), nor are `opencode serve`, Aider (its log
+has no real per-action times) or `watch-all --all-logs`. Single `watch` of
+an OpenCode/Kilo database finds no process (`Net: no live process`); use
+`watch-all`. One-shot `check` / `security-scan` never sample. Claude Code,
+Codex and Gemini log a tool call when it starts, so a Bash command's
+connection may be reported on the next action.
 
 ### Process Discovery
 

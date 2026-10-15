@@ -574,9 +574,19 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   refresh, unioned). DNS runs on daemon threads, never in one-shot scans.
   `KNOWN_AGENT_HOSTS` holds Claude Code's Datadog telemetry and
   `downloads.claude.ai`, observed live 2026-10-15; other agents' vendor
-  telemetry is not listed and will be flagged. Editor-hosted sessions and
-  `--all-logs` are not sampled. Aider's naive local timestamps offset its
-  windows on non-UTC machines. `watch` resolves its pid once at mount.
+  telemetry is not listed and will be flagged. Editor-hosted sessions,
+  `kilo serve`/`opencode serve`, Aider (synthetic timestamps) and
+  `--all-logs` are not sampled. `watch` resolves its pid once at mount and
+  never matches OpenCode/Kilo (`opencode.db#ses_x` keys). `attributable()`
+  splits the joined command string, so a prompt containing "app-server" or
+  "serve" fails safe to not sampled. A pending DNS lookup for any declared
+  host suppresses the check until it resolves. Claude Code/Codex/Gemini
+  stamp actions at tool start with duration 0, so a connection can land on
+  the next action's window. Pid reuse is guarded by create_time.
+  Since #130 Claude Code and Gemini set `network_host` from a tool's `url`
+  (like the other parsers), so network detectors now see their fetches:
+  on 10 real CC logs `repeated_beacon` went 0 -> 1 (heavy fetching from
+  one docs site), nothing else changed.
   Live smoke-tested on Windows 10 unelevated (2026-10-15); macOS/Linux
   fixture-tested only. `tests/conftest.py` stubs `AgentWatchApp.
   _find_own_process` so TUI tests never scan real processes.

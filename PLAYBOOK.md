@@ -4062,18 +4062,18 @@ pytest tests -q` (the editable install points at another worktree).
 Baseline on the branch: 1452 passed, 1 skipped; ruff clean.
 
 ### Acceptance Criteria
-- [ ] Sampler works unprivileged on Windows/macOS/Linux; degrades
+- [x] Sampler works unprivileged on Windows/macOS/Linux; degrades
       gracefully (AccessDenied / NoSuchProcess / denied global table).
-- [ ] Each action from a live, attributable agent carries the endpoints
+- [x] Each action from a live, attributable agent carries the endpoints
       observed in its window (`Action.observed_endpoints`).
-- [ ] Editor-hosted / synthetic-pid sessions (Cursor, Copilot VS Code,
+- [x] Editor-hosted / synthetic-pid sessions (Cursor, Copilot VS Code,
       Cline, Claude Desktop, ChatGPT-app Codex threads, `kilo serve`) are
       skipped and shown as not attributable.
-- [ ] Undeclared egress raises a warning; LLM API traffic, known agent
+- [x] Undeclared egress raises a warning; LLM API traffic, known agent
       vendor hosts and declared WebFetch hosts do not.
-- [ ] Documented limit: connections shorter than the poll interval are
+- [x] Documented limit: connections shorter than the poll interval are
       missed; no byte counts.
-- [ ] All existing tests pass, ruff clean, no new dependencies, no UI
+- [x] All existing tests pass, ruff clean, no new dependencies, no UI
       thread blocking (psutil polling and DNS off the UI thread).
 
 ### Implementation Plan
@@ -4100,6 +4100,38 @@ Baseline on the branch: 1452 passed, 1 skipped; ruff clean.
 - Known agent vendor hosts, observed live from `claude.exe` on 2026-10-15
   (`http-intake.logs.us5.datadoghq.com` telemetry, `downloads.claude.ai`
   updates), are not flagged, alongside `ai_detect.AI_PROVIDERS`.
+
+### Result
+- `227e449` Wave 1: `net_sampler.py` (`NetSampler`, `window()`,
+  `attributable()`), `Action.observed_endpoints`.
+- `9fc6a33` Wave 2: one sampler thread per TUI; `watch` finds its pid by
+  log path off the UI thread; `watch-all` tracks attributable agents and
+  untracks on reap; stats line `Net: N endpoints` / `n/a (not
+  attributable)` / `no live process`. `tests/conftest.py` stubs the pid
+  lookup so TUI tests never scan real processes.
+- `881b3b5` Wave 3: `UndeclaredEgressDetector` (MEDIUM, `endpoint` added
+  to dedup identity keys), non-blocking cached DNS on daemon threads.
+- `65d011f` docs (README, docs/index.md 21 security / 36 detectors,
+  CLAUDE.md).
+- QA round 1 FAIL, B1: Claude Code and Gemini never set `network_host`,
+  so their WebFetch traffic was flagged. Fixed in `78d9ced` (hostname of a
+  tool's `url`, Gemini `web_fetch` prompt URL; same convention as the
+  other parsers). Side effect on 10 real CC logs: `repeated_beacon` 0 -> 1,
+  nothing else. `47e8bcc`: Aider and `opencode serve` not attributable,
+  pid reuse guarded by create_time, IPv6 shown as `[ip]:port`.
+- Live smoke (Windows 10, unelevated, 2026-10-15): real `claude.exe`
+  traffic (api.anthropic.com, Datadog intake, downloads.claude.ai) not
+  flagged; an injected public endpoint flagged; loopback ignored.
+  macOS/Linux fixture-tested only.
+
+### Open (documented, not fixed)
+- QA N2 single `watch` never samples OpenCode/Kilo; N3 `attributable()`
+  splits the joined command (fails safe); N6 a pending DNS lookup
+  suppresses the check; N7 tool-start timestamps shift a connection to
+  the next action; N9 `_parse_timestamp` drops non-UTC offsets
+  (pre-existing).
+- `repeated_beacon` can now fire on heavy single-site WebFetch use by
+  Claude Code/Gemini (as it already did for Copilot/OpenCode/Cline).
 
 ### Next sprint (deferred, board 2026-10-14)
 - Option 2 byte counts (ETW / `GetPerTcpConnectionEStats` on Windows,
