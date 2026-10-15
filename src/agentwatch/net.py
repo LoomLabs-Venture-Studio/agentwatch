@@ -78,11 +78,12 @@ def _addr(a) -> tuple:
 
 
 def tree_sockets(root_pid: int, exclude: set[int] = frozenset(),
-                 process=psutil.Process) -> list[SocketInfo]:
+                 process=psutil.Process, pids: set[int] | None = None) -> list[SocketInfo]:
     """Every inet socket (LISTEN included) of *root_pid* and its descendants.
 
     Descendants in *exclude*, and their subtrees, are skipped. Vanished or
-    denied processes are skipped.
+    denied processes are skipped. *pids*, if given, gets every walked pid,
+    including those whose sockets couldn't be read.
     """
     # ponytail: on Windows psutil builds each process's net_connections() from
     # the whole system table, so one poll costs a full read per tree process
@@ -105,6 +106,8 @@ def tree_sockets(root_pid: int, exclude: set[int] = frozenset(),
     for p in (root, *kids):
         if p.pid in skip:
             continue
+        if pids is not None:
+            pids.add(p.pid)
         try:
             get = getattr(p, "net_connections", None) or p.connections
             conns = get(kind="inet")
@@ -400,10 +403,11 @@ class Tracker:
         new, listeners, accepted = [], [], []
         for t in targets:
             self._names.setdefault(t.pid, t.process)
-            socks = tree_sockets(t.pid, process=self._process)
+            tree = {t.pid}  # walked pids: a denied child's connection is still internal
+            socks = tree_sockets(t.pid, process=self._process, pids=tree)
             listening = {s.laddr for s in socks
                          if s.status == "LISTEN" and s.kind == "tcp" and s.laddr}
-            tree = {t.pid} | {s.pid for s in socks}
+            tree |= {s.pid for s in socks}
             for s in socks:
                 if s.status == "LISTEN":
                     if s.kind == "tcp" and s.laddr:

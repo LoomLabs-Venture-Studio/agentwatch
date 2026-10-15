@@ -728,6 +728,39 @@ def test_internal_client_skipped_other_target_client_listed(monkeypatch):
         (10, 11434, 20, "ollama.exe")]
 
 
+def test_tree_sockets_reports_walked_pids_even_when_denied():
+    class Denied(FakeProc):
+        def net_connections(self, kind):
+            raise psutil.AccessDenied(self.pid)
+
+    root = FakeProc(10, "r", [conn("1.1.1.1")], kids=[Denied(11, "d"), FakeProc(12, "x")])
+    pids = set()
+    net.tree_sockets(10, process=table(root)[1], pids=pids)
+    assert pids == {10, 11, 12}
+    assert {s.pid for s in net.tree_sockets(10, process=table(root)[1])} == {10}
+
+
+def test_denied_child_connection_is_internal_not_a_client():
+    # llama-server child(11) can't be read; its connection to serve(10) is
+    # still internal: the walk, not the socket owners, defines the tree.
+    class Denied(FakeProc):
+        def net_connections(self, kind):
+            raise psutil.AccessDenied(self.pid)
+
+    def tcp(lip, lport, rip=None, rport=0, status="ESTABLISHED"):
+        return SimpleNamespace(laddr=SimpleNamespace(ip=lip, port=lport),
+                               raddr=SimpleNamespace(ip=rip, port=rport) if rip else (),
+                               status=status, type=socket.SOCK_STREAM)
+
+    root = FakeProc(10, "ollama.exe", [tcp("127.0.0.1", 11434, status="LISTEN"),
+                                       tcp("127.0.0.1", 11434, "127.0.0.1", 52300)],
+                    kids=[Denied(11, "llama-server.exe")])
+    connections, process_iter = global_table([(11, "127.0.0.1", 52300)])
+    tracker = net.Tracker(FakeNamer(), process=table(root)[1], connections=connections,
+                          process_iter=process_iter)
+    assert clients_of(tracker.poll([SERVE], T0)) == []
+
+
 def test_remote_client_named_and_tagged_lan(monkeypatch):
     trees = {10: [sock(10, ("0.0.0.0", 11434), status="LISTEN"),
                   sock(10, ("192.168.1.5", 11434), ("192.168.1.20", 60001)),
