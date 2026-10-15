@@ -157,3 +157,19 @@ def test_secrets_only_leaves_pii(tmp_path):  # AC11
     cleaned = (tmp_path / "file.scrubbed.txt").read_text()
     for raw in PII:
         assert raw in cleaned
+
+
+def test_claude_code_log_prompt_pii_redacted_in_copy(tmp_path):
+    # audit skips user prompts; the skill relies on scrub catching them.
+    lines = [
+        json.dumps({"type": "user", "message": {"content": "my ssn is 123-45-6789"}}),
+        json.dumps({"type": "assistant", "message": {"content": "noted"}}),
+    ]
+    src = _seed(tmp_path, "session.jsonl", "\n".join(lines) + "\n")
+    res = _run(str(src), "--json")
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.stdout)["redacted"] >= 1
+    out = (tmp_path / "session.scrubbed.jsonl").read_text()
+    assert "123-45-6789" not in out
+    for line in out.splitlines():
+        json.loads(line)

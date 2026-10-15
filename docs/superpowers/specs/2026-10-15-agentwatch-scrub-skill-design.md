@@ -134,15 +134,24 @@ One `SKILL.md` (frontmatter `name`, `description`) that tells Claude:
   `pip install -U agentwatch-monitor`. Never install without a yes.
 - **What to run:** `agentwatch scrub <file> --dry-run --json` first, show the
   masked findings, then run it for real (copy by default; `--in-place` only
-  if the user asks). For Claude Code session logs:
-  `agentwatch audit --redact --pii` (it skips the live session's log).
-  Never `scrub --in-place` a log an agent is still writing.
+  if the user asks). For one Claude Code session log:
+  `agentwatch scrub <log>.jsonl` (dry-run first), which writes
+  `<log>.scrubbed.jsonl` and catches personal info typed into prompts and
+  secrets in tool results. For in-place redaction across many logs:
+  `agentwatch audit --redact --pii` (it skips the live session's log); the
+  skill says plainly that `audit` does not look at user prompts or tool
+  results, so the scrubbed copy is the safe file to share. Never
+  `scrub --in-place` an active session log (including this session's own).
 - **Exit codes:** real run 0 = done; dry-run 1 = found something (not a
   failure); 2 = error, show the message.
 - **Safety rules:** never Read, cat or print the original file (its secrets
   would land in this session's own log); never print an unmasked value; say a
   `.bak` still holds the originals; tell the user to rotate any leaked key,
   because hiding it in a log does not make it safe.
+
+**Board decision (2026-10-15):** option 2 chosen. The skill uses `scrub`
+for single session logs; `audit`'s channels are unchanged (prompts and tool
+results stay outside its scope).
 
 Install: copy the folder to `~/.claude/skills/agentwatch-scrub/`. README gets
 a short "Scrub skill" section with that step.

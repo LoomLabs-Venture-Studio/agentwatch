@@ -15,3 +15,12 @@ def test_skill_frontmatter_and_length():
     meta = dict(line.split(":", 1) for line in lines[1:end])
     assert meta["name"].strip() == "agentwatch-scrub"
     assert meta["description"].strip()
+
+
+def test_session_logs_offer_scrub_and_state_audit_limit():
+    text = SKILL.read_text(encoding="utf-8")
+    section = text[text.index("## 3. Claude Code session logs") : text.index("## 4.")]
+    assert "agentwatch scrub <log>.jsonl" in section
+    assert "--dry-run --json" in section
+    assert "audit --redact --pii" in section
+    assert "prompts" in section and "tool results" in section

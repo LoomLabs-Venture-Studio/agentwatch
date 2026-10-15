@@ -74,8 +74,19 @@ Add `--secrets-only` if the user wants personal info left alone.
 
 ## 3. Claude Code session logs (~/.claude/projects/)
 
-Use `audit`, not `scrub --in-place`. `audit` skips the log of a session that
-is still running.
+To share or clean one session log, use `scrub`. Dry run first, same as
+for any file:
+
+```bash
+agentwatch scrub <log>.jsonl --dry-run --json
+agentwatch scrub <log>.jsonl             # writes <log>.scrubbed.jsonl
+```
+
+This catches personal info the user typed into prompts and secrets in tool
+results. The scrubbed copy is the safe file to share.
+
+To hide findings in place across many logs, use `audit`. It skips the log
+of a session that is still running.
 
 ```bash
 agentwatch audit --pii                   # current project, report only
@@ -83,9 +94,12 @@ agentwatch audit --redact --pii          # hide the findings
 agentwatch audit --all --redact --pii    # every project
 ```
 
-Never run `scrub --in-place` on a log an agent is still writing (including
-this session's own log). If the user only wants to share one log, run
-`agentwatch scrub <log>` without `--in-place`; that writes a clean copy.
+`audit` does NOT look at user prompts or tool results. Personal info typed
+into a prompt stays in the log after `audit`; tell the user so, and share
+the `scrub` copy instead.
+
+Never run `scrub --in-place` on an active session log, one an agent is
+still writing (including this session's own log).
 
 ## 4. Exit codes
 

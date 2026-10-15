@@ -405,11 +405,19 @@ agentwatch scrub notes.txt --in-place
 # Secrets only, leave emails/phones/etc. alone
 agentwatch scrub notes.txt --secrets-only
 
-# Claude Code session logs: find, then hide, secrets and personal info
+# One Claude Code session log: writes <log>.scrubbed.jsonl, the copy to share
+agentwatch scrub <log>.jsonl --dry-run --json
+agentwatch scrub <log>.jsonl
+
+# Many Claude Code session logs, in place
 # (skips the log of a session that is still running)
 agentwatch audit --all --pii
 agentwatch audit --all --redact --pii
 ```
+
+`audit` does not look at user prompts or tool results, so personal info
+typed into a prompt stays in the log after `audit`. To share a session log,
+use the `scrub` copy, which covers every line.
 
 Personal info is emails, phone numbers, SSNs, card numbers and US street
 addresses. A `.bak` still holds the original values; delete it once you have
@@ -449,7 +457,10 @@ agentwatch security-scan || echo "Security issues detected"
 
 A Claude Code skill that runs `scrub`/`audit --pii` for you when you ask to
 scrub, sanitize or redact a file, or are about to share a log. It always
-dry-runs first and never prints the raw values. Install it by copying the
+dry-runs first and never prints the raw values. For one session log it uses
+`scrub` (a clean copy that also covers prompts and tool results); for
+in-place redaction across many logs it uses `audit --redact --pii`, which
+skips prompts and tool results. Install it by copying the
 folder:
 
 ```bash
