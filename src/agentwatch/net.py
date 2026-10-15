@@ -9,8 +9,8 @@ and AI_PROVIDERS never hide one (board 2026-10-15). Unprivileged.
 
 # ponytail: polling misses connections shorter than one interval and never
 # sees ICMP or unconnected UDP; DoH/VPN/proxy hide hostnames (the proxy or
-# resolver IP shows instead); gethostbyaddr blocks the poll on a slow reverse
-# lookup. Upgrade: ETW/eBPF capture, lookups off the poll thread.
+# resolver IP shows instead); reverse lookups slower than RDNS_WAIT_S show as
+# the bare IP until a later poll or the summary. Upgrade: ETW/eBPF capture.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import json
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -35,6 +36,8 @@ NO_RUNTIME = (
 )
 DNS_REFRESH_S = 5.0
 KNOWN_REFRESH_S = 300.0  # CDN IPs rotate
+RDNS_WAIT_S = 2.0  # per poll, for all its new endpoints' reverse lookups
+RDNS_WORKERS = 4
 # Forward-resolved for naming only ("known" = a guess from a shared IP); never
 # used to hide an endpoint.
 KNOWN_HOSTS: tuple[str, ...] = tuple(sorted(
@@ -180,7 +183,27 @@ class Namer:
         self._refreshed: float | None = None
         self._known: dict[str, set[str]] = {}  # IP -> known hosts, unioned across refreshes
         self._known_at: float | None = None
-        self._rdns_cache: dict[str, str | None] = {}
+        self._rdns_cache: dict[str, str | None] = {}  # written by lookup threads
+        self._pending: dict[str, threading.Event] = {}
+        self._slots = threading.BoundedSemaphore(RDNS_WORKERS)
+
+    def _start_rdns(self, ip: str) -> threading.Event:
+        # Daemon threads, not a ThreadPoolExecutor: its atexit join would make
+        # a straggling lookup block exit.
+        done = threading.Event()
+
+        def lookup():
+            with self._slots:
+                try:
+                    host = self._rdns(ip)[0] or None
+                except (OSError, UnicodeError):
+                    host = None
+            self._rdns_cache[ip] = host
+            done.set()
+
+        self._pending[ip] = done
+        threading.Thread(target=lookup, name="agentwatch-rdns", daemon=True).start()
+        return done
 
     def _known_name(self, ip: str) -> str | None:
         # ponytail: resolves every known host serially on refresh (blocking,
@@ -198,7 +221,7 @@ class Namer:
         hosts = self._known.get(ip)
         return "|".join(sorted(hosts)) if hosts else None  # shared CDN IP: all of them
 
-    def name(self, ip: str) -> tuple[str, str]:
+    def _quick(self, ip: str) -> tuple[str, str] | None:
         # A cache miss is not final: a later refresh (>= DNS_REFRESH_S on) may have it.
         if self._dns_cache and ip not in self._names and (
             self._refreshed is None or self._clock() - self._refreshed >= DNS_REFRESH_S
@@ -208,15 +231,35 @@ class Namer:
         if ip in self._names:
             return _printable(self._names[ip]), "dns-cache"
         known = self._known_name(ip)
-        if known:
-            return known, "known"
-        if ip not in self._rdns_cache:
-            try:
-                self._rdns_cache[ip] = self._rdns(ip)[0] or None
-            except (OSError, UnicodeError):
-                self._rdns_cache[ip] = None
-        host = self._rdns_cache[ip]
+        return (known, "known") if known else None
+
+    def _from_rdns(self, ip: str) -> tuple[str, str]:
+        host = self._rdns_cache.get(ip)  # absent: lookup still running
         return (_printable(host), "rdns") if host else (ip, "ip")
+
+    def name(self, ip: str) -> tuple[str, str]:
+        return self.name_many([ip])[ip]
+
+    def name_many(self, ips, wait: float = RDNS_WAIT_S) -> dict[str, tuple[str, str]]:
+        """Name *ips*; their reverse lookups run concurrently, waiting at most
+        *wait* s in all. A lookup not done in time leaves the bare IP and
+        finishes into the cache for a later call."""
+        out: dict[str, tuple[str, str]] = {}
+        slow = []
+        for ip in dict.fromkeys(ips):
+            hit = self._quick(ip)
+            if hit:
+                out[ip] = hit
+            elif ip in self._rdns_cache:
+                out[ip] = self._from_rdns(ip)
+            else:
+                slow.append(ip)
+        events = [self._pending.get(ip) or self._start_rdns(ip) for ip in slow]
+        deadline = time.monotonic() + wait
+        for done in events:
+            done.wait(max(0.0, deadline - time.monotonic()))
+        out.update((ip, self._from_rdns(ip)) for ip in slow)
+        return out
 
 
 @dataclass
@@ -279,13 +322,16 @@ class Tracker:
                               ip, "ip", ipaddress.ip_address(ip).is_private, now, now)
                 self.endpoints[key] = ep
                 new.append(ep)
-        for ep in new:
-            ep.host, ep.host_source = self.namer.name(ep.ip)
+        self._rename(new)
         return new
 
+    def _rename(self, endpoints) -> None:
+        names = self.namer.name_many([ep.ip for ep in endpoints])
+        for ep in endpoints:
+            ep.host, ep.host_source = names[ep.ip]
+
     def summary(self) -> list[Endpoint]:
-        """All endpoints, oldest first; names retried (the DNS cache may have them now)."""
-        for ep in self.endpoints.values():
-            if ep.host_source != "dns-cache":
-                ep.host, ep.host_source = self.namer.name(ep.ip)
+        """All endpoints, oldest first; names retried (the DNS cache or a
+        finished reverse lookup may have them now)."""
+        self._rename([ep for ep in self.endpoints.values() if ep.host_source != "dns-cache"])
         return sorted(self.endpoints.values(), key=lambda e: (e.first_seen, e.runtime, e.ip))

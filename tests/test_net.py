@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import socket
 import subprocess
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -220,6 +222,9 @@ class FakeNamer:
         self.calls.append(ip)
         return f"host-{ip}", "rdns"
 
+    def name_many(self, ips):
+        return {ip: self.name(ip) for ip in ips}
+
 
 def test_poll_filters_local_tags_lan_and_tracks_seen(monkeypatch):
     kid = FakeProc(3, "llama-server.exe", conns=[conn("104.18.1.1")])
@@ -266,7 +271,7 @@ def test_every_tree_is_sampled_before_any_naming():
             log.append(f"read {self.pid}")
             return self._conns
 
-    class SlowNamer:
+    class SlowNamer(FakeNamer):
         def name(self, ip):
             log.append(f"name {ip}")
             return ip, "ip"
@@ -384,6 +389,35 @@ def test_powershell_called_with_fixed_argument_list():
 
 
 # -- CLI -----------------------------------------------------------------------
+
+def test_reverse_lookups_run_concurrently():
+    both = threading.Barrier(2, timeout=2)  # passes only if both lookups run at once
+
+    def rdns(ip):
+        both.wait()
+        return f"r-{ip}", [], [ip]
+
+    namer = net.Namer(dns_cache=lambda: {}, rdns=rdns, resolve=no_resolve)
+    assert namer.name_many(["1.1.1.1", "2.2.2.2"]) == {
+        "1.1.1.1": ("r-1.1.1.1", "rdns"), "2.2.2.2": ("r-2.2.2.2", "rdns")}
+
+
+def test_slow_reverse_lookup_capped_then_finishes_into_cache():
+    release = threading.Event()
+
+    def rdns(ip):
+        if ip == "2.2.2.2":
+            release.wait(5)
+        return f"r-{ip}", [], [ip]
+
+    namer = net.Namer(dns_cache=lambda: {}, rdns=rdns, resolve=no_resolve)
+    start = time.monotonic()
+    assert namer.name_many(["1.1.1.1", "2.2.2.2"], wait=0.2) == {
+        "1.1.1.1": ("r-1.1.1.1", "rdns"), "2.2.2.2": ("2.2.2.2", "ip")}
+    assert time.monotonic() - start < 1.5
+    release.set()
+    assert namer.name("2.2.2.2") == ("r-2.2.2.2", "rdns")  # same lookup, not a new one
+
 
 def test_known_host_names_ip_and_joins_shared_cdn_ips():
     namer = net.Namer(dns_cache=lambda: {}, rdns=no_rdns, resolve=resolver({
