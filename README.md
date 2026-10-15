@@ -405,7 +405,9 @@ so, to whom?". It finds local LLM runtimes by exact process name: Ollama
 (`python*` running `llama_cpp.server`), LM Studio (`LM Studio`, `llmster`,
 `lms`), Jan (`Jan-Desktop`, `jan`, `jan-llama-worker`), GPT4All (`gpt4all`,
 or `chat` from a `gpt4all` install), and Msty (`msty`, `Msty Studio`,
-`msty-local`, `MstySidecar*`). `--pid N` adds any other process. Each
+`msty-local`, `MstySidecar*`). `--pid N` adds any other process (a pid with
+no process is reported: `pid N not found` on stderr, `missing_pids` in JSON;
+`--pid 0` is refused). Each
 target's whole process tree is sampled every `--interval` seconds (default
 1). Nothing is allow-listed, not even the AI-provider and agent-vendor
 hosts that `detect` and `undeclared_egress` accept: every remote endpoint
@@ -432,6 +434,9 @@ Known limits:
 - Agents hosted in an editor (Cline, Copilot) attribute to the editor process.
 - LM Studio's `lms` starts the app detached, so the app is matched by its own
   name, not through `lms`'s process tree.
+- Ollama CLI calls (`ollama run`, `ollama list`, ...) are their own short-lived
+  `ollama.exe` processes, so each shows up as a target with a STARTED/STOPPED
+  pair; their traffic goes to the local server on loopback and isn't listed.
 - Reverse lookups run concurrently, at most ~2 s per poll. A slower one shows
   the bare IP at first, and the summary picks up the name once it arrives.
 - Reverse DNS often names the cloud host, not the service: e.g. `ollama.com`
