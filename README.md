@@ -401,12 +401,20 @@ or `chat` from a `gpt4all` install), and Msty (`msty`, `Msty Studio`,
 target's whole process tree is sampled every `--interval` seconds (default
 1). Nothing is allow-listed, not even the AI-provider and agent-vendor
 hosts that `detect` and `undeclared_egress` accept: every remote endpoint
-that isn't loopback, link-local or multicast is reported with the owning process, first/last
-seen, tcp/udp, and a name: the Windows DNS client cache (`dns-cache`), then
-reverse DNS (`rdns`), then the bare IP (`ip`). Private (LAN) addresses are
-kept and tagged `LAN` (`"lan": true`). If no runtime is running it says so
-and, in stream mode, waits for one to start. Unprivileged and read-only;
-its only network traffic is reverse-DNS lookups of the IPs it finds.
+that isn't loopback, link-local or multicast is reported with the owning
+process, first/last seen, tcp/udp, and a name. Names are tried in order:
+1. the Windows DNS client cache (`dns-cache`);
+2. `known`: a guess. The IP matches a forward lookup of a known host: the AI
+   providers, agent vendor hosts (Datadog intake, `downloads.claude.ai`) and
+   each runtime's by-design hosts (e.g. `registry.ollama.ai`,
+   `huggingface.co`, `lmstudio.ai`). The lookups are refreshed every 5 min. A
+   CDN IP shared by several known hosts lists all of them (`a|b`);
+3. reverse DNS (`rdns`);
+4. the bare IP (`ip`).
+Private (LAN) addresses are kept and tagged `LAN` (`"lan": true`). If no
+runtime is running it says so and, in stream mode, waits for one to start.
+Unprivileged and read-only; its only network traffic is DNS lookups: the
+known hosts, and reverse lookups of the IPs it finds.
 
 Known limits:
 - No ICMP (needs admin); unconnected UDP isn't seen either.

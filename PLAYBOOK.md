@@ -4202,9 +4202,13 @@ Byte counts stay out of scope.
       (owner names looked up immediately), new endpoints are named after.
 - [ ] Naming: Windows `Get-DnsClientCache` (unprivileged, refreshed at most
       every few seconds on a miss, A/AAAA data -> entry name), then
+      `known` (forward lookups of AI_PROVIDERS + KNOWN_AGENT_HOSTS + the
+      runtime table's by-design `hosts`, lazily on the first DNS-cache
+      miss, refreshed at most every 300 s, unioned; a shared IP names all
+      its hosts joined by `|`; naming only, never suppression), then
       `socket.gethostbyaddr`, then bare IP; source recorded
-      (`dns-cache` / `rdns` / `ip`); results cached per IP. No shell
-      string built from untrusted data.
+      (`dns-cache` / `known` / `rdns` / `ip`); results cached per IP. No
+      shell string built from untrusted data.
 - [ ] `agentwatch net`: polls every `--interval` (default 1 s); one line
       per NEW endpoint; on Ctrl+C prints a summary with first/last seen.
       `--once` takes one sample and prints the summary. `--json`: NDJSON

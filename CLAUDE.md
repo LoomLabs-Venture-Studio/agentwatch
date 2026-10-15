@@ -107,7 +107,8 @@ src/agentwatch/
                        a string (#119). Read-only, no admin on Windows.
                        LOCAL_RUNTIMES is the one local-LLM runtime table
                        (exact fnmatch names, weak names gated by cmdline/
-                       exe token, ports); runtime_of() matches it and
+                       exe token, ports, by-design hosts); runtime_of()
+                       matches it and
                        LOCAL_LLM_PORTS is derived from it
   net.py               `agentwatch net` (Sprint 34 B1): find_targets()
                        (runtime_of + --pid, ancestor dedup), tree_sockets()
@@ -115,7 +116,9 @@ src/agentwatch/
                        moved here from closed #132), Tracker.poll() (sample
                        every tree first, then name the new endpoints; every
                        non-local remote endpoint, LAN tagged, first/last
-                       seen), Namer (Windows Get-DnsClientCache ->
+                       seen), Namer (Windows Get-DnsClientCache -> "known"
+                       = forward lookups of KNOWN_HOSTS (AI_PROVIDERS +
+                       KNOWN_AGENT_HOSTS + LOCAL_RUNTIMES hosts, 300 s) ->
                        gethostbyaddr -> IP, cached per IP). Nothing is
                        allow-listed: KNOWN_AGENT_HOSTS and AI_PROVIDERS
                        never hide an endpoint (board 2026-10-15)
