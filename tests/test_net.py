@@ -519,6 +519,12 @@ def test_cli_once_text_table(monkeypatch):
     assert "1 outgoing endpoint(s)" in out
 
 
+def test_cli_text_process_names_made_printable(monkeypatch):
+    fake_cli(monkeypatch, [net.Target(7, "pid", "evil\x1b[2J")], [("104.18.1.1", 443)])
+    out = CliRunner().invoke(cli, ["net", "--once"]).output
+    assert "evil?[2J(7)" in out and "\x1b" not in out
+
+
 def test_cli_once_text_lists_watched_targets_without_endpoints(monkeypatch):
     fake_cli(monkeypatch, [net.Target(7, "ollama", "ollama.exe")])
     out = CliRunner().invoke(cli, ["net", "--once"]).output

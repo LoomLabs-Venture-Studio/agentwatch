@@ -738,22 +738,28 @@ def _hostport(ip: str, port: int) -> str:
     return f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
 
 
+def _proc(name: str, pid: int) -> str:
+    from agentwatch.net import _printable  # process names can carry control chars
+
+    return f"{_printable(name)}({pid})"
+
+
 def _net_line(ep) -> str:
     lan = " LAN" if ep.lan else ""
     return (
-        f"{_clock(ep.first_seen)}  OUT  {ep.runtime}  {ep.process}({ep.pid}) -> "
+        f"{_clock(ep.first_seen)}  OUT  {ep.runtime}  {_proc(ep.process, ep.pid)} -> "
         f"{ep.host} [{ep.host_source}] {_hostport(ep.ip, ep.port)} {ep.kind}{lan}"
     )
 
 
 def _print_net_summary(endpoints, targets) -> None:
-    click.echo("  Watched: " + (", ".join(f"{t.runtime} {t.process}({t.pid})" for t in targets)
+    click.echo("  Watched: " + (", ".join(f"{t.runtime} {_proc(t.process, t.pid)}" for t in targets)
                                 or "nothing"))
     if not endpoints:
         click.echo("  No outgoing connections seen.")
         return
     rows = [("RUNTIME", "PROCESS", "HOST", "ENDPOINT", "FIRST SEEN", "LAST SEEN")] + [
-        (e.runtime, f"{e.process}({e.pid})",
+        (e.runtime, _proc(e.process, e.pid),
          f"{e.host} [{e.host_source}]" + (" LAN" if e.lan else ""),
          f"{_hostport(e.ip, e.port)}/{e.kind}", _clock(e.first_seen), _clock(e.last_seen))
         for e in endpoints
@@ -850,7 +856,8 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
                 for pid in sorted(pid_set):
                     t = side[pid]
                     emit("target", f"{_clock(now)}  {state.upper():<4} {t.runtime}  "
-                         f"{t.process}({t.pid})", state=state, time=now.isoformat(), **asdict(t))
+                         f"{_proc(t.process, t.pid)}", state=state, time=now.isoformat(),
+                         **asdict(t))
             current = seen
             watched.update(seen)
             if not targets and not waiting:
