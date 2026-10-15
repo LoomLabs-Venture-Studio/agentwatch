@@ -230,7 +230,7 @@ def test_allow_listed_hosts_are_still_reported():
         AI_PROVIDERS["anthropic"])
     names = {"34.36.57.103": "downloads.claude.ai", "160.79.104.10": "api.anthropic.com"}
     root = FakeProc(2, "ollama.exe", [conn(ip) for ip in names])
-    tracker = net.Tracker(net.Namer(dns_cache=lambda: names, rdns=no_rdns),
+    tracker = net.Tracker(net.Namer(dns_cache=lambda: names, rdns=no_rdns, resolve=no_resolve),
                           process=table(root)[1])
     new = tracker.poll([net.Target(2, "ollama", "ollama.exe")], T0)
     assert {(e.ip, e.host, e.host_source) for e in new} == {
@@ -267,10 +267,26 @@ def no_rdns(ip):
     raise socket.herror(1, "not found")
 
 
+def no_resolve(host, port):
+    raise socket.gaierror(host)
+
+
+def resolver(table_, calls=None):
+    """Fake getaddrinfo over {host: [ip, ...]}; unknown hosts fail."""
+    def resolve(host, port):
+        if calls is not None:
+            calls.append(host)
+        if host not in table_:
+            raise socket.gaierror(host)
+        return [(socket.AF_INET6 if ":" in ip else socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                 (ip, port)) for ip in table_[host]]
+    return resolve
+
+
 def test_naming_order_dns_cache_then_rdns_then_ip():
     namer = net.Namer(dns_cache=lambda: {"1.1.1.1": "one.one.one.one"},
                       rdns=lambda ip: ("rdns.example", [], [ip]) if ip == "2.2.2.2"
-                      else no_rdns(ip))
+                      else no_rdns(ip), resolve=no_resolve)
     assert namer.name("1.1.1.1") == ("one.one.one.one", "dns-cache")
     assert namer.name("2.2.2.2") == ("rdns.example", "rdns")
     assert namer.name("3.3.3.3") == ("3.3.3.3", "ip")
@@ -288,7 +304,7 @@ def test_dns_cache_refresh_throttled_and_miss_not_final():
         rdns_calls.append(ip)
         raise OSError
 
-    namer = net.Namer(dns_cache=dns, rdns=rdns, clock=lambda: clock[0])
+    namer = net.Namer(dns_cache=dns, rdns=rdns, clock=lambda: clock[0], resolve=no_resolve)
     assert namer.name("5.5.5.5") == ("5.5.5.5", "ip")
     clock[0] += 1
     assert namer.name("5.5.5.5") == ("5.5.5.5", "ip")  # within 5 s: no refresh
@@ -299,7 +315,8 @@ def test_dns_cache_refresh_throttled_and_miss_not_final():
 
 
 def test_names_from_network_are_made_printable():
-    namer = net.Namer(dns_cache=lambda: {}, rdns=lambda ip: ("evil\x1b[2Jhost", [], [ip]))
+    namer = net.Namer(dns_cache=lambda: {}, rdns=lambda ip: ("evil\x1b[2Jhost", [], [ip]),
+                      resolve=no_resolve)
     assert namer.name("6.6.6.6") == ("evil?[2Jhost", "rdns")
 
 
@@ -347,13 +364,67 @@ def test_powershell_called_with_fixed_argument_list():
 
 # -- CLI -----------------------------------------------------------------------
 
+def test_known_host_names_ip_and_joins_shared_cdn_ips():
+    namer = net.Namer(dns_cache=lambda: {}, rdns=no_rdns, resolve=resolver({
+        "ollama.com": ["104.21.0.1", "2606:4700::1"],
+        "registry.ollama.ai": ["104.21.0.1"],
+        "huggingface.co": ["::ffff:3.3.3.3"],
+    }), known_hosts=("huggingface.co", "ollama.com", "registry.ollama.ai"))
+    assert namer.name("104.21.0.1") == ("ollama.com|registry.ollama.ai", "known")
+    assert namer.name("2606:4700::1") == ("ollama.com", "known")
+    assert namer.name("3.3.3.3") == ("huggingface.co", "known")
+    assert namer.name("9.9.9.9") == ("9.9.9.9", "ip")
+
+
+def test_known_order_between_dns_cache_and_rdns():
+    namer = net.Namer(dns_cache=lambda: {"1.1.1.1": "cached.example"},
+                      rdns=lambda ip: ("rdns.example", [], [ip]),
+                      resolve=resolver({"ollama.com": ["1.1.1.1", "2.2.2.2"]}),
+                      known_hosts=("ollama.com",))
+    assert namer.name("1.1.1.1") == ("cached.example", "dns-cache")  # dns-cache beats known
+    assert namer.name("2.2.2.2") == ("ollama.com", "known")  # known beats rdns
+    assert namer.name("3.3.3.3") == ("rdns.example", "rdns")
+
+
+def test_known_refresh_after_ttl_unions_and_retries_failures():
+    tables = iter([{"ollama.com": ["1.1.1.1"]},  # huggingface.co fails the first time
+                   {"ollama.com": ["5.5.5.5"], "huggingface.co": ["6.6.6.6"]}])
+    current, calls, clock = [next(tables)], [], [0.0]
+    namer = net.Namer(dns_cache=lambda: {}, rdns=no_rdns, clock=lambda: clock[0],
+                      resolve=lambda h, p: resolver(current[0], calls)(h, p),
+                      known_hosts=("huggingface.co", "ollama.com"))
+    assert namer.name("1.1.1.1") == ("ollama.com", "known")
+    assert namer.name("5.5.5.5") == ("5.5.5.5", "ip")  # no refresh within 300 s
+    assert len(calls) == 2
+    clock[0] += net.KNOWN_REFRESH_S
+    current[0] = next(tables)
+    assert namer.name("5.5.5.5") == ("ollama.com", "known")
+    assert namer.name("6.6.6.6") == ("huggingface.co", "known")  # failure retried
+    assert namer.name("1.1.1.1") == ("ollama.com", "known")  # old IP kept (union)
+    assert len(calls) == 4
+
+
+def test_known_resolver_failure_falls_through_to_rdns():
+    namer = net.Namer(dns_cache=lambda: {}, rdns=lambda ip: ("rdns.example", [], [ip]),
+                      resolve=no_resolve, known_hosts=("ollama.com",))
+    assert namer.name("1.1.1.1") == ("rdns.example", "rdns")
+
+
+def test_known_hosts_cover_providers_agent_hosts_and_runtimes():
+    hosts = set(net.KNOWN_HOSTS)
+    assert {"api.anthropic.com", "downloads.claude.ai", "registry.ollama.ai",
+            "llmster.lmstudio.ai", "apps.jan.ai", "gpt4all.io", "msty.studio"} <= hosts
+    assert len(net.KNOWN_HOSTS) == len(hosts)  # deduped
+
+
 def fake_cli(monkeypatch, targets, sockets=()):
     monkeypatch.setattr(net, "find_targets", lambda pids: list(targets))
     monkeypatch.setattr(net, "tree_sockets", lambda pid, **kw: [
         net.SocketInfo(pid, ("10.0.0.2", 50000), raddr, "ESTABLISHED", "tcp") for raddr in sockets])
     namer = net.Namer
     monkeypatch.setattr(net, "Namer", lambda: namer(
-        dns_cache=lambda: {"104.18.1.1": "registry.ollama.ai"}, rdns=no_rdns))
+        dns_cache=lambda: {"104.18.1.1": "registry.ollama.ai"}, rdns=no_rdns,
+        resolve=no_resolve))
 
 
 def test_cli_once_json_shape(monkeypatch):

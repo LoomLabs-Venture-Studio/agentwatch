@@ -89,26 +89,37 @@ class Runtime:
     """Process names (fnmatch patterns, matched whole against the lowercased
     name minus `.exe`) and default ports of one local LLM runtime. A *weak*
     name only counts if *cmdline_token* is in the cmdline or *exe_token* in
-    the exe path."""
+    the exe path. *hosts*: by-design outbound hosts (naming only, `net`)."""
 
     names: tuple[str, ...]
     ports: tuple[int, ...]
     weak: tuple[str, ...] = ()
     cmdline_token: str | None = None
     exe_token: str | None = None
+    hosts: tuple[str, ...] = ()
 
 
 # Local LLM runtimes, the one source of truth for `detect` and `net`. Sources:
 # runtime research 2026-10-15 (PLAYBOOK Sprint 34 Part B). A port maps to
 # one runtime only.
+# hosts: source-confirmed by-design hosts only, never the UNVERIFIED ones.
 LOCAL_RUNTIMES: dict[str, Runtime] = {
-    "ollama": Runtime(("ollama", "ollama app"), (11434,)),
-    "llama.cpp": Runtime(("llama-server",), (9931, 8080)),
-    "llama-cpp-python": Runtime((), (8000,), weak=("python*",), cmdline_token="llama_cpp.server"),
-    "lm-studio": Runtime(("lm studio", "llmster", "lms"), (1234,)),
-    "jan": Runtime(("jan-desktop", "jan", "jan-llama-worker"), (1337,)),
-    "gpt4all": Runtime(("gpt4all",), (4891,), weak=("chat",), exe_token="gpt4all"),
-    "msty": Runtime(("msty", "msty studio", "msty-local", "mstysidecar*"), (11964, 11932, 10000)),
+    "ollama": Runtime(("ollama", "ollama app"), (11434,),
+                      hosts=("registry.ollama.ai", "ollama.com")),
+    "llama.cpp": Runtime(("llama-server",), (9931, 8080),
+                         hosts=("huggingface.co", "auth.docker.io", "registry-1.docker.io")),
+    "llama-cpp-python": Runtime((), (8000,), weak=("python*",), cmdline_token="llama_cpp.server",
+                                hosts=("huggingface.co",)),
+    "lm-studio": Runtime(("lm studio", "llmster", "lms"), (1234,),
+                         hosts=("huggingface.co", "lmstudio.ai", "llmster.lmstudio.ai")),
+    "jan": Runtime(("jan-desktop", "jan", "jan-llama-worker"), (1337,),
+                   hosts=("apps.jan.ai", "github.com", "raw.githubusercontent.com",
+                          "huggingface.co")),
+    "gpt4all": Runtime(("gpt4all",), (4891,), weak=("chat",), exe_token="gpt4all",
+                       hosts=("gpt4all.io", "api.gpt4all.io", "huggingface.co")),
+    "msty": Runtime(("msty", "msty studio", "msty-local", "mstysidecar*"), (11964, 11932, 10000),
+                    hosts=("registry.ollama.ai", "ollama.com", "huggingface.co", "github.com",
+                           "msty.ai", "msty.studio")),
 }
 
 # Default port -> runtime. `detect` counts a listener only if the owning

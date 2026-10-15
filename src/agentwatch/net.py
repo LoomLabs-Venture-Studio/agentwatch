@@ -26,14 +26,22 @@ from datetime import datetime, timezone
 
 import psutil
 
-from agentwatch.ai_detect import _PROC_ERRORS, LOCAL_RUNTIMES, runtime_of
-from agentwatch.detectors.security.network import _flaggable
+from agentwatch.ai_detect import _PROC_ERRORS, AI_PROVIDERS, LOCAL_RUNTIMES, runtime_of
+from agentwatch.detectors.security.network import KNOWN_AGENT_HOSTS, _flaggable
 
 NO_RUNTIME = (
     f"No local AI runtime running ({', '.join(LOCAL_RUNTIMES)}). "
     "Use --pid N to watch any other process."
 )
 DNS_REFRESH_S = 5.0
+KNOWN_REFRESH_S = 300.0  # CDN IPs rotate
+# Forward-resolved for naming only ("known" = a guess from a shared IP); never
+# used to hide an endpoint.
+KNOWN_HOSTS: tuple[str, ...] = tuple(sorted(
+    {d for ds in AI_PROVIDERS.values() for d in ds}
+    | set(KNOWN_AGENT_HOSTS)
+    | {h for rt in LOCAL_RUNTIMES.values() for h in rt.hosts}
+))
 # Fixed argument list: nothing from the network or the process table goes in.
 _PS_DNS = [
     "powershell", "-NoProfile", "-NonInteractive", "-Command",
@@ -157,15 +165,36 @@ def _printable(s: str) -> str:
 
 
 class Namer:
-    """IP -> (name, source): DNS client cache (Windows), reverse DNS, bare IP."""
+    """IP -> (name, source): DNS client cache (Windows), KNOWN_HOSTS forward
+    lookups ("known"), reverse DNS, bare IP."""
 
-    def __init__(self, dns_cache=None, rdns=socket.gethostbyaddr, clock=time.monotonic):
+    def __init__(self, dns_cache=None, rdns=socket.gethostbyaddr, clock=time.monotonic,
+                 resolve=socket.getaddrinfo, known_hosts=KNOWN_HOSTS):
         if dns_cache is None and sys.platform == "win32":
             dns_cache = dns_cache_snapshot
         self._dns_cache, self._rdns, self._clock = dns_cache, rdns, clock
+        self._resolve, self._known_hosts = resolve, known_hosts
         self._names: dict[str, str] = {}  # dns-cache hits, merged across refreshes
         self._refreshed: float | None = None
+        self._known: dict[str, set[str]] = {}  # IP -> known hosts, unioned across refreshes
+        self._known_at: float | None = None
         self._rdns_cache: dict[str, str | None] = {}
+
+    def _known_name(self, ip: str) -> str | None:
+        # ponytail: resolves every known host serially on refresh (blocking,
+        # after sampling); thread it if the list grows.
+        if self._known_at is None or self._clock() - self._known_at >= KNOWN_REFRESH_S:
+            self._known_at = self._clock()
+            for host in self._known_hosts:
+                try:
+                    infos = self._resolve(host, 443)
+                except (OSError, UnicodeError):
+                    continue  # retried at the next refresh
+                for info in infos:
+                    addr = info[4][0].removeprefix("::ffff:").lower()
+                    self._known.setdefault(addr, set()).add(host)
+        hosts = self._known.get(ip)
+        return "|".join(sorted(hosts)) if hosts else None  # shared CDN IP: all of them
 
     def name(self, ip: str) -> tuple[str, str]:
         # A cache miss is not final: a later refresh (>= DNS_REFRESH_S on) may have it.
@@ -176,6 +205,9 @@ class Namer:
             self._refreshed = self._clock()
         if ip in self._names:
             return _printable(self._names[ip]), "dns-cache"
+        known = self._known_name(ip)
+        if known:
+            return known, "known"
         if ip not in self._rdns_cache:
             try:
                 self._rdns_cache[ip] = self._rdns(ip)[0] or None
