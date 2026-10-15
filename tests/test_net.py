@@ -556,3 +556,243 @@ def test_cli_stream_json_events_and_summary_on_ctrl_c(monkeypatch):
     assert [e["event"] for e in events] == ["target", "outgoing", "summary"]
     assert events[0]["state"] == "started" and events[1]["host"] == "registry.ollama.ai"
     assert len(events[2]["outgoing"]) == 1
+
+
+# -- incoming (B2) -------------------------------------------------------------
+
+def sock(pid, laddr, raddr=(), status="ESTABLISHED", kind="tcp"):
+    return net.SocketInfo(pid, laddr, raddr, status, kind)
+
+
+def global_table(rows, calls=None, deny=False, procs=()):
+    """Fake (net_connections, process_iter); rows are (pid, laddr ip, laddr port)."""
+    def connections(kind):
+        if calls is not None:
+            calls.append(kind)
+        if deny:
+            raise psutil.AccessDenied()
+        return [SimpleNamespace(pid=pid, laddr=SimpleNamespace(ip=ip, port=port), raddr=())
+                for pid, ip, port in rows]
+    return connections, lambda: list(procs)
+
+
+def name_table(names):
+    def process(pid):
+        if pid not in names:
+            raise psutil.NoSuchProcess(pid)
+        return SimpleNamespace(name=lambda: names[pid])
+    return process
+
+
+def incoming_tracker(monkeypatch, trees, rows=(), names=None, **table_kw):
+    """Tracker over fake trees {target pid: [SocketInfo]} and a fake global table."""
+    monkeypatch.setattr(net, "tree_sockets", lambda pid, **kw: list(trees.get(pid, [])))
+    connections, process_iter = global_table(rows, **table_kw)
+    return net.Tracker(FakeNamer(), process=name_table(names or {}), connections=connections,
+                       process_iter=process_iter)
+
+
+def clients_of(records):
+    return [r for r in records if isinstance(r, net.Client)]
+
+
+SERVE = net.Target(10, "ollama", "ollama.exe")
+LISTEN = sock(10, ("127.0.0.1", 11434), status="LISTEN")
+
+
+@pytest.mark.parametrize("ip, scope", [
+    ("0.0.0.0", "all interfaces"), ("::", "all interfaces"), ("192.168.1.5", "lan"),
+    ("10.0.0.2", "lan"), ("203.0.113.9", "lan"), ("fe80::1%5", "lan"),
+    ("127.0.0.1", "loopback"), ("::1", "loopback"), ("::ffff:127.0.0.1", "loopback"),
+])
+def test_listener_scope(ip, scope):
+    assert net.listener_scope(ip) == scope
+
+
+def test_listeners_flag_exposed_list_loopback_and_track_seen(monkeypatch):
+    trees = {10: [LISTEN, sock(10, ("0.0.0.0", 8080), status="LISTEN"),
+                  sock(11, ("192.168.1.5", 9000), status="LISTEN"),
+                  sock(10, ("0.0.0.0", 5353), status="NONE", kind="udp")]}
+    tracker = incoming_tracker(monkeypatch, trees, names={11: "llama-server.exe"})
+    new = tracker.poll([SERVE], T0)
+    assert {(r.pid, r.process, r.ip, r.port, r.exposed, r.scope) for r in new} == {
+        (10, "ollama.exe", "127.0.0.1", 11434, False, "loopback"),
+        (10, "ollama.exe", "0.0.0.0", 8080, True, "all interfaces"),
+        (11, "llama-server.exe", "192.168.1.5", 9000, True, "lan")}
+    assert all(isinstance(r, net.Listener) and r.runtime == "ollama" and r.target_pid == 10
+               for r in new)
+    later = T0 + timedelta(seconds=3)
+    assert tracker.poll([SERVE], later) == []
+    lst = tracker.listeners[(10, 10, "127.0.0.1", 11434)]
+    assert (lst.first_seen, lst.last_seen) == (T0, later)
+
+
+def test_local_client_named_by_process_via_global_table(monkeypatch):
+    trees = {10: [LISTEN, sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52001))]}
+    tracker = incoming_tracker(monkeypatch, trees, rows=[(4321, "127.0.0.1", 52001)],
+                               names={4321: "curl.exe"})
+    [c] = clients_of(tracker.poll([SERVE], T0))
+    assert (c.scope, c.pid, c.process, c.listener_ip, c.listener_port, c.ip, c.port) == (
+        "local", 4321, "curl.exe", "127.0.0.1", 11434, "127.0.0.1", 52001)
+    assert (c.host, c.host_source) == (None, None)
+    assert tracker.namer.calls == []  # local clients are never DNS-named
+
+
+def test_global_table_denied_falls_back_to_per_process(monkeypatch):
+    curl = FakeProc(4321, "curl.exe", [SimpleNamespace(
+        laddr=SimpleNamespace(ip="127.0.0.1", port=52001), raddr=(), status="ESTABLISHED")])
+    trees = {10: [LISTEN, sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52001))]}
+    tracker = incoming_tracker(monkeypatch, trees, names={4321: "curl.exe"}, deny=True,
+                               procs=[curl])
+    [c] = clients_of(tracker.poll([SERVE], T0))
+    assert (c.scope, c.pid, c.process) == ("local", 4321, "curl.exe")
+
+
+def test_loopback_client_with_unseen_owner_is_still_local(monkeypatch):
+    # macOS non-root fallback can't see other users' processes.
+    trees = {10: [LISTEN, sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52001))]}
+    tracker = incoming_tracker(monkeypatch, trees, deny=True)
+    [c] = clients_of(tracker.poll([SERVE], T0))
+    assert (c.scope, c.pid, c.process, c.host) == ("local", None, "?", None)
+
+
+def test_internal_client_skipped_other_target_client_listed(monkeypatch):
+    # serve(10) -> its llama-server child(11) on 127.0.0.1:50500: internal.
+    # `ollama run` CLI (20, another target) -> serve on 11434: listed.
+    trees = {
+        10: [LISTEN, sock(11, ("127.0.0.1", 50500), status="LISTEN"),
+             sock(11, ("127.0.0.1", 50500), ("127.0.0.1", 52100)),
+             sock(10, ("127.0.0.1", 52100), ("127.0.0.1", 50500)),
+             sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52200))],
+        20: [sock(20, ("127.0.0.1", 52200), ("127.0.0.1", 11434))],
+    }
+    rows = [(11, "127.0.0.1", 50500), (11, "127.0.0.1", 50500), (10, "127.0.0.1", 52100),
+            (10, "127.0.0.1", 11434), (20, "127.0.0.1", 52200)]
+    tracker = incoming_tracker(monkeypatch, trees, rows=rows,
+                               names={11: "llama-server.exe", 20: "ollama.exe"})
+    clients = clients_of(tracker.poll([SERVE, net.Target(20, "ollama", "ollama.exe")], T0))
+    assert [(c.target_pid, c.listener_port, c.pid, c.process) for c in clients] == [
+        (10, 11434, 20, "ollama.exe")]
+
+
+def test_remote_client_named_and_tagged_lan(monkeypatch):
+    trees = {10: [sock(10, ("0.0.0.0", 11434), status="LISTEN"),
+                  sock(10, ("192.168.1.5", 11434), ("192.168.1.20", 60001)),
+                  sock(10, ("192.168.1.5", 11434), ("8.8.4.4", 60002))]}
+    tracker = incoming_tracker(monkeypatch, trees, rows=[(10, "192.168.1.5", 11434)])
+    clients = clients_of(tracker.poll([SERVE], T0))
+    assert {(c.ip, c.port, c.scope, c.pid, c.process, c.host, c.host_source,
+             c.listener_ip) for c in clients} == {
+        ("192.168.1.20", 60001, "lan", None, None, "host-192.168.1.20", "rdns", "192.168.1.5"),
+        ("8.8.4.4", 60002, "public", None, None, "host-8.8.4.4", "rdns", "192.168.1.5")}
+    assert tracker.endpoints == {}  # an accepted connection is not outgoing
+
+
+def test_client_must_match_listener_ip_unless_unspecified(monkeypatch):
+    # Listener on 127.0.0.1:11434 only: a socket on 10.0.0.2:11434 is no client.
+    calls = []
+    trees = {10: [LISTEN, sock(10, ("10.0.0.2", 11434), ("8.8.8.8", 443))]}
+    tracker = incoming_tracker(monkeypatch, trees, calls=calls)
+    assert clients_of(tracker.poll([SERVE], T0)) == [] and calls == []
+    assert [e.ip for e in tracker.endpoints.values()] == ["8.8.8.8"]
+
+
+def test_no_global_table_read_without_client_sockets(monkeypatch):
+    calls = []
+    trees = {10: [LISTEN, sock(10, ("10.0.0.2", 50000), ("104.18.1.1", 443))]}
+    tracker = incoming_tracker(monkeypatch, trees, calls=calls)
+    tracker.poll([SERVE], T0)
+    assert calls == []
+    trees[10].append(sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52001)))
+    trees[10].append(sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52002)))
+    tracker.poll([SERVE], T0)
+    assert calls == ["inet"]  # once per poll, not per client
+
+
+def test_local_client_dedup_across_ephemeral_ports(monkeypatch):
+    trees = {10: [LISTEN, sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52001))]}
+    rows = [(4321, "127.0.0.1", 52001), (4321, "127.0.0.1", 52002)]
+    tracker = incoming_tracker(monkeypatch, trees, rows=rows, names={4321: "ollama.exe"})
+    assert len(clients_of(tracker.poll([SERVE], T0))) == 1
+    trees[10][1] = sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52002))  # reconnect
+    later = T0 + timedelta(seconds=2)
+    assert tracker.poll([SERVE], later) == []
+    [c] = tracker.clients.values()
+    assert (c.port, c.first_seen, c.last_seen) == (52001, T0, later)
+
+
+def fake_incoming_cli(monkeypatch, socks, rows=(), names=None):
+    monkeypatch.setattr(net, "find_targets", lambda pids: [net.Target(7, "ollama", "ollama.exe")])
+    monkeypatch.setattr(net, "tree_sockets", lambda pid, **kw: list(socks))
+    namer, tracker = net.Namer, net.Tracker
+    connections, process_iter = global_table(rows)
+    monkeypatch.setattr(net, "Namer", lambda: namer(
+        dns_cache=lambda: {"192.168.1.20": "laptop.lan"}, rdns=no_rdns, resolve=no_resolve))
+    monkeypatch.setattr(net, "Tracker", lambda nm: tracker(
+        nm, process=name_table(names or {}), connections=connections,
+        process_iter=process_iter))
+
+
+INCOMING = [sock(7, ("0.0.0.0", 11434), status="LISTEN"),
+            sock(7, ("127.0.0.1", 11434), ("127.0.0.1", 52001)),
+            sock(7, ("192.168.1.5", 11434), ("192.168.1.20", 60001))]
+CURL = {"rows": [(4321, "127.0.0.1", 52001)], "names": {4321: "curl.exe"}}
+LISTENER_DOC = {"runtime": "ollama", "target_pid": 7, "pid": 7, "process": "ollama.exe",
+                "ip": "0.0.0.0", "port": 11434, "exposed": True, "scope": "all interfaces"}
+CLIENT_DOCS = [
+    {"runtime": "ollama", "target_pid": 7, "listener_ip": "127.0.0.1", "listener_port": 11434,
+     "ip": "127.0.0.1", "port": 52001, "scope": "local", "pid": 4321, "process": "curl.exe",
+     "host": None, "host_source": None},
+    {"runtime": "ollama", "target_pid": 7, "listener_ip": "192.168.1.5", "listener_port": 11434,
+     "ip": "192.168.1.20", "port": 60001, "scope": "lan", "pid": None, "process": None,
+     "host": "laptop.lan", "host_source": "dns-cache"},
+]
+
+
+def doc_of(d):
+    d = {k: v for k, v in d.items() if k != "event"}
+    assert datetime.fromisoformat(d.pop("first_seen")) <= datetime.fromisoformat(
+        d.pop("last_seen"))
+    return d
+
+
+def test_cli_once_json_has_listeners_and_clients(monkeypatch):
+    fake_incoming_cli(monkeypatch, INCOMING, **CURL)
+    doc = json.loads(CliRunner().invoke(cli, ["net", "--once", "--json"]).output)
+    assert doc["outgoing"] == []
+    assert [doc_of(d) for d in doc["listeners"]] == [LISTENER_DOC]
+    assert [doc_of(d) for d in doc["clients"]] == CLIENT_DOCS
+
+
+def test_cli_stream_json_listener_client_events_and_summary(monkeypatch):
+    fake_incoming_cli(monkeypatch, INCOMING, **CURL)
+    result = CliRunner().invoke(cli, ["net", "--json", "--duration", "0.01"])
+    assert result.exit_code == 0, result.output
+    events = [json.loads(line) for line in result.output.splitlines()]
+    assert [e["event"] for e in events] == ["target", "listener", "client", "client", "summary"]
+    assert doc_of(events[1]) == LISTENER_DOC
+    assert [doc_of(e) for e in events[2:4]] == CLIENT_DOCS
+    assert [doc_of(d) for d in events[-1]["listeners"]] == [LISTENER_DOC]
+    assert [doc_of(d) for d in events[-1]["clients"]] == CLIENT_DOCS
+    assert events[-1]["outgoing"] == []
+
+
+def test_cli_text_lines_tables_and_exposed_count(monkeypatch):
+    fake_incoming_cli(monkeypatch, [*INCOMING, sock(7, ("127.0.0.1", 9000), status="LISTEN")],
+                      **CURL)
+    out = CliRunner().invoke(cli, ["net", "--duration", "0.01"]).output
+    assert "LISTEN  ollama  ollama.exe(7) 0.0.0.0:11434  EXPOSED (all interfaces)" in out
+    assert "LISTEN  ollama  ollama.exe(7) 127.0.0.1:9000  loopback" in out
+    assert "IN  ollama  127.0.0.1:11434 <- curl.exe(4321) [local]" in out
+    assert ("IN  ollama  192.168.1.5:11434 <- 192.168.1.20:60001 [lan] laptop.lan [dns-cache]"
+            in out)
+    summary = out.split("No outgoing connections seen.")[1]
+    assert "LISTENERS" in summary and "CLIENTS" in summary
+    assert summary.rstrip().endswith("1 listener(s) reachable from other machines")
+
+
+def test_cli_once_text_loopback_only_has_no_exposed_line(monkeypatch):
+    fake_incoming_cli(monkeypatch, [sock(7, ("127.0.0.1", 11434), status="LISTEN")])
+    out = CliRunner().invoke(cli, ["net", "--once"]).output
+    assert "LISTENERS" in out and "loopback" in out and "No clients seen." in out
+    assert "reachable from other machines" not in out
