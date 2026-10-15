@@ -793,7 +793,7 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
         missing = netmod.missing_pids(pids)
         targets = netmod.find_targets(pids)
         tracker.poll(targets)
-        endpoints = tracker.summary()
+        endpoints = tracker.summary(wait=0)  # poll() already waited for rDNS
         if json_output:
             doc = {"targets": [asdict(t) for t in targets],
                    "outgoing": [e.to_dict() for e in endpoints], "missing_pids": missing}

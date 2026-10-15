@@ -225,7 +225,7 @@ class FakeNamer:
         self.calls.append(ip)
         return f"host-{ip}", "rdns"
 
-    def name_many(self, ips):
+    def name_many(self, ips, wait=None):
         return {ip: self.name(ip) for ip in ips}
 
 
@@ -499,6 +499,17 @@ def test_cli_once_json_shape(monkeypatch):
                   "ip": "104.18.1.1", "port": 443, "kind": "tcp",
                   "host": "registry.ollama.ai", "host_source": "dns-cache", "lan": False}
     assert "message" not in doc and doc["missing_pids"] == []
+
+
+def test_cli_once_waits_for_rdns_only_in_the_poll(monkeypatch):
+    real = net.Namer  # fake_cli swaps net.Namer for a factory of this class
+    fake_cli(monkeypatch, [net.Target(7, "ollama", "ollama.exe")], [("104.18.1.1", 443)])
+    waits, name_many = [], real.name_many
+    monkeypatch.setattr(real, "name_many",
+                        lambda self, ips, wait=net.RDNS_WAIT_S: waits.append(wait)
+                        or name_many(self, ips, wait))
+    assert CliRunner().invoke(cli, ["net", "--once"]).exit_code == 0
+    assert waits == [net.RDNS_WAIT_S, 0]
 
 
 def test_cli_once_text_table(monkeypatch):

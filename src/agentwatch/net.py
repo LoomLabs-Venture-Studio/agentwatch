@@ -330,13 +330,14 @@ class Tracker:
         self._rename(new)
         return new
 
-    def _rename(self, endpoints) -> None:
-        names = self.namer.name_many([ep.ip for ep in endpoints])
+    def _rename(self, endpoints, wait: float = RDNS_WAIT_S) -> None:
+        names = self.namer.name_many([ep.ip for ep in endpoints], wait)
         for ep in endpoints:
             ep.host, ep.host_source = names[ep.ip]
 
-    def summary(self) -> list[Endpoint]:
+    def summary(self, wait: float = RDNS_WAIT_S) -> list[Endpoint]:
         """All endpoints, oldest first; names retried (the DNS cache or a
-        finished reverse lookup may have them now)."""
-        self._rename([ep for ep in self.endpoints.values() if ep.host_source != "dns-cache"])
+        finished reverse lookup may have them now), waiting at most *wait* s."""
+        self._rename([ep for ep in self.endpoints.values() if ep.host_source != "dns-cache"],
+                     wait)
         return sorted(self.endpoints.values(), key=lambda e: (e.first_seen, e.runtime, e.ip))
