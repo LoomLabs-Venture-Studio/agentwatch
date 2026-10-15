@@ -25,6 +25,10 @@ def conn(pid, ip, port, status="ESTABLISHED"):
 class FakeProc:
     def __init__(self, pid, conns=(), children=(), error=None):
         self.pid, self.conns, self.kids, self.error = pid, list(conns), list(children), error
+        self.created = 1.0
+
+    def create_time(self):
+        return self.created
 
     def children(self, recursive=False):
         assert recursive
@@ -104,10 +108,24 @@ def test_dead_root_is_empty_and_others_still_recorded():
     s.track(1)
     s.track(5)
     s.track(42)  # never existed
+    assert s._created[42] is None
     s.sample()
     assert s.endpoints(1, 1000, 1000) == []
     assert s.endpoints(42, 1000, 1000) == []
     assert s.endpoints(5, 1000, 1000) == [("5.6.7.8", 443)]
+
+
+def test_reused_root_pid_is_dead_and_new_process_never_sampled():
+    clock = Clock()
+    root = FakeProc(1, [conn(1, "5.6.7.8", 443)])
+    s, _ = make([root], clock=clock)
+    s.track(1)
+    s.sample()
+    clock.t = 1010
+    root.created, root.conns = 2.0, [conn(1, "9.9.9.9", 443)]  # pid 1 reused
+    s.sample()
+    assert s._live[1] == {}
+    assert s.endpoints(1, 1000, 1010) == [("5.6.7.8", 443)]
 
 
 def test_gap_splits_spans_and_window_in_gap_excludes():
@@ -194,6 +212,9 @@ def proc(agent_type, command=""):
     (proc("claude-desktop"), False),
     (proc("codex", "codex.exe app-server --listen"), False),
     (proc("kilo-code", "/ext/bin/kilo serve --port 0"), False),
+    (proc("opencode", "opencode"), True),
+    (proc("opencode", "opencode serve --port 4096"), False),
+    (proc("aider", "aider --model x"), False),
     (proc("nope", "x"), False),
 ])
 def test_attributable(p, expected):

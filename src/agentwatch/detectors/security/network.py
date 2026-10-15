@@ -353,7 +353,8 @@ class UndeclaredEgressDetector(SecurityDetector):
         if pending:
             return None  # warm-up: the next tick decides
         undeclared = list(dict.fromkeys(  # most recent first
-            f"{ip}:{port}" for ip, port in reversed(seen) if ip not in allowed
+            f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
+            for ip, port in reversed(seen) if ip not in allowed
         ))
         if not undeclared:
             return None

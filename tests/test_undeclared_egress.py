@@ -79,6 +79,12 @@ def test_several_undeclared_most_recent_first():
     assert w.message == "Undeclared egress to 8.8.4.4:443 (+1 more)"
 
 
+def test_ipv6_endpoint_bracketed():
+    det, _ = _detector()
+    w = det.check(_buf(_action([("2001:db8::1", 443), ("8.8.4.4", 443)])))
+    assert w.details["undeclared"] == ["8.8.4.4:443", "[2001:db8::1]:443"]
+
+
 def test_llm_provider_ip_not_flagged():
     det, _ = _detector({"api.anthropic.com": [ANTHROPIC_IP]})
     assert det.check(_buf(_action([(ANTHROPIC_IP, 443)]))) is None

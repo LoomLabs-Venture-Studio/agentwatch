@@ -56,33 +56,41 @@ class NetSampler:
         self._clock = clock
         self._lock = threading.Lock()
         self._started: dict[int, float] = {}  # root pid -> tracking start
+        self._created: dict[int, float | None] = {}  # root pid -> create_time()
         self._spans: dict[int, list[Endpoint]] = {}
         self._live: dict[int, dict[tuple[str, int], Endpoint]] = {}  # seen last tick
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def track(self, pid: int) -> None:
+        try:
+            created = self._process(pid).create_time()
+        except _PROC_ERRORS:
+            created = None
         with self._lock:
             if pid not in self._started:
                 self._started[pid] = self._clock()
+                self._created[pid] = created
                 self._spans[pid], self._live[pid] = [], {}
 
     def untrack(self, pid: int) -> None:
         with self._lock:
-            for d in (self._started, self._spans, self._live):
+            for d in (self._started, self._created, self._spans, self._live):
                 d.pop(pid, None)
 
     def sample(self) -> None:
         """One poll of every tracked root and its descendants."""
         now = self._clock()
         with self._lock:
-            roots = list(self._started)
+            roots = dict(self._created)
         if not roots:
             return  # nothing tracked: don't read the machine's socket table
         trees: dict[int, list] = {}
-        for root in roots:
+        for root, created in roots.items():
             try:
                 proc = self._process(root)
+                if created is not None and proc.create_time() != created:
+                    raise psutil.NoSuchProcess(root)  # pid reused: never sample the newcomer
                 trees[root] = [proc, *proc.children(recursive=True)]
             except _PROC_ERRORS:
                 trees[root] = []  # dead or denied root: empty this tick
@@ -188,11 +196,13 @@ def endpoint_summary(actions) -> str:
 
 def attributable(proc) -> bool:
     """True only for a real per-agent OS process (not an editor host, a Codex
-    app-server thread's synthetic pid or a shared ``kilo serve``)."""
+    app-server thread's synthetic pid, a shared ``kilo serve``/``opencode
+    serve``, or Aider, whose timestamps are synthesized from session start +
+    ordinal so its windows are meaningless)."""
     adapter = agents.get(proc.agent_type)
     words = proc.command.split()
-    if adapter is None or adapter.kind != "process":
+    if adapter is None or adapter.kind != "process" or proc.agent_type == "aider":
         return False
     if proc.agent_type == "codex" and "app-server" in words:
         return False
-    return not (proc.agent_type == "kilo-code" and "serve" in words)
+    return not (proc.agent_type in ("kilo-code", "opencode") and "serve" in words)
