@@ -399,8 +399,9 @@ so, to whom?". It finds local LLM runtimes by exact process name: Ollama
 or `chat` from a `gpt4all` install), and Msty (`msty`, `Msty Studio`,
 `msty-local`, `MstySidecar*`). `--pid N` adds any other process. Each
 target's whole process tree is sampled every `--interval` seconds (default
-1). Nothing is allow-listed: every remote endpoint that isn't loopback,
-link-local or multicast is reported with the owning process, first/last
+1). Nothing is allow-listed, not even the AI-provider and agent-vendor
+hosts that `detect` and `undeclared_egress` accept: every remote endpoint
+that isn't loopback, link-local or multicast is reported with the owning process, first/last
 seen, tcp/udp, and a name: the Windows DNS client cache (`dns-cache`), then
 reverse DNS (`rdns`), then the bare IP (`ip`). Private (LAN) addresses are
 kept and tagged `LAN` (`"lan": true`). If no runtime is running it says so
@@ -415,7 +416,8 @@ Known limits:
 - Agents hosted in an editor (Cline, Copilot) attribute to the editor process.
 - LM Studio's `lms` starts the app detached, so the app is matched by its own
   name, not through `lms`'s process tree.
-- A slow reverse-DNS lookup delays that poll by a few seconds.
+- A slow reverse-DNS lookup (a few seconds) delays the next poll; the
+  current poll's sockets are all read before any naming.
 
 ### Token Usage Stats
 
