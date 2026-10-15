@@ -13,6 +13,13 @@ from textual.widgets import Footer, Header, Static
 
 from agentwatch.health.score import MIN_RATE_MINUTES
 from agentwatch.llm import DEFAULT_OLLAMA_MODEL
+from agentwatch.net_sampler import (
+    NOT_ATTRIBUTABLE,
+    NetSampler,
+    attach,
+    attributable,
+    endpoint_summary,
+)
 from agentwatch.themes import ascii_safe, get_theme, security_status_from_score
 from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
@@ -315,21 +322,26 @@ class StatsPanel(Static):
         self._action_count = 0
         self._error_count = 0
         self._duration = 0.0
+        self._network = ""
 
     def on_mount(self) -> None:
         self.update(self._build_content())
 
-    def update_stats(self, action_count: int, error_count: int, duration: float) -> None:
+    def update_stats(
+        self, action_count: int, error_count: int, duration: float, network: str = ""
+    ) -> None:
         self._action_count = action_count
         self._error_count = error_count
         self._duration = duration
+        self._network = network
         self.update(self._build_content())
 
     def _build_content(self) -> str:
-        return (
+        line = (
             f"  Actions: {self._action_count}  Errors: {self._error_count}  "
             f"Duration: {int(self._duration)}m"
         )
+        return f"{line}  {self._network}" if self._network else line
 
 
 def select_single_agent_watcher(log_path: Path, cursor_composer_id: str | None):
@@ -428,6 +440,10 @@ class AgentWatchApp(App):
         self._alerted_signals: set[str] = set()
         self._siem_exporter = None
         self._llm_assessor = None
+        self._net_sampler = NetSampler()
+        self._net_pid: int | None = None
+        self._net_prev_end: float | None = None
+        self._net_status = "Net: no live process"
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -527,6 +543,8 @@ class AgentWatchApp(App):
             self.watcher.on_action(self._on_action)
             self.run_worker(self.watcher.watch_with_callbacks())
 
+        self.run_worker(self._resolve_net_pid(), exit_on_error=False)
+
         self.refresh_display()
 
         # Set up periodic refresh as backup (1s for responsive feel)
@@ -567,6 +585,36 @@ class AgentWatchApp(App):
             conn.close()
         return select_latest_agent_composer(headers)
 
+    def _find_own_process(self):
+        """The running agent writing self.log_path, or None (blocking psutil)."""
+        from agentwatch.discovery import find_running_agents
+
+        def resolved(p: Path) -> Path:
+            try:
+                return p.resolve()
+            except OSError:
+                return p
+
+        target = resolved(self.log_path)
+        return next(
+            (p for p in find_running_agents() if p.log_file and resolved(p.log_file) == target),
+            None,
+        )
+
+    async def _resolve_net_pid(self) -> None:
+        """Find the agent's pid off the UI thread and start sampling it."""
+        # ponytail: resolved once at mount; an agent started after `watch` is
+        # not picked up (re-run discovery periodically if that matters).
+        proc = await asyncio.to_thread(self._find_own_process)
+        if proc is None:
+            return
+        if not attributable(proc):
+            self._net_status = NOT_ATTRIBUTABLE
+            return
+        self._net_sampler.track(proc.pid)
+        self._net_sampler.start()
+        self._net_pid = proc.pid
+
     def _on_action(self, action: Action) -> None:
         """Callback for new actions from watcher."""
         # NOTE: must be `is not None`, not a bare truthy check. ActionBuffer
@@ -577,6 +625,10 @@ class AgentWatchApp(App):
         # gains any actions, which means it stays empty (and falsy)
         # forever -- no action is ever recorded.
         if self._buffer is not None:
+            if self._net_pid is not None:
+                self._net_prev_end = attach(
+                    self._net_sampler, self._net_pid, action, self._net_prev_end
+                )
             self._buffer.add(action)
             # The 1s interval timer handles refreshes — don't pile up extra
             # calls via call_after_refresh, which was causing sporadic updates
@@ -702,6 +754,8 @@ class AgentWatchApp(App):
             self._buffer.stats.activity_count,
             self._buffer.stats.error_count,
             self._buffer.stats.duration_minutes,
+            endpoint_summary(self._buffer.actions) if self._net_pid is not None
+            else self._net_status,
         )
 
     async def _run_llm_batch(self, new_warnings: list["Warning"]) -> None:
@@ -738,7 +792,8 @@ class AgentWatchApp(App):
             self.notify(error, title="Tier-2 LLM unavailable", severity="warning", timeout=10)
 
     def on_unmount(self) -> None:
-        """Flush and release the SIEM log file handle on app exit."""
+        """Flush and release the SIEM log file handle, stop the net sampler."""
+        self._net_sampler.stop()
         if self._siem_exporter is not None:
             self._siem_exporter.close()
 
