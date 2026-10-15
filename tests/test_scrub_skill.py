@@ -24,3 +24,10 @@ def test_session_logs_offer_scrub_and_state_audit_limit():
     assert "--dry-run --json" in section
     assert "audit --redact --pii" in section
     assert "prompts" in section and "tool results" in section
+
+
+def test_scrubbed_session_log_moved_out_of_projects():
+    text = SKILL.read_text(encoding="utf-8")
+    section = text[text.index("## 3. Claude Code session logs") : text.index("## 4.")]
+    assert "mv <log>.scrubbed.jsonl" in section
+    assert "out of ~/.claude/projects" in section

@@ -137,7 +137,10 @@ One `SKILL.md` (frontmatter `name`, `description`) that tells Claude:
   if the user asks). For one Claude Code session log:
   `agentwatch scrub <log>.jsonl` (dry-run first), which writes
   `<log>.scrubbed.jsonl` and catches personal info typed into prompts and
-  secrets in tool results. For in-place redaction across many logs:
+  secrets in tool results; the skill then moves that copy out of
+  `~/.claude/projects/` (where `stats`, `audit`, discovery and `/resume`
+  glob `*.jsonl` and would count it as a session), never copying the
+  original out first. For in-place redaction across many logs:
   `agentwatch audit --redact --pii` (it skips the live session's log); the
   skill says plainly that `audit` does not look at user prompts or tool
   results, so the scrubbed copy is the safe file to share. Never

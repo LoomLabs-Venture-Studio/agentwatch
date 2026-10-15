@@ -460,7 +460,8 @@ scrub, sanitize or redact a file, or are about to share a log. It always
 dry-runs first and never prints the raw values. For one session log it uses
 `scrub` (a clean copy that also covers prompts and tool results); for
 in-place redaction across many logs it uses `audit --redact --pii`, which
-skips prompts and tool results. Install it by copying the
+skips prompts and tool results. It moves a scrubbed session log out of
+`~/.claude/projects/` so it is not counted as another session. Install it by copying the
 folder:
 
 ```bash

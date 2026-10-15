@@ -85,6 +85,17 @@ agentwatch scrub <log>.jsonl             # writes <log>.scrubbed.jsonl
 This catches personal info the user typed into prompts and secrets in tool
 results. The scrubbed copy is the safe file to share.
 
+Right after the real run, move the copy out of ~/.claude/projects (to the
+current project dir, or a folder the user picks) and give the user that path:
+
+```bash
+mv <log>.scrubbed.jsonl <dest>/
+```
+
+Left there, it counts as another session (`stats`, `audit`, discovery,
+`/resume`). Never copy the original log out first; that makes a second
+unredacted copy.
+
 To hide findings in place across many logs, use `audit`. It skips the log
 of a session that is still running.
 
