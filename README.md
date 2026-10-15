@@ -365,6 +365,31 @@ agentwatch stats --burn
 agentwatch stats --json
 ```
 
+### Scrub Secrets and Personal Info
+
+```bash
+# Hide secrets and personal info in one file; writes notes.scrubbed.txt
+agentwatch scrub notes.txt
+
+# See what would be hidden (masked), write nothing
+agentwatch scrub notes.txt --dry-run --json
+
+# Overwrite the file, keeping the original as notes.txt.bak
+agentwatch scrub notes.txt --in-place
+
+# Secrets only, leave emails/phones/etc. alone
+agentwatch scrub notes.txt --secrets-only
+
+# Claude Code session logs: find, then hide, secrets and personal info
+# (skips the log of a session that is still running)
+agentwatch audit --all --pii
+agentwatch audit --all --redact --pii
+```
+
+Personal info is emails, phone numbers, SSNs, card numbers and US street
+addresses. A `.bak` still holds the original values; delete it once you have
+checked the result. Rotate any leaked key: hiding it does not make it safe.
+
 ### AgentGuard (Security-Focused CLI)
 
 ```bash
@@ -387,6 +412,26 @@ Use in CI/CD:
 agentwatch check --json || echo "Agent health issues detected"
 agentwatch security-scan || echo "Security issues detected"
 ```
+
+`scrub` uses its own codes (2 is an error here, not a critical finding):
+
+| Run     | 0             | 1               | 2     |
+| ------- | ------------- | --------------- | ----- |
+| real    | done          | -               | error |
+| dry run | nothing found | found something | error |
+
+## Scrub Skill (Claude Code)
+
+A Claude Code skill that runs `scrub`/`audit --pii` for you when you ask to
+scrub, sanitize or redact a file, or are about to share a log. It always
+dry-runs first and never prints the raw values. Install it by copying the
+folder:
+
+```bash
+cp -r skills/agentwatch-scrub ~/.claude/skills/agentwatch-scrub
+```
+
+Claude Code only.
 
 ## Configuration
 
