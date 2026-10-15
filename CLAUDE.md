@@ -95,7 +95,8 @@ src/agentwatch/
   ai_detect.py         Machine-wide AI-use detection for `agentwatch detect`:
                        resolves AI_PROVIDERS domains to IPs, attributes
                        psutil socket-table connections to PIDs, checks
-                       Ollama/LM Studio ports, excludes browsers (board
+                       local runtime ports (port AND exact name), excludes
+                       browsers (board
                        decision 2026-10-09), maps to adapters via
                        match_process_adapter. Editor processes are labelled
                        with every editor adapter that has live sessions
@@ -103,7 +104,17 @@ src/agentwatch/
                        "cursor, cline", Insiders/VSCodium -> "cline";
                        editor gates from agents/cline.py, #127), falling
                        back to the first candidate; AiUsage.adapter stays
-                       a string (#119). Read-only, no admin on Windows
+                       a string (#119). Read-only, no admin on Windows.
+                       LOCAL_RUNTIMES is the one local-LLM runtime table
+                       (exact fnmatch names, weak names gated by cmdline/
+                       exe token, ports); runtime_of() matches it and
+                       LOCAL_LLM_PORTS is derived from it
+  net.py               `agentwatch net` (Sprint 34 B1): find_targets()
+                       (runtime_of + --pid, ancestor dedup), Tracker.poll()
+                       (egress.tree_sockets per target, every non-local
+                       remote endpoint, LAN tagged, first/last seen), Namer
+                       (Windows Get-DnsClientCache -> gethostbyaddr -> IP,
+                       cached per IP). Nothing allow-listed
   egress.py            Per-agent egress sampler (#130): tree_sockets()
                        (generic per-process-tree socket collector, LISTEN
                        kept), is_local_address(), is_agent_pid() (skips
