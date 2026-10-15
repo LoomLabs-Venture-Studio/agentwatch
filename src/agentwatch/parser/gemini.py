@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .logs import _parse_timestamp, classify_tool
+from .logs import _parse_timestamp, classify_tool, url_hostname
 from .models import Action, ToolType
 
 # CoreToolCallStatus (packages/core/src/scheduler/types.ts); the rest
@@ -33,6 +33,7 @@ _FINAL_STATUSES = frozenset({"success", "error", "cancelled"})
 # run_shell_command reports a non-zero exit as status "success" with an
 # "Exit Code: N" line in its output (packages/core/src/tools/shell.ts).
 _EXIT_CODE = re.compile(r"^Exit Code: (-?\d+)$", re.MULTILINE)
+_URL = re.compile(r"https?://[^\s'\"<>)\]]+")
 
 
 def _text(content: Any) -> str:
@@ -170,6 +171,10 @@ class GeminiParser:
 
         path = args.get("file_path") or args.get("dir_path")
         command = args.get("command")
+        url = args.get("url")
+        if url is None and name == "web_fetch" and isinstance(args.get("prompt"), str):
+            # web_fetch takes a prompt with the URLs in it (packages/core/src/tools/web-fetch.ts)
+            url = next(iter(_URL.findall(args["prompt"])), None)
         return Action(
             timestamp=_parse_timestamp(call) or msg_timestamp,
             tool_name=name,
@@ -177,6 +182,7 @@ class GeminiParser:
             success=success,
             file_path=path if isinstance(path, str) else None,
             command=command if isinstance(command, str) else None,
+            network_host=url_hostname(url),
             error_message=error_message,
             session_id=self.session_id,
             raw=raw,

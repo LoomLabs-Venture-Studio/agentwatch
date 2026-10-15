@@ -10,6 +10,7 @@ from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Severity, warning_dedup_key
 from agentwatch.detectors.security import network
 from agentwatch.detectors.security.network import UndeclaredEgressDetector
+from agentwatch.parser.logs import parse_claude_code_entry
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
 
 ANTHROPIC_IP = "160.79.104.10"
@@ -162,3 +163,34 @@ def test_dedup_key_differs_per_endpoint():
     w1 = det.check(_buf(_action([("8.8.4.4", 443)])))
     w2 = det.check(_buf(_action([("9.9.9.9", 443)])))
     assert warning_dedup_key(w1) != warning_dedup_key(w2)
+
+
+# A real-shaped Claude Code WebFetch tool_use line (B1: its host was never declared).
+CC_WEBFETCH = {
+    "type": "assistant", "timestamp": "2026-10-15T10:00:00.000Z", "sessionId": "s1",
+    "message": {
+        "role": "assistant", "model": "claude-opus-4-1",
+        "content": [{
+            "type": "tool_use", "id": "toolu_01", "name": "WebFetch",
+            "input": {"url": "https://docs.example.com/guide/x?token=abc", "prompt": "summarize"},
+        }],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    },
+}
+
+
+def _cc_action(entry):
+    parsed = parse_claude_code_entry(entry)
+    (action,) = parsed if isinstance(parsed, list) else [parsed]
+    return action
+
+
+def test_claude_code_webfetch_declares_hostname_only():
+    assert _cc_action(CC_WEBFETCH).network_host == "docs.example.com"
+
+
+def test_claude_code_webfetch_endpoint_not_flagged():
+    action = _cc_action(CC_WEBFETCH)
+    action.observed_endpoints = [(FETCH_IP, 443)]
+    det, _ = _detector({"docs.example.com": [FETCH_IP]})
+    assert det.check(_buf(action)) is None

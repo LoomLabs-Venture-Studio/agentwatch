@@ -140,6 +140,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
 
                 file_path = None
                 command = None
+                network_host = None
 
                 if isinstance(tool_input, dict):
                     file_path = (
@@ -148,6 +149,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                         or tool_input.get("file")
                     )
                     command = tool_input.get("command") or tool_input.get("cmd")
+                    network_host = url_hostname(tool_input.get("url"))  # WebFetch
 
                 actions.append(Action(
                     timestamp=timestamp,
@@ -156,6 +158,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                     success=True,  # Default; updated when tool_result arrives
                     file_path=file_path,
                     command=command,
+                    network_host=network_host,
                     tokens_in=tokens_in,
                     tokens_out=tokens_out,
                     cost_usd=cost_usd,
