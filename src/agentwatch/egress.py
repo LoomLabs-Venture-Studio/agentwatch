@@ -8,10 +8,10 @@ socket tables only. Reads cmdline in memory to confirm the pid is the
 agent's real process; never stores or logs it.
 
 # ponytail: polling (watch-all ticks ~2 s) misses connections opened and
-# closed between samples; the DNS allow-list resolves each host once, so a
-# CDN rotating IPs later reads as undeclared; children(recursive=True) walks
-# the whole tree every tick. Upgrade: ETW/eBPF event capture if any of
-# these bites.
+# closed between samples; the DNS allow-list resolves each host once (a
+# failed lookup is retried every tick), so a CDN rotating IPs later reads as
+# undeclared; children(recursive=True) walks the whole tree every tick.
+# Upgrade: ETW/eBPF event capture if any of these bites.
 """
 
 from __future__ import annotations
@@ -153,22 +153,32 @@ def declared_hosts(actions) -> set[str]:
     return hosts
 
 
+# Both lookups raise on failure so lru_cache keeps successes only; a failed
+# lookup is retried next tick instead of staying unexplained all session.
 @lru_cache(maxsize=4096)
 def _host_ips(host: str, resolve) -> frozenset[str]:
-    try:
-        return frozenset(i[4][0].removeprefix("::ffff:") for i in resolve(host, 443))
-    except (OSError, ValueError):  # ValueError: UnicodeError from IDNA encoding
-        return frozenset()
+    return frozenset(i[4][0].removeprefix("::ffff:") for i in resolve(host, 443))
 
 
 @lru_cache(maxsize=1)
 def _provider_ips(resolve) -> frozenset[str]:
-    return frozenset(_resolve_ips(resolve)[0])
+    ips = frozenset(_resolve_ips(resolve)[0])  # partial failure is cached, total is not
+    if not ips:
+        raise OSError("no AI provider domain resolved")
+    return ips
+
+
+def _or_empty(lookup, *args) -> frozenset[str]:
+    try:
+        return lookup(*args)
+    except (OSError, ValueError):  # ValueError: UnicodeError from IDNA encoding
+        return frozenset()
 
 
 def allowed_ips(hosts: set[str], resolve=socket.getaddrinfo) -> frozenset[str]:
     """IPs of AI_PROVIDERS plus *hosts*. Blocking DNS: call off the event loop."""
-    return _provider_ips(resolve).union(*(_host_ips(h, resolve) for h in hosts))
+    return _or_empty(_provider_ips, resolve).union(
+        *(_or_empty(_host_ips, h, resolve) for h in hosts))
 
 
 def sample(targets, tracked: set[int], verdicts: dict, *, process=psutil.Process,

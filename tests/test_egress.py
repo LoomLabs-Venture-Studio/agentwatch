@@ -216,6 +216,19 @@ def test_dns_lookups_cached_per_host():
     assert len(seen) == first
 
 
+def test_dns_failures_not_cached():
+    calls = {}
+
+    def flaky(host, port):  # every lookup fails the first time, then works
+        calls[host] = calls.get(host, 0) + 1
+        if calls[host] == 1:
+            raise OSError(host)
+        return fake_resolve(host, port)
+
+    assert egress.allowed_ips({"example.com"}, flaky) == frozenset()
+    assert {"160.79.104.10", "93.184.215.14"} <= egress.allowed_ips({"example.com"}, flaky)
+
+
 def test_sample_returns_endpoints_and_allowed_for_real_pid():
     root = FakeProc(10, [conn("160.79.104.10"), conn("151.101.0.223")])
     out = egress.sample([("k", 10, "claude-code", {"example.com"})], {10}, {},
@@ -274,6 +287,21 @@ def test_detector_fires_on_undeclared_endpoint():
         "first_seen": later.isoformat(), "last_seen": later.isoformat(),
     }
     assert "160.79.104.10:443" not in {e["endpoint"] for e in w.details["endpoints"]}
+
+
+def test_dedup_key_follows_undeclared_set():
+    from agentwatch.detectors.base import warning_dedup_key
+
+    def key(observed):
+        buf = ActionBuffer()
+        buf.egress = egress.Egress()
+        buf.egress.merge(observed, frozenset(), T0)
+        return warning_dedup_key(UndeclaredEgressDetector().check(buf))
+
+    a = {("203.0.113.1", 443)}
+    b = a | {("203.0.113.2", 443)}
+    assert key(a) == key(set(a)) != key(b)
+    assert key(b) == key(set(b))
 
 
 def test_detector_registered():

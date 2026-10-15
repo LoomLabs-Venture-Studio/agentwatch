@@ -167,6 +167,7 @@ _IDENTITY_DETAIL_KEYS = (
     "error_pattern",
     "last_command",
     "last_error",
+    "endpoint_set",
 )
 
 

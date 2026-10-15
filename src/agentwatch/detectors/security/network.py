@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import Counter
 
@@ -281,5 +282,11 @@ class UndeclaredEgressDetector(SecurityDetector):
                     for (ip, port), (first, last) in flagged[:5]
                 ],
                 "count": len(flagged),
+                # Identity of the whole undeclared set: a new SIEM dedup key
+                # whenever it changes, not just for the first warning.
+                "endpoint_set": hashlib.sha1(
+                    ",".join(sorted(f"{ip}:{port}" for (ip, port), _ in flagged)).encode(),
+                    usedforsecurity=False,
+                ).hexdigest()[:12],
             },
         )
