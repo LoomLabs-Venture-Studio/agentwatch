@@ -38,6 +38,7 @@ DNS_REFRESH_S = 5.0
 KNOWN_REFRESH_S = 300.0  # CDN IPs rotate
 RDNS_WAIT_S = 2.0  # per poll, for all its new endpoints' reverse lookups
 RDNS_WORKERS = 4
+_SHARED = ipaddress.ip_network("100.64.0.0/10")  # RFC 6598 CGNAT; Tailscale lives here
 # Forward-resolved for naming only ("known" = a guess from a shared IP); never
 # used to hide an endpoint.
 KNOWN_HOSTS: tuple[str, ...] = tuple(sorted(
@@ -145,6 +146,11 @@ def find_targets(extra_pids=(), *, process_iter=psutil.process_iter,
         if not ancestors & found.keys():
             targets.append(t)
     return sorted(targets, key=lambda t: t.pid)
+
+
+def _is_lan(ip: str) -> bool:
+    a = ipaddress.ip_address(ip)
+    return a.is_private or (a.version == 4 and a in _SHARED)
 
 
 def missing_pids(pids) -> list[int]:
@@ -324,7 +330,7 @@ class Tracker:
                     self.endpoints[key].last_seen = now
                     continue
                 ep = Endpoint(t.runtime, t.pid, s.pid, self._name(s.pid), ip, port, s.kind,
-                              ip, "ip", ipaddress.ip_address(ip).is_private, now, now)
+                              ip, "ip", _is_lan(ip), now, now)
                 self.endpoints[key] = ep
                 new.append(ep)
         self._rename(new)

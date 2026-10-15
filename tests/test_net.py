@@ -285,6 +285,13 @@ def test_every_tree_is_sampled_before_any_naming():
     assert log == ["read 1", "read 2", "name 1.1.1.1", "name 2.2.2.2"]
 
 
+def test_lan_includes_private_and_shared_cgnat():
+    for ip in ("192.168.0.7", "10.1.2.3", "fd00::1", "100.64.0.1", "100.127.255.254"):
+        assert net._is_lan(ip), ip
+    for ip in ("100.63.255.255", "100.128.0.1", "104.18.1.1", "2606:4700::1", "::6440:101"):
+        assert not net._is_lan(ip), ip
+
+
 def test_vanished_owner_named_question_mark():
     tracker = net.Tracker(FakeNamer(), process=table()[1])
     assert tracker._name(77) == "?"
