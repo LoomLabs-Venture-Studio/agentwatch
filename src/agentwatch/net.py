@@ -147,6 +147,11 @@ def find_targets(extra_pids=(), *, process_iter=psutil.process_iter,
     return sorted(targets, key=lambda t: t.pid)
 
 
+def missing_pids(pids) -> list[int]:
+    """The --pid values with no live process."""
+    return sorted({p for p in pids if not psutil.pid_exists(p)})
+
+
 def dns_cache_snapshot(run=subprocess.run) -> dict[str, str]:
     """Windows DNS client cache: A/AAAA record IP -> queried name; {} on failure."""
     try:

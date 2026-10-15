@@ -770,8 +770,9 @@ def _print_net_summary(endpoints, targets) -> None:
 @click.option("--once", is_flag=True, help="Take one sample, print the summary and exit")
 @click.option("--json", "json_output", is_flag=True,
               help="NDJSON events (one JSON document with --once)")
-@click.option("--pid", "pids", type=int, multiple=True,
-              help="Also watch this process and its children (repeatable)")
+@click.option("--pid", "pids", type=click.IntRange(min=1), multiple=True,
+              help="Also watch this process and its children (repeatable; not 0, which "
+                   "is the System Idle Process on Windows)")
 @click.option("--duration", type=click.FloatRange(min=0, min_open=True), default=None,
               help="Stop after this many seconds and print the summary (headless runs)")
 def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
@@ -784,19 +785,25 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
 
     from agentwatch import net as netmod  # call-time lookup: tests monkeypatch it
 
+    if once and duration is not None:
+        raise click.UsageError("--duration has no effect with --once; use one of them")
     tracker = netmod.Tracker(netmod.Namer())
 
     if once:
+        missing = netmod.missing_pids(pids)
         targets = netmod.find_targets(pids)
         tracker.poll(targets)
         endpoints = tracker.summary()
         if json_output:
             doc = {"targets": [asdict(t) for t in targets],
-                   "outgoing": [e.to_dict() for e in endpoints]}
+                   "outgoing": [e.to_dict() for e in endpoints], "missing_pids": missing}
             if not targets:
                 doc["message"] = netmod.NO_RUNTIME
             click.echo(json.dumps(doc, indent=2))
-        elif not targets:
+            return
+        for pid in missing:
+            click.echo(f"pid {pid} not found", err=True)
+        if not targets:
             click.echo(netmod.NO_RUNTIME)
         else:
             _print_net_summary(endpoints, targets)
@@ -822,12 +829,21 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
         click.echo("Watching outgoing connections of local AI runtimes (Ctrl+C for summary)")
     current: dict[int, object] = {}
     watched: dict[int, object] = {}
+    missing: set[int] = set()
     waiting = False
     deadline = time.monotonic() + duration if duration else None
     try:
         while True:
+            gone = set(netmod.missing_pids(pids)) - missing
             targets = netmod.find_targets(pids)
             now = datetime.now(timezone.utc)
+            if gone:
+                missing |= gone
+                if json_output:
+                    emit("missing", "", time=now.isoformat(), missing_pids=sorted(gone))
+                else:
+                    for pid in sorted(gone):
+                        click.echo(f"{_clock(now)}  pid {pid} not found", err=True)
             seen = {t.pid: t for t in targets}
             for state, pid_set, side in (("started", seen.keys() - current.keys(), seen),
                                          ("stopped", current.keys() - seen.keys(), current)):
@@ -857,7 +873,7 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
     endpoints = tracker.summary()
     if json_output:
         emit("summary", "", targets=[asdict(t) for t in watched.values()],
-             outgoing=[e.to_dict() for e in endpoints])
+             outgoing=[e.to_dict() for e in endpoints], missing_pids=sorted(missing))
     else:
         click.echo()
         _print_net_summary(endpoints, list(watched.values()))

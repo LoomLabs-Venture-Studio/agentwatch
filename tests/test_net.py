@@ -498,7 +498,7 @@ def test_cli_once_json_shape(monkeypatch):
     assert ep == {"runtime": "ollama", "target_pid": 7, "pid": 7, "process": "ollama.exe",
                   "ip": "104.18.1.1", "port": 443, "kind": "tcp",
                   "host": "registry.ollama.ai", "host_source": "dns-cache", "lan": False}
-    assert "message" not in doc
+    assert "message" not in doc and doc["missing_pids"] == []
 
 
 def test_cli_once_text_table(monkeypatch):
@@ -541,6 +541,33 @@ def test_cli_no_runtime_text_and_json(monkeypatch):
     doc = json.loads(CliRunner().invoke(cli, ["net", "--once", "--json"]).output)
     assert doc["targets"] == [] and doc["outgoing"] == []
     assert "No local AI runtime running" in doc["message"]
+
+
+def test_cli_missing_pid_reported(monkeypatch):
+    fake_cli(monkeypatch, [])
+    monkeypatch.setattr(net, "missing_pids", lambda pids: sorted(pids))
+    text = CliRunner().invoke(cli, ["net", "--once", "--pid", "4242"])
+    assert text.exit_code == 0 and "pid 4242 not found" in text.output  # stderr
+    doc = json.loads(CliRunner().invoke(cli, ["net", "--once", "--json", "--pid", "4242"]).stdout)
+    assert doc["missing_pids"] == [4242]
+
+    monkeypatch.setattr("time.sleep", lambda s: (_ for _ in ()).throw(KeyboardInterrupt))
+    out = CliRunner().invoke(cli, ["net", "--json", "--pid", "4242"]).stdout
+    events = [json.loads(line) for line in out.splitlines()]
+    assert [e["event"] for e in events] == ["missing", "waiting", "summary"]
+    assert events[0]["missing_pids"] == [4242] and events[-1]["missing_pids"] == [4242]
+
+
+def test_missing_pids_uses_pid_exists(monkeypatch):
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid == 4)
+    assert net.missing_pids([8, 4, 8]) == [8]
+
+
+@pytest.mark.parametrize("args", [["--pid", "0"], ["--once", "--duration", "5"]])
+def test_cli_usage_errors(monkeypatch, args):
+    fake_cli(monkeypatch, [])
+    result = CliRunner().invoke(cli, ["net", *args])
+    assert result.exit_code == 2  # click UsageError
 
 
 def test_cli_stream_json_events_and_summary_on_ctrl_c(monkeypatch):
