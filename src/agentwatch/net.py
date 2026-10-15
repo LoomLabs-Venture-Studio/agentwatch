@@ -223,7 +223,12 @@ class Tracker:
         return self._names[pid]
 
     def poll(self, targets: list[Target], now: datetime | None = None) -> list[Endpoint]:
-        """Sample every target's tree once; returns the endpoints not seen before."""
+        """Sample every target's tree once; returns the endpoints not seen before.
+
+        All trees are read first (owner names at once, before short-lived
+        owners exit), then the new endpoints are named: a slow reverse lookup
+        never delays a socket read.
+        """
         now = now or datetime.now(timezone.utc)
         new = []
         for t in targets:
@@ -236,12 +241,12 @@ class Tracker:
                 if key in self.endpoints:
                     self.endpoints[key].last_seen = now
                     continue
-                owner = self._name(s.pid)  # before naming: a DNS lookup can outlive the owner
-                host, source = self.namer.name(ip)
-                ep = Endpoint(t.runtime, t.pid, s.pid, owner, ip, port, s.kind,
-                              host, source, ipaddress.ip_address(ip).is_private, now, now)
+                ep = Endpoint(t.runtime, t.pid, s.pid, self._name(s.pid), ip, port, s.kind,
+                              ip, "ip", ipaddress.ip_address(ip).is_private, now, now)
                 self.endpoints[key] = ep
                 new.append(ep)
+        for ep in new:
+            ep.host, ep.host_source = self.namer.name(ep.ip)
         return new
 
     def summary(self) -> list[Endpoint]:

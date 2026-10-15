@@ -237,6 +237,25 @@ def test_allow_listed_hosts_are_still_reported():
         (ip, host, "dns-cache") for ip, host in names.items()}
 
 
+def test_every_tree_is_sampled_before_any_naming():
+    log = []
+
+    class Logged(FakeProc):
+        def net_connections(self, kind):
+            log.append(f"read {self.pid}")
+            return self._conns
+
+    class SlowNamer:
+        def name(self, ip):
+            log.append(f"name {ip}")
+            return ip, "ip"
+
+    a, b = Logged(1, "ollama.exe", [conn("1.1.1.1")]), Logged(2, "lms.exe", [conn("2.2.2.2")])
+    tracker = net.Tracker(SlowNamer(), process=table(a, b)[1])
+    tracker.poll([net.Target(1, "ollama", "ollama.exe"), net.Target(2, "lm-studio", "lms.exe")])
+    assert log == ["read 1", "read 2", "name 1.1.1.1", "name 2.2.2.2"]
+
+
 def test_vanished_owner_named_question_mark():
     tracker = net.Tracker(FakeNamer(), process=table()[1])
     assert tracker._name(77) == "?"
