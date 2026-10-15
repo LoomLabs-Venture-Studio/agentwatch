@@ -110,13 +110,18 @@ LOCAL_RUNTIMES: dict[str, Runtime] = {
                          hosts=("huggingface.co", "auth.docker.io", "registry-1.docker.io")),
     "llama-cpp-python": Runtime((), (8000,), weak=("python*",), cmdline_token="llama_cpp.server",
                                 hosts=("huggingface.co",)),
-    "lm-studio": Runtime(("lm studio", "llmster", "lms"), (1234,),
+    # UNVERIFIED: the "lm studio helper*" pattern (macOS Electron helpers);
+    # "lm-studio" / "lmstudio" kept from detect's old substring tokens.
+    "lm-studio": Runtime(("lm studio", "llmster", "lms", "lm-studio", "lmstudio",
+                          "lm studio helper*"), (1234,),
                          hosts=("huggingface.co", "lmstudio.ai", "llmster.lmstudio.ai")),
+    # UNVERIFIED: the legacy "jan" name (pre-0.6 Electron Jan.exe).
     "jan": Runtime(("jan-desktop", "jan", "jan-llama-worker"), (1337,),
                    hosts=("apps.jan.ai", "github.com", "raw.githubusercontent.com",
                           "huggingface.co")),
     "gpt4all": Runtime(("gpt4all",), (4891,), weak=("chat",), exe_token="gpt4all",
                        hosts=("gpt4all.io", "api.gpt4all.io", "huggingface.co")),
+    # UNVERIFIED: the "msty" / "msty studio" app names and port 10000 (Msty 1.x).
     "msty": Runtime(("msty", "msty studio", "msty-local", "mstysidecar*"), (11964, 11932, 10000),
                     hosts=("registry.ollama.ai", "ollama.com", "huggingface.co", "github.com",
                            "msty.ai", "msty.studio")),

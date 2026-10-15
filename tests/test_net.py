@@ -87,6 +87,8 @@ def table(*procs):
     ("lms.exe", "lm-studio"), ("llmster", "lm-studio"), ("Jan-Desktop.exe", "jan"),
     ("jan-llama-worker", "jan"), ("gpt4all", "gpt4all"), ("msty-local.exe", "msty"),
     ("MstySidecar_x64.exe", "msty"), ("Msty Studio.exe", "msty"),
+    ("lm-studio", "lm-studio"), ("lmstudio.exe", "lm-studio"), ("LM Studio", "lm-studio"),
+    ("LM Studio Helper", "lm-studio"), ("LM Studio Helper (Renderer)", "lm-studio"),
 ])
 def test_runtime_names_exact_case_and_exe(name, runtime):
     assert runtime_of(name) == runtime

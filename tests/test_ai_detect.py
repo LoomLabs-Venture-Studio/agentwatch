@@ -257,6 +257,10 @@ def test_ollama_listener_counted_when_name_matches():
 
 @pytest.mark.parametrize("name, port, runtime", [
     ("LM Studio.exe", 1234, "lm-studio"),
+    ("LM Studio", 1234, "lm-studio"),
+    ("lm-studio", 1234, "lm-studio"),
+    ("LM Studio Helper (Renderer)", 1234, "lm-studio"),
+    ("Ollama", 11434, "ollama"),
     ("ollama app.exe", 11434, "ollama"),
     ("llama-server.exe", 9931, "llama.cpp"),
     ("Jan-Desktop.exe", 1337, "jan"),
