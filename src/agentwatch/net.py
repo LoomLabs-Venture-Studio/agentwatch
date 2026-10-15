@@ -75,6 +75,10 @@ def tree_sockets(root_pid: int, exclude: set[int] = frozenset(),
     Descendants in *exclude*, and their subtrees, are skipped. Vanished or
     denied processes are skipped.
     """
+    # ponytail: on Windows psutil builds each process's net_connections() from
+    # the whole system table, so one poll costs a full read per tree process
+    # (~0.65 s measured with 315 processes). Upgrade: one psutil.net_connections()
+    # per poll, filtered by the trees' pids.
     try:
         root = process(root_pid)
         kids = root.children(recursive=True)

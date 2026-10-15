@@ -855,7 +855,7 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
                                          ("stopped", current.keys() - seen.keys(), current)):
                 for pid in sorted(pid_set):
                     t = side[pid]
-                    emit("target", f"{_clock(now)}  {state.upper():<4} {t.runtime}  "
+                    emit("target", f"{_clock(now)}  {state.upper()} {t.runtime}  "
                          f"{_proc(t.process, t.pid)}", state=state, time=now.isoformat(),
                          **asdict(t))
             current = seen
