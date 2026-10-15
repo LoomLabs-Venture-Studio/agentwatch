@@ -255,6 +255,30 @@ def test_ollama_listener_counted_when_name_matches():
     assert (u.local_runtime, u.connections, u.providers) == ("ollama", 0, set())
 
 
+@pytest.mark.parametrize("name, port, runtime", [
+    ("LM Studio.exe", 1234, "lm-studio"),
+    ("ollama app.exe", 11434, "ollama"),
+    ("llama-server.exe", 9931, "llama.cpp"),
+    ("Jan-Desktop.exe", 1337, "jan"),
+])
+def test_table_runtimes_labelled_by_port_and_name(name, port, runtime):
+    r = run([conn(5, lport=port, status="LISTEN")], [FakeProc(5, name)])
+    assert r.usages[0].local_runtime == runtime
+
+
+def test_runtime_name_on_another_runtimes_port_ignored():
+    r = run([conn(5, lport=1234, status="LISTEN")], [FakeProc(5, "ollama.exe")])
+    assert r.usages == []
+
+
+def test_llama_cpp_python_listener_needs_cmdline_gate():
+    gated = FakeProc(5, "python.exe", cmdline=["python", "-m", "llama_cpp.server"])
+    assert run([conn(5, lport=8000, status="LISTEN")], [gated]).usages[0].local_runtime == (
+        "llama-cpp-python")
+    plain = FakeProc(5, "python.exe", cmdline=["python", "-m", "http.server"])
+    assert run([conn(5, lport=8000, status="LISTEN")], [plain]).usages == []
+
+
 def test_llm_port_owned_by_unrelated_process_ignored():
     r = run([conn(5, lport=11434, status="LISTEN")], [FakeProc(5, "node.exe")])
     assert r.usages == []
