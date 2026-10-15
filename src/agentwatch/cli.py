@@ -1489,6 +1489,11 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
     is_flag=True,
     help="Allow redacting active session logs (default: skip them)",
 )
+@click.option(
+    "--pii",
+    is_flag=True,
+    help="Also find (and with --redact, hide) personal info: emails, phones, SSNs, cards",
+)
 def audit(
     all_projects: bool,
     session_id: str | None,
@@ -1496,6 +1501,7 @@ def audit(
     redact: bool,
     dry_run: bool,
     force: bool,
+    pii: bool,
 ):
     """Scan log history for leaked secrets and credentials.
 
@@ -1512,12 +1518,17 @@ def audit(
         find_all_project_dirs,
         project_dir_to_name,
     )
+    from agentwatch.detectors.security.pii import _PII_PATTERNS
     from agentwatch.detectors.security.secret_scanner import (
+        _SECRET_PATTERNS,
         AuditFinding,
         assess_impact,
         audit_log_file,
         redact_log_file,
     )
+
+    # Without --pii, call exactly as before (no patterns kwarg).
+    pat = {"patterns": _SECRET_PATTERNS + _PII_PATTERNS} if pii else {}
 
     if all_projects:
         dirs = find_all_project_dirs()
@@ -1549,7 +1560,7 @@ def audit(
         for jsonl_path in files:
             sessions_scanned += 1
             try:
-                findings = audit_log_file(jsonl_path, project_name=proj_name)
+                findings = audit_log_file(jsonl_path, project_name=proj_name, **pat)
                 all_findings.extend(findings)
             except (OSError, json.JSONDecodeError, UnsupportedLogFormatError):
                 continue
@@ -1593,7 +1604,7 @@ def audit(
                 continue
             # One bad file must not abort the run and skip the remaining files.
             try:
-                redact_count += redact_log_file(fp, backups=backups)
+                redact_count += redact_log_file(fp, backups=backups, **pat)
             except (OSError, UnicodeError, ValueError) as exc:
                 redact_errors.append({"log_file": str(fp), "error": str(exc)})
                 bak = fp.with_name(fp.name + ".bak")

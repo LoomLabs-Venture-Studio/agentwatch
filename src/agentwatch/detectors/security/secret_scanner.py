@@ -19,7 +19,7 @@ from typing import Any
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
-from .pii import _PII_VALIDATORS
+from .pii import _PII_VALIDATORS, PII_LABELS
 
 # ---------------------------------------------------------------------------
 # Pattern registry — each entry: (compiled regex, secret_type label)
@@ -709,6 +709,13 @@ def audit_log_file(
                 seen.add(dedup_key)
 
                 severity = _CHANNEL_SEVERITY.get(channel, Severity.MEDIUM)
+                remediation = _REMEDIATION.get(
+                    secret_type,
+                    "Remove from file, use env var, rotate if committed to git",
+                )
+                if secret_type in PII_LABELS:
+                    severity = Severity.LOW
+                    remediation = "Personal info; remove it before sharing this log"
 
                 findings.append(
                     AuditFinding(
@@ -720,10 +727,7 @@ def audit_log_file(
                         project_name=project_name,
                         matched_prefix=_mask_match_value(m),
                         severity=_SEVERITY_LABEL.get(severity, "medium"),
-                        remediation=_REMEDIATION.get(
-                            secret_type,
-                            "Remove from file, use env var, rotate if committed to git",
-                        ),
+                        remediation=remediation,
                         timestamp=ts_str,
                     )
                 )
