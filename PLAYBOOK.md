@@ -4062,37 +4062,73 @@ Nothing run live.
 only. Goal is security ("where"), not bytes.
 
 ### Acceptance Criteria
-- [ ] New `src/agentwatch/egress.py`: unprivileged sampler. For one agent
+- [x] New `src/agentwatch/egress.py`: unprivileged sampler. For one agent
       pid, reads `net_connections(kind="inet")` for the pid and its
       descendants, skipping descendants that are themselves tracked agent
       pids. Returns remote `(ip, port)` pairs; loopback, unspecified,
       link-local and multicast addresses dropped; `::ffff:` prefix stripped.
       Vanished/denied processes are skipped, never raised.
-- [ ] Synthetic pids (Cursor, Copilot in VS Code, Cline, Cowork, Codex
+- [x] Synthetic pids (Cursor, Copilot in VS Code, Cline, Cowork, Codex
       app-server threads, ...) are never sampled: a pid is sampled only if
       `match_process_adapter(cmdline, name)` on the real process returns
       the agent's own adapter. Result cached per pid.
-- [ ] Allowed set: IPs of `ai_detect.AI_PROVIDERS` domains (resolved once,
+- [x] Allowed set: IPs of `ai_detect.AI_PROVIDERS` domains (resolved once,
       off the event loop) plus IPs of every host declared by the agent's
       actions (`network_host`, and `http(s)://` hosts in `command`).
-      DNS lookups cached per host; failures ignored.
-- [ ] New `UndeclaredEgressDetector` (security, `Category.NETWORK`,
+      DNS successes cached per host; failed lookups retried next tick.
+- [x] New `UndeclaredEgressDetector` (security, `Category.NETWORK`,
       signal `undeclared_egress`, `Severity.LOW`): fires when an observed
       endpoint is not in the allowed set. Details list endpoints
       (`ip:port`, first/last seen) and a count. No sampler data on the
       buffer (`check`, `watch`, non-process `watch-all`) -> returns None.
-- [ ] `watch-all` in process mode with `--security` samples every tracked
+- [x] `watch-all` in process mode with `--security` samples every tracked
       real-pid agent about every 2 s off the event loop (one in flight at
       a time); results merged into each agent's buffer on the event loop.
-- [ ] Tests: sampler (fake psutil), synthetic-pid skip, allow-list,
+- [x] Tests: sampler (fake psutil), synthetic-pid skip, allow-list,
       detector fires/doesn't fire, no-sampler-data no-op, multi_app merge.
-- [ ] Live probe on the Windows dev machine: sampler run read-only against
+- [x] Live probe on the Windows dev machine: sampler run read-only against
       a real `claude.exe`; observed endpoints and any false positives
       reported in the PR.
-- [ ] README security-detector list and CLAUDE.md updated.
-- [ ] All existing tests pass; `ruff check .` clean; no new security
+- [x] README security-detector list and CLAUDE.md updated.
+- [x] All existing tests pass; `ruff check .` clean; no new security
       issues (no cmdline or payload stored or logged).
 
 ### Out of scope
 Byte counts (ETW/eBPF/`nettop`), per-action endpoint attachment, reverse
 DNS, `watch` single-agent mode, `detect` changes.
+
+### Result
+- `c08e33a`: Sprint 34 opened in PLAYBOOK.md.
+- `ff20bca`: `egress.py` (`tree_sockets`, `is_local_address`,
+  `is_agent_pid` cached per `(pid, create_time)`, allow-list) and
+  `UndeclaredEgressDetector`; `ActionBuffer.egress`. No new dependencies.
+- `834c135`: `watch-all` process mode with `--security` samples every
+  2 s in `asyncio.to_thread`, one in flight; merge on the event loop.
+- `43067cf`: README, `docs/index.md` (21 security / 36 total detectors),
+  CLAUDE.md module map.
+- `c5e8e78`: `details.endpoint_set` (hash of the undeclared set) joins
+  the SIEM dedup identity keys, so a changed set exports again; failed
+  DNS lookups are no longer cached.
+- `98fabbd` (QA): any sampler error is logged at debug and never stops
+  the dashboard; stopped agents (stale pid) not sampled; tree-walk
+  exclude set built from real agent pids only; non-str `host` in a log
+  `tool_input` ignored at the parser; ponytail note on the Windows
+  `net_connections` cost.
+- `feature/egress-sampler` @ `98fabbd`: 1483 passed, 1 skipped; `ruff
+  check .` clean (local run, 2026-10-15).
+
+### Live probe
+Windows 10, unprivileged, read-only, about 20 s at 2 s ticks, four live
+`claude-code` agents (all passed the real-pid check; one had no sockets).
+The sessions declared no network hosts.
+
+| Endpoint | Verdict | Likely host |
+|---|---|---|
+| `160.79.104.10:443` | allowed | `api.anthropic.com` |
+| `34.149.66.165:443` | flagged | `http-intake.logs.us5.datadoghq.com` (Claude Code telemetry) |
+| `35.190.46.17:443` | flagged | `downloads.claude.ai` (updater) |
+
+### Open threads
+- Vendor telemetry/updater endpoints raise a LOW `undeclared_egress` on
+  every Claude Code agent. No vendor allow-list, by design; board to
+  decide.
