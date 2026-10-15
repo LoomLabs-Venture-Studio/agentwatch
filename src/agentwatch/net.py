@@ -447,6 +447,8 @@ class Tracker:
         pairs, _ = _connections_by_pid(self._connections, self._process_iter)
         owners: dict[tuple, int | None] = {}
         for pid, c in pairs:
+            if c.type == socket.SOCK_DGRAM:  # a UDP socket on the same ip:port isn't the client
+                continue
             a = _addr(c.laddr)
             if a and (pid or a not in owners):  # a real pid beats 0/None (TIME_WAIT etc.)
                 owners[a] = pid

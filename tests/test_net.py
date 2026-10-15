@@ -618,14 +618,18 @@ def sock(pid, laddr, raddr=(), status="ESTABLISHED", kind="tcp"):
 
 
 def global_table(rows, calls=None, deny=False, procs=()):
-    """Fake (net_connections, process_iter); rows are (pid, laddr ip, laddr port)."""
+    """Fake (net_connections, process_iter); rows are (pid, laddr ip, laddr port)
+    for TCP, or (pid, ip, port, "udp")."""
     def connections(kind):
         if calls is not None:
             calls.append(kind)
         if deny:
             raise psutil.AccessDenied()
-        return [SimpleNamespace(pid=pid, laddr=SimpleNamespace(ip=ip, port=port), raddr=())
-                for pid, ip, port in rows]
+        return [SimpleNamespace(
+            pid=pid, laddr=SimpleNamespace(ip=ip, port=port), raddr=(),
+            type=socket.SOCK_DGRAM if udp else socket.SOCK_STREAM,
+            status="NONE" if udp else "ESTABLISHED")
+            for pid, ip, port, *udp in rows]
     return connections, lambda: list(procs)
 
 
@@ -693,12 +697,23 @@ def test_local_client_named_by_process_via_global_table(monkeypatch):
 
 def test_global_table_denied_falls_back_to_per_process(monkeypatch):
     curl = FakeProc(4321, "curl.exe", [SimpleNamespace(
-        laddr=SimpleNamespace(ip="127.0.0.1", port=52001), raddr=(), status="ESTABLISHED")])
+        laddr=SimpleNamespace(ip="127.0.0.1", port=52001), raddr=(), status="ESTABLISHED",
+        type=socket.SOCK_STREAM)])
     trees = {10: [LISTEN, sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52001))]}
     tracker = incoming_tracker(monkeypatch, trees, names={4321: "curl.exe"}, deny=True,
                                procs=[curl])
     [c] = clients_of(tracker.poll([SERVE], T0))
     assert (c.scope, c.pid, c.process) == ("local", 4321, "curl.exe")
+
+
+@pytest.mark.parametrize("order", [1, -1])
+def test_udp_socket_on_same_ip_port_does_not_steal_client(monkeypatch, order):
+    trees = {10: [LISTEN, sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52001))]}
+    rows = [(4321, "127.0.0.1", 52001), (999, "127.0.0.1", 52001, "udp")][::order]
+    tracker = incoming_tracker(monkeypatch, trees, rows=rows,
+                               names={4321: "curl.exe", 999: "dns.exe"})
+    [c] = clients_of(tracker.poll([SERVE], T0))
+    assert (c.pid, c.process) == (4321, "curl.exe")
 
 
 def test_loopback_client_with_unseen_owner_is_still_local(monkeypatch):
