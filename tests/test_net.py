@@ -5,6 +5,7 @@ table in ai_detect. Every OS/network call is a fake.
 from __future__ import annotations
 
 import json
+import signal
 import socket
 import subprocess
 import threading
@@ -503,6 +504,32 @@ def test_cli_once_text_table(monkeypatch):
     out = CliRunner().invoke(cli, ["net", "--once"]).output
     assert "registry.ollama.ai [dns-cache]" in out and "104.18.1.1:443/tcp" in out
     assert "1 outgoing endpoint(s)" in out
+
+
+def test_cli_once_text_lists_watched_targets_without_endpoints(monkeypatch):
+    fake_cli(monkeypatch, [net.Target(7, "ollama", "ollama.exe")])
+    out = CliRunner().invoke(cli, ["net", "--once"]).output
+    assert "Watched: ollama ollama.exe(7)" in out
+    assert "No outgoing connections seen." in out
+
+
+def test_cli_duration_stops_with_summary(monkeypatch):
+    fake_cli(monkeypatch, [net.Target(7, "ollama", "ollama.exe")], [("104.18.1.1", 443)])
+    polls, clock = [], [0.0]
+    find = net.find_targets
+    monkeypatch.setattr(net, "find_targets", lambda pids: polls.append(clock[0]) or find(pids))
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("time.sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    before = signal.getsignal(signal.SIGTERM)
+    result = CliRunner().invoke(cli, ["net", "--json", "--duration", "2.5", "--interval", "1"])
+    assert result.exit_code == 0, result.output
+    assert signal.getsignal(signal.SIGTERM) == before  # SIGTERM -> summary handler undone
+    assert polls == [0.0, 1.0, 2.0, 2.5]
+    events = [json.loads(line) for line in result.output.splitlines()]
+    assert events[-1]["event"] == "summary"
+    assert events[-1]["targets"] == [{"pid": 7, "runtime": "ollama", "process": "ollama.exe"}]
+    [ep] = events[-1]["outgoing"]
+    assert ep["host"] == "registry.ollama.ai"
 
 
 def test_cli_no_runtime_text_and_json(monkeypatch):

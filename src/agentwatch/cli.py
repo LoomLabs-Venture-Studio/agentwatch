@@ -746,7 +746,9 @@ def _net_line(ep) -> str:
     )
 
 
-def _print_net_summary(endpoints) -> None:
+def _print_net_summary(endpoints, targets) -> None:
+    click.echo("  Watched: " + (", ".join(f"{t.runtime} {t.process}({t.pid})" for t in targets)
+                                or "nothing"))
     if not endpoints:
         click.echo("  No outgoing connections seen.")
         return
@@ -770,8 +772,12 @@ def _print_net_summary(endpoints) -> None:
               help="NDJSON events (one JSON document with --once)")
 @click.option("--pid", "pids", type=int, multiple=True,
               help="Also watch this process and its children (repeatable)")
-def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...]):
+@click.option("--duration", type=click.FloatRange(min=0, min_open=True), default=None,
+              help="Stop after this many seconds and print the summary (headless runs)")
+def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
+        duration: float | None):
     """Show which external servers local AI runtimes (Ollama, LM Studio, ...) talk to."""
+    import signal
     import time
     from dataclasses import asdict
     from datetime import datetime, timezone
@@ -793,16 +799,31 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...]):
         elif not targets:
             click.echo(netmod.NO_RUNTIME)
         else:
-            _print_net_summary(endpoints)
+            _print_net_summary(endpoints, targets)
         return
 
     def emit(event: str, text: str, **fields) -> None:
         click.echo(json.dumps({"event": event, **fields}) if json_output else text)
 
+    def stop(signum, frame):
+        raise KeyboardInterrupt
+
+    # SIGTERM / SIGBREAK (Ctrl+Break, console close on Windows) take the Ctrl+C path.
+    previous = {}
+    for name in ("SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                previous[sig] = signal.signal(sig, stop)
+            except (ValueError, OSError):  # not the main thread
+                pass
+
     if not json_output:
         click.echo("Watching outgoing connections of local AI runtimes (Ctrl+C for summary)")
     current: dict[int, object] = {}
+    watched: dict[int, object] = {}
     waiting = False
+    deadline = time.monotonic() + duration if duration else None
     try:
         while True:
             targets = netmod.find_targets(pids)
@@ -815,21 +836,31 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...]):
                     emit("target", f"{_clock(now)}  {state.upper():<4} {t.runtime}  "
                          f"{t.process}({t.pid})", state=state, time=now.isoformat(), **asdict(t))
             current = seen
+            watched.update(seen)
             if not targets and not waiting:
                 emit("waiting", f"{netmod.NO_RUNTIME} Waiting for one to start...",
                      message=netmod.NO_RUNTIME)
             waiting = not targets
             for ep in tracker.poll(targets, now):
                 emit("outgoing", _net_line(ep), **ep.to_dict())
-            time.sleep(interval)
+            if deadline is None:
+                time.sleep(interval)
+            elif (left := deadline - time.monotonic()) > 0:
+                time.sleep(min(interval, left))
+            else:
+                break
     except KeyboardInterrupt:
-        endpoints = tracker.summary()
-        if json_output:
-            emit("summary", "", targets=[asdict(t) for t in current.values()],
-                 outgoing=[e.to_dict() for e in endpoints])
-        else:
-            click.echo()
-            _print_net_summary(endpoints)
+        pass
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    endpoints = tracker.summary()
+    if json_output:
+        emit("summary", "", targets=[asdict(t) for t in watched.values()],
+             outgoing=[e.to_dict() for e in endpoints])
+    else:
+        click.echo()
+        _print_net_summary(endpoints, list(watched.values()))
 
 
 def _print_agents_view(agents: list[AgentProcess]) -> None:
