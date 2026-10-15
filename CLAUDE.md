@@ -113,7 +113,8 @@ src/agentwatch/
                        end) -> Action.observed_endpoints (None = not
                        sampled). window() treats naive timestamps as UTC.
                        attributable(): process-kind adapters only, minus
-                       Codex app-server threads and `kilo serve`
+                       Codex app-server threads, `kilo serve`/`opencode
+                       serve` and Aider (synthetic timestamps)
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
@@ -582,7 +583,8 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   "serve" fails safe to not sampled. A pending DNS lookup for any declared
   host suppresses the check until it resolves. Claude Code/Codex/Gemini
   stamp actions at tool start with duration 0, so a connection can land on
-  the next action's window. Pid reuse is guarded by create_time.
+  the next action's window. Pid reuse is guarded by create_time, only
+  when it was readable at track() time (else unguarded for that pid).
   Since #130 Claude Code and Gemini set `network_host` from a tool's `url`
   (like the other parsers), so network detectors now see their fetches:
   on 10 real CC logs `repeated_beacon` went 0 -> 1 (heavy fetching from
