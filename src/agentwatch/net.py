@@ -409,10 +409,10 @@ class Tracker:
                     if s.kind == "tcp" and s.laddr:
                         self._listener(t, s, now, listeners)
                     continue
-                if (s.kind == "tcp" and s.status == "ESTABLISHED" and s.raddr and s.laddr
-                        and _accepted(s.laddr, listening)):
-                    accepted.append((t, tree, s))  # incoming, not outgoing
-                    continue
+                if s.kind == "tcp" and s.raddr and s.laddr and _accepted(s.laddr, listening):
+                    if s.status == "ESTABLISHED":  # FIN_WAIT2, CLOSE_WAIT...: not a client
+                        accepted.append((t, tree, s))
+                    continue  # incoming, never outgoing
                 if not s.raddr or not _flaggable(s.raddr[0]):  # loopback etc.
                     continue
                 ip, port = s.raddr

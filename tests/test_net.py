@@ -779,6 +779,16 @@ def test_summary_renames_endpoints_and_clients_in_one_wait(monkeypatch):
     assert c.host == "late-192.168.1.20" and len(waits) == 1
 
 
+@pytest.mark.parametrize("status", ["FIN_WAIT2", "CLOSE_WAIT", "SYN_RECV", "LAST_ACK"])
+def test_accepted_socket_in_other_states_is_neither_client_nor_outgoing(monkeypatch, status):
+    calls = []
+    trees = {10: [sock(10, ("0.0.0.0", 11434), status="LISTEN"),
+                  sock(10, ("192.168.1.5", 11434), ("192.168.1.20", 60001), status=status)]}
+    tracker = incoming_tracker(monkeypatch, trees, calls=calls)
+    assert clients_of(tracker.poll([SERVE], T0)) == []
+    assert tracker.endpoints == {} and tracker.clients == {} and calls == []
+
+
 def test_client_must_match_listener_ip_unless_unspecified(monkeypatch):
     # Listener on 127.0.0.1:11434 only: a socket on 10.0.0.2:11434 is no client.
     calls = []
