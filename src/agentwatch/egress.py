@@ -11,7 +11,10 @@ agent's real process; never stores or logs it.
 # closed between samples; the DNS allow-list resolves each host once (a
 # failed lookup is retried every tick), so a CDN rotating IPs later reads as
 # undeclared; children(recursive=True) walks the whole tree every tick.
-# Upgrade: ETW/eBPF event capture if any of these bites.
+# On Windows psutil's per-process net_connections fetches the whole system
+# table on every call: O(tree size x table) per agent per tick (measured
+# 10-19 ms). Upgrade: one system-wide psutil.net_connections() per tick,
+# filtered by tree pids; ETW/eBPF event capture if the rest bites.
 """
 
 from __future__ import annotations
@@ -181,16 +184,16 @@ def allowed_ips(hosts: set[str], resolve=socket.getaddrinfo) -> frozenset[str]:
         *(_or_empty(_host_ips, h, resolve) for h in hosts))
 
 
-def sample(targets, tracked: set[int], verdicts: dict, *, process=psutil.Process,
+def sample(targets, verdicts: dict, *, process=psutil.Process,
            resolve=socket.getaddrinfo) -> dict:
     """One tick, run in a worker thread: {key: (endpoints, allowed_ips)}.
 
     *targets* is [(key, pid, agent_type, declared_hosts)]; pids that aren't
-    the agent's real process are left out.
+    the agent's real process are left out, and only real ones are cut out of
+    other agents' tree walks (a synthetic pid may collide with a child's).
     """
-    out = {}
-    for key, pid, agent_type, hosts in targets:
-        if is_agent_pid(pid, agent_type, verdicts, process):
-            sockets = tree_sockets(pid, tracked, process)
-            out[key] = (remote_endpoints(sockets), allowed_ips(hosts, resolve))
-    return out
+    real = [t for t in targets if is_agent_pid(t[1], t[2], verdicts, process)]
+    exclude = {pid for _, pid, _, _ in real}
+    return {key: (remote_endpoints(tree_sockets(pid, exclude, process)),
+                  allowed_ips(hosts, resolve))
+            for key, pid, _, hosts in real}

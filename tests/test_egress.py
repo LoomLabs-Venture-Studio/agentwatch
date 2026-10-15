@@ -153,15 +153,30 @@ def test_synthetic_pid_is_never_sampled():
     # unrelated process: the adapter check rejects it.
     unrelated = FakeProc(4242, [conn("1.1.1.1")], cmdline=["C:\\Windows\\notepad.exe"])
     verdicts: dict = {}
-    out = egress.sample([("k", 4242, "cursor", set())], {4242}, verdicts,
+    out = egress.sample([("k", 4242, "cursor", set())], verdicts,
                         process=table(unrelated), resolve=fake_resolve)
     assert out == {}
     assert egress.is_agent_pid(4242, "cursor", verdicts, table(unrelated)) is False
 
 
 def test_missing_pid_is_skipped():
-    assert egress.sample([("k", 99, "claude-code", set())], {99}, {},
+    assert egress.sample([("k", 99, "claude-code", set())], {},
                          process=table(), resolve=fake_resolve) == {}
+
+
+def test_only_real_agent_pids_excluded_from_tree_walks():
+    # A synthetic Cursor pid that collides with a child of the claude tree
+    # must not cut that child out; a real tracked sub-agent still is.
+    sub_agent = FakeProc(20, [conn("8.8.8.8")])
+    tool = FakeProc(4242, [conn("151.101.0.223")], cmdline=["C:\tools\node.exe"])
+    root = FakeProc(10, [conn("160.79.104.10")], kids=[sub_agent, tool])
+    out = egress.sample(
+        [("root", 10, "claude-code", set()), ("sub", 20, "claude-code", set()),
+         ("cursor", 4242, "cursor", set())],
+        {}, process=table(root, sub_agent, tool), resolve=fake_resolve)
+    assert out.keys() == {"root", "sub"}
+    assert out["root"][0] == {("160.79.104.10", 443), ("151.101.0.223", 443)}
+    assert out["sub"][0] == {("8.8.8.8", 443)}
 
 
 def test_verdict_cached_per_pid_and_create_time(monkeypatch):
@@ -195,6 +210,22 @@ def test_declared_hosts_from_network_host_and_command_urls():
         _act(command="ls -la"),
     ]
     assert egress.declared_hosts(actions) == {"example.com", "pypi.org", "2001:db8::1"}
+
+
+@pytest.mark.parametrize("tool_input, expected", [
+    ({"host": 1234}, None),
+    ({"host": ["evil.example"]}, None),
+    ({"host": 1234, "url": "https://example.com/x?token=s"}, "example.com"),
+    ({"host": "api.example.com"}, "api.example.com"),
+])
+def test_non_str_host_in_log_gives_no_network_host(tool_input, expected):
+    from agentwatch.parser.logs import parse_moltbot_entry
+
+    entry = {"type": "tool", "tool_call": {"name": "net", "input": tool_input}}
+    action = parse_moltbot_entry(entry)
+    assert action is not None
+    assert action.network_host == expected
+    egress.declared_hosts([action])  # no AttributeError on .lower()
 
 
 def test_allowed_ips_providers_plus_declared_dns_failures_ignored():
@@ -231,7 +262,7 @@ def test_dns_failures_not_cached():
 
 def test_sample_returns_endpoints_and_allowed_for_real_pid():
     root = FakeProc(10, [conn("160.79.104.10"), conn("151.101.0.223")])
-    out = egress.sample([("k", 10, "claude-code", {"example.com"})], {10}, {},
+    out = egress.sample([("k", 10, "claude-code", {"example.com"})], {},
                         process=table(root), resolve=fake_resolve)
     observed, allowed = out["k"]
     assert observed == {("160.79.104.10", 443), ("151.101.0.223", 443)}
@@ -320,8 +351,8 @@ async def test_multi_app_samples_off_loop_and_merges(monkeypatch):
 
     calls = []
 
-    def fake_sample(targets, tracked, verdicts):
-        calls.append((targets, tracked))
+    def fake_sample(targets, verdicts):
+        calls.append(targets)
         return {targets[0][0]: ({("203.0.113.9", 443)}, frozenset({"160.79.104.10"}))}
 
     monkeypatch.setattr(multi_app.egress, "sample", fake_sample)
@@ -345,8 +376,7 @@ async def test_multi_app_samples_off_loop_and_merges(monkeypatch):
 
         await app._sample_egress()
 
-        targets, tracked = calls[0]
-        assert tracked == {10, 3000000001}
+        targets = calls[0]
         assert [(t[0], t[1], t[2]) for t in targets] == [
             (real, 10, "claude-code"), (synthetic, 3000000001, "cursor")]
         assert targets[0][3] == {"example.com"}
@@ -359,3 +389,99 @@ async def test_multi_app_samples_off_loop_and_merges(monkeypatch):
         app.security_mode = False
         await app._sample_egress()
         assert len(calls) == 1
+
+
+def _app_with_agents(monkeypatch, metas):
+    from agentwatch.detectors import create_registry
+    from agentwatch.health.rot import RotScorer
+    from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
+
+    app = MultiAgentWatchApp(agent_processes=[], security_mode=True)
+
+    def install():
+        monkeypatch.setattr(app.watcher, "get_process_meta", metas.get)
+        for path in metas:
+            app.agents[path] = {
+                "buffer": ActionBuffer(), "registry": create_registry(mode="all"),
+                "item": AgentItem(path), "rot_scorer": RotScorer(), "pid": None,
+                "team_id": None, "_last_count": 1, "_last_report": object(),
+            }
+
+    return app, install
+
+
+@pytest.mark.parametrize("where", ["sample", "declared_hosts"])
+async def test_multi_app_survives_sampler_error(monkeypatch, where):
+    from agentwatch.discovery import AgentProcess
+    from agentwatch.ui import multi_app
+
+    def boom(*a):
+        raise RuntimeError("cmdline secret")
+
+    monkeypatch.setattr(multi_app.egress, where, boom)
+    path = Path("real.jsonl")
+    app, install = _app_with_agents(monkeypatch, {
+        path: AgentProcess(pid=10, agent_type="claude-code", working_directory=None)})
+    async with app.run_test():
+        install()
+        await app._sample_egress()  # must not raise
+        assert app._sampling is False
+        assert app.agents[path]["buffer"].egress is None
+
+
+async def test_multi_app_in_flight_guard(monkeypatch):
+    from agentwatch.discovery import AgentProcess
+    from agentwatch.ui import multi_app
+
+    calls = []
+    monkeypatch.setattr(multi_app.egress, "sample", lambda *a: calls.append(a) or {})
+    app, install = _app_with_agents(monkeypatch, {
+        Path("real.jsonl"): AgentProcess(pid=10, agent_type="claude-code",
+                                         working_directory=None)})
+    async with app.run_test():
+        install()
+        app._sampling = True
+        await app._sample_egress()
+        assert calls == []
+        assert app._sampling is True  # left to the in-flight call to reset
+        app._sampling = False
+        await app._sample_egress()
+        assert len(calls) == 1
+
+
+async def test_multi_app_skips_agent_reaped_during_sample(monkeypatch):
+    from agentwatch.discovery import AgentProcess
+    from agentwatch.ui import multi_app
+
+    keep, reaped = Path("keep.jsonl"), Path("reaped.jsonl")
+    app, install = _app_with_agents(monkeypatch, {
+        keep: AgentProcess(pid=10, agent_type="claude-code", working_directory=None),
+        reaped: AgentProcess(pid=11, agent_type="claude-code", working_directory=None)})
+
+    def fake_sample(targets, verdicts):
+        app.agents.pop(reaped)  # reaped on the loop while the thread ran
+        return {t[0]: ({("203.0.113.9", 443)}, frozenset()) for t in targets}
+
+    monkeypatch.setattr(multi_app.egress, "sample", fake_sample)
+    async with app.run_test():
+        install()
+        await app._sample_egress()
+        assert reaped not in app.agents
+        assert app.agents[keep]["buffer"].egress.undeclared().keys() == {("203.0.113.9", 443)}
+
+
+async def test_multi_app_does_not_sample_stopped_agent(monkeypatch):
+    from agentwatch.discovery import AgentProcess
+    from agentwatch.ui import multi_app
+
+    calls = []
+    monkeypatch.setattr(multi_app.egress, "sample", lambda t, v: calls.append(t) or {})
+    live, stopped = Path("live.jsonl"), Path("stopped.jsonl")
+    app, install = _app_with_agents(monkeypatch, {
+        live: AgentProcess(pid=10, agent_type="claude-code", working_directory=None),
+        stopped: AgentProcess(pid=11, agent_type="claude-code", working_directory=None,
+                              command="(stopped)")})
+    async with app.run_test():
+        install()
+        await app._sample_egress()
+        assert [t[0] for t in calls[0]] == [live]

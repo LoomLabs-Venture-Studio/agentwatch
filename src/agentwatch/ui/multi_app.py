@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +38,8 @@ from agentwatch.ui.rot_widget import ContextHealthWidget
 if TYPE_CHECKING:
     from agentwatch.detectors.base import Warning
     from agentwatch.health.score import HealthReport
+
+logger = logging.getLogger(__name__)
 
 
 class TeamHeaderItem(ListItem):
@@ -756,32 +759,34 @@ class MultiAgentWatchApp(App):
         """
         if not self.security_mode or self._sampling:
             return
-        targets = []
-        for path, data in self.agents.items():
-            proc = self.watcher.get_process_meta(path)
-            if proc is not None and proc.pid is not None:
-                hosts = egress.declared_hosts(data["buffer"].actions)
-                targets.append((path, proc.pid, proc.agent_type, hosts))
-        if not targets:
-            return
-        tracked = {t[1] for t in targets}
         self._sampling = True
         try:
-            results = await asyncio.to_thread(
-                egress.sample, targets, tracked, self._egress_verdicts
-            )
+            targets = []
+            for path, data in self.agents.items():
+                proc = self.watcher.get_process_meta(path)
+                # A stopped meta keeps its old pid; a new process may reuse it.
+                if proc is not None and proc.pid is not None and proc.command != "(stopped)":
+                    hosts = egress.declared_hosts(data["buffer"].actions)
+                    targets.append((path, proc.pid, proc.agent_type, hosts))
+            if not targets:
+                return
+            results = await asyncio.to_thread(egress.sample, targets, self._egress_verdicts)
+            now = datetime.now(timezone.utc)
+            for path, (observed, allowed) in results.items():
+                data = self.agents.get(path)
+                if data is None:
+                    continue  # reaped while sampling
+                buffer = data["buffer"]
+                if buffer.egress is None:
+                    buffer.egress = egress.Egress()
+                if buffer.egress.merge(observed, allowed, now):
+                    data["_last_count"] = -1  # endpoints changed: rescore on the next tick
+        except Exception:
+            # Optional sampler: never take down the dashboard, and no
+            # traceback (Textual's prints locals, which may hold a cmdline).
+            logger.debug("egress sample failed", exc_info=False)
         finally:
             self._sampling = False
-        now = datetime.now(timezone.utc)
-        for path, (observed, allowed) in results.items():
-            data = self.agents.get(path)
-            if data is None:
-                continue  # reaped while sampling
-            buffer = data["buffer"]
-            if buffer.egress is None:
-                buffer.egress = egress.Egress()
-            if buffer.egress.merge(observed, allowed, now):
-                data["_last_count"] = -1  # endpoints changed: rescore on the next tick
 
     def action_toggle_security(self) -> None:
         """Toggle security mode across all agents."""
