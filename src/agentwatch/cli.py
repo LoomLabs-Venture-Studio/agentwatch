@@ -1695,6 +1695,59 @@ def audit(
     sys.exit(0)
 
 
+@cli.command()
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--secrets-only", is_flag=True, help="Hide secrets only, not personal info")
+@click.option(
+    "--in-place", is_flag=True, help="Overwrite the file, keeping the original as <file>.bak"
+)
+@click.option("--dry-run", is_flag=True, help="List what would be hidden; write nothing")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+def scrub(path: Path, secrets_only: bool, in_place: bool, dry_run: bool, json_output: bool):
+    """Hide secrets and personal info in one file before sharing it.
+
+    \b
+    Writes a cleaned copy beside the file (notes.txt -> notes.scrubbed.txt)
+    unless --in-place. Exit codes: 0 done (dry run: nothing found),
+    1 dry run found something, 2 error.
+    """
+    from agentwatch.detectors.security.pii import _PII_PATTERNS
+    from agentwatch.detectors.security.secret_scanner import _SECRET_PATTERNS, scrub_file
+
+    patterns = _SECRET_PATTERNS if secrets_only else _SECRET_PATTERNS + _PII_PATTERNS
+    try:
+        r = scrub_file(path, patterns=patterns, in_place=in_place, dry_run=dry_run)
+    except (OSError, ValueError, UnicodeError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    if json_output:
+        click.echo(json.dumps({
+            "file": str(r.file),
+            "output": str(r.output) if r.output else None,
+            "backup": str(r.backup) if r.backup else None,
+            "dry_run": r.dry_run,
+            "redacted": r.redacted,
+            "findings": r.findings,
+        }, indent=2))
+    else:
+        if dry_run:
+            click.echo(f"Would hide {r.redacted} value(s) in {r.file} (dry run, nothing written).")
+        else:
+            click.echo(f"Hid {r.redacted} value(s) in {r.file}.")
+        if r.output and not r.backup:
+            click.echo(f"Clean copy: {r.output}")
+        if r.backup:
+            click.echo(click.style(
+                f"Original (with the unhidden values) kept at {r.backup}. "
+                "Delete it once you've checked the file.",
+                fg="yellow",
+            ))
+        for f in r.findings:
+            click.echo(f"  line {f['line']:>5}  {f['type']:<24} {f['preview']}")
+    sys.exit(1 if dry_run and r.redacted else 0)
+
+
 def _print_audit_report(
     findings: list,
     sessions_scanned: int,

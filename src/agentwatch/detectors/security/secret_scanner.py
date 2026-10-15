@@ -1014,6 +1014,80 @@ def redact_log_file(
     return total_replacements
 
 
+@dataclass
+class ScrubResult:
+    """Outcome of ``scrub_file``. ``findings`` hold masked previews only."""
+
+    file: Path
+    output: Path | None
+    backup: Path | None
+    dry_run: bool
+    redacted: int
+    findings: list[dict] = field(default_factory=list)
+
+
+def _span_findings(text: str, patterns: list, line: int | None = None) -> list[dict]:
+    return [
+        {
+            "type": label,
+            "line": line if line is not None else text.count("\n", 0, start) + 1,
+            "preview": _mask_value(text[start:end]),
+        }
+        for start, end, label in _find_spans(text, patterns)
+    ]
+
+
+def scrub_file(
+    path: Path,
+    *,
+    patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
+    in_place: bool = False,
+    dry_run: bool = False,
+) -> ScrubResult:
+    """Redact *patterns* in one file; write a ``.scrubbed`` copy or, with
+    *in_place*, replace the file keeping ``<name>.bak``. Raises ``ValueError``
+    for a binary file or an existing ``.bak`` (it would be stale), ``OSError``
+    on I/O failure. *dry_run* does all the work but writes nothing.
+    """
+    original = path.read_bytes()
+    if b"\0" in original[:8192]:
+        raise ValueError(f"{path} looks like a binary file (NUL byte); not scrubbed")
+    backup = path.with_name(path.name + ".bak")
+    if in_place and not dry_run and backup.exists():
+        raise ValueError(f"{backup} already exists; move it away before --in-place")
+    text = original.decode("utf-8", errors="surrogateescape")
+    findings: list[dict] = []
+    if path.suffix.lower() == ".jsonl":
+        new_lines: list[str] = []
+        redacted = 0
+        for lineno, line in enumerate(text.split("\n"), start=1):
+            new_line, n = _redact_line(line, patterns)
+            new_lines.append(new_line)
+            redacted += n
+            # ponytail: findings come from the raw line, so a value only seen
+            # after JSON-escape decoding is redacted but not listed.
+            if n:
+                findings += _span_findings(line, patterns, lineno)
+        new_text = "\n".join(new_lines)
+    else:
+        new_text, redacted = _redact_text(text, patterns)
+        findings = _span_findings(text, patterns)
+
+    result = ScrubResult(path, None, None, dry_run, redacted, findings)
+    if dry_run or (in_place and not redacted):
+        return result
+    data = new_text.encode("utf-8", errors="surrogateescape")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if in_place:
+        _atomic_write_bytes(backup, original, 0o600)
+        _atomic_write_bytes(path, data, mode)
+        result.output, result.backup = path, backup
+    else:
+        result.output = path.with_name(path.stem + ".scrubbed" + path.suffix)
+        _atomic_write_bytes(result.output, data, mode)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Impact assessment helpers
 # ---------------------------------------------------------------------------
