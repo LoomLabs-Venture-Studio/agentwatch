@@ -87,6 +87,8 @@ def table(*procs):
     ("lms.exe", "lm-studio"), ("llmster", "lm-studio"), ("Jan-Desktop.exe", "jan"),
     ("jan-llama-worker", "jan"), ("gpt4all", "gpt4all"), ("msty-local.exe", "msty"),
     ("MstySidecar_x64.exe", "msty"), ("Msty Studio.exe", "msty"),
+    ("lm-studio", "lm-studio"), ("lmstudio.exe", "lm-studio"), ("LM Studio", "lm-studio"),
+    ("LM Studio Helper", "lm-studio"), ("LM Studio Helper (Renderer)", "lm-studio"),
 ])
 def test_runtime_names_exact_case_and_exe(name, runtime):
     assert runtime_of(name) == runtime
@@ -223,7 +225,7 @@ class FakeNamer:
         self.calls.append(ip)
         return f"host-{ip}", "rdns"
 
-    def name_many(self, ips):
+    def name_many(self, ips, wait=None):
         return {ip: self.name(ip) for ip in ips}
 
 
@@ -281,6 +283,13 @@ def test_every_tree_is_sampled_before_any_naming():
     tracker = net.Tracker(SlowNamer(), process=table(a, b)[1])
     tracker.poll([net.Target(1, "ollama", "ollama.exe"), net.Target(2, "lm-studio", "lms.exe")])
     assert log == ["read 1", "read 2", "name 1.1.1.1", "name 2.2.2.2"]
+
+
+def test_lan_includes_private_and_shared_cgnat():
+    for ip in ("192.168.0.7", "10.1.2.3", "fd00::1", "100.64.0.1", "100.127.255.254"):
+        assert net._is_lan(ip), ip
+    for ip in ("100.63.255.255", "100.128.0.1", "104.18.1.1", "2606:4700::1", "::6440:101"):
+        assert not net._is_lan(ip), ip
 
 
 def test_vanished_owner_named_question_mark():
@@ -496,7 +505,18 @@ def test_cli_once_json_shape(monkeypatch):
     assert ep == {"runtime": "ollama", "target_pid": 7, "pid": 7, "process": "ollama.exe",
                   "ip": "104.18.1.1", "port": 443, "kind": "tcp",
                   "host": "registry.ollama.ai", "host_source": "dns-cache", "lan": False}
-    assert "message" not in doc
+    assert "message" not in doc and doc["missing_pids"] == []
+
+
+def test_cli_once_waits_for_rdns_only_in_the_poll(monkeypatch):
+    real = net.Namer  # fake_cli swaps net.Namer for a factory of this class
+    fake_cli(monkeypatch, [net.Target(7, "ollama", "ollama.exe")], [("104.18.1.1", 443)])
+    waits, name_many = [], real.name_many
+    monkeypatch.setattr(real, "name_many",
+                        lambda self, ips, wait=net.RDNS_WAIT_S: waits.append(wait)
+                        or name_many(self, ips, wait))
+    assert CliRunner().invoke(cli, ["net", "--once"]).exit_code == 0
+    assert waits == [net.RDNS_WAIT_S, 0]
 
 
 def test_cli_once_text_table(monkeypatch):
@@ -504,6 +524,12 @@ def test_cli_once_text_table(monkeypatch):
     out = CliRunner().invoke(cli, ["net", "--once"]).output
     assert "registry.ollama.ai [dns-cache]" in out and "104.18.1.1:443/tcp" in out
     assert "1 outgoing endpoint(s)" in out
+
+
+def test_cli_text_process_names_made_printable(monkeypatch):
+    fake_cli(monkeypatch, [net.Target(7, "pid", "evil\x1b[2J")], [("104.18.1.1", 443)])
+    out = CliRunner().invoke(cli, ["net", "--once"]).output
+    assert "evil?[2J(7)" in out and "\x1b" not in out
 
 
 def test_cli_once_text_lists_watched_targets_without_endpoints(monkeypatch):
@@ -539,6 +565,33 @@ def test_cli_no_runtime_text_and_json(monkeypatch):
     doc = json.loads(CliRunner().invoke(cli, ["net", "--once", "--json"]).output)
     assert doc["targets"] == [] and doc["outgoing"] == []
     assert "No local AI runtime running" in doc["message"]
+
+
+def test_cli_missing_pid_reported(monkeypatch):
+    fake_cli(monkeypatch, [])
+    monkeypatch.setattr(net, "missing_pids", lambda pids: sorted(pids))
+    text = CliRunner().invoke(cli, ["net", "--once", "--pid", "4242"])
+    assert text.exit_code == 0 and "pid 4242 not found" in text.output  # stderr
+    doc = json.loads(CliRunner().invoke(cli, ["net", "--once", "--json", "--pid", "4242"]).stdout)
+    assert doc["missing_pids"] == [4242]
+
+    monkeypatch.setattr("time.sleep", lambda s: (_ for _ in ()).throw(KeyboardInterrupt))
+    out = CliRunner().invoke(cli, ["net", "--json", "--pid", "4242"]).stdout
+    events = [json.loads(line) for line in out.splitlines()]
+    assert [e["event"] for e in events] == ["missing", "waiting", "summary"]
+    assert events[0]["missing_pids"] == [4242] and events[-1]["missing_pids"] == [4242]
+
+
+def test_missing_pids_uses_pid_exists(monkeypatch):
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid == 4)
+    assert net.missing_pids([8, 4, 8]) == [8]
+
+
+@pytest.mark.parametrize("args", [["--pid", "0"], ["--once", "--duration", "5"]])
+def test_cli_usage_errors(monkeypatch, args):
+    fake_cli(monkeypatch, [])
+    result = CliRunner().invoke(cli, ["net", *args])
+    assert result.exit_code == 2  # click UsageError
 
 
 def test_cli_stream_json_events_and_summary_on_ctrl_c(monkeypatch):
@@ -698,6 +751,34 @@ def test_client_on_this_machines_lan_ip_is_local(monkeypatch):
     assert tracker.namer.calls == []
 
 
+def test_remote_client_cgnat_is_lan_and_names_printable(monkeypatch):
+    trees = {10: [sock(10, ("0.0.0.0", 11434), status="LISTEN"),
+                  sock(10, ("192.168.1.5", 11434), ("100.64.0.9", 60003))]}
+    monkeypatch.setattr(net, "tree_sockets", lambda pid, **kw: list(trees[pid]))
+    connections, process_iter = global_table([])
+    tracker = net.Tracker(
+        net.Namer(dns_cache=lambda: {}, rdns=lambda ip: ("evil\x1b[2Jhost", [], [ip]),
+                  resolve=no_resolve),
+        process=name_table({}), connections=connections, process_iter=process_iter)
+    [c] = clients_of(tracker.poll([SERVE], T0))
+    assert (c.scope, c.host, c.host_source) == ("lan", "evil?[2Jhost", "rdns")
+
+
+def test_summary_renames_endpoints_and_clients_in_one_wait(monkeypatch):
+    trees = {10: [LISTEN, sock(10, ("0.0.0.0", 8080), status="LISTEN"),
+                  sock(10, ("192.168.1.5", 8080), ("192.168.1.20", 60001)),
+                  sock(10, ("10.0.0.2", 50000), ("104.18.1.1", 443))]}
+    tracker = incoming_tracker(monkeypatch, trees)
+    tracker.poll([SERVE], T0)
+    waits = []
+    tracker.namer.name_many = lambda ips, wait: waits.append((sorted(ips), wait)) or {
+        ip: (f"late-{ip}", "rdns") for ip in ips}
+    tracker.summary(wait=0)
+    assert waits == [(["104.18.1.1", "192.168.1.20"], 0)]
+    _, [c] = tracker.incoming()
+    assert c.host == "late-192.168.1.20" and len(waits) == 1
+
+
 def test_client_must_match_listener_ip_unless_unspecified(monkeypatch):
     # Listener on 127.0.0.1:11434 only: a socket on 10.0.0.2:11434 is no client.
     calls = []
@@ -799,6 +880,14 @@ def test_cli_text_lines_tables_and_exposed_count(monkeypatch):
     summary = out.split("No outgoing connections seen.")[1]
     assert "LISTENERS" in summary and "CLIENTS" in summary
     assert summary.rstrip().endswith("1 listener(s) reachable from other machines")
+
+
+def test_cli_process_names_made_printable(monkeypatch):
+    fake_incoming_cli(monkeypatch, [sock(7, ("127.0.0.1", 9000), status="LISTEN"),
+                                    sock(7, ("127.0.0.1", 9000), ("127.0.0.1", 52001))],
+                      rows=[(4321, "127.0.0.1", 52001)], names={4321: "bad\x1b[2J.exe"})
+    out = CliRunner().invoke(cli, ["net", "--duration", "0.01"]).output
+    assert "\x1b[2J" not in out and out.count("bad?[2J.exe(4321) [local]") == 2
 
 
 def test_cli_once_text_loopback_only_has_no_exposed_line(monkeypatch):

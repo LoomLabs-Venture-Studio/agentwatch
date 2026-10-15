@@ -47,6 +47,7 @@ DNS_REFRESH_S = 5.0
 KNOWN_REFRESH_S = 300.0  # CDN IPs rotate
 RDNS_WAIT_S = 2.0  # per poll, for all its new endpoints' reverse lookups
 RDNS_WORKERS = 4
+_SHARED = ipaddress.ip_network("100.64.0.0/10")  # RFC 6598 CGNAT; Tailscale lives here
 # Forward-resolved for naming only ("known" = a guess from a shared IP); never
 # used to hide an endpoint.
 KNOWN_HOSTS: tuple[str, ...] = tuple(sorted(
@@ -83,6 +84,10 @@ def tree_sockets(root_pid: int, exclude: set[int] = frozenset(),
     Descendants in *exclude*, and their subtrees, are skipped. Vanished or
     denied processes are skipped.
     """
+    # ponytail: on Windows psutil builds each process's net_connections() from
+    # the whole system table, so one poll costs a full read per tree process
+    # (~0.65 s measured with 315 processes). Upgrade: one psutil.net_connections()
+    # per poll, filtered by the trees' pids.
     try:
         root = process(root_pid)
         kids = root.children(recursive=True)
@@ -154,6 +159,16 @@ def find_targets(extra_pids=(), *, process_iter=psutil.process_iter,
         if not ancestors & found.keys():
             targets.append(t)
     return sorted(targets, key=lambda t: t.pid)
+
+
+def _is_lan(ip: str) -> bool:
+    a = ipaddress.ip_address(ip)
+    return a.is_private or (a.version == 4 and a in _SHARED)
+
+
+def missing_pids(pids) -> list[int]:
+    """The --pid values with no live process."""
+    return sorted({p for p in pids if not psutil.pid_exists(p)})
 
 
 def dns_cache_snapshot(run=subprocess.run) -> dict[str, str]:
@@ -406,7 +421,7 @@ class Tracker:
                     self.endpoints[key].last_seen = now
                     continue
                 ep = Endpoint(t.runtime, t.pid, s.pid, self._name(s.pid), ip, port, s.kind,
-                              ip, "ip", ipaddress.ip_address(ip).is_private, now, now)
+                              ip, "ip", _is_lan(ip), now, now)
                 self.endpoints[key] = ep
                 new.append(ep)
         clients = self._clients(accepted, now) if accepted else []
@@ -444,28 +459,27 @@ class Tracker:
             if s.raddr in owners or listener_scope(ip) == "loopback":
                 scope, process, host, source = "local", self._name(pid) if pid else "?", None, None
             else:
-                lan = ipaddress.ip_address(ip).is_private
-                scope, process, host, source = "lan" if lan else "public", None, ip, "ip"
+                scope, process, host, source = "lan" if _is_lan(ip) else "public", None, ip, "ip"
             self.clients[key] = c = Client(t.runtime, t.pid, *s.laddr, ip, port, scope, pid,
                                            process, host, source, now, now)
             out.append(c)
         return out
 
-    def _rename(self, endpoints) -> None:
-        names = self.namer.name_many([ep.ip for ep in endpoints])
+    def _rename(self, endpoints, wait: float = RDNS_WAIT_S) -> None:
+        names = self.namer.name_many([ep.ip for ep in endpoints], wait)
         for ep in endpoints:
             ep.host, ep.host_source = names[ep.ip]
 
-    def summary(self) -> list[Endpoint]:
-        """All endpoints, oldest first; names retried (the DNS cache or a
-        finished reverse lookup may have them now)."""
-        self._rename([ep for ep in self.endpoints.values() if ep.host_source != "dns-cache"])
+    def summary(self, wait: float = RDNS_WAIT_S) -> list[Endpoint]:
+        """All endpoints, oldest first; names of endpoints and remote clients
+        retried (the DNS cache or a finished reverse lookup may have them
+        now), waiting at most *wait* s in all."""
+        self._rename([r for r in (*self.endpoints.values(), *self.clients.values())
+                      if r.host_source and r.host_source != "dns-cache"], wait)
         return sorted(self.endpoints.values(), key=lambda e: (e.first_seen, e.runtime, e.ip))
 
     def incoming(self) -> tuple[list[Listener], list[Client]]:
-        """All listeners and clients, oldest first; remote client names retried."""
-        self._rename([c for c in self.clients.values()
-                      if c.host_source and c.host_source != "dns-cache"])
+        """All listeners and clients, oldest first (summary() renames clients)."""
         return (
             sorted(self.listeners.values(), key=lambda r: (r.first_seen, r.runtime, r.port, r.ip)),
             sorted(self.clients.values(),
