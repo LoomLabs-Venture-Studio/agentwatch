@@ -4164,10 +4164,14 @@ Plan: `docs/superpowers/plans/2026-10-15-agentwatch-scrub-skill.md`.
   `fbd2639` `audit --pii`; `0a7fe48` skill + README.
 
 ### Open threads
-- `audit` (develop too) does not scan user prompts or tool results, so
-  `audit --redact --pii` leaves PII a user typed into a prompt. `scrub`
-  on a log copy catches it. Board: widen `audit`'s channels, or have the
-  skill also offer `scrub` for logs?
+- `audit` (develop too) does not scan user prompts or tool results.
+  Board chose option 2 (2026-10-15): `audit` unchanged; the skill uses
+  `scrub <log>.jsonl` for one session log, moves the copy out of
+  `~/.claude/projects` (else stats/audit/discovery count it as a
+  session), and keeps `audit --redact --pii` for many logs (`861e842`,
+  `dd48dd1`; QA re-verify PASS incl. live headless run).
+- Windows: `scrub`'s `…` preview prefix shows as `?`/replacement char
+  when stdout is piped (display only).
 - `scrub` on `.jsonl`: a value only visible after JSON-escape decoding
   is redacted and counted but not listed in findings.
 
