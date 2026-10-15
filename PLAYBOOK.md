@@ -4213,7 +4213,10 @@ Byte counts stay out of scope.
       per NEW endpoint; on Ctrl+C prints a summary with first/last seen.
       `--once` takes one sample and prints the summary. `--json`: NDJSON
       events in stream mode, one JSON document with `--once`. Says
-      clearly when no runtime is running.
+      clearly when no runtime is running. `--duration S` and SIGTERM /
+      SIGBREAK also end with the summary (headless runs). Reverse lookups
+      concurrent, capped ~2 s per poll. An exiting process (parent lookup
+      fails with NoSuchProcess) is never promoted to a target.
 - [ ] Tests with fake psutil/DNS: table matching (exact names, weak-name
       gate, `.exe`), target dedup, outgoing filter, naming fallback order,
       CLI `--once --json` shape. `detect` tests still pass.

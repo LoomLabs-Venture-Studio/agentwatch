@@ -389,7 +389,15 @@ agentwatch net --once --json
 
 # Also watch any other process tree; poll every 2 s
 agentwatch net --pid 1234 --pid 5678 --interval 2
+
+# Headless: run 10 minutes, then print the summary (or the JSON summary event)
+agentwatch net --json --duration 600
 ```
+
+Ctrl+C, SIGTERM and (Windows) Ctrl+Break or closing the console all print
+the summary, the only place with a final last-seen time. A headless
+background run on Windows can't be stopped gracefully (`taskkill` without
+`/F` refuses), so use `--duration` there.
 
 `agentwatch net` answers "does a local AI talk to external servers, and if
 so, to whom?". It finds local LLM runtimes by exact process name: Ollama
@@ -424,8 +432,14 @@ Known limits:
 - Agents hosted in an editor (Cline, Copilot) attribute to the editor process.
 - LM Studio's `lms` starts the app detached, so the app is matched by its own
   name, not through `lms`'s process tree.
-- A slow reverse-DNS lookup (a few seconds) delays the next poll; the
-  current poll's sockets are all read before any naming.
+- Reverse lookups run concurrently, at most ~2 s per poll. A slower one shows
+  the bare IP at first, and the summary picks up the name once it arrives.
+- Reverse DNS often names the cloud host, not the service: e.g. `ollama.com`
+  shows as `15.133.36.34.bc.googleusercontent.com [rdns]` when no known-host
+  lookup matches.
+- A runtime's embedded browser shows up under that runtime with its own
+  process name (e.g. the Ollama app's `msedgewebview2.exe` UI, talking to
+  Microsoft hosts).
 
 ### Token Usage Stats
 

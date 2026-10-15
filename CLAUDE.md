@@ -119,7 +119,8 @@ src/agentwatch/
                        seen), Namer (Windows Get-DnsClientCache -> "known"
                        = forward lookups of KNOWN_HOSTS (AI_PROVIDERS +
                        KNOWN_AGENT_HOSTS + LOCAL_RUNTIMES hosts, 300 s) ->
-                       gethostbyaddr -> IP, cached per IP). Nothing is
+                       gethostbyaddr (daemon threads, name_many() waits
+                       <= 2 s per poll) -> IP, cached per IP). Nothing is
                        allow-listed: KNOWN_AGENT_HOSTS and AI_PROVIDERS
                        never hide an endpoint (board 2026-10-15)
   net_sampler.py       Per-agent endpoint sampler for watch/watch-all
