@@ -62,6 +62,12 @@ agentwatch scan
 # List running agents
 agentwatch ps
 
+# Programs using AI right now
+agentwatch detect
+
+# Who local AI runtimes (Ollama, LM Studio, ...) talk to
+agentwatch net
+
 # Token usage stats
 agentwatch stats
 ```
