@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 34 (2026-10-15/16; Part A #130, Part B `agentwatch net` #134-#136), at the end of this file.** Start there.
+> **Latest: Sprint 35 (scrub skill, 2026-10-15/16; PR #133), at the end of this file; Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -4328,3 +4328,46 @@ an agent's shell). An independent 1 s socket sampler (run 1) saw nothing
 | 2026-10-15 | #134 | feature/net-outgoing | feature | merged (`a459b13`) | -- |
 | 2026-10-15 | #135 | feature/net-incoming | feature | merged (`c735449`) | -- |
 | 2026-10-16 | #136 | feature/net-local | feature | merged (`07c5556`) | -- |
+
+### Sprint 35 -- Scrub skill: `agentwatch scrub`, `audit --pii`, Claude Code skill (2026-10-15)
+**Type:** feature. Branch `feature/agentwatch-skill` from `develop` @
+`57f9204`. Spec: `docs/superpowers/specs/2026-10-15-agentwatch-scrub-skill-design.md`.
+Plan: `docs/superpowers/plans/2026-10-15-agentwatch-scrub-skill.md`.
+**Harness:** PLAYBOOK standalone; TDD per task.
+
+### Acceptance Criteria
+- [x] Spec ACs 1-14 (PII patterns + look-alikes, `scrub` copy/in-place/
+      dry-run/json/exit codes, PEM bodies, `audit --pii` low severity,
+      no PII in live `SecretLeakScanner`, `SKILL.md` live-tested once in
+      Claude Code, README, ruff + pytest green). QA PASS 2026-10-15:
+      1508 passed / 1 skipped; `audit` without `--pii` byte-identical to
+      develop; AC12 live via headless Claude Code 2.1.300 (project-scope
+      skill).
+
+### Result
+- `a272a93` patterns threaded through redaction + `_find_spans`;
+  `496fda7` PEM bodies; `ce4b6ac` `pii.py`; `0d2298b` `scrub`;
+  `fbd2639` `audit --pii`; `0a7fe48` skill + README.
+
+### Open threads
+- `audit` (develop too) does not scan user prompts or tool results.
+  Board chose option 2 (2026-10-15): `audit` unchanged; the skill uses
+  `scrub <log>.jsonl` for one session log, moves the copy out of
+  `~/.claude/projects` (else stats/audit/discovery count it as a
+  session), and keeps `audit --redact --pii` for many logs (`861e842`,
+  `dd48dd1`; QA re-verify PASS incl. live headless run).
+- Windows: `scrub`'s `…` preview prefix shows as `?`/replacement char
+  when stdout is piped (display only).
+- `scrub` on `.jsonl`: a value only visible after JSON-escape decoding
+  is redacted and counted but not listed in findings.
+
+### Board decisions (2026-10-15)
+1. Target user: developers using AI coding agents. Consumer version
+   parked.
+2. Claude Desktop dropped from v1 (sandbox cannot see host files;
+   uploading defeats the purpose). Skill ships for Claude Code only.
+
+### PR Log
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
+| 2026-10-16 | #133 | feature/agentwatch-skill | feature | approved: develop merged in (`346b85b`, PLAYBOOK conflict only), QA-found `audit --pii` text report dropping LOW findings fixed (`6ee59b1`), CI green 3.11/3.12, CTO review + QA PASS (1690 passed / 1 skipped; `audit` without `--pii` byte-identical to develop); squash-merged to `develop` under board standing policy | -- |
