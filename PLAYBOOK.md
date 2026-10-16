@@ -4269,9 +4269,11 @@ Byte counts (ETW/eBPF/nettop), ICMP, packet capture, blocking traffic.
 - `develop` @ `07c5556`: 1630 passed, 1 skipped; `ruff check .` clean.
 
 ### Live test (B4, Windows 10 dev machine, Ollama 0.40.4, `smollm2:135m`)
-Installed with winget (board-approved). Runs on 2026-10-15: install + pull
-+ run + 5 min idle (B1 build), then `--local` on the final build (QA).
-An independent 1 s socket sampler saw nothing `net` missed.
+Installed with winget (board-approved). Runs: 2026-10-15 install + pull +
+run + 5 min idle (B1 build, before `known` naming), and `--local` on #136
+round 1; 2026-10-16 `--local` on the final #136 build (Ollama started from
+an agent's shell). An independent 1 s socket sampler (run 1) saw nothing
+`net` missed.
 
 | Process | Host (evidence) | Why |
 |---|---|---|
@@ -4279,16 +4281,17 @@ An independent 1 s socket sampler saw nothing `net` missed.
 | `ollama.exe serve` | ollama.com, 34.36.133.15 (server.log `POST /api/me` 401) | account check and model recommendations, with nobody signed in |
 | `ollama.exe serve` | registry.ollama.ai, Cloudflare 2606:4700::6812:10aa / 11aa (forward DNS) | model registry (manifest) |
 | `ollama.exe serve` | `<id>.r2.cloudflarestorage.com`, 2606:4700:113::1 (registry 307 redirect) | model blob download (first pull only) |
-| `msedgewebview2.exe` (app UI) | Microsoft: edge.microsoft.com 2620:1ec:33::11, Office 365 range 2603:1026:... (by prefix) | WebView2 runtime, not Ollama |
+| `msedgewebview2.exe` (app UI) | Microsoft: edge.microsoft.com 2620:1ec:33:1::11 / 2620:1ec:33::11 (forward DNS); 2603:1026:... and 2603:1063:2a:113::365:7ea3 (Microsoft/Office ranges, by prefix only) | WebView2 runtime, not Ollama |
 
 - No telemetry host, nothing unexpected. Listeners all on 127.0.0.1:
   11434 (serve), a random UI port (app), a random `llama-server` port.
   Nothing on 0.0.0.0. Clients: `ollama` CLI processes and `curl.exe`, by
   name.
-- Naming here: the Windows DNS client cache is empty (Portmaster / DNS
-  over TLS on this machine), so names come from `known` forward lookups;
-  rDNS gives the cloud host (ollama.com reads as
-  `*.bc.googleusercontent.com`); WebView2 endpoints stay bare IPs.
+- Naming here: the Windows DNS client cache holds only hosts-file
+  entries (Portmaster / DNS over TLS on this machine). Run 1 (pre-`known`
+  build) named ollama.com only by rDNS (`*.bc.googleusercontent.com`) and
+  left the rest as bare IPs; later runs named ollama.com and
+  registry.ollama.ai via `known`. WebView2 endpoints stay bare IPs.
 - Claude Code agents under `--local`: api.anthropic.com flagged
   `AI-PROVIDER anthropic`; Datadog intake and downloads.claude.ai named,
   not flagged, not hidden.
@@ -4301,18 +4304,22 @@ An independent 1 s socket sampler saw nothing `net` missed.
 - Board: develop's #130 detector allow-lists `KNOWN_AGENT_HOSTS` (Datadog
   intake, downloads.claude.ai). `net` ignores that list by design; is the
   list right for `undeclared_egress`?
-- `parser/logs.py` takes `tool_input["host"]` with no type check; a
-  non-str value can raise in `NetworkAnomalyDetector` (found in #132 QA,
-  pre-existing). Small fix PR needed.
+- `parse_moltbot_entry` (`parser/logs.py:390`) passes a non-str
+  `tool_input["host"]` through; `NetworkAnomalyDetector` raises
+  TypeError, `check_all` swallows it, so the detector misses every
+  warning in that window (e.g. `suspicious_port`). Pre-existing, found in
+  #132 QA. Small fix PR needed.
 - Not live-verified: LM Studio, llama.cpp, Jan, GPT4All, Msty (not
   installed); a LAN client of an exposed listener (Windows Firewall
   blocked the test); the editor-hosted "not watched" count; macOS/Linux.
 - Known limits (README): sub-poll connections missed (`ollama list` and a
-  one-shot curl are), no ICMP, unconnected UDP not seen, DoH/VPN/proxy
+  quick `/api/tags` curl are), no ICMP, unconnected UDP not seen, DoH/VPN/proxy
   hide names, editor-hosted agents attribute to the editor, `lms` spawns
   detached, the Ollama CLI shows as short-lived targets.
-- `feature/net-command` (pre-rebase B1) and `feature/egress-sampler`
-  (#132) remain on origin; deleting remote branches needs the board.
+- Branches left on origin: `feature/net-command` (pre-rebase B1),
+  `feature/egress-sampler` (#132), and the merged #134-#136 heads
+  `feature/net-outgoing`, `feature/net-incoming`, `feature/net-local`.
+  Deleting remote branches needs the board.
 
 ### PR Log (Sprint 34 Part A/B)
 | Date | PR | Branch | Type | Status | Rejection Reason |
