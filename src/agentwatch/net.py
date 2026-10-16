@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import socket
 import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
@@ -43,6 +45,8 @@ from agentwatch.ai_detect import (
 from agentwatch.detectors.security.network import KNOWN_AGENT_HOSTS, _flaggable
 from agentwatch.discovery import DiscoveryCache, find_running_agents, match_process_adapter
 
+logger = logging.getLogger(__name__)
+
 NO_RUNTIME = (
     f"No local AI runtime running ({', '.join(LOCAL_RUNTIMES)}). "
     "Use --pid N to watch any other process."
@@ -52,11 +56,13 @@ NO_TARGET_LOCAL = (
     "running. Use --pid N to watch any other process."
 )
 DNS_REFRESH_S = 5.0
-AGENT_SLOW_S = 0.5  # a find_running_agents() slower than this...
-AGENT_REFRESH_S = 5.0  # ...runs at most this often (1.2 s measured on Windows)
+# find_running_agents() took 1.2-5.2 s per call on Windows (QA #136), so it
+# runs on a background thread, started at most this often.
+AGENT_REFRESH_S = 5.0
 KNOWN_REFRESH_S = 300.0  # CDN IPs rotate
 RDNS_WAIT_S = 2.0  # per poll, for all its new endpoints' reverse lookups
 RDNS_WORKERS = 4
+KNOWN_WORKERS = 8  # concurrent known-host forward lookups (29 serial: ~1.1 s)
 _SHARED = ipaddress.ip_network("100.64.0.0/10")  # RFC 6598 CGNAT; Tailscale lives here
 # Forward-resolved for naming only ("known" = a guess from a shared IP); never
 # used to hide an endpoint.
@@ -252,16 +258,20 @@ class Namer:
         threading.Thread(target=lookup, name="agentwatch-rdns", daemon=True).start()
         return done
 
+    def _lookup_known(self, host: str) -> tuple[str, list]:
+        try:
+            return host, self._resolve(host, 443)
+        except (OSError, UnicodeError):
+            return host, []  # retried at the next refresh
+
     def _refresh_known(self) -> None:
-        # ponytail: resolves every known host serially on refresh (blocking,
-        # after sampling); thread it if the list grows.
+        # Blocking (after sampling) but concurrent; every lookup is awaited,
+        # so the pool leaves no straggler behind.
         if self._known_at is None or self._clock() - self._known_at >= KNOWN_REFRESH_S:
             self._known_at = self._clock()
-            for host in self._known_hosts:
-                try:
-                    infos = self._resolve(host, 443)
-                except (OSError, UnicodeError):
-                    continue  # retried at the next refresh
+            with ThreadPoolExecutor(KNOWN_WORKERS, thread_name_prefix="agentwatch-known") as pool:
+                results = list(pool.map(self._lookup_known, self._known_hosts))
+            for host, infos in results:
                 for info in infos:
                     addr = info[4][0].removeprefix("::ffff:").lower()
                     self._known.setdefault(addr, set()).add(host)
@@ -553,6 +563,7 @@ class LocalAgents:
         self._find, self._process, self._clock = find, process, clock
         self._verdicts: dict[tuple[int, float], str | None] = {}  # adapter name
         self._due = 0.0
+        self._thread: threading.Thread | None = None  # at most one discovery in flight
         self.targets: list[tuple[int, str]] = []  # (pid, "agent:<agent_type>")
         self.unwatched: list[str] = []  # agent_type of each agent not watched
 
@@ -571,16 +582,29 @@ class LocalAgents:
         return self._verdicts[key] == agent_type
 
     def scan(self) -> None:
-        """Re-discover, unless the last discovery was slow and is younger
-        than AGENT_REFRESH_S."""
-        start = self._clock()
-        if start < self._due:
+        """Start a re-discovery on a daemon thread, unless one is running or
+        the last one started less than AGENT_REFRESH_S ago; *targets* and
+        *unwatched* stay the last completed result meanwhile, so a slow
+        discovery never delays a poll. The first scan waits for its result
+        (--once, and no empty first poll)."""
+        if (self._thread and self._thread.is_alive()) or self._clock() < self._due:
             return
-        agents = self._find()
-        if self._clock() - start >= AGENT_SLOW_S:
-            self._due = start + AGENT_REFRESH_S
+        first = self._thread is None
+        self._due = self._clock() + AGENT_REFRESH_S
+        self._thread = threading.Thread(target=self._discover, name="agentwatch-agents",
+                                        daemon=True)
+        self._thread.start()
+        if first:
+            self._thread.join()
+
+    def _discover(self) -> None:
+        try:
+            agents = self._find()
+        except Exception:  # keep the last result; the next scan retries
+            logger.debug("agent discovery failed", exc_info=True)
+            return
         real = [a for a in agents if self.is_agent_pid(a.pid, a.agent_type)]
-        self.targets = [(a.pid, f"agent:{a.agent_type}") for a in real]
         self.unwatched = sorted(a.agent_type for a in agents if a not in real)
+        self.targets = [(a.pid, f"agent:{a.agent_type}") for a in real]
         live = {a.pid for a in agents}
         self._verdicts = {k: v for k, v in self._verdicts.items() if k[0] in live}

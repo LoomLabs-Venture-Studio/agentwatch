@@ -1013,27 +1013,63 @@ def test_scan_watches_real_pids_counts_synthetic_and_includes_aider():
     assert found.unwatched == ["cline", "codex", "cursor"]
 
 
-def test_rediscovery_every_scan_unless_slow_then_every_5_s():
-    clock, calls, cost = [0.0], [], [0.0]
+def test_discovery_in_background_first_scan_waits():
+    clock, gate, calls = [0.0], threading.Event(), []
+    results = iter([[agent(40, "aider")], [agent(40, "aider"), agent(41, "opencode")]])
 
     def find():
         calls.append(clock[0])
-        clock[0] += cost[0]
-        return []
+        if len(calls) > 1:
+            gate.wait(5)  # a slow discovery (1.85-5.2 s live)
+        return next(results)
 
-    found = net.LocalAgents(find=find, process=table()[1], clock=lambda: clock[0])
+    _, process = table(FakeProc(40, "aider", cmdline=["aider"]),
+                       FakeProc(41, "opencode", cmdline=["opencode"]))
+    found = net.LocalAgents(find=find, process=process, clock=lambda: clock[0])
     found.scan()
+    assert found.targets == [(40, "agent:aider")]  # the first scan (--once) waited
     found.scan()
-    assert len(calls) == 2  # fast: every poll
-    cost[0] = 1.2  # as measured on Windows
-    found.scan()  # starts at 0.0, ends 1.2
-    for t in (2.2, 3.2, 4.9):
-        clock[0] = t
-        found.scan()
-    assert len(calls) == 3
-    clock[0] = 5.0
+    assert len(calls) == 1  # not due yet
+    clock[0] = net.AGENT_REFRESH_S
+    start = time.monotonic()
+    found.scan()  # starts the slow discovery, doesn't wait for it
+    clock[0] += 3 * net.AGENT_REFRESH_S
+    found.scan()  # one in flight: no second one
+    assert time.monotonic() - start < 1 and calls == [0.0, net.AGENT_REFRESH_S]
+    assert found.targets == [(40, "agent:aider")]  # polls use the last completed result
+    gate.set()
+    found._thread.join(5)
+    assert found.targets == [(40, "agent:aider"), (41, "agent:opencode")]  # a later poll
+
+
+def test_failed_discovery_keeps_last_result():
+    clock, answers = [0.0], iter([[agent(40, "aider")], OSError("boom")])
+
+    def find():
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    found = net.LocalAgents(find=find, process=table(FakeProc(40, "aider", cmdline=["aider"]))[1],
+                            clock=lambda: clock[0])
     found.scan()
-    assert calls == [0.0, 0.0, 0.0, 5.0]
+    clock[0] = net.AGENT_REFRESH_S
+    found.scan()
+    found._thread.join(5)
+    assert found.targets == [(40, "agent:aider")]
+
+
+def test_known_host_lookups_run_concurrently():
+    both = threading.Barrier(2, timeout=2)  # passes only if both lookups run at once
+
+    def resolve(host, port):
+        both.wait()
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"9.9.9.{len(host)}", port))]
+
+    namer = net.Namer(dns_cache=lambda: {}, rdns=no_rdns, resolve=resolve,
+                      known_hosts=("a.example", "bb.example"))
+    assert namer.name("9.9.9.9") == ("a.example", "known")
 
 
 def test_only_a_runtime_absorbs_a_runtime():
