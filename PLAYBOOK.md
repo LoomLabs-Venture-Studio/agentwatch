@@ -4366,3 +4366,8 @@ Plan: `docs/superpowers/plans/2026-10-15-agentwatch-scrub-skill.md`.
    parked.
 2. Claude Desktop dropped from v1 (sandbox cannot see host files;
    uploading defeats the purpose). Skill ships for Claude Code only.
+
+### PR Log
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
+| 2026-10-16 | #133 | feature/agentwatch-skill | feature | approved: develop merged in (`346b85b`, PLAYBOOK conflict only), QA-found `audit --pii` text report dropping LOW findings fixed (`6ee59b1`), CI green 3.11/3.12, CTO review + QA PASS (1690 passed / 1 skipped; `audit` without `--pii` byte-identical to develop); squash-merged to `develop` under board standing policy | -- |
