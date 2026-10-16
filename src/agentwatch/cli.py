@@ -2058,16 +2058,19 @@ def _print_audit_report(
     critical = [f for f in findings if f.severity == "critical"]
     high = [f for f in findings if f.severity == "high"]
     medium = [f for f in findings if f.severity == "medium"]
+    low = [f for f in findings if f.severity == "low"]
 
     for label, color, group in [
         ("CRITICAL", "red", critical),
         ("HIGH", "yellow", high),
         ("MEDIUM", "blue", medium),
+        ("LOW", "cyan", low),
     ]:
         if not group:
             continue
         emoji = {
             "CRITICAL": "\U0001f6a8", "HIGH": "\u26a0\ufe0f ", "MEDIUM": "\u2139\ufe0f ",
+            "LOW": "\u2139\ufe0f ",
         }[label]
         click.echo(
             f"  {emoji} "

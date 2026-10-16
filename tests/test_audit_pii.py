@@ -51,6 +51,15 @@ def test_pii_finding_is_low_and_exit_zero(tmp_path, monkeypatch):
     assert EMAIL not in res.stdout
 
 
+def test_pii_text_report_prints_low_finding(tmp_path, monkeypatch):
+    _log(tmp_path, monkeypatch)
+    res = CliRunner().invoke(cli, ["audit", "--all", "--pii"])
+    assert res.exit_code == 0
+    assert "LOW (1)" in res.stdout
+    assert "email" in res.stdout
+    assert EMAIL not in res.stdout
+
+
 def test_pii_redact_removes_it_and_keeps_bak(tmp_path, monkeypatch):
     log = _log(tmp_path, monkeypatch)
     res = CliRunner().invoke(cli, ["audit", "--all", "--pii", "--redact", "--json"])
