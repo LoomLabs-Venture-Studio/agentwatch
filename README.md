@@ -392,6 +392,10 @@ agentwatch net --pid 1234 --pid 5678 --interval 2
 
 # Headless: run 10 minutes, then print the summary (or the JSON summary event)
 agentwatch net --json --duration 600
+
+# Also watch running agents (Claude Code, Aider, opencode, ...) with their own process
+agentwatch net --local
+agentwatch net --local --once --json
 ```
 
 Ctrl+C, SIGTERM and (Windows) Ctrl+Break or closing the console all print
@@ -441,12 +445,52 @@ process, however many ports it reconnects on. The summary adds LISTENERS and
 CLIENTS tables (`listeners` / `clients` in JSON) and ends with
 `N listener(s) reachable from other machines` when any was exposed.
 
+AI providers: an outgoing endpoint, of any target, whose IP belongs to an AI
+provider domain (the `detect` list: `api.anthropic.com`, `api.openai.com`,
+...; matched by the known-host lookups or the DNS-cache name) is flagged
+`AI-PROVIDER <name>` (`"ai_provider": "anthropic"`, else `null`). The summary
+adds `N connection(s) to cloud AI providers (from ...)`. Flagged is not
+hidden: every endpoint is still reported, and agent vendor hosts (Datadog
+intake, `downloads.claude.ai`) are reported and named but not flagged.
+
+`--local` adds running agents that `agentwatch ps` finds, as targets
+`agent:<type>` (e.g. `agent:aider`, `agent:claude-code`), for agents on
+local models (Aider or opencode pointed at Ollama, ...). Their cloud
+AI-provider traffic is flagged, not allowed. An agent counts only if its
+pid is its own process (the process's command line, read in memory and
+never stored, matches that agent). Agents are re-discovered in the
+background every 5 s; `--once` waits for one discovery. A runtime started
+from an agent (Ollama launched in a Claude Code shell) stays its own target
+(`ollama`), and so does an agent started by a runtime: each target's walk
+skips the other targets' subtrees, so nothing is counted twice. Only a
+runtime inside another runtime (`ollama serve`'s `llama-server`) is covered
+by its parent. An agent's connection to a watched runtime (Aider -> Ollama
+on `127.0.0.1:11434`), or one from a tool the agent started, shows as a
+local client of that runtime, by process name. Editor-hosted agents
+(Cursor, Copilot in VS Code, Cline, Claude Desktop/Cowork), Codex app-server
+threads, and agents whose command line can't be read have no verifiable
+process of their own, so they aren't watched. They are counted once:
+`N agent(s) without a verifiable own process not watched (...; use --pid
+<pid>)`, `unwatched_agents` in JSON.
+
 Known limits:
 - No ICMP (needs admin); unconnected UDP isn't seen either.
 - Connections opened and closed within one poll interval are missed.
 - DoH, a VPN or a proxy hides hostnames: you see the proxy or resolver IP,
   and the DNS client cache may be empty (the name falls back to rdns or IP).
-- Agents hosted in an editor (Cline, Copilot) attribute to the editor process.
+- Agents hosted in an editor (Cursor, Copilot, Cline, Claude Desktop) attribute
+  to the editor process: `--local` skips them, so watch the editor with
+  `--pid <editor pid>` (its own traffic is mixed in).
+- `--local` can't verify an agent whose command line it may not read (another
+  user's or an elevated process); it is counted as not watched.
+- An agent target covers its whole process tree, so traffic of the tools it
+  runs (git, npm, curl, an MCP server) shows as `agent:<type>`.
+- Agent discovery runs in the background (it takes seconds), so a newly
+  started agent appears a few seconds late and its first connections can
+  be missed.
+- WebView2/Chromium endpoints (an app's embedded browser) often stay a bare
+  IP: Chromium resolves DNS itself, so the Windows DNS client cache has no
+  entry for them.
 - LM Studio's `lms` starts the app detached, so the app is matched by its own
   name, not through `lms`'s process tree.
 - Ollama CLI calls (`ollama run`, `ollama list`, ...) are their own short-lived

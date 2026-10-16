@@ -110,8 +110,11 @@ src/agentwatch/
                        exe token, ports, by-design hosts); runtime_of()
                        matches it and
                        LOCAL_LLM_PORTS is derived from it
-  net.py               `agentwatch net` (Sprint 34 B1/B2): find_targets()
-                       (runtime_of + --pid, ancestor dedup), tree_sockets()
+  net.py               `agentwatch net` (Sprint 34 B1-B3): find_targets()
+                       (runtime_of + --local agents + --pid; only a
+                       runtime is deduped, into a runtime nearest-target
+                       ancestor; poll() walks each tree with exclude= the
+                       other targets), tree_sockets()
                        (per-process-tree socket collector, LISTEN kept;
                        moved here from closed #132), Tracker.poll() (sample
                        every tree first, then name the new endpoints; every
@@ -132,6 +135,16 @@ src/agentwatch/
                        local -> pid + name, in-tree owner = internal,
                        skipped; remote named via Namer, lan/public; keyed
                        (target, listener port, ip, owner pid | port).
+                       --local (B3): LocalAgents.scan() =
+                       find_running_agents on a daemon thread (one in
+                       flight, every 5 s; polls use the last result, the
+                       first scan waits) filtered by is_agent_pid (live pid whose
+                       own cmdline matches its adapter, verdict cached per
+                       (pid, create_time); synthetic pids -> unwatched,
+                       counted). Not net_sampler.attributable() (drops
+                       Aider). Endpoint.ai_provider = Namer.providers()
+                       (known lookups / dns-cache name -> AI_PROVIDERS),
+                       a flag only, every target.
                        Tracker.incoming() for the summary
   net_sampler.py       Per-agent endpoint sampler for watch/watch-all
                        (#130): NetSampler thread polls psutil sockets of

@@ -1,4 +1,4 @@
-"""Tests for agentwatch.net (`agentwatch net`, Sprint 34 B1) and the runtime
+"""Tests for agentwatch.net (`agentwatch net`, Sprint 34 B1-B3) and the runtime
 table in ai_detect. Every OS/network call is a fake.
 """
 
@@ -35,9 +35,11 @@ def conn(ip, port=443, udp=False, status="ESTABLISHED", lport=50000):
 
 
 class FakeProc:
-    def __init__(self, pid, name, conns=(), kids=(), cmdline=(), exe="", deny=False):
+    def __init__(self, pid, name, conns=(), kids=(), cmdline=(), exe="", deny=False,
+                 created=1.0):
         self.pid, self._name, self._conns, self._kids = pid, name, list(conns), list(kids)
         self._cmdline, self._exe, self._deny = list(cmdline), exe, deny
+        self._created, self.cmdline_reads = created, 0
         self._parent = None
         for k in self._kids:
             k._parent = self
@@ -45,7 +47,11 @@ class FakeProc:
     def name(self):
         return self._name
 
+    def create_time(self):
+        return self._created
+
     def cmdline(self):
+        self.cmdline_reads += 1
         if self._deny:
             raise psutil.AccessDenied(self.pid)
         return self._cmdline
@@ -227,6 +233,9 @@ class FakeNamer:
 
     def name_many(self, ips, wait=None):
         return {ip: self.name(ip) for ip in ips}
+
+    def providers(self, ip):
+        return None
 
 
 def test_poll_filters_local_tags_lan_and_tracks_seen(monkeypatch):
@@ -504,8 +513,9 @@ def test_cli_once_json_shape(monkeypatch):
     assert datetime.fromisoformat(first_seen) == datetime.fromisoformat(ep.pop("last_seen"))
     assert ep == {"runtime": "ollama", "target_pid": 7, "pid": 7, "process": "ollama.exe",
                   "ip": "104.18.1.1", "port": 443, "kind": "tcp",
-                  "host": "registry.ollama.ai", "host_source": "dns-cache", "lan": False}
-    assert "message" not in doc and doc["missing_pids"] == []
+                  "host": "registry.ollama.ai", "host_source": "dns-cache", "lan": False,
+                  "ai_provider": None}
+    assert "message" not in doc and doc["missing_pids"] == [] and doc["unwatched_agents"] == []
 
 
 def test_cli_once_waits_for_rdns_only_in_the_poll(monkeypatch):
@@ -953,3 +963,276 @@ def test_cli_once_text_loopback_only_has_no_exposed_line(monkeypatch):
     out = CliRunner().invoke(cli, ["net", "--once"]).output
     assert "LISTENERS" in out and "loopback" in out and "No clients seen." in out
     assert "reachable from other machines" not in out
+
+
+# -- --local (B3) --------------------------------------------------------------
+
+def agent(pid, agent_type):
+    return SimpleNamespace(pid=pid, agent_type=agent_type)
+
+
+def test_agent_pid_verdict_match_mismatch_vanished_denied():
+    by_pid, process = table(
+        FakeProc(40, "aider", cmdline=["aider"]),
+        FakeProc(41, "opencode.exe", cmdline=[r"C:\x\opencode.exe", "serve"]),
+        FakeProc(42, "Cursor.exe", cmdline=["Cursor.exe"]),  # an editor's real pid
+        FakeProc(43, "claude.exe", deny=True))
+    found = net.LocalAgents(find=list, process=process)
+    assert found.is_agent_pid(40, "aider")
+    assert found.is_agent_pid(41, "opencode")  # `opencode serve` too (unlike attributable())
+    assert not found.is_agent_pid(41, "aider")  # another adapter's process
+    assert not found.is_agent_pid(42, "cursor")  # no process adapter matches an editor
+    assert not found.is_agent_pid(43, "claude-code")  # denied: unproven
+    assert not found.is_agent_pid(999, "codex")  # vanished / synthetic
+
+
+def test_agent_pid_verdict_cached_per_pid_and_create_time():
+    procs = {40: FakeProc(40, "aider", cmdline=["aider"])}
+
+    def process(pid):
+        if pid not in procs:
+            raise psutil.NoSuchProcess(pid)
+        return procs[pid]
+
+    found = net.LocalAgents(find=list, process=process)
+    assert found.is_agent_pid(40, "aider") and found.is_agent_pid(40, "aider")
+    assert procs[40].cmdline_reads == 1
+    procs[40] = FakeProc(40, "notepad.exe", cmdline=["notepad.exe"], created=2.0)  # pid reused
+    assert not found.is_agent_pid(40, "aider")
+    assert procs[40].cmdline_reads == 1
+
+
+def test_scan_watches_real_pids_counts_synthetic_and_includes_aider():
+    _, process = table(FakeProc(40, "aider", cmdline=["aider"]),
+                       FakeProc(50, "claude.exe", cmdline=[r"C:\bin\claude.exe"]))
+    agents = [agent(40, "aider"), agent(50, "claude-code"), agent(3141592653, "cursor"),
+              agent(2718281828, "cline"), agent(1618033988, "codex")]
+    found = net.LocalAgents(find=lambda: agents, process=process)
+    found.scan()
+    assert found.targets == [(40, "agent:aider"), (50, "agent:claude-code")]
+    assert found.unwatched == ["cline", "codex", "cursor"]
+
+
+def test_discovery_in_background_first_scan_waits():
+    clock, gate, calls = [0.0], threading.Event(), []
+    results = iter([[agent(40, "aider")], [agent(40, "aider"), agent(41, "opencode")]])
+
+    def find():
+        calls.append(clock[0])
+        if len(calls) > 1:
+            gate.wait(5)  # a slow discovery (1.85-5.2 s live)
+        return next(results)
+
+    _, process = table(FakeProc(40, "aider", cmdline=["aider"]),
+                       FakeProc(41, "opencode", cmdline=["opencode"]))
+    found = net.LocalAgents(find=find, process=process, clock=lambda: clock[0])
+    found.scan()
+    assert found.targets == [(40, "agent:aider")]  # the first scan (--once) waited
+    found.scan()
+    assert len(calls) == 1  # not due yet
+    clock[0] = net.AGENT_REFRESH_S
+    start = time.monotonic()
+    found.scan()  # starts the slow discovery, doesn't wait for it
+    clock[0] += 3 * net.AGENT_REFRESH_S
+    found.scan()  # one in flight: no second one
+    assert time.monotonic() - start < 1 and calls == [0.0, net.AGENT_REFRESH_S]
+    assert found.targets == [(40, "agent:aider")]  # polls use the last completed result
+    gate.set()
+    found._thread.join(5)
+    assert found.targets == [(40, "agent:aider"), (41, "agent:opencode")]  # a later poll
+
+
+def test_failed_discovery_keeps_last_result():
+    clock, answers = [0.0], iter([[agent(40, "aider")], OSError("boom")])
+
+    def find():
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    found = net.LocalAgents(find=find, process=table(FakeProc(40, "aider", cmdline=["aider"]))[1],
+                            clock=lambda: clock[0])
+    found.scan()
+    clock[0] = net.AGENT_REFRESH_S
+    found.scan()
+    found._thread.join(5)
+    assert found.targets == [(40, "agent:aider")]
+
+
+def test_known_host_lookups_run_concurrently():
+    both = threading.Barrier(2, timeout=2)  # passes only if both lookups run at once
+
+    def resolve(host, port):
+        both.wait()
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"9.9.9.{len(host)}", port))]
+
+    namer = net.Namer(dns_cache=lambda: {}, rdns=no_rdns, resolve=resolve,
+                      known_hosts=("a.example", "bb.example"))
+    assert namer.name("9.9.9.9") == ("a.example", "known")
+
+
+def test_only_a_runtime_absorbs_a_runtime():
+    # QA #136: Ollama started from a Claude Code shell was reported as agent traffic.
+    llama = FakeProc(61, "llama-server.exe")
+    serve = FakeProc(60, "ollama.exe", kids=[llama])
+    sub = FakeProc(51, "claude.exe")
+    agent_ = FakeProc(50, "claude.exe", kids=[sub, serve])
+    lms = FakeProc(91, "lms.exe")
+    shell = FakeProc(90, "pwsh.exe", kids=[lms])
+    by_pid, process = table(agent_, sub, serve, llama, shell, lms)
+    found = net.find_targets([50, 90], [(50, "agent:claude-code"), (51, "agent:claude-code")],
+                             process_iter=lambda: list(by_pid.values()), process=process)
+    assert found == [net.Target(50, "agent:claude-code", "claude.exe"),  # agent beats --pid
+                     net.Target(51, "agent:claude-code", "claude.exe"),
+                     net.Target(60, "ollama", "ollama.exe"),  # llama-server deduped into it
+                     net.Target(90, "pid", "pwsh.exe"),
+                     net.Target(91, "lm-studio", "lms.exe")]
+
+
+def tcp(lip, lport, rip=None, rport=None, status="ESTABLISHED"):
+    return SimpleNamespace(laddr=SimpleNamespace(ip=lip, port=lport),
+                           raddr=SimpleNamespace(ip=rip, port=rport) if rip else (),
+                           status=status, type=socket.SOCK_STREAM)
+
+
+def test_runtime_under_agent_kept_apart_no_duplicates_agent_child_is_client():
+    curl = FakeProc(70, "curl.exe", [tcp("127.0.0.1", 52300, "127.0.0.1", 11434)])
+    serve = FakeProc(60, "ollama.exe", [
+        tcp("127.0.0.1", 11434, status="LISTEN"),
+        tcp("127.0.0.1", 11434, "127.0.0.1", 52300),
+        tcp("10.0.0.2", 50001, "34.36.133.15", 443)])
+    agent_ = FakeProc(50, "claude.exe", [tcp("10.0.0.2", 50002, "160.79.104.10", 443)],
+                      kids=[serve, curl])
+    by_pid, process = table(agent_, serve, curl)
+    connections, process_iter = global_table([(70, "127.0.0.1", 52300),
+                                              (60, "127.0.0.1", 11434)])
+    tracker = net.Tracker(FakeNamer(), process=process, connections=connections,
+                          process_iter=process_iter)
+    targets = net.find_targets((), [(50, "agent:claude-code")],
+                               process_iter=lambda: list(by_pid.values()), process=process)
+    records = tracker.poll(targets, T0)
+    assert sorted((e.runtime, e.pid, e.ip) for e in tracker.endpoints.values()) == [
+        ("agent:claude-code", 50, "160.79.104.10"), ("ollama", 60, "34.36.133.15")]
+    assert [(r.runtime, r.pid, r.port) for r in tracker.listeners.values()] == [
+        ("ollama", 60, 11434)]
+    # curl runs in the agent's tree, not the runtime's: a client, not internal
+    assert [(c.runtime, c.pid, c.process) for c in clients_of(records)] == [
+        ("ollama", 70, "curl.exe")]
+
+
+def provider_tracker():
+    resolve_calls = []
+    namer = net.Namer(dns_cache=lambda: {}, rdns=no_rdns, resolve=resolver({
+        "api.anthropic.com": ["160.79.104.10"], "downloads.claude.ai": ["34.36.57.103"],
+        "http-intake.logs.us5.datadoghq.com": ["34.149.66.137"]}, resolve_calls),
+        known_hosts=("api.anthropic.com", "downloads.claude.ai",
+                     "http-intake.logs.us5.datadoghq.com"))
+    root = FakeProc(50, "claude.exe", [conn(ip) for ip in (
+        "160.79.104.10", "34.36.57.103", "34.149.66.137", "9.9.9.9")])
+    return net.Tracker(namer, process=table(root)[1]), resolve_calls
+
+
+def test_ai_provider_flag_set_from_ip_map_none_otherwise_nothing_hidden():
+    tracker, resolve_calls = provider_tracker()
+    target = [net.Target(50, "agent:claude-code", "claude.exe")]
+    new = tracker.poll(target, T0)
+    assert {(e.ip, e.host, e.ai_provider) for e in new} == {
+        ("160.79.104.10", "api.anthropic.com", "anthropic"),  # flagged, still reported
+        ("34.36.57.103", "downloads.claude.ai", None),  # KNOWN_AGENT_HOSTS: reported, unflagged
+        ("34.149.66.137", "http-intake.logs.us5.datadoghq.com", None),
+        ("9.9.9.9", "9.9.9.9", None)}
+    tracker.poll(target, T0 + timedelta(seconds=1))
+    assert len(resolve_calls) == 3  # one resolution shared by naming and flagging
+
+
+def test_ai_provider_from_dns_cache_name_and_any_target():
+    namer = net.Namer(dns_cache=lambda: {"1.2.3.4": "API.OpenAI.com"}, rdns=no_rdns,
+                      resolve=no_resolve)
+    root = FakeProc(2, "ollama.exe", [conn("1.2.3.4")])
+    [ep] = net.Tracker(namer, process=table(root)[1]).poll(
+        [net.Target(2, "ollama", "ollama.exe")], T0)
+    assert (ep.runtime, ep.ai_provider) == ("ollama", "openai")
+
+
+def test_known_agent_hosts_are_never_provider_domains():
+    # The flag is AI_PROVIDERS only; KNOWN_AGENT_HOSTS just names.
+    assert not set(KNOWN_AGENT_HOSTS) & set(net._PROVIDER_OF)
+
+
+def test_agent_loopback_to_runtime_listed_as_client(monkeypatch):
+    # Aider (30, a --local target) -> Ollama serve (10, a runtime target) on 11434.
+    trees = {10: [LISTEN, sock(10, ("127.0.0.1", 11434), ("127.0.0.1", 52300))],
+             30: [sock(30, ("127.0.0.1", 52300), ("127.0.0.1", 11434))]}
+    tracker = incoming_tracker(monkeypatch, trees, rows=[(10, "127.0.0.1", 11434),
+                                                         (30, "127.0.0.1", 52300)],
+                               names={30: "aider.exe"})
+    records = tracker.poll([SERVE, net.Target(30, "agent:aider", "aider.exe")], T0)
+    assert [(c.runtime, c.listener_port, c.scope, c.pid, c.process)
+            for c in clients_of(records)] == [("ollama", 11434, "local", 30, "aider.exe")]
+    assert tracker.endpoints == {}  # the agent's side is loopback, not outgoing
+
+
+def fake_local_cli(monkeypatch):
+    claude = FakeProc(50, "claude.exe", cmdline=[r"C:\bin\claude.exe"])
+    _, process = table(claude)
+    agents = [agent(50, "claude-code"), agent(3141592653, "cursor")]
+    real_agents, real_find = net.LocalAgents, net.find_targets
+    monkeypatch.setattr(net, "LocalAgents",
+                        lambda: real_agents(find=lambda: agents, process=process))
+    monkeypatch.setattr(net, "find_targets", lambda pids, agents=(): real_find(
+        pids, agents, process_iter=lambda: [], process=process))
+    monkeypatch.setattr(net, "tree_sockets", lambda pid, **kw: [
+        net.SocketInfo(pid, ("10.0.0.2", 50000), raddr, "ESTABLISHED", "tcp")
+        for raddr in (("160.79.104.10", 443), ("34.36.57.103", 443))])
+    namer = net.Namer
+    monkeypatch.setattr(net, "Namer", lambda: namer(dns_cache=lambda: {
+        "160.79.104.10": "api.anthropic.com", "34.36.57.103": "downloads.claude.ai"},
+        rdns=no_rdns, resolve=no_resolve))
+
+
+def test_cli_local_once_json_shape(monkeypatch):
+    fake_local_cli(monkeypatch)
+    result = CliRunner().invoke(cli, ["net", "--local", "--once", "--json"])
+    assert result.exit_code == 0, result.output
+    doc = json.loads(result.output)
+    assert doc["targets"] == [{"pid": 50, "runtime": "agent:claude-code", "process": "claude.exe"}]
+    assert doc["unwatched_agents"] == ["cursor"]
+    assert [(e["runtime"], e["host"], e["ai_provider"]) for e in doc["outgoing"]] == [
+        ("agent:claude-code", "api.anthropic.com", "anthropic"),
+        ("agent:claude-code", "downloads.claude.ai", None)]
+
+
+def test_cli_local_once_text_flags_and_counts(monkeypatch):
+    fake_local_cli(monkeypatch)
+    out = CliRunner().invoke(cli, ["net", "--local", "--once"]).output
+    assert "Watched: agent:claude-code claude.exe(50)" in out
+    assert "api.anthropic.com [dns-cache] AI-PROVIDER anthropic" in out
+    assert "downloads.claude.ai [dns-cache] " in out and out.count("AI-PROVIDER") == 1
+    assert "1 connection(s) to cloud AI providers (from agent:claude-code claude.exe(50))" in out
+    assert ("1 agent(s) without a verifiable own process not watched (editor-hosted, "
+            "Codex app-server threads, or unreadable; use --pid <pid>)") in out
+
+
+def test_cli_local_stream_reports_unwatched_once(monkeypatch):
+    fake_local_cli(monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("time.sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    result = CliRunner().invoke(cli, ["net", "--local", "--json", "--duration", "3"])
+    assert result.exit_code == 0, result.output
+    events = [json.loads(line) for line in result.output.splitlines()]
+    assert [e["event"] for e in events].count("unwatched") == 1
+    assert events[0]["unwatched_agents"] == ["cursor"]
+    assert [e["ai_provider"] for e in events if e["event"] == "outgoing"] == ["anthropic", None]
+    assert events[-1]["unwatched_agents"] == ["cursor"]
+    assert events[-1]["targets"][0]["runtime"] == "agent:claude-code"
+
+
+def test_cli_local_no_target_message(monkeypatch):
+    fake_cli(monkeypatch, [])
+    monkeypatch.setattr(net, "LocalAgents",
+                        lambda: SimpleNamespace(scan=lambda: None, targets=[], unwatched=[]))
+    monkeypatch.setattr(net, "find_targets", lambda pids, agents=(): [])
+    doc = json.loads(CliRunner().invoke(cli, ["net", "--local", "--once", "--json"]).output)
+    assert doc["message"] == net.NO_TARGET_LOCAL and doc["unwatched_agents"] == []
