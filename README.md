@@ -458,14 +458,20 @@ intake, `downloads.claude.ai`) are reported and named but not flagged.
 local models (Aider or opencode pointed at Ollama, ...). Their cloud
 AI-provider traffic is flagged, not allowed. An agent counts only if its
 pid is its own process (the process's command line, read in memory and
-never stored, matches that agent). Agents are re-discovered every poll, or at
-most every 5 s when discovery is slow. An agent's connection to a watched
-runtime (Aider -> Ollama on `127.0.0.1:11434`) shows as a local client of
-that runtime, by process name. Editor-hosted agents (Cursor, Copilot in VS
-Code, Cline, Claude Desktop/Cowork, Codex app-server threads) have no
+never stored, matches that agent). Agents are re-discovered in the
+background every 5 s; `--once` waits for one discovery. A runtime started
+from an agent (Ollama launched in a Claude Code shell) stays its own target
+(`ollama`), and so does an agent started by a runtime: each target's walk
+skips the other targets' subtrees, so nothing is counted twice. Only a
+runtime inside another runtime (`ollama serve`'s `llama-server`) is covered
+by its parent. An agent's connection to a watched runtime (Aider -> Ollama
+on `127.0.0.1:11434`), or one from a tool the agent started, shows as a
+local client of that runtime, by process name. Editor-hosted agents
+(Cursor, Copilot in VS Code, Cline, Claude Desktop/Cowork), Codex app-server
+threads, and agents whose command line can't be read have no verifiable
 process of their own, so they aren't watched. They are counted once:
-`N editor-hosted agent(s) not watched (...; use --pid <editor pid>)`,
-`unwatched_agents` in JSON.
+`N agent(s) without a verifiable own process not watched (...; use --pid
+<pid>)`, `unwatched_agents` in JSON.
 
 Known limits:
 - No ICMP (needs admin); unconnected UDP isn't seen either.
@@ -477,6 +483,14 @@ Known limits:
   `--pid <editor pid>` (its own traffic is mixed in).
 - `--local` can't verify an agent whose command line it may not read (another
   user's or an elevated process); it is counted as not watched.
+- An agent target covers its whole process tree, so traffic of the tools it
+  runs (git, npm, curl, an MCP server) shows as `agent:<type>`.
+- Agent discovery runs in the background (it takes seconds), so a newly
+  started agent appears a few seconds late and its first connections can
+  be missed.
+- WebView2/Chromium endpoints (an app's embedded browser) often stay a bare
+  IP: Chromium resolves DNS itself, so the Windows DNS client cache has no
+  entry for them.
 - LM Studio's `lms` starts the app detached, so the app is matched by its own
   name, not through `lms`'s process tree.
 - Ollama CLI calls (`ollama run`, `ollama list`, ...) are their own short-lived
