@@ -144,8 +144,11 @@ def find_targets(extra_pids=(), agents=(), *, process_iter=psutil.process_iter,
     """Local AI runtime processes running now, plus *agents* ((pid, runtime
     label) pairs, LocalAgents.targets) and *extra_pids*.
 
-    A target whose ancestor is also a target is dropped: the ancestor's
-    tree_sockets walk already covers it (e.g. Ollama's llama-server child).
+    A runtime target whose nearest target ancestor is also a runtime target
+    is dropped: the ancestor's tree_sockets walk already covers it (e.g.
+    Ollama's llama-server child). An agent or --pid target never absorbs a
+    runtime, nor a runtime an agent (Ollama started from a Claude Code shell
+    stays `ollama`); Tracker.poll() keeps their trees apart instead.
     """
     found: dict[int, tuple[Target, object]] = {}
     for p in process_iter():
@@ -166,14 +169,19 @@ def find_targets(extra_pids=(), agents=(), *, process_iter=psutil.process_iter,
     targets = []
     for t, p in found.values():
         try:
-            ancestors = {a.pid for a in p.parents()}
+            ancestors = [a.pid for a in p.parents()]  # nearest first
         except psutil.NoSuchProcess:  # ZombieProcess too: exiting, e.g. a model unloading
             continue
         except _PROC_ERRORS:  # denied: can't prove a target ancestor, keep it
-            ancestors = set()
-        if not ancestors & found.keys():
+            ancestors = []
+        nearest = next((found[a][0] for a in ancestors if a in found), None)
+        if not (nearest and _is_runtime(t) and _is_runtime(nearest)):
             targets.append(t)
     return sorted(targets, key=lambda t: t.pid)
+
+
+def _is_runtime(t: Target) -> bool:
+    return t.runtime in LOCAL_RUNTIMES
 
 
 def _is_lan(ip: str) -> bool:
@@ -425,10 +433,14 @@ class Tracker:
         """
         now = now or datetime.now(timezone.utc)
         new, listeners, accepted = [], [], []
+        all_pids = {t.pid for t in targets}
         for t in targets:
             self._names.setdefault(t.pid, t.process)
-            tree = {t.pid}  # walked pids: a denied child's connection is still internal
-            socks = tree_sockets(t.pid, process=self._process, pids=tree)
+            # Walked pids: a denied child's connection is still internal. Other
+            # targets' subtrees are theirs (e.g. Ollama under an agent's shell).
+            tree = {t.pid}
+            socks = tree_sockets(t.pid, exclude=all_pids - {t.pid}, process=self._process,
+                                 pids=tree)
             listening = {s.laddr for s in socks
                          if s.status == "LISTEN" and s.kind == "tcp" and s.laddr}
             tree |= {s.pid for s in socks}

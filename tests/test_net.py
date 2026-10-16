@@ -1036,13 +1036,53 @@ def test_rediscovery_every_scan_unless_slow_then_every_5_s():
     assert calls == [0.0, 0.0, 0.0, 5.0]
 
 
-def test_scan_targets_feed_find_targets_with_ancestor_dedup():
+def test_only_a_runtime_absorbs_a_runtime():
+    # QA #136: Ollama started from a Claude Code shell was reported as agent traffic.
+    llama = FakeProc(61, "llama-server.exe")
+    serve = FakeProc(60, "ollama.exe", kids=[llama])
     sub = FakeProc(51, "claude.exe")
-    root = FakeProc(50, "claude.exe", kids=[sub])
-    by_pid, process = table(root, sub)
-    found = net.find_targets([50], [(50, "agent:claude-code"), (51, "agent:claude-code")],
-                             process_iter=lambda: [], process=process)
-    assert found == [net.Target(50, "agent:claude-code", "claude.exe")]  # agent beats --pid
+    agent_ = FakeProc(50, "claude.exe", kids=[sub, serve])
+    lms = FakeProc(91, "lms.exe")
+    shell = FakeProc(90, "pwsh.exe", kids=[lms])
+    by_pid, process = table(agent_, sub, serve, llama, shell, lms)
+    found = net.find_targets([50, 90], [(50, "agent:claude-code"), (51, "agent:claude-code")],
+                             process_iter=lambda: list(by_pid.values()), process=process)
+    assert found == [net.Target(50, "agent:claude-code", "claude.exe"),  # agent beats --pid
+                     net.Target(51, "agent:claude-code", "claude.exe"),
+                     net.Target(60, "ollama", "ollama.exe"),  # llama-server deduped into it
+                     net.Target(90, "pid", "pwsh.exe"),
+                     net.Target(91, "lm-studio", "lms.exe")]
+
+
+def tcp(lip, lport, rip=None, rport=None, status="ESTABLISHED"):
+    return SimpleNamespace(laddr=SimpleNamespace(ip=lip, port=lport),
+                           raddr=SimpleNamespace(ip=rip, port=rport) if rip else (),
+                           status=status, type=socket.SOCK_STREAM)
+
+
+def test_runtime_under_agent_kept_apart_no_duplicates_agent_child_is_client():
+    curl = FakeProc(70, "curl.exe", [tcp("127.0.0.1", 52300, "127.0.0.1", 11434)])
+    serve = FakeProc(60, "ollama.exe", [
+        tcp("127.0.0.1", 11434, status="LISTEN"),
+        tcp("127.0.0.1", 11434, "127.0.0.1", 52300),
+        tcp("10.0.0.2", 50001, "34.36.133.15", 443)])
+    agent_ = FakeProc(50, "claude.exe", [tcp("10.0.0.2", 50002, "160.79.104.10", 443)],
+                      kids=[serve, curl])
+    by_pid, process = table(agent_, serve, curl)
+    connections, process_iter = global_table([(70, "127.0.0.1", 52300),
+                                              (60, "127.0.0.1", 11434)])
+    tracker = net.Tracker(FakeNamer(), process=process, connections=connections,
+                          process_iter=process_iter)
+    targets = net.find_targets((), [(50, "agent:claude-code")],
+                               process_iter=lambda: list(by_pid.values()), process=process)
+    records = tracker.poll(targets, T0)
+    assert sorted((e.runtime, e.pid, e.ip) for e in tracker.endpoints.values()) == [
+        ("agent:claude-code", 50, "160.79.104.10"), ("ollama", 60, "34.36.133.15")]
+    assert [(r.runtime, r.pid, r.port) for r in tracker.listeners.values()] == [
+        ("ollama", 60, 11434)]
+    # curl runs in the agent's tree, not the runtime's: a client, not internal
+    assert [(c.runtime, c.pid, c.process) for c in clients_of(records)] == [
+        ("ollama", 70, "curl.exe")]
 
 
 def provider_tracker():
