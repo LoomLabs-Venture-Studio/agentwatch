@@ -758,8 +758,8 @@ def _net_line(ep) -> str:
 
 
 def _unwatched_line(unwatched) -> str:
-    return (f"{len(unwatched)} editor-hosted agent(s) not watched (they run inside the "
-            "editor process; use --pid <editor pid>)")
+    return (f"{len(unwatched)} agent(s) without a verifiable own process not watched "
+            "(editor-hosted, Codex app-server threads, or unreadable; use --pid <pid>)")
 
 
 def _print_net_summary(endpoints, targets) -> None:

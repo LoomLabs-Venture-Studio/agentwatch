@@ -1210,8 +1210,8 @@ def test_cli_local_once_text_flags_and_counts(monkeypatch):
     assert "api.anthropic.com [dns-cache] AI-PROVIDER anthropic" in out
     assert "downloads.claude.ai [dns-cache] " in out and out.count("AI-PROVIDER") == 1
     assert "1 connection(s) to cloud AI providers (from agent:claude-code claude.exe(50))" in out
-    assert ("1 editor-hosted agent(s) not watched (they run inside the editor process; "
-            "use --pid <editor pid>)") in out
+    assert ("1 agent(s) without a verifiable own process not watched (editor-hosted, "
+            "Codex app-server threads, or unreadable; use --pid <pid>)") in out
 
 
 def test_cli_local_stream_reports_unwatched_once(monkeypatch):
