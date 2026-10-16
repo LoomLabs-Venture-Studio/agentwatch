@@ -58,6 +58,9 @@ agentwatch ps
 # List every program using AI right now (any app or CLI)
 agentwatch detect
 
+# Who do local AI runtimes (Ollama, LM Studio, ...) talk to, and who can reach them?
+agentwatch net
+
 # Token usage stats
 agentwatch stats
 agentwatch stats --burn
@@ -350,7 +353,8 @@ agentwatch detect --json
 
 `agentwatch detect` lists programs that are talking to an AI provider
 (Anthropic, OpenAI, Copilot, Cursor, Mistral, xAI, DeepSeek, OpenRouter,
-Groq) or serving a local LLM (Ollama, LM Studio) right now,
+Groq) or serving a local LLM (Ollama, LM Studio, llama.cpp, Jan, GPT4All,
+Msty) right now,
 including ones agentwatch can't monitor yet. Browsers are excluded. It is
 local and read-only: it reads process names, executable paths and socket
 tables, and its only network traffic is DNS lookups of those providers'
@@ -369,6 +373,144 @@ adapter that monitors them. A Cline task counts only for the editor whose
 store it is in; a Cline SDK-store session with source `vscode` doesn't name
 the fork, so it counts for stable VS Code only. Connections are not split
 between adapters.
+
+### Local AI Network Activity
+
+```bash
+# Live: one line per new outgoing endpoint, listener or client; Ctrl+C prints a summary
+agentwatch net
+
+# One sample, summary table
+agentwatch net --once
+
+# NDJSON events (stream) or one JSON document (--once)
+agentwatch net --json
+agentwatch net --once --json
+
+# Also watch any other process tree; poll every 2 s
+agentwatch net --pid 1234 --pid 5678 --interval 2
+
+# Headless: run 10 minutes, then print the summary (or the JSON summary event)
+agentwatch net --json --duration 600
+
+# Also watch running agents (Claude Code, Aider, opencode, ...) with their own process
+agentwatch net --local
+agentwatch net --local --once --json
+```
+
+Ctrl+C, SIGTERM and (Windows) Ctrl+Break or closing the console all print
+the summary, the only place with a final last-seen time. A headless
+background run on Windows can't be stopped gracefully (`taskkill` without
+`/F` refuses), so use `--duration` there.
+
+`agentwatch net` answers "does a local AI talk to external servers, and if
+so, to whom?". It finds local LLM runtimes by exact process name: Ollama
+(`ollama`, `ollama app`), llama.cpp (`llama-server`), llama-cpp-python
+(`python*` running `llama_cpp.server`), LM Studio (`LM Studio`, `llmster`,
+`lms`), Jan (`Jan-Desktop`, `jan`, `jan-llama-worker`), GPT4All (`gpt4all`,
+or `chat` from a `gpt4all` install), and Msty (`msty`, `Msty Studio`,
+`msty-local`, `MstySidecar*`). `--pid N` adds any other process (a pid with
+no process is reported: `pid N not found` on stderr, `missing_pids` in JSON;
+`--pid 0` is refused). Each
+target's whole process tree is sampled every `--interval` seconds (default
+1). Nothing is allow-listed, not even the AI-provider and agent-vendor
+hosts that `detect` and `undeclared_egress` accept: every remote endpoint
+that isn't loopback, link-local or multicast is reported with the owning
+process, first/last seen, tcp/udp, and a name. Names are tried in order:
+1. the Windows DNS client cache (`dns-cache`);
+2. `known`: a guess. The IP matches a forward lookup of a known host: the AI
+   providers, agent vendor hosts (Datadog intake, `downloads.claude.ai`) and
+   each runtime's by-design hosts (e.g. `registry.ollama.ai`,
+   `huggingface.co`, `lmstudio.ai`). The lookups are refreshed every 5 min. A
+   CDN IP shared by several known hosts lists all of them (`a|b`);
+3. reverse DNS (`rdns`);
+4. the bare IP (`ip`).
+Private (LAN) addresses are kept and tagged `LAN` (`"lan": true`). If no
+runtime is running it says so and, in stream mode, waits for one to start.
+Unprivileged and read-only; its only network traffic is DNS lookups: the
+known hosts, and reverse lookups of the IPs it finds.
+
+Incoming: every TCP listener in a runtime's tree is listed. One bound to all
+interfaces (`0.0.0.0` / `::`) or to any non-loopback address is flagged
+`EXPOSED` (`"exposed": true`, `scope` `all interfaces` or `lan`), because
+other machines can reach it (an exposed Ollama API is a known risk). A
+loopback-only listener is listed as `loopback` and not flagged. Clients
+connected to a listener are listed too. A local client is shown by process
+name and pid (`curl.exe(4321) [local]`), found in the system socket table.
+A remote client is named like an outgoing endpoint and tagged `lan` or
+`public`. A client inside the runtime's own tree is internal and not listed
+(e.g. `ollama serve` talking to its `llama-server` child). One in another
+tree, such as the `ollama run` CLI, is listed. A local client counts once per
+process, however many ports it reconnects on. The summary adds LISTENERS and
+CLIENTS tables (`listeners` / `clients` in JSON) and ends with
+`N listener(s) reachable from other machines` when any was exposed.
+
+AI providers: an outgoing endpoint, of any target, whose IP belongs to an AI
+provider domain (the `detect` list: `api.anthropic.com`, `api.openai.com`,
+...; matched by the known-host lookups or the DNS-cache name) is flagged
+`AI-PROVIDER <name>` (`"ai_provider": "anthropic"`, else `null`). The summary
+adds `N connection(s) to cloud AI providers (from ...)`. Flagged is not
+hidden: every endpoint is still reported, and agent vendor hosts (Datadog
+intake, `downloads.claude.ai`) are reported and named but not flagged.
+
+`--local` adds running agents that `agentwatch ps` finds, as targets
+`agent:<type>` (e.g. `agent:aider`, `agent:claude-code`), for agents on
+local models (Aider or opencode pointed at Ollama, ...). Their cloud
+AI-provider traffic is flagged, not allowed. An agent counts only if its
+pid is its own process (the process's command line, read in memory and
+never stored, matches that agent). Agents are re-discovered in the
+background every 5 s; `--once` waits for one discovery. A runtime started
+from an agent (Ollama launched in a Claude Code shell) stays its own target
+(`ollama`), and so does an agent started by a runtime: each target's walk
+skips the other targets' subtrees, so nothing is counted twice. Only a
+runtime inside another runtime (`ollama serve`'s `llama-server`) is covered
+by its parent. An agent's connection to a watched runtime (Aider -> Ollama
+on `127.0.0.1:11434`), or one from a tool the agent started, shows as a
+local client of that runtime, by process name. Editor-hosted agents
+(Cursor, Copilot in VS Code, Cline, Claude Desktop/Cowork), Codex app-server
+threads, and agents whose command line can't be read have no verifiable
+process of their own, so they aren't watched. They are counted once:
+`N agent(s) without a verifiable own process not watched (...; use --pid
+<pid>)`, `unwatched_agents` in JSON.
+
+Known limits:
+- No ICMP (needs admin); unconnected UDP isn't seen either.
+- Connections opened and closed within one poll interval are missed.
+- DoH, a VPN or a proxy hides hostnames: you see the proxy or resolver IP,
+  and the DNS client cache may be empty (the name falls back to rdns or IP).
+- Agents hosted in an editor (Cursor, Copilot, Cline, Claude Desktop) attribute
+  to the editor process: `--local` skips them, so watch the editor with
+  `--pid <editor pid>` (its own traffic is mixed in).
+- `--local` can't verify an agent whose command line it may not read (another
+  user's or an elevated process); it is counted as not watched.
+- An agent target covers its whole process tree, so traffic of the tools it
+  runs (git, npm, curl, an MCP server) shows as `agent:<type>`.
+- Agent discovery runs in the background (it takes seconds), so a newly
+  started agent appears a few seconds late and its first connections can
+  be missed.
+- WebView2/Chromium endpoints (an app's embedded browser) often stay a bare
+  IP: Chromium resolves DNS itself, so the Windows DNS client cache has no
+  entry for them.
+- LM Studio's `lms` starts the app detached, so the app is matched by its own
+  name, not through `lms`'s process tree.
+- Ollama CLI calls (`ollama run`, `ollama list`, ...) are their own short-lived
+  `ollama.exe` processes, so each shows up as a target with a STARTED/STOPPED
+  pair; their traffic goes to the local server on loopback and isn't listed.
+- Reverse lookups run concurrently, at most ~2 s per poll. A slower one shows
+  the bare IP at first, and the summary picks up the name once it arrives.
+- Reverse DNS often names the cloud host, not the service: e.g. `ollama.com`
+  shows as `15.133.36.34.bc.googleusercontent.com [rdns]` when no known-host
+  lookup matches.
+- A runtime's embedded browser shows up under that runtime with its own
+  process name (e.g. the Ollama app's `msedgewebview2.exe` UI, talking to
+  Microsoft hosts).
+- Short client requests (`ollama list`, a one-shot `curl`) are usually over
+  within one poll and missed, like short outgoing connections.
+- A client on this machine that connects through one of its LAN IPs is still
+  found in the system socket table and shown as local. Without access to that
+  table (macOS without root) each process is read instead, so other users'
+  client processes can be missed: a loopback one still shows as `[local]`
+  without a name, and a LAN-IP one shows as a `lan` client.
 
 ### Token Usage Stats
 

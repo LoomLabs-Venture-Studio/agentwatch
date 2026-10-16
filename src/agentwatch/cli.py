@@ -730,6 +730,277 @@ def detect(json_output: bool):
     click.echo()
 
 
+def _clock(dt) -> str:
+    return dt.astimezone().strftime("%H:%M:%S")
+
+
+def _hostport(ip: str, port: int) -> str:
+    return f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
+
+
+def _proc(name: str, pid: int) -> str:
+    from agentwatch.net import _printable  # process names can carry control chars
+
+    return f"{_printable(name)}({pid})"
+
+
+def _ai_warn(text: str) -> str:
+    return click.style(text, fg="yellow", bold=True)
+
+
+def _net_line(ep) -> str:
+    lan = " LAN" if ep.lan else ""
+    flag = _ai_warn(f" AI-PROVIDER {ep.ai_provider}") if ep.ai_provider else ""
+    return (
+        f"{_clock(ep.first_seen)}  OUT  {ep.runtime}  {_proc(ep.process, ep.pid)} -> "
+        f"{ep.host} [{ep.host_source}] {_hostport(ep.ip, ep.port)} {ep.kind}{lan}{flag}"
+    )
+
+
+def _unwatched_line(unwatched) -> str:
+    return (f"{len(unwatched)} agent(s) without a verifiable own process not watched "
+            "(editor-hosted, Codex app-server threads, or unreadable; use --pid <pid>)")
+
+
+def _print_net_summary(endpoints, targets) -> None:
+    click.echo("  Watched: " + (", ".join(f"{t.runtime} {_proc(t.process, t.pid)}" for t in targets)
+                                or "nothing"))
+    if not endpoints:
+        click.echo("  No outgoing connections seen.")
+        return
+    head, *lines = _table_lines(
+        [("RUNTIME", "PROCESS", "HOST", "ENDPOINT", "FIRST SEEN", "LAST SEEN")] + [
+            (e.runtime, _proc(e.process, e.pid),
+             f"{e.host} [{e.host_source}]" + (" LAN" if e.lan else "")
+             + (f" AI-PROVIDER {e.ai_provider}" if e.ai_provider else ""),
+             f"{_hostport(e.ip, e.port)}/{e.kind}", _clock(e.first_seen), _clock(e.last_seen))
+            for e in endpoints])
+    click.echo(head)
+    for e, line in zip(endpoints, lines):
+        click.echo(_ai_warn(line) if e.ai_provider else line)
+    click.echo(f"\n  {len(endpoints)} outgoing endpoint(s)")
+    flagged = [e for e in endpoints if e.ai_provider]
+    if flagged:
+        names = {t.pid: t.process for t in targets}
+        sources = dict.fromkeys(f"{e.runtime} {_proc(names.get(e.target_pid, '?'), e.target_pid)}"
+                                for e in flagged)
+        click.echo("  " + _ai_warn(f"{len(flagged)} connection(s) to cloud AI providers "
+                                   f"(from {', '.join(sources)})"))
+
+
+def _warn(listener, text: str) -> str:
+    if not listener.exposed:
+        return text
+    return click.style(text, fg="red" if listener.scope == "all interfaces" else "yellow")
+
+
+def _listen_line(lst) -> str:
+    where = f"EXPOSED ({lst.scope})" if lst.exposed else lst.scope
+    return _warn(lst, f"{_clock(lst.first_seen)}  LISTEN  {lst.runtime}  "
+                      f"{_proc(lst.process, lst.pid)} {_hostport(lst.ip, lst.port)}  {where}")
+
+
+def _client_desc(c) -> str:
+    if c.scope == "local":
+        return (_proc(c.process, c.pid) if c.pid else _hostport(c.ip, c.port)) + " [local]"
+    name = "" if c.host_source == "ip" else f" {c.host} [{c.host_source}]"
+    return f"{_hostport(c.ip, c.port)} [{c.scope}]{name}"
+
+
+def _client_line(c) -> str:
+    return (f"{_clock(c.first_seen)}  IN  {c.runtime}  "
+            f"{_hostport(c.listener_ip, c.listener_port)} <- {_client_desc(c)}")
+
+
+def _table_lines(rows) -> list[str]:
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    return ["  " + "  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in rows]
+
+
+def _print_incoming(listeners, clients) -> None:
+    click.echo()
+    if not listeners:
+        click.echo("  No listening sockets seen.")
+        return
+    click.echo("  LISTENERS")
+    head, *lines = _table_lines(
+        [("RUNTIME", "PROCESS", "ADDRESS", "SCOPE", "FIRST SEEN", "LAST SEEN")] + [
+            (lst.runtime, _proc(lst.process, lst.pid), _hostport(lst.ip, lst.port),
+             f"EXPOSED ({lst.scope})" if lst.exposed else lst.scope,
+             _clock(lst.first_seen), _clock(lst.last_seen))
+            for lst in listeners])
+    click.echo(head)
+    for lst, line in zip(listeners, lines):
+        click.echo(_warn(lst, line))
+    click.echo()
+    if clients:
+        click.echo("  CLIENTS")
+        for line in _table_lines(
+            [("RUNTIME", "LISTENER", "CLIENT", "FIRST SEEN", "LAST SEEN")] + [
+                (c.runtime, _hostport(c.listener_ip, c.listener_port), _client_desc(c),
+                 _clock(c.first_seen), _clock(c.last_seen))
+                for c in clients]):
+            click.echo(line)
+    else:
+        click.echo("  No clients seen.")
+    exposed = sum(lst.exposed for lst in listeners)
+    if exposed:
+        click.echo("\n  " + click.style(f"{exposed} listener(s) reachable from other machines",
+                                         fg="red", bold=True))
+
+
+@cli.command()
+@click.option("--interval", type=click.FloatRange(min=0.1), default=1.0, show_default=True,
+              help="Seconds between polls")
+@click.option("--once", is_flag=True, help="Take one sample, print the summary and exit")
+@click.option("--json", "json_output", is_flag=True,
+              help="NDJSON events (one JSON document with --once)")
+@click.option("--pid", "pids", type=click.IntRange(min=1), multiple=True,
+              help="Also watch this process and its children (repeatable; not 0, which "
+                   "is the System Idle Process on Windows)")
+@click.option("--duration", type=click.FloatRange(min=0, min_open=True), default=None,
+              help="Stop after this many seconds and print the summary (headless runs)")
+@click.option("--local", is_flag=True,
+              help="Also watch running agents with their own process (Claude Code, Aider, "
+                   "...); their AI-provider traffic is flagged, like every target's")
+def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
+        duration: float | None, local: bool):
+    """Show which external servers local AI runtimes (Ollama, LM Studio, ...) talk to,
+    and which of their listeners are reachable from other machines."""
+    import signal
+    import time
+    from dataclasses import asdict
+    from datetime import datetime, timezone
+
+    from agentwatch import net as netmod  # call-time lookup: tests monkeypatch it
+
+    if once and duration is not None:
+        raise click.UsageError("--duration has no effect with --once; use one of them")
+    tracker = netmod.Tracker(netmod.Namer())
+    agents = netmod.LocalAgents() if local else None
+    no_target = netmod.NO_TARGET_LOCAL if local else netmod.NO_RUNTIME
+
+    def find_targets():
+        if agents is None:
+            return netmod.find_targets(pids)
+        agents.scan()
+        return netmod.find_targets(pids, agents.targets)
+
+    def unwatched() -> list[str]:
+        return agents.unwatched if agents else []
+
+    if once:
+        missing = netmod.missing_pids(pids)
+        targets = find_targets()
+        tracker.poll(targets)
+        endpoints = tracker.summary(wait=0)  # poll() already waited for rDNS
+        listeners, clients = tracker.incoming()
+        if json_output:
+            doc = {"targets": [asdict(t) for t in targets],
+                   "outgoing": [e.to_dict() for e in endpoints],
+                   "listeners": [r.to_dict() for r in listeners],
+                   "clients": [r.to_dict() for r in clients], "missing_pids": missing,
+                   "unwatched_agents": unwatched()}
+            if not targets:
+                doc["message"] = no_target
+            click.echo(json.dumps(doc, indent=2))
+            return
+        for pid in missing:
+            click.echo(f"pid {pid} not found", err=True)
+        if not targets:
+            click.echo(no_target)
+        else:
+            _print_net_summary(endpoints, targets)
+            _print_incoming(listeners, clients)
+        if unwatched():
+            click.echo("\n  " + _unwatched_line(unwatched()))
+        return
+
+    def emit(event: str, text: str, **fields) -> None:
+        click.echo(json.dumps({"event": event, **fields}) if json_output else text)
+
+    def stop(signum, frame):
+        raise KeyboardInterrupt
+
+    # SIGTERM / SIGBREAK (Ctrl+Break, console close on Windows) take the Ctrl+C path.
+    previous = {}
+    for name in ("SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                previous[sig] = signal.signal(sig, stop)
+            except (ValueError, OSError):  # not the main thread
+                pass
+
+    if not json_output:
+        click.echo("Watching connections of local AI runtimes" + (" and agents" if local else "")
+                   + " (Ctrl+C for summary)")
+    current: dict[int, object] = {}
+    watched: dict[int, object] = {}
+    missing: set[int] = set()
+    waiting = False
+    told_unwatched = False
+    deadline = time.monotonic() + duration if duration else None
+    try:
+        while True:
+            gone = set(netmod.missing_pids(pids)) - missing
+            targets = find_targets()
+            now = datetime.now(timezone.utc)
+            if unwatched() and not told_unwatched:  # once: the count, not every change
+                told_unwatched = True
+                emit("unwatched", _unwatched_line(unwatched()), time=now.isoformat(),
+                     unwatched_agents=unwatched())
+            if gone:
+                missing |= gone
+                if json_output:
+                    emit("missing", "", time=now.isoformat(), missing_pids=sorted(gone))
+                else:
+                    for pid in sorted(gone):
+                        click.echo(f"{_clock(now)}  pid {pid} not found", err=True)
+            seen = {t.pid: t for t in targets}
+            for state, pid_set, side in (("started", seen.keys() - current.keys(), seen),
+                                         ("stopped", current.keys() - seen.keys(), current)):
+                for pid in sorted(pid_set):
+                    t = side[pid]
+                    emit("target", f"{_clock(now)}  {state.upper()} {t.runtime}  "
+                         f"{_proc(t.process, t.pid)}", state=state, time=now.isoformat(),
+                         **asdict(t))
+            current = seen
+            watched.update(seen)
+            if not targets and not waiting:
+                emit("waiting", f"{no_target} Waiting for one to start...", message=no_target)
+            waiting = not targets
+            for rec in tracker.poll(targets, now):
+                if isinstance(rec, netmod.Listener):
+                    emit("listener", _listen_line(rec), **rec.to_dict())
+                elif isinstance(rec, netmod.Client):
+                    emit("client", _client_line(rec), **rec.to_dict())
+                else:
+                    emit("outgoing", _net_line(rec), **rec.to_dict())
+            if deadline is None:
+                time.sleep(interval)
+            elif (left := deadline - time.monotonic()) > 0:
+                time.sleep(min(interval, left))
+            else:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    endpoints = tracker.summary()
+    listeners, clients = tracker.incoming()
+    if json_output:
+        emit("summary", "", targets=[asdict(t) for t in watched.values()],
+             outgoing=[e.to_dict() for e in endpoints],
+             listeners=[r.to_dict() for r in listeners], clients=[r.to_dict() for r in clients],
+             missing_pids=sorted(missing), unwatched_agents=unwatched())
+    else:
+        click.echo()
+        _print_net_summary(endpoints, list(watched.values()))
+        _print_incoming(listeners, clients)
+
+
 def _print_agents_view(agents: list[AgentProcess]) -> None:
     """Print agents as a simple list (no sub-agents present)."""
     # Table header

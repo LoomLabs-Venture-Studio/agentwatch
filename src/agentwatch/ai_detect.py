@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import socket
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 
 import psutil
 
@@ -82,13 +83,76 @@ AI_PROVIDERS: dict[str, tuple[str, ...]] = {
     "groq": ("api.groq.com",),
 }
 
-# Local LLM runtimes: default port -> runtime. Counted only if the owning
-# process name also matches (generic ports like 8000/8080 are too noisy).
-LOCAL_LLM_PORTS: dict[int, str] = {11434: "ollama", 1234: "lm-studio"}
-_RUNTIME_NAME_TOKENS: dict[str, tuple[str, ...]] = {
-    "ollama": ("ollama",),
-    "lm-studio": ("lm studio", "lm-studio", "lms"),
+
+@dataclass(frozen=True)
+class Runtime:
+    """Process names (fnmatch patterns, matched whole against the lowercased
+    name minus `.exe`) and default ports of one local LLM runtime. A *weak*
+    name only counts if *cmdline_token* is in the cmdline or *exe_token* in
+    the exe path. *hosts*: by-design outbound hosts (naming only, `net`)."""
+
+    names: tuple[str, ...]
+    ports: tuple[int, ...]
+    weak: tuple[str, ...] = ()
+    cmdline_token: str | None = None
+    exe_token: str | None = None
+    hosts: tuple[str, ...] = ()
+
+
+# Local LLM runtimes, the one source of truth for `detect` and `net`. Sources:
+# runtime research 2026-10-15 (PLAYBOOK Sprint 34 Part B). A port maps to
+# one runtime only.
+# hosts: source-confirmed by-design hosts only, never the UNVERIFIED ones.
+LOCAL_RUNTIMES: dict[str, Runtime] = {
+    "ollama": Runtime(("ollama", "ollama app"), (11434,),
+                      hosts=("registry.ollama.ai", "ollama.com")),
+    "llama.cpp": Runtime(("llama-server",), (9931, 8080),
+                         hosts=("huggingface.co", "auth.docker.io", "registry-1.docker.io")),
+    "llama-cpp-python": Runtime((), (8000,), weak=("python*",), cmdline_token="llama_cpp.server",
+                                hosts=("huggingface.co",)),
+    # UNVERIFIED: the "lm studio helper*" pattern (macOS Electron helpers);
+    # "lm-studio" / "lmstudio" kept from detect's old substring tokens.
+    "lm-studio": Runtime(("lm studio", "llmster", "lms", "lm-studio", "lmstudio",
+                          "lm studio helper*"), (1234,),
+                         hosts=("huggingface.co", "lmstudio.ai", "llmster.lmstudio.ai")),
+    # UNVERIFIED: the legacy "jan" name (pre-0.6 Electron Jan.exe).
+    "jan": Runtime(("jan-desktop", "jan", "jan-llama-worker"), (1337,),
+                   hosts=("apps.jan.ai", "github.com", "raw.githubusercontent.com",
+                          "huggingface.co")),
+    "gpt4all": Runtime(("gpt4all",), (4891,), weak=("chat",), exe_token="gpt4all",
+                       hosts=("gpt4all.io", "api.gpt4all.io", "huggingface.co")),
+    # UNVERIFIED: the "msty" / "msty studio" app names and port 10000 (Msty 1.x).
+    "msty": Runtime(("msty", "msty studio", "msty-local", "mstysidecar*"), (11964, 11932, 10000),
+                    hosts=("registry.ollama.ai", "ollama.com", "huggingface.co", "github.com",
+                           "msty.ai", "msty.studio")),
 }
+
+# Default port -> runtime. `detect` counts a listener only if the owning
+# process is also that runtime by name (generic ports like 8000/8080 are noisy).
+LOCAL_LLM_PORTS: dict[int, str] = {
+    port: name for name, rt in LOCAL_RUNTIMES.items() for port in rt.ports
+}
+
+
+def _gate(rt: Runtime, proc) -> bool:
+    try:
+        if rt.cmdline_token:
+            return rt.cmdline_token in " ".join(proc.cmdline()).lower()
+        return bool(rt.exe_token) and rt.exe_token in (proc.exe() or "").lower()
+    except _PROC_ERRORS:
+        return False
+
+
+def runtime_of(name: str, proc=None) -> str | None:
+    """The local LLM runtime process *name* belongs to, or None. Exact match,
+    never substring; weak names also need *proc* (cmdline / exe read)."""
+    n = name.lower().removesuffix(".exe")
+    for runtime, rt in LOCAL_RUNTIMES.items():
+        if any(fnmatchcase(n, p) for p in rt.names):
+            return runtime
+        if proc is not None and any(fnmatchcase(n, p) for p in rt.weak) and _gate(rt, proc):
+            return runtime
+    return None
 
 # Board decision 2026-10-09: report apps and CLIs only, never browsers.
 BROWSER_NAMES = frozenset({
@@ -195,7 +259,7 @@ def detect(
         if lowered.removesuffix(".exe") in BROWSER_NAMES:
             continue
         runtime = listeners.get(pid)
-        if runtime and not any(t in lowered for t in _RUNTIME_NAME_TOKENS[runtime]):
+        if runtime and runtime_of(name, proc) != runtime:
             runtime = None
         usage = found.get(pid)
         if usage is None and runtime is None:

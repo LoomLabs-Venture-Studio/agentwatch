@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 32 (2026-10-13), at the end of this file.** Start there.
+> **Latest: Sprint 35 (scrub skill, 2026-10-15/16; PR #133), at the end of this file; Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -4142,6 +4142,192 @@ Baseline on the branch: 1452 passed, 1 skipped; ruff clean.
 | Date | PR | Branch | Type | Status | Rejection Reason |
 |---|---|---|---|---|---|
 | 2026-10-15 | #130 | feature/network-tracking | feature | approved (CTO review, QA round 2 PASS, CI green 3.11/3.12); squash-merged to `develop` under board standing policy | -- |
+
+### Sprint 34 Part B -- `agentwatch net`: who does a local AI talk to (board decisions 2026-10-15)
+**Type:** feature. Run by the CTO agent (board delegation).
+**Goal:** check whether a LOCAL AI makes any communication with external
+servers, and if so, to whom. Nothing is allow-listed silently.
+**Research:** runtime fingerprints (process names, ports, binds, expected
+hosts), source-pinned 2026-10-15; summary in the B1 PR body.
+**Reuses:** the per-tree socket collector (`tree_sockets`, `SocketInfo`,
+`is_local_address`), moved into `net.py` from closed PR #132;
+`ai_detect._PROC_ERRORS` and the `ai_detect` runtime table;
+`ai_detect._connections_by_pid` / `_resolve_ips`, `discovery.find_running_agents`.
+
+### Board decisions (2026-10-15)
+1. New `agentwatch net` command. Runtimes: Ollama, LM Studio, llama.cpp
+   server, Jan, GPT4All, Msty, found by process name and port plus child
+   processes; `--pid N` for anything else.
+2. Outgoing: endpoint, first/last seen, owning process, a name for "to
+   who" (Windows: DNS client cache, then reverse DNS, then bare IP).
+3. Incoming: flag listeners on 0.0.0.0 or a LAN address; list clients of
+   the listener, by process name when local.
+4. Output: live stream (one line per new endpoint), `--json`, `--once`.
+5. `--local`: agents on local models get the same treatment, AI-provider
+   traffic flagged instead of allowed.
+6. Installing Ollama on the Windows dev machine for a live test is
+   approved; other installs or credentials go back to the board.
+7. Documented limits: no ICMP without admin; connections shorter than one
+   poll missed; DoH/VPN/proxy hide hostnames; editor-hosted agents
+   attribute to the editor process.
+Byte counts stay out of scope.
+
+### Acceptance Criteria
+**B1 runtime table + targets + outgoing + naming + command (one PR)**
+- [x] One runtime table in `ai_detect.py` (runtime -> exact process names,
+      default ports, optional cmdline token / exe-path token for weak
+      names). `LOCAL_LLM_PORTS` and `_RUNTIME_NAME_TOKENS` derived from it;
+      `detect` behaviour for ollama/lm-studio unchanged, other runtimes
+      now also labelled.
+- [x] Rows: ollama (`ollama`, `ollama app`; 11434), llama.cpp
+      (`llama-server`; 9931, 8080), llama-cpp-python (`python*` +
+      cmdline `llama_cpp.server`; 8000), lm-studio (`lm studio`,
+      `llmster`, `lms`; 1234), jan (`jan-desktop`, `jan`,
+      `jan-llama-worker`; 1337), gpt4all (`gpt4all`, or `chat` only with
+      `gpt4all` in the exe path; 4891), msty (`msty`, `msty studio`,
+      `msty-local`, `mstysidecar*`; 11964, 11932, 10000). Name match is
+      exact after lowercasing and stripping `.exe`, never substring.
+- [x] Target finder: matched runtime processes; a runtime whose nearest
+      target ancestor is also a runtime is covered by that tree (e.g.
+      Ollama's `llama-server`), any other nesting stays a separate target
+      and walks exclude each other (#136 fix); `--pid N` (repeatable) adds
+      any pid. Sockets come from `net.tree_sockets`.
+- [x] Outgoing: every non-local remote endpoint (`is_local_address` false;
+      LAN private addresses kept and tagged `lan`), with first/last seen,
+      owning pid + process name, runtime, tcp/udp.
+- [x] No allow-list hides anything (board 2026-10-15): develop's
+      `KNOWN_AGENT_HOSTS` and `ai_detect.AI_PROVIDERS` never suppress an
+      endpoint in `agentwatch net` (nor in `--local`); every external
+      connection is reported and named. Test: an endpoint resolving to
+      `downloads.claude.ai` / an AI provider is still reported.
+- [x] Naming never delays sampling: every target's tree is sampled first
+      (owner names looked up immediately), new endpoints are named after.
+- [x] Naming: Windows `Get-DnsClientCache` (unprivileged, refreshed at most
+      every few seconds on a miss, A/AAAA data -> entry name), then
+      `known` (forward lookups of AI_PROVIDERS + KNOWN_AGENT_HOSTS + the
+      runtime table's by-design `hosts`, lazily on the first DNS-cache
+      miss, refreshed at most every 300 s, unioned; a shared IP names all
+      its hosts joined by `|`; naming only, never suppression), then
+      `socket.gethostbyaddr`, then bare IP; source recorded
+      (`dns-cache` / `known` / `rdns` / `ip`); results cached per IP. No
+      shell string built from untrusted data.
+- [x] `agentwatch net`: polls every `--interval` (default 1 s); one line
+      per NEW endpoint; on Ctrl+C prints a summary with first/last seen.
+      `--once` takes one sample and prints the summary. `--json`: NDJSON
+      events in stream mode, one JSON document with `--once`. Says
+      clearly when no runtime is running. `--duration S` and SIGTERM /
+      SIGBREAK also end with the summary (headless runs). Reverse lookups
+      concurrent, capped ~2 s per poll. An exiting process (parent lookup
+      fails with NoSuchProcess) is never promoted to a target.
+- [x] Tests with fake psutil/DNS: table matching (exact names, weak-name
+      gate, `.exe`), target dedup, outgoing filter, naming fallback order,
+      CLI `--once --json` shape. `detect` tests still pass.
+**B2 incoming**
+- [x] LISTEN sockets in the target tree: bound to unspecified or a
+      non-loopback address -> flagged `exposed`; loopback-only listed
+      as local.
+- [x] Clients: established sockets on a listener port; loopback client
+      -> owning local process (pid + name) via the global table with the
+      per-process fallback; clients inside the target's own tree are
+      internal and not listed; remote clients named as in B1.
+- [x] Stream/once/json include listeners and clients. Tests.
+**B3 `--local`**
+- [x] `--local` adds real-pid agents (`find_running_agents` +
+      `is_agent_pid`) as targets; their endpoints to `AI_PROVIDERS` IPs
+      are flagged with the provider name. Tests.
+**B4 live test + docs**
+- [x] Ollama installed on the Windows dev machine; a small model pulled
+      and run while `agentwatch net` watches; contacted hosts recorded in
+      the PR and Result.
+- [x] README `net` section with the documented limits (decision 7);
+      CLAUDE.md module map. All tests pass; `ruff check .` clean.
+
+### Out of scope
+Byte counts (ETW/eBPF/nettop), ICMP, packet capture, blocking traffic.
+
+### Result (Part A and Part B)
+- Part A: PR #132 (`feature/egress-sampler`, our per-agent sampler) closed
+  unmerged 2026-10-15. A parallel session had already merged the same goal
+  as #130 (`5c4b842`, `net_sampler.py`, per-action endpoints, see the
+  section above). The #132 per-tree socket collector moved into `net.py`.
+  Its QA-found bug (a non-str `host` in `parser/logs.py`) was not carried
+  over; see Open threads.
+- #134 `a459b13` (B1): runtime table `ai_detect.LOCAL_RUNTIMES` (exact
+  names, weak-name gates, by-design `hosts`); `detect` derives
+  `LOCAL_LLM_PORTS` from it and keeps LM Studio's old names; `agentwatch
+  net` with outgoing endpoints, naming `dns-cache -> known -> rdns -> ip`,
+  stream / `--once` / `--json` / `--duration` / `--pid`, SIGTERM/SIGBREAK
+  summary. QA 2 rounds.
+- #135 `c735449` (B2): listeners (`exposed`, scope all interfaces / lan /
+  loopback) and clients (local by process via the global socket table,
+  internal ones skipped, remote named); accepted sockets never reported
+  as outgoing. QA 2 rounds.
+- #136 `07c5556` (B3): `--local` adds agents with their own OS process
+  (real-pid check per `(pid, create_time)`; Aider included); every
+  endpoint carries `ai_provider` (flagged, never hidden); agent discovery
+  on a background thread; runtime and agent trees kept apart. QA 2 rounds.
+- `develop` @ `07c5556`: 1630 passed, 1 skipped; `ruff check .` clean.
+
+### Live test (B4, Windows 10 dev machine, Ollama 0.40.4, `smollm2:135m`)
+Installed with winget (board-approved). Runs: 2026-10-15 install + pull +
+run + 5 min idle (B1 build, before `known` naming), and `--local` on #136
+round 1; 2026-10-16 `--local` on the final #136 build (Ollama started from
+an agent's shell). An independent 1 s socket sampler (run 1) saw nothing
+`net` missed.
+
+| Process | Host (evidence) | Why |
+|---|---|---|
+| `ollama app.exe` | ollama.com, 34.36.133.15 (forward DNS; app.log) | update check ~3 s after launch, then hourly |
+| `ollama.exe serve` | ollama.com, 34.36.133.15 (server.log `POST /api/me` 401) | account check and model recommendations, with nobody signed in |
+| `ollama.exe serve` | registry.ollama.ai, Cloudflare 2606:4700::6812:10aa / 11aa (forward DNS) | model registry (manifest) |
+| `ollama.exe serve` | `<id>.r2.cloudflarestorage.com`, 2606:4700:113::1 (registry 307 redirect) | model blob download (first pull only) |
+| `msedgewebview2.exe` (app UI) | Microsoft: edge.microsoft.com 2620:1ec:33:1::11 / 2620:1ec:33::11 (forward DNS); 2603:1026:... and 2603:1063:2a:113::365:7ea3 (Microsoft/Office ranges, by prefix only) | WebView2 runtime, not Ollama |
+
+- No telemetry host, nothing unexpected. Listeners all on 127.0.0.1:
+  11434 (serve), a random UI port (app), a random `llama-server` port.
+  Nothing on 0.0.0.0. Clients: `ollama` CLI processes and `curl.exe`, by
+  name.
+- Naming here: the Windows DNS client cache holds only hosts-file
+  entries (Portmaster / DNS over TLS on this machine). Run 1 (pre-`known`
+  build) named ollama.com only by rDNS (`*.bc.googleusercontent.com`) and
+  left the rest as bare IPs; later runs named ollama.com and
+  registry.ollama.ai via `known`. WebView2 endpoints stay bare IPs.
+- Claude Code agents under `--local`: api.anthropic.com flagged
+  `AI-PROVIDER anthropic`; Datadog intake and downloads.claude.ai named,
+  not flagged, not hidden.
+- Left on the machine: Ollama and the model are still installed. The app
+  added a login Startup shortcut (`Ollama.lnk`); it was left alone (board
+  call). All Ollama processes were stopped.
+
+### Open threads
+- Board: remove Ollama, or its Startup shortcut, from the dev machine?
+- Board: develop's #130 detector allow-lists `KNOWN_AGENT_HOSTS` (Datadog
+  intake, downloads.claude.ai). `net` ignores that list by design; is the
+  list right for `undeclared_egress`?
+- `parse_moltbot_entry` (`parser/logs.py:390`) passes a non-str
+  `tool_input["host"]` through; `NetworkAnomalyDetector` raises
+  TypeError, `check_all` swallows it, so the detector misses every
+  warning in that window (e.g. `suspicious_port`). Pre-existing, found in
+  #132 QA. Small fix PR needed.
+- Not live-verified: LM Studio, llama.cpp, Jan, GPT4All, Msty (not
+  installed); a LAN client of an exposed listener (Windows Firewall
+  blocked the test); the editor-hosted "not watched" count; macOS/Linux.
+- Known limits (README): sub-poll connections missed (`ollama list` and a
+  quick `/api/tags` curl are), no ICMP, unconnected UDP not seen, DoH/VPN/proxy
+  hide names, editor-hosted agents attribute to the editor, `lms` spawns
+  detached, the Ollama CLI shows as short-lived targets.
+- Branches left on origin: `feature/net-command` (pre-rebase B1),
+  `feature/egress-sampler` (#132), and the merged #134-#136 heads
+  `feature/net-outgoing`, `feature/net-incoming`, `feature/net-local`.
+  Deleting remote branches needs the board.
+
+### PR Log (Sprint 34 Part A/B)
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
+| 2026-10-15 | #132 | feature/egress-sampler | feature | closed, not merged | superseded by #130 (parallel session, merged first) |
+| 2026-10-15 | #134 | feature/net-outgoing | feature | merged (`a459b13`) | -- |
+| 2026-10-15 | #135 | feature/net-incoming | feature | merged (`c735449`) | -- |
+| 2026-10-16 | #136 | feature/net-local | feature | merged (`07c5556`) | -- |
 
 ### Sprint 35 -- Scrub skill: `agentwatch scrub`, `audit --pii`, Claude Code skill (2026-10-15)
 **Type:** feature. Branch `feature/agentwatch-skill` from `develop` @
