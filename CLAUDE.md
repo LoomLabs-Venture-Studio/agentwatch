@@ -65,7 +65,11 @@ want a "fitness tracker + security guard" for those agents.
 ```
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
-                       detect, list-detectors, security-scan, themes, stats, audit.
+                       detect, net, list-detectors, security-scan, themes, stats,
+                       audit, scrub. `scrub PATH` redacts secrets + PII in one
+                       file (copy by default, `--in-place`/`--dry-run`/
+                       `--json`); `audit --pii` adds low-severity PII findings
+                       (output without `--pii` unchanged)
                        Entry points: `agentwatch` and `agentguard`
                        (security-first alias), both -> agentwatch.cli
   __init__.py          Public package API re-exporting detectors/health/parser/etc.
@@ -272,6 +276,11 @@ src/agentwatch/
                        constraints
     security/*.py        Security detectors: credentials, injection,
                        network, privilege, supply_chain, secret_scanner
+    security/pii.py      PII patterns + validators (email, phone, US SSN,
+                       Luhn-checked card, street address; look-alikes
+                       rejected), stdlib only; imported by
+                       secret_scanner.py for `scrub` / `audit --pii`.
+                       Not used by the live SecretLeakScanner
 
   health/
     score.py             calculate_health / calculate_efficiency /
