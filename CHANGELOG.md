@@ -134,8 +134,9 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
   a transcript string (a tool_result of `cat x.json`) is redacted too
   (PR #143).
 - Security: bare `key=value` / `key: value` secrets (`password=Hunter2!`,
-  `secret: ...`, `token=`, `api_key=`) are masked everywhere, with no
-  revealed tail. Values under 6 chars, without a digit or symbol, code
+  `client_secret=...`, `AUTH_TOKEN=...`, `api_key: ...`) are masked
+  everywhere, with no revealed tail. Values under 8 chars, without a digit
+  and a letter or a symbol, short lowercase words (`gpt4all`), code
   expressions and placeholders (`***`, `gho_****`, `<...>`, `${VAR}`,
   `changeme`) are left alone (PR #143).
 - `detect`: `Code.exe` and `Cursor.exe` map to their editor adapters

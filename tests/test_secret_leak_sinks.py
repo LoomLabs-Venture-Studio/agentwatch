@@ -657,6 +657,15 @@ def test_flag_gap_glued_program_words(text, expected):
         ("apikey = ak7Hq2Lm9PzX", "ak7Hq2Lm9PzX"),
         ("password='Hunter2!'", "Hunter2!"),
         ('{"password": "Hunter2!x"}', "Hunter2!x"),
+        # Compound / env-var style keys (CTO review of PR #143).
+        ("client_secret=Abc123xyz789QQ", "Abc123xyz789QQ"),
+        ("access_token=ya29Abc123xyz789", "ya29Abc123xyz789"),
+        ("AUTH_TOKEN=Zz9988776655aa", "Zz9988776655aa"),
+        ("refresh_token: rt_8899aabbccdd", "rt_8899aabbccdd"),
+        ("export CLIENT_SECRET=Abc123xyz789QQ", "Abc123xyz789QQ"),
+        ("GITHUB_TOKEN=Zz9988776655aa", "Zz9988776655aa"),
+        ("SECRET_KEY=dj4ngo-Abc123xyz", "dj4ngo-Abc123xyz"),
+        ("db-password: Pw0rd!Pw0rd", "Pw0rd!Pw0rd"),
     ],
 )
 def test_bare_key_value_secret_masked(text, secret):
@@ -674,7 +683,16 @@ def test_bare_key_value_secret_masked(text, secret):
 @pytest.mark.parametrize(
     "text",
     [
-        "password=abc12",  # under 6 chars
+        "password=Ab1!xyz",  # under 8 chars
+        "exe_token=gpt4all",  # lowercase word under 10 chars
+        "model_token=llama3b8",
+        "token = get_token()",
+        "secret_name: my-secret",
+        "password_field = forms.CharField()",
+        "password_hash: str",
+        "api_key_header = 'X-Api-Key'",
+        "token=abcdefghijkl",  # no digit, no symbol
+        "TOKEN_TTL=3600",
         "password=***",
         "password=********",
         "password=<your-password>",
@@ -706,7 +724,11 @@ def test_bare_key_value_secret_live_detector():
 
 
 def test_bare_key_value_linear_on_pathological_input():
-    _assert_linear(["token:", "secret: ", "password=(", "api_key=a.", 'pwd="\\"'], "redact_secrets")
+    _assert_linear(
+        ["token:", "secret: ", "password=(", "api_key=a.", 'pwd="\\"',
+         "a_token:", "atoken", "a-", "x_secret_key=a1"],
+        "redact_secrets",
+    )
 
 
 def test_key_value_secret_stops_at_backtick_and_shows_no_tail():

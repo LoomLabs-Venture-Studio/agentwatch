@@ -254,19 +254,28 @@ _p(
 )
 _p(r"\bbearer\s+['\"]?(?P<secret>[a-z0-9_\-.=~+/]{20,})", "bearer_header")
 # Bare key=value / key: value secrets (password=Hunter2!, token: ...), which
-# the assignment patterns above miss: unquoted or under 8/20 chars. To keep
-# false positives low the key is a whole word (not exe_token=), and the value
-# is 6+ chars with a digit or symbol (code like "password=self.password" has
-# neither), is not a call or subscript ("get_token(", "Optional[str]"), and is
-# no placeholder (***, gho_****, <...>, ${VAR}, {{ var }}, %(x)s, changeme) or
-# path (PWD=/home/...). Its masked form never shows a tail (_NO_TAIL_LABELS).
+# the assignment patterns above miss: unquoted or under 8/20 chars. The key
+# may end a compound or env-var name (client_secret, AUTH_TOKEN, SECRET_KEY).
+# False positives are judged by the value, which must be 8+ chars with a
+# digit and a letter or with a symbol, and must not be:
+# - a short all-lowercase word (exe_token="gpt4all", model=llama3b8);
+# - code: a call or subscript ("get_token(", "Optional[str]");
+# - a placeholder (***, gho_****, <...>, ${VAR}, {{ var }}, %(x)s, changeme)
+#   or a path (PWD=/home/...).
+# Its masked form never shows a tail (_NO_TAIL_LABELS).
+_KV_VALUE_CHAR = r"[^\s'\"`]"
 _p(
-    r"(?<!\w)(?:password|passwd|pwd|secret|token|api[_-]?key|apikey)"
+    r"(?<![a-z0-9])(?:[a-z0-9]*[_-])?"
+    r"(?:password|passwd|pwd|secret|token|api[_-]?key|apikey)(?:[_-]key)?"
     r"['\"]?[^\S\n]*[:=][^\S\n]*['\"]?"
     # The look-aheads that scan the value are bounded: unbounded, every key in
     # a long run ("token:token:...") scanned to its end (quadratic).
-    r"(?![*<{%/]|changeme\b|[\w.]*[(\[]|[^\s'\"`]{0,64}?\*{3})"
-    r"(?=[^\s'\"`]{6})(?=[^\s'\"`]{0,64}?[\d!@#^&*+=?~])" + _SECRET_VALUE,
+    rf"(?![*<{{%/]|changeme\b|[\w.]*[(\[]|{_KV_VALUE_CHAR}{{0,64}}?\*{{3}})"
+    rf"(?!(?-i:[a-z0-9]{{1,9}})(?!{_KV_VALUE_CHAR}))"
+    rf"(?={_KV_VALUE_CHAR}{{8}})"
+    rf"(?={_KV_VALUE_CHAR}{{0,64}}?[!@#^&*+=?~]"
+    rf"|(?={_KV_VALUE_CHAR}{{0,64}}?\d)(?={_KV_VALUE_CHAR}{{0,64}}?[a-z]))"
+    + _SECRET_VALUE,
     "key_value_secret",
 )
 # Labels whose masked value never reveals its last chars, however long: a
