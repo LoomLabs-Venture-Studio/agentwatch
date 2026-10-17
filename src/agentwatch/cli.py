@@ -10,7 +10,7 @@ import click
 
 from agentwatch import __version__
 from agentwatch.detectors import create_registry
-from agentwatch.detectors.base import Warning
+from agentwatch.detectors.base import Warning, findings_spend, format_tokens, format_usd
 from agentwatch.discovery import (
     AgentProcess,
     build_agent_tree,
@@ -234,6 +234,39 @@ def _default_log() -> tuple[Path | None, str | None]:
     return log, f"No session for {Path.cwd()}; using newest session from {project}"
 
 
+def _waste(warnings: list[Warning], stats) -> dict | None:
+    """Spend on the calls behind the findings vs the session's, or None when
+    no finding has token data. A call shared by two findings counts once."""
+    findings, tokens, cost = findings_spend(warnings)
+    if not findings:
+        return None
+    return {
+        "findings": findings,
+        "tokens": tokens,
+        "cost_usd": None if cost is None else round(cost, 4),
+        "session_tokens": stats.billed_tokens,
+        "session_cost_usd": None if stats.billed_cost is None else round(stats.billed_cost, 4),
+    }
+
+
+def _waste_line(waste: dict) -> str:
+    """'Waste: ~$X on N findings (Y% of session cost)'; tokens when unpriced."""
+    def pct(part: float, whole: float) -> str:
+        share = part / whole * 100
+        return "<1%" if share < 0.5 else f"{share:.0f}%"
+
+    n = waste["findings"]
+    cost, session_cost = waste["cost_usd"], waste["session_cost_usd"]
+    if cost is not None:
+        amount = format_usd(cost)
+        share = f" ({pct(cost, session_cost)} of session cost)" if session_cost else ""
+    else:
+        amount = f"{format_tokens(waste['tokens'])} tok"
+        session = waste["session_tokens"]
+        share = f" ({pct(waste['tokens'], session)} of session tokens)" if session else ""
+    return f"  Waste: {amount} on {n} finding{'s' if n != 1 else ''}{share}"
+
+
 def print_health_report(
     report,
     security_mode: bool = False,
@@ -287,7 +320,10 @@ def print_health_report(
         )
     if stats is not None and stats.peak_context_tokens:
         click.echo(f"  Peak context: {stats.peak_context_tokens:,} tokens (single action)")
-    if efficiency is not None or (stats is not None and stats.peak_context_tokens):
+    waste = _waste(report.warnings, stats) if stats is not None else None
+    if waste:
+        click.echo(click.style(_waste_line(waste), bold=True))
+    if efficiency is not None or (stats is not None and stats.peak_context_tokens) or waste:
         click.echo()
 
     # Warnings
@@ -305,6 +341,7 @@ def print_health_report(
                 f"     {w.emoji} "
                 + click.style(f"[{w.signal}]", fg=severity_color[w.severity.value])
                 + f" {w.message}"
+                + (click.style(f"  {w.cost_label}", bold=True) if w.cost_label else "")
             )
             # Show key details
             if w.details:
@@ -478,6 +515,7 @@ def check(
         output["session_fallback"] = note
         output["efficiency"] = efficiency.to_dict()
         output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
+        output["waste"] = _waste(warnings, buffer.stats)
         click.echo(json.dumps(output, indent=2))
     else:
         print_health_report(
@@ -1477,6 +1515,11 @@ def _fmt_tokens(n: int) -> str:
     return f"{n:,}"
 
 
+def _usd(cost: float | None) -> str:
+    """Dollar amount for `stats`; "n/a" when the model has no listed price."""
+    return "n/a" if cost is None else f"${cost:,.2f}"
+
+
 def _print_stats_report(report) -> None:
     """Print a formatted token usage report."""
     from agentwatch.cc_stats import ToolCategory
@@ -1497,7 +1540,7 @@ def _print_stats_report(report) -> None:
     click.echo()
 
     # Totals
-    est_cost = report.totals.estimated_cost_usd(report.model)
+    est_cost = report.totals.estimated_cost_usd()
     click.echo("  TOTALS")
     click.echo("  " + "\u2500" * 50)
     click.echo(
@@ -1510,7 +1553,7 @@ def _print_stats_report(report) -> None:
     )
     click.echo(
         f"  Total:   {_fmt_tokens(report.totals.total_tokens):>12}"
-        f"    Est. cost:   {click.style(f'${est_cost:>10,.2f}', bold=True)}"
+        f"    Est. cost:   {click.style(f'{_usd(est_cost):>11}', bold=True)}"
     )
     click.echo()
 
@@ -1528,7 +1571,7 @@ def _print_stats_report(report) -> None:
 
         for cat, bucket in sorted_tools:
             pct = bucket.total_tokens / total * 100
-            cost = bucket.estimated_cost_usd(report.model)
+            cost = bucket.estimated_cost_usd()
             count_str = (
                 f"{bucket.call_count:>5}"
                 if cat != ToolCategory.Thinking
@@ -1538,7 +1581,7 @@ def _print_stats_report(report) -> None:
                 f"  {cat.value:<14} {count_str}"
                 f" {_fmt_tokens(bucket.total_tokens):>12}"
                 f" {pct:>5.1f}%"
-                f"   ${cost:>6,.2f}"
+                f"   {_usd(cost):>7}"
             )
             click.echo(f"    {_make_bar(pct / 100)}")
 
@@ -1598,8 +1641,8 @@ def _print_burn_report(report) -> None:
 
     triv_pct = triv.total_tokens / total * 100
     sub_pct = sub.total_tokens / total * 100
-    triv_cost = triv.estimated_cost_usd(report.model)
-    sub_cost = sub.estimated_cost_usd(report.model)
+    triv_cost = triv.estimated_cost_usd()
+    sub_cost = sub.estimated_cost_usd()
 
     # Trivial
     click.echo(
@@ -1614,7 +1657,7 @@ def _print_burn_report(report) -> None:
         f"    {triv_pct:>5.1f}%"
     )
     click.echo(
-        f"  Est. cost: {click.style(f'${triv_cost:,.2f}', fg='yellow', bold=True)}"
+        f"  Est. cost: {click.style(_usd(triv_cost), fg='yellow', bold=True)}"
     )
     click.echo(f"    {_make_bar(triv_pct / 100)}")
     click.echo()
@@ -1645,7 +1688,7 @@ def _print_burn_report(report) -> None:
         f"    {sub_pct:>5.1f}%"
     )
     click.echo(
-        f"  Est. cost: {click.style(f'${sub_cost:,.2f}', fg='green', bold=True)}"
+        f"  Est. cost: {click.style(_usd(sub_cost), fg='green', bold=True)}"
     )
     click.echo(f"    {_make_bar(sub_pct / 100)}")
     click.echo()
@@ -1663,7 +1706,7 @@ def _print_burn_report(report) -> None:
             )
         )
         click.echo(
-            f"  You could save ~${triv_cost:,.2f} by running simple commands yourself."
+            f"  You could save ~{_usd(triv_cost)} by running simple commands yourself."
         )
     elif triv_pct > 15:
         click.echo(
@@ -1708,7 +1751,7 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
         click.echo(
             f"  $ {click.style(cmd_display, bold=True)}"
             f"   {_fmt_tokens(tc.total_tokens):>10} tok"
-            f"   ${tc.estimated_cost_usd:,.2f}"
+            f"   {_usd(tc.estimated_cost_usd)}"
         )
         if show_prompts and tc.user_prompt:
             prompt = tc.user_prompt.strip().replace("\n", " ")
@@ -1719,11 +1762,12 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
             )
 
     click.echo()
-    total_cost = sum(tc.estimated_cost_usd for tc in calls)
+    costs = [tc.estimated_cost_usd for tc in calls]
+    total_cost = None if None in costs else sum(costs)
     click.echo(
         f"  {len(calls)} trivial calls"
         f" | {_fmt_tokens(sum(tc.total_tokens for tc in calls))} tokens"
-        f" | ${total_cost:,.2f} est. cost"
+        f" | {_usd(total_cost)} est. cost"
     )
     click.echo()
 

@@ -187,7 +187,8 @@ class WarningsList(Static):
         lines.append("  Active Warnings:")
         lines.append("")
         for w in self._warnings[:8]:
-            lines.append(f"  {w.emoji} [{w.signal:20}] {w.message}")
+            cost = f"  {w.cost_label}" if w.cost_label else ""
+            lines.append(f"  {w.emoji} [{w.signal:20}] {w.message}{cost}")
 
             # Show key details inline
             detail_line = self._format_details(w)

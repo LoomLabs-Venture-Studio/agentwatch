@@ -251,6 +251,8 @@ def read_session(
         except (AttributeError, TypeError, ValueError):
             # A malformed row (wrong JSON types, #70): skip it, don't end the scan.
             actions = []
+        for action in actions:
+            action.message_id = mid  # the step's usage sits on its first action
         out.append((mid, actions))
     return out
 

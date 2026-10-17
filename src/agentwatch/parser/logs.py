@@ -110,6 +110,14 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
             or usage.get("cache_read_input_tokens")
             or 0
         )
+        split = usage.get("cache_creation")
+        cache_1h = (split.get("ephemeral_1h_input_tokens") or 0) if isinstance(split, dict) else 0
+        # Identify the API call: every line of one message repeats its usage.
+        call = {
+            "model": msg.get("model") if isinstance(msg.get("model"), str) else None,
+            "message_id": msg.get("id") if isinstance(msg.get("id"), str) else None,
+            "cache_creation_1h_tokens": cache_1h,
+        } if entry_type == "assistant" else {}
 
         session_id = entry.get("sessionId")
 
@@ -167,6 +175,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                     outgoing_data=outgoing_data,
                     session_id=session_id,
                     raw=block,
+                    **call,
                 ))
                 # Only attach text to the first tool_use in this entry
                 outgoing_data = None
@@ -215,6 +224,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                 cache_read_tokens=cache_read_tokens,
                 session_id=session_id,
                 raw={"type": "text", "text": joined[:500]},
+                **call,
             ))
 
         if len(actions) == 1:

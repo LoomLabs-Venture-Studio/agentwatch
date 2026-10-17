@@ -127,6 +127,10 @@ class SiemLogger:
         }
         if warning.suggestion:
             payload["suggestion"] = warning.suggestion
+        if warning.tokens is not None:  # absent, not 0, when unknown
+            payload["tokens"] = warning.tokens
+        if warning.cost_usd is not None:
+            payload["cost_usd"] = round(warning.cost_usd, 4)
         # warning.severity drives the "severity" field via the rename_fields
         # mapping above (levelname -> severity), set from the log level.
         self._logger.log(_SEVERITY_TO_LOG_LEVEL[warning.severity], warning.message, extra=payload)

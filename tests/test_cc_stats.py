@@ -17,6 +17,7 @@ from agentwatch.cc_stats import (
     is_trivial_bash,
     parse_session_stats,
     project_dir_to_name,
+    usage_cost_usd,
 )
 from agentwatch.path_encoding import encode_path_for_claude
 
@@ -247,27 +248,24 @@ class TestTokenBucket:
         assert a.output_tokens == 15
         assert a.call_count == 3
 
-    def test_estimated_cost_sonnet(self):
-        b = TokenBucket(
-            input_tokens=1_000_000,
-            output_tokens=1_000_000,
-            cache_write_tokens=1_000_000,
-            cache_read_tokens=1_000_000,
-        )
-        # sonnet: 3 + 15 + 3.75 + 0.30 = 22.05
-        cost = b.estimated_cost_usd("sonnet")
+    def test_cost_sonnet_4_6(self):
+        # 3 + 15 + 3.75 + 0.30 = 22.05
+        cost = usage_cost_usd("claude-sonnet-4-6", 10**6, 10**6, 10**6, 10**6)
         assert abs(cost - 22.05) < 0.01
 
-    def test_estimated_cost_opus(self):
-        b = TokenBucket(
-            input_tokens=1_000_000,
-            output_tokens=1_000_000,
-            cache_write_tokens=1_000_000,
-            cache_read_tokens=1_000_000,
-        )
-        # opus: 15 + 75 + 18.75 + 1.50 = 110.25
-        cost = b.estimated_cost_usd("claude-opus-4-6")
-        assert abs(cost - 110.25) < 0.01
+    def test_cost_opus_4_6(self):
+        # 5 + 25 + 6.25 + 0.50 = 36.75 (was billed at 4.1's $15/$75)
+        cost = usage_cost_usd("claude-opus-4-6", 10**6, 10**6, 10**6, 10**6)
+        assert abs(cost - 36.75) < 0.01
+
+    def test_bucket_cost_is_sum_of_calls_and_unpriced_poisons_it(self):
+        a, b = TokenBucket(), TokenBucket()
+        a.add_cost(1.25)
+        a.add_cost(0.75)
+        assert a.estimated_cost_usd() == 2.0
+        b.add_cost(None)  # a call with tokens but no listed price
+        a.merge(b)
+        assert a.estimated_cost_usd() is None
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +407,36 @@ def _make_user_line(msg_id: str = "user-1") -> str:
 
 
 class TestParseSessionStats:
+    def test_each_call_priced_by_its_own_model_with_ttl_split(self, tmp_path):
+        """QA #145: stats priced every call at the dominant model, all writes 5m."""
+        opus = json.loads(_make_assistant_line("m1", [{"type": "text", "text": "a"}],
+                                               model="claude-opus-5-5"))
+        opus["message"]["usage"]["cache_creation"] = {"ephemeral_1h_input_tokens": 200}
+        lines = [json.dumps(opus)] + [
+            _make_assistant_line(f"m{i}", [{"type": "text", "text": "b"}],
+                                 model="claude-haiku-4-5")
+            for i in (2, 3)
+        ]
+        jsonl = tmp_path / "session.jsonl"
+        jsonl.write_text("\n".join(lines))
+        report = parse_session_stats(jsonl)
+        assert report.model == "claude-haiku-4-5"  # dominant, display only
+        expected = (
+            usage_cost_usd("claude-opus-5-5", 100, 50, 200, 1000, 200)
+            + 2 * usage_cost_usd("claude-haiku-4-5", 100, 50, 200, 1000)
+        )
+        assert abs(report.totals.estimated_cost_usd() - expected) < 1e-12
+        assert report.to_dict()["totals"]["estimated_cost_usd"] == round(expected, 2)
+
+    def test_unpriced_call_makes_cost_unknown(self, tmp_path):
+        lines = [
+            _make_assistant_line("m1", [{"type": "text", "text": "a"}]),
+            _make_assistant_line("m2", [{"type": "text", "text": "b"}], model="claude-opus-4-9"),
+        ]
+        jsonl = tmp_path / "session.jsonl"
+        jsonl.write_text("\n".join(lines))
+        assert parse_session_stats(jsonl).totals.estimated_cost_usd() is None
+
     def test_single_tool_call(self, tmp_path):
         """A single message with one Bash tool_use."""
         lines = [
