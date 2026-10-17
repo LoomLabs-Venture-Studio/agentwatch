@@ -90,7 +90,7 @@ def default_cursor_user_dir() -> Path:
 def _file_uri_to_path(uri: str) -> Path | None:
     """Decode a ``workspace.json`` ``folder`` field into a filesystem Path.
 
-    Confirmed real shape on this machine: ``file:///c%3A/Users/Zaid/Desktop/
+    Confirmed real shape on this machine: ``file:///c%3A/Users/alice/Desktop/
     claude%20work/agentwatch/agentwatch-main`` -- URL-encoded, with a
     percent-encoded drive-letter colon on Windows. ``urlparse`` + ``unquote``
     handles the encoding; the leading ``/`` before a Windows drive letter

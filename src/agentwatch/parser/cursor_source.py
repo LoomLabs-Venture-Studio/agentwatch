@@ -5,7 +5,7 @@ Cursor (a VS Code fork) persists its AI chat/agent history in
 way Claude Code/Moltbot/Aider/Codex CLI do. This module isolates "how do I
 read Cursor's DB correctly" from ``CursorWatcher``'s poll/diff/dispatch loop
 (``watcher.py``), per the architecture review's module-boundary reasoning
-(``C:\\Users\\Zaid\\.claude\\plans\\cursor-sqlite-architecture-review.md``).
+(``C:\\Users\\alice\\.claude\\plans\\cursor-sqlite-architecture-review.md``).
 
 **Schema history -- read this before touching field names.** The original
 architecture review guessed bubble/message content lives in a

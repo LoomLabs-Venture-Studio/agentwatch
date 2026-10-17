@@ -329,6 +329,18 @@ class MultiAgentWatchApp(App):
             self._net_sampler.track(proc.pid)
             state["net_sampled"] = True
 
+    def _repid(self, state: dict, proc: AgentProcess) -> None:
+        """A new process took over this log: drop the old pid, sample the new."""
+        old = state["pid"]
+        state["pid"] = proc.pid
+        if old is not None and not any(d.get("pid") == old for d in self.agents.values()):
+            self._team_by_pid.pop(old, None)
+            self._net_sampler.untrack(old)
+        if proc.team_id is not None:
+            self._team_by_pid[proc.pid] = proc.team_id
+        state["net_sampled"] = False
+        self._track_net(state, proc)
+
     def on_mount(self) -> None:
         """Called when app starts."""
         self.title = "AgentWatch - Multi-Agent Dashboard"
@@ -755,6 +767,8 @@ class MultiAgentWatchApp(App):
         for log_path, agent_data in self.agents.items():
             proc = self.watcher.get_process_meta(log_path)
             if proc:
+                if proc.pid != agent_data["pid"]:
+                    self._repid(agent_data, proc)
                 agent_data["item"].update_process_info(proc)
 
         # Remove agents that have been stopped for over 60 seconds

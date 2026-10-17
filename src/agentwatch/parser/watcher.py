@@ -382,7 +382,7 @@ class CursorWatcher:
     Unlike ``LogWatcher``, there is no append-only byte stream to tail --
     SQLite files are rewritten in place and Cursor does not leave a WAL to
     stream incrementally when idle (see
-    ``C:\\Users\\Zaid\\.claude\\plans\\cursor-sqlite-architecture-review.md``).
+    ``C:\\Users\\alice\\.claude\\plans\\cursor-sqlite-architecture-review.md``).
     This watcher instead re-queries on an interval, using
     ``composerHeaders.lastUpdatedAt`` as a cheap per-composer change signal
     before paying to re-fetch that composer's ``bubbleId:*`` rows (the

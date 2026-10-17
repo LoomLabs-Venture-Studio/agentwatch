@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta
 
+import pytest
+
 from agentwatch.detectors.base import Category, Detector, Severity
 from agentwatch.detectors.registry import DetectorRegistry, create_registry
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
@@ -204,6 +206,7 @@ class TestAuditLogCliWiring:
         assert result.exit_code in (0, 1, 2), result.output
         assert not (tmp_path / "audit.jsonl").exists()
 
+    @pytest.mark.usefixtures("needs_siem")
     def test_audit_log_is_distinct_from_siem_log(self, tmp_path):
         """--audit-log and --siem-log can both be passed and produce two
         different files with different shapes (audit = every detector's

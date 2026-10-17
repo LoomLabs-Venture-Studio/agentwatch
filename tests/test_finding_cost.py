@@ -241,7 +241,7 @@ def test_check_text_shows_cost_and_waste(tmp_path):
     log = loop_log(tmp_path / "s1.jsonl")
     text = CliRunner().invoke(cli, ["check", "--log", str(log)]).output
     loop_line = next(line for line in text.splitlines() if "[loop]" in line)
-    assert "~$0.10 · 206k tok" in loop_line  # 5 calls * $0.02004, 5 * 41,210 tokens
+    assert "~$0.16 · 330k tok" in loop_line  # 8 calls * $0.02004, 8 * 41,210 tokens
     assert "Waste: ~$" in text and "% of session cost)" in text
 
 
@@ -251,7 +251,7 @@ def test_tui_warning_list_shows_cost(tmp_path):
     found, _ = _scan(loop_log(tmp_path / "s1.jsonl"))
     widget = WarningsList()
     widget._warnings = [found["loop"]]
-    assert "~$0.10 · 206k tok" in widget._build_content()
+    assert "~$0.16 · 330k tok" in widget._build_content()
 
 
 def test_siem_payload_carries_cost(tmp_path):
@@ -264,7 +264,7 @@ def test_siem_payload_carries_cost(tmp_path):
         siem.log_warning(LoopDetector().check(_tokenless_loop()))
     priced, bare = (json.loads(x) for x in path.read_text(encoding="utf-8").splitlines())
     assert priced["tokens"] == found["loop"].tokens
-    assert priced["cost_usd"] == pytest.approx(found["loop"].cost_usd)
+    assert priced["cost_usd"] == pytest.approx(found["loop"].cost_usd, abs=1e-4)  # rounded
     assert "tokens" not in bare and "cost_usd" not in bare
 
 

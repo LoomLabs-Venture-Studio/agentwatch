@@ -580,16 +580,24 @@ def test_cli_no_runtime_text_and_json(monkeypatch):
 def test_cli_missing_pid_reported(monkeypatch):
     fake_cli(monkeypatch, [])
     monkeypatch.setattr(net, "missing_pids", lambda pids: sorted(pids))
-    text = CliRunner().invoke(cli, ["net", "--once", "--pid", "4242"])
-    assert text.exit_code == 0 and "pid 4242 not found" in text.output  # stderr
-    doc = json.loads(CliRunner().invoke(cli, ["net", "--once", "--json", "--pid", "4242"]).stdout)
-    assert doc["missing_pids"] == [4242]
+    text = CliRunner().invoke(cli, ["net", "--once", "--pid", "4242", "--pid", "4242"])
+    assert text.exit_code == 1 and "pid 4242 not found" in text.output  # stderr
+    js = CliRunner().invoke(cli, ["net", "--once", "--json", "--pid", "4242"])
+    assert js.exit_code == 1 and json.loads(js.stdout)["missing_pids"] == [4242]
 
     monkeypatch.setattr("time.sleep", lambda s: (_ for _ in ()).throw(KeyboardInterrupt))
     out = CliRunner().invoke(cli, ["net", "--json", "--pid", "4242"]).stdout
     events = [json.loads(line) for line in out.splitlines()]
     assert [e["event"] for e in events] == ["missing", "waiting", "summary"]
     assert events[0]["missing_pids"] == [4242] and events[-1]["missing_pids"] == [4242]
+
+
+def test_cli_once_some_pids_found_exits_zero(monkeypatch):
+    fake_cli(monkeypatch, [net.Target(7, "pid", "x.exe")])
+    monkeypatch.setattr(net, "missing_pids", lambda pids: [4242])
+    for extra in ([], ["--json"]):
+        result = CliRunner().invoke(cli, ["net", "--once", *extra, "--pid", "4242", "--pid", "7"])
+        assert result.exit_code == 0, result.output
 
 
 def test_missing_pids_uses_pid_exists(monkeypatch):

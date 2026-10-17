@@ -35,6 +35,8 @@ from pathlib import Path
 from time import monotonic as _monotonic
 from types import SimpleNamespace
 
+import pytest
+
 from agentwatch.ui.app import AgentWatchApp, WarningsList
 from agentwatch.ui.live_integrations import LLM_ASSESSMENT_INTERVAL_SECONDS
 
@@ -80,6 +82,7 @@ def _write_fixture_log(path: Path) -> None:
     path.write_text(line + "\n", encoding="utf-8")
 
 
+@pytest.mark.usefixtures("needs_siem")
 async def test_siem_and_llm_populate_via_real_watcher_and_real_detector(tmp_path, monkeypatch):
     fake = _FakeOllamaClient()
     monkeypatch.setattr("agentwatch.llm._import_ollama_client", lambda: fake)

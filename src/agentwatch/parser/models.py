@@ -43,9 +43,11 @@ class ToolType(Enum):
 # conversation as a "loop".
 # Claude Code's "system" and "queue-operation" entries and "text_output"
 # blocks stay actions (detectors scan their content) but are not tool calls.
+# Nor is "tool_result": the failed outcome of the tool call before it (error
+# detectors read it; a loop is keyed on the call itself).
 NON_TOOL_ROLE_LABELS = frozenset({
     "user_message", "assistant_message", "unknown_bubble",
-    "system", "queue-operation", "text_output",
+    "system", "queue-operation", "text_output", "tool_result",
 })
 
 # Token-usage-only records (Codex `token_count` events). Kept in the buffer so
@@ -107,6 +109,11 @@ class Action:
     @property
     def is_network(self) -> bool:
         return self.network_host is not None or self.network_port is not None
+
+
+# Context window sizes (tokens). A call bigger than 200K proves a 1M window.
+CONTEXT_WINDOW_200K = 200_000
+CONTEXT_WINDOW_1M = 1_000_000
 
 
 # ponytail: a fixed cap on idle gaps between actions. A single tool call that
@@ -171,6 +178,15 @@ class SessionStats:
         takes to run.
         """
         return self.active_seconds / 60
+
+    @property
+    def known_context_window(self) -> int:
+        """The model's window as far as the log proves it: reported by the log
+        (Codex, a known Claude model), else 1M once a call exceeded 200K.
+        0 = unknown."""
+        if self.context_window:
+            return self.context_window
+        return CONTEXT_WINDOW_1M if self.peak_context_tokens > CONTEXT_WINDOW_200K else 0
 
     @property
     def activity_count(self) -> int:

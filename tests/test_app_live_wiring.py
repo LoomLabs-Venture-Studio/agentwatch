@@ -23,6 +23,8 @@ import json
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
+
 from agentwatch.detectors.base import Category, Severity, Warning
 from agentwatch.parser.models import Action, ToolType
 from agentwatch.siem import SiemExportError
@@ -82,6 +84,7 @@ class _FakeOllamaClient:
 
 
 class TestSiemExportDedup:
+    @pytest.mark.usefixtures("needs_siem")
     async def test_still_open_warning_exported_once_across_ticks(self, tmp_path):
         log_path = tmp_path / "session.jsonl"
         log_path.write_text("", encoding="utf-8")

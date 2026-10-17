@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 
+import pytest
+
 from agentwatch.detectors.security.secret_scanner import (
     _find_spans,
     _redact_line,
@@ -74,3 +76,174 @@ def test_unterminated_pem_header_redacted_and_fast():
     assert time.perf_counter() - t0 < 2.0
     assert count == 1
     assert "BEGIN RSA PRIVATE KEY" not in new
+
+
+# QA repro corpus (#scrub-secret-leaks): shell commands quoting their secret.
+# Inside JSON the quote before each value is the escape \", which the raw-text
+# pass used to take for the value (a 1-char "\" match), leaving the secret.
+_QUOTED_SECRETS = [
+    ('export PGPASSWORD="S3cretPw0rd99" && psql', "S3cretPw0rd99"),
+    ('MYSQL_PWD="S3cretPw0rd98" mysql', "S3cretPw0rd98"),
+    ('mysql -u root -p"S3cretPw0rd97"', "S3cretPw0rd97"),
+    ('psql --password="S3cretPw0rd96"', "S3cretPw0rd96"),
+    ('curl -u "admin:S3cretPw0rd95" https://x.io', "S3cretPw0rd95"),
+    ('DB_PASSWORD="S3cretPw0rd94"', "S3cretPw0rd94"),
+    ('Authorization: Bearer "abcDEF123456ghiJKL789012mnoPQR"', "abcDEF123456ghiJKL789012mnoPQR"),
+    ('TOKEN="ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"', "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"),
+    # Bug 2: a shell-escaped quote inside the quoted value.
+    ('export PGPASSWORD="S3cret\\"Pw0rd99" && psql', 'S3cret\\"Pw0rd99'),
+]
+_CMDS = [cmd for cmd, _ in _QUOTED_SECRETS]
+
+
+def _corpus(tmp_path):
+    objs = [{"command": cmd} for cmd in _CMDS]
+    files = {
+        "many.json": json.dumps(objs, indent=1) + "\n",
+        "compact.json": json.dumps(objs),
+        "many.jsonl": "\n".join(json.dumps(o) for o in objs) + "\n",
+        "log.txt": "\n".join(json.dumps(o) for o in objs) + "\n",  # copied JSONL log
+        "plain.txt": "\n".join(_CMDS) + "\n",
+    }
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    return [tmp_path / name for name in files]
+
+
+def _leaks(text):
+    return [s for _, s in _QUOTED_SECRETS for frag in (s, s.split('\\"')[-1]) if frag in text]
+
+
+@pytest.mark.parametrize(
+    "name", ["many.json", "compact.json", "many.jsonl", "log.txt", "plain.txt"]
+)
+def test_scrub_hides_quoted_secrets_in_every_format(tmp_path, name):
+    from agentwatch.detectors.security.secret_scanner import scrub_file
+
+    _corpus(tmp_path)
+    path = tmp_path / name
+    r = scrub_file(path)
+    out = r.output.read_text(encoding="utf-8")
+    assert _leaks(out) == []
+    assert r.redacted == len(_QUOTED_SECRETS)
+    assert len(r.findings) == len(_QUOTED_SECRETS)
+    if path.suffix == ".json":
+        doc = json.loads(out)
+        assert [list(o) for o in doc] == [["command"]] * len(_CMDS)
+        assert doc[0]["command"] == 'export PGPASSWORD="[REDACTED]" && psql'
+    elif name != "plain.txt":
+        assert [list(json.loads(x)) for x in out.splitlines()] == [["command"]] * len(_CMDS)
+
+
+def test_scrub_json_keeps_formatting_outside_redacted_strings(tmp_path):
+    from agentwatch.detectors.security.secret_scanner import scrub_file
+
+    path = tmp_path / "cfg.json"
+    path.write_text('{\n  "a": 1,\n  "cmd": "mysql -p\\"S3cretPw0rd97\\""\n}\n', encoding="utf-8")
+    out = scrub_file(path).output.read_text(encoding="utf-8")
+    assert out == '{\n  "a": 1,\n  "cmd": "mysql -p\\"[REDACTED]\\""\n}\n'
+
+
+def test_no_short_findings_on_repro_corpus(tmp_path):
+    """A 1-2 char "secret" is a mis-anchored match (the backslash of an escaped quote)."""
+    from agentwatch.detectors.security.secret_scanner import scrub_file
+
+    for path in _corpus(tmp_path):
+        for f in scrub_file(path, dry_run=True).findings:
+            m = re.fullmatch(r"\[hidden, (\d+) chars\]", f["preview"])
+            assert m is None or int(m.group(1)) >= 4, (path.name, f)
+
+
+def test_scrub_dry_run_lists_json_findings_by_line(tmp_path):
+    from agentwatch.detectors.security.secret_scanner import scrub_file
+
+    path = tmp_path / "many.json"
+    path.write_text(json.dumps([{"command": c} for c in _CMDS[:2]], indent=1), encoding="utf-8")
+    findings = scrub_file(path, dry_run=True).findings
+    assert [(f["line"], f["preview"]) for f in findings] == [
+        (3, "[hidden, 13 chars]"),
+        (6, "[hidden, 13 chars]"),
+    ]
+
+
+def test_redact_secrets_consumes_escaped_quote_in_value():
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    assert (
+        redact_secrets('export PGPASSWORD="S3cret\\"Pw0rd99" && psql')
+        == 'export PGPASSWORD="[hidden, 15 chars]" && psql'
+    )
+
+
+def test_scrub_refuses_to_write_invalid_json(tmp_path, monkeypatch):
+    from agentwatch.detectors.security import secret_scanner
+
+    path = tmp_path / "a.json"
+    path.write_text('{"cmd": "x"}', encoding="utf-8")
+    monkeypatch.setattr(secret_scanner, "_redact_line", lambda *a, **k: ('{"cmd": ', 1))
+    with pytest.raises(ValueError, match="not be valid JSON"):
+        secret_scanner.scrub_file(path)
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def _nested_transcript(tmp_path):
+    """A Claude Code transcript where a tool_result holds `cat many.json`:
+    JSON text inside a JSON string, so each value is escaped twice."""
+    inner = json.dumps([{"command": c} for c in _CMDS], indent=1)
+    lines = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cat many.json"}},
+        ]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": inner},
+        ]}},
+    ]
+    path = tmp_path / "nested.jsonl"
+    path.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_scrub_hides_secrets_in_json_inside_a_tool_result(tmp_path):
+    from agentwatch.detectors.security.secret_scanner import scrub_file
+
+    r = scrub_file(_nested_transcript(tmp_path))
+    out = r.output.read_text(encoding="utf-8")
+    assert _leaks(out) == []
+    content = json.loads(out.splitlines()[1])["message"]["content"][0]["content"]
+    assert [list(o) for o in json.loads(content)] == [["command"]] * len(_CMDS)
+
+
+def test_scrub_nested_json_findings_not_fewer_than_develop(tmp_path):
+    """develop listed 5 (mostly bogus 1-char) findings on this file; fewer
+    would read as "cleaner" while secrets are left behind."""
+    from agentwatch.detectors.security.secret_scanner import scrub_file
+
+    r = scrub_file(_nested_transcript(tmp_path), dry_run=True)
+    assert len(r.findings) == r.redacted >= len(_QUOTED_SECRETS) > 5
+    assert {f["line"] for f in r.findings} == {2}
+
+
+def test_nested_json_redacted_at_every_layer():
+    text = "x"
+    for _ in range(8):
+        text = json.dumps({"cmd": 'mysql -p"Pw0rdS3cret9" ' + text})
+    new, count = _redact_line(text)
+    assert count == 8
+    assert "Pw0rdS3cret9" not in new
+
+
+@pytest.mark.parametrize("unit", ['\\"a\\" ', "\\\\", '"\\', 'x\\"'])
+def test_nested_json_pass_linear_on_unbalanced_quotes(unit):
+    """An unterminated quote in nested text must not rescan from every quote."""
+    import time
+
+    def run(n):
+        line = json.dumps({"c": unit * (n // len(unit))})
+        best = float("inf")
+        for _ in range(3):
+            t0 = time.perf_counter()
+            _redact_line(line)
+            best = min(best, time.perf_counter() - t0)
+        return best
+
+    assert run(200_000) / run(50_000) < 8.0

@@ -30,9 +30,9 @@ class TestEncodePathForClaude:
         # Empirically confirmed against a real ~/.claude/projects/ entry on
         # Windows: backslash, colon, and space all become '-'.
         windows_path = (
-            r"C:\Users\Zaid\Desktop\claude work\agentwatch\agentwatch-main"
+            r"C:\Users\alice\Desktop\claude work\agentwatch\agentwatch-main"
         )
-        expected = "C--Users-Zaid-Desktop-claude-work-agentwatch-agentwatch-main"
+        expected = "C--Users-alice-Desktop-claude-work-agentwatch-agentwatch-main"
         assert encode_path_for_claude(Path(windows_path)) == expected
 
     def test_windows_path_no_spaces(self):
