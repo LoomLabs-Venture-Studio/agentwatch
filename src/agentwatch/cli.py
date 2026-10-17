@@ -1977,6 +1977,14 @@ def audit(
     sys.exit(0)
 
 
+@cli.command(hidden=True)
+def hook():
+    """Claude Code coach hook: reads hook JSON on stdin (see plugin/)."""
+    from agentwatch.coach import main as coach_main
+
+    coach_main()
+
+
 @cli.command()
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--secrets-only", is_flag=True, help="Hide secrets only, not personal info")
