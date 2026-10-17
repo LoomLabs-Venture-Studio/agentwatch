@@ -106,6 +106,9 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
   so network detectors still fire (PR #138).
 - Security: PEM private-key bodies are redacted, not just the header line
   (PR #133).
+- PII: a card number followed by a CVV or expiry is now hidden, and phone
+  numbers with an invalid NANP area code or exchange (`100-200-3000`) are no
+  longer flagged.
 - `detect`: `Code.exe` and `Cursor.exe` map to their editor adapters
   (#100, PR #101).
 - `detect`: editor processes are credited to every candidate editor adapter
