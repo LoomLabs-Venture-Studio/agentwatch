@@ -1,0 +1,12 @@
+{
+  "name": "agentwatch",
+  "description": "agentwatch plugins for Claude Code",
+  "owner": { "name": "LoomLabs", "url": "https://github.com/LoomLabs-Venture-Studio" },
+  "plugins": [
+    {
+      "name": "agentwatch",
+      "source": "./plugin",
+      "description": "Coach hook (loops, thrashing, error spirals, stuck) and the agentwatch-scrub skill"
+    }
+  ]
+}

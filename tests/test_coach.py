@@ -168,3 +168,15 @@ def test_watchdog_exits_zero_silently_on_timeout():
         proc.kill()
         proc.stdin.close()
 
+
+def test_plugin_and_marketplace_manifests():
+    root = Path(__file__).resolve().parents[1]
+    market = json.loads((root / ".claude-plugin" / "marketplace.json").read_text("utf-8"))
+    entry = market["plugins"][0]
+    plugin_dir = root / entry["source"]
+    manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text("utf-8"))
+    assert manifest["name"] == entry["name"]
+    hooks = json.loads((plugin_dir / "hooks" / "hooks.json").read_text("utf-8"))["hooks"]
+    for event in ("PostToolUse", "PostToolUseFailure"):
+        assert "agentwatch hook" in hooks[event][0]["hooks"][0]["command"]
+    assert (plugin_dir / "skills" / "agentwatch-scrub" / "SKILL.md").is_file()
