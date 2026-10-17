@@ -34,6 +34,7 @@ REAL = [
     ("credit_card", "4111111111111111"),
     ("credit_card", "3782 822463 10005"),
     ("credit_card", "3782-822463-10005"),
+    ("credit_card", "4111 1111-1111 1111"),
     ("street_address", "123 Main St"),
     ("street_address", "4500 Old Mill Road, Apt 4B"),
 ]
@@ -58,7 +59,6 @@ LOOKALIKES = [
     "sha deadbeef4111111111111111",
     "run 4111 1111 1111 1112 123 ok",  # Luhn-invalid card + CVV
     "order 41111111111111112",  # Luhn-invalid 17-digit run
-    "4111 1111-1111 1111",  # mixed separators
     "100-200-3000",  # NANP area code starts 0/1
     "212-100-3000",  # NANP exchange starts 0/1
     "(100) 200-3000",
@@ -88,6 +88,7 @@ def test_lookalikes_are_ignored(text):
     ("5500-0000-0000-0004", " 12 26"),
     ("4111111111111111", " 123"),
     ("3782 822463 10005", " 1234"),
+    ("4111 1111-1111 1111", " 123"),
 ])
 def test_card_followed_by_cvv_or_expiry(card, tail):
     text = f"pay with {card}{tail} ok"
