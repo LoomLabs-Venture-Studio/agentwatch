@@ -1363,6 +1363,7 @@ class TestMatchedPrefixMasking:
         for f in findings:
             assert not _leaks(_GHP_TOKEN, f.matched_prefix)
 
+    @pytest.mark.usefixtures("needs_siem")
     def test_siem_round_trip_contains_no_raw_secret(self, tmp_path):
         from agentwatch.siem import SiemLogger
 

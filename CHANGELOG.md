@@ -4,10 +4,36 @@ Notable changes to AgentWatch (`agentwatch-monitor`). The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Issue and PR
 numbers refer to the GitHub repository.
 
-## [Unreleased] - develop, 2026-10-03 to 2026-10-14
+## [Unreleased]
+
+## [0.2.0] - Unreleased
+
+Everything on `develop` since `v0.1.6` (2026-03-10).
 
 ### Added
 
+- `agentwatch net`: shows which external servers local AI runtimes (Ollama,
+  LM Studio, llama.cpp, ...) talk to, named from the DNS cache, known hosts or
+  reverse DNS. Nothing is allow-listed. Supports `--once`, `--json`,
+  `--pid`, `--interval` and `--duration` (PR #134).
+- `agentwatch net` lists runtime listeners and flags the ones other machines
+  can reach (bound to all interfaces or a LAN address), plus the clients
+  connected to them (PR #135).
+- `agentwatch net --local` also watches running agents (Aider, opencode, ...)
+  and flags connections to cloud AI providers (PR #136).
+- Per-action network tracking in `watch` / `watch-all`: each agent's live
+  endpoints are sampled (unprivileged, about once a second) and the stats line
+  shows `Net:`. New `undeclared_egress` security detector (medium) flags
+  endpoints not explained by a declared host, a known AI provider or a known
+  agent vendor host (#130, PR #130).
+- `agentwatch scrub <file>`: hides secrets and personal info (email, phone,
+  US SSN, card numbers, US street address) in a `.scrubbed` copy, or
+  `--in-place` with a `.bak`. Also `--dry-run`, `--json`, `--secrets-only`
+  (PR #133).
+- `agentwatch audit --pii` reports personal info as low-severity findings
+  that never change the exit code (PR #133).
+- Claude Code skill `skills/agentwatch-scrub` for scrubbing a file or session
+  log by asking Claude Code (PR #133).
 - Per-agent adapter registry. Discovery, `parse_file`, `watch-all` and the
   TUI dispatch through it, and a failing adapter is skipped. Adds the GitHub
   Copilot CLI and Antigravity CLI (`agy`) adapters (PR #29).
@@ -26,9 +52,39 @@ numbers refer to the GitHub repository.
   (#79, PR #80).
 - `agentwatch check` reports session efficiency in text and JSON output
   (#40, PR #51).
+- Cursor support: `check`, `security-scan` and `watch-all` read Cursor
+  agent-mode sessions from `state.vscdb` (PR #2), and `watch --log
+  state.vscdb` works in the single-agent TUI (PR #13).
+- Aider support: parses `.aider.chat.history.md` in every edit format,
+  including resumed sessions, with an optional `--analytics-log` sidecar for
+  tokens and cost. Live tailing in `watch` / `watch-all` (PR #2).
+- Codex CLI support: session discovery and rollout log parsing (PR #2).
+  Rollouts are resolved from the process's open files when a pid is known,
+  and more Codex tool names are classified (PR #14).
+- Native Windows support: psutil process discovery, Windows path encoding
+  and a UTF-8 console (PR #2).
+- `ascii` theme for consoles without Unicode (PR #2).
+- `--siem-log PATH` writes findings as JSON lines for SIEM ingestion
+  (`siem` extra) on `check` and `security-scan` (PR #2), and on `watch` /
+  `watch-all`, exporting each warning once (PR #15).
+- `--llm` adds an optional local-Ollama second opinion on warnings (`llm`
+  extra) (PR #2), plus a goal-alignment advisory that is never scored
+  (PRs #9, #15).
+- `security-scan --audit-log PATH` writes a JSON-lines record of every
+  security detector run (PR #8).
+- `security-scan` shows raw security-signal counts (`security_stats` in
+  `--json`), and `check` and the TUI show peak context tokens (PR #8).
 
 ### Changed
 
+- Claude Code and Gemini actions take their network host from a tool's
+  `url`, so URL fetches reach the network detectors (#130, PR #130).
+- Status messages such as "Using log ..." go to stderr, so `--json` stdout
+  stays clean (PR #20).
+- Secrets in findings are masked: values of 20+ characters show only the last
+  4, shorter ones show `[hidden, N chars]`, and commands in warning details
+  are masked too. Affects `matched_prefix`, SIEM, `audit --json` and the TUI
+  (PR #23).
 - Synthetic PIDs are a crc32 of the session id, so they stay stable across
   runs (#90, PR #92).
 - Copilot in VS Code: finished requests settle for 1 s before they are
@@ -41,9 +97,15 @@ numbers refer to the GitHub repository.
   (#35, PR #56).
 - Rates show "--" until a session has 2 active minutes (#45, PR #50).
 - Security: redaction of truncated windows is memoized (#25, PR #57).
+- Faster scans and TUI refreshes on long sessions (PR #2).
+- `Action.user_id`, which was never set, is removed from the model (PR #8).
 
 ### Fixed
 
+- Parser: a non-text `host` in a tool's input no longer hides the URL host,
+  so network detectors still fire (PR #138).
+- Security: PEM private-key bodies are redacted, not just the header line
+  (PR #133).
 - `detect`: `Code.exe` and `Cursor.exe` map to their editor adapters
   (#100, PR #101).
 - `detect`: editor processes are credited to every candidate editor adapter
@@ -80,6 +142,13 @@ numbers refer to the GitHub repository.
 - Fixes from the Sprint 26 follow-ups (#62, #63, #64, PR #66).
 - Parser: unrecognised and binary logs are rejected instead of being parsed
   as Claude Code (#39, PR #48).
+- `watch`: the single-agent TUI showed no live data for any agent because the
+  first action was dropped (PR #12).
+- `stats` no longer crashes on non-UTF-8 bytes in a Claude Code log (PR #17).
+- `--version` reports the installed package version (PR #19).
+- `audit --redact` replaces only secret values, keeps JSON lines valid,
+  preserves non-UTF-8 bytes, writes atomically and keeps a one-time `.bak`
+  (PR #22). Its redaction count no longer includes false positives (PR #3).
 - Watcher: Claude metadata-only sessions are emitted the same way as in
   `parse_file` (#39, PR #61).
 - Parser: Claude Code bookkeeping entries are skipped, and the loop key is
@@ -108,6 +177,8 @@ numbers refer to the GitHub repository.
 
 ### Documentation
 
+- README: goal alignment, the GOAL category and Cursor's scope are described
+  accurately (PR #16).
 - README: GitHub Copilot in VS Code (#87, PR #96).
 - CLAUDE.md: crc32 synthetic pids, the Copilot-in-VS-Code settle, Kilo Code,
   Cline forks, the Roo marker and macOS Codex (PRs #97, #126).
@@ -119,5 +190,6 @@ numbers refer to the GitHub repository.
 - ADR proposing a TLS-intercepting proxy for network visibility (PR #103,
   rebuilt from PR #21).
 
-Earlier unreleased develop work since `v0.1.6` (PRs up to #28) is in the git
-log. Released history is in the PyPI releases up to `v0.1.6`.
+## [0.1.6] and earlier
+
+Released history is in the PyPI releases up to `v0.1.6`.

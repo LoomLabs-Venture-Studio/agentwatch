@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from agentwatch.detectors.base import Category, Severity, Warning
 from agentwatch.llm import LlmUnavailableError
 from agentwatch.siem import SiemExportError
@@ -98,6 +100,7 @@ def _read_lines(path) -> list[dict]:
 
 
 class TestLiveSiemExporter:
+    @pytest.mark.usefixtures("needs_siem")
     def test_still_open_warning_exported_once_across_simulated_ticks(self, tmp_path):
         path = tmp_path / "siem.jsonl"
         exporter = LiveSiemExporter(path, source_log="agent.jsonl")
@@ -113,6 +116,7 @@ class TestLiveSiemExporter:
         assert len(lines) == 1
         assert lines[0]["signal"] == "credential_access"
 
+    @pytest.mark.usefixtures("needs_siem")
     def test_new_distinct_warning_is_exported(self, tmp_path):
         path = tmp_path / "siem.jsonl"
         exporter = LiveSiemExporter(path)
@@ -160,6 +164,7 @@ class TestLiveSiemExporter:
         exporter = LiveSiemExporter(tmp_path / "siem.jsonl")
         exporter.close()  # must not raise even though export_new was never called
 
+    @pytest.mark.usefixtures("needs_siem")
     def test_close_releases_file_handle(self, tmp_path):
         path = tmp_path / "siem.jsonl"
         exporter = LiveSiemExporter(path)

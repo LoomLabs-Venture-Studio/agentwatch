@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta
 
+import pytest
+
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
 from agentwatch.parser.security_patterns import (
     is_credential_like_path,
@@ -230,6 +232,7 @@ class TestSecurityScanCountersSummaryLine:
         assert payload["security_stats"]["injection_attempts"] == 0
 
 
+@pytest.mark.usefixtures("needs_siem")
 class TestSiemReportSummaryCarriesSecurityStats:
     def test_log_report_summary_accepts_optional_security_stats(self, tmp_path):
         from agentwatch.siem import SiemLogger
