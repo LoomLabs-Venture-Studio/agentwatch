@@ -105,6 +105,8 @@ numbers refer to the GitHub repository.
 - Security: the Discord, JWT and high-entropy patterns run in linear time
   (#32, PR #60).
 - Security: `c2_beacon` patterns match whole words only (#41, PR #55).
+- Net: `watch-all` re-tracks a session's sockets when a new process takes
+  over its log, and `net --once` exits 1 when every `--pid` is missing.
 
 ### Documentation
 
