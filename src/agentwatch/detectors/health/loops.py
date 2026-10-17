@@ -112,6 +112,8 @@ class LoopDetector(Detector):
                     "count": count,
                     "last_command": last_cmd,
                     "last_error": last_err,
+                    # Exported, so a hash: the key can hold a raw command.
+                    "loop_id": hashlib.sha1(most_common.encode()).hexdigest()[:12],
                 },
             ).with_cost(matching, buffer)
 

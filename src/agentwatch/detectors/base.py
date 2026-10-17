@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -228,7 +229,30 @@ _IDENTITY_DETAIL_KEYS = (
     "last_command",
     "last_error",
     "endpoint",
+    "loop_id",
 )
+
+# Error text in a key is normalized first: its durations, pids, temp paths
+# and timestamps change on every run of the same failure.
+_ERROR_DETAIL_KEYS = frozenset({"error_pattern", "last_error"})
+
+# Volatile parts of an error message: line numbers, durations, hex ids and
+# hashes, Windows and POSIX paths (temp dirs), and any 2+ digit number
+# (pids, ports, timestamps). Single digits stay: "exit code 1" != "exit code 2".
+_VOLATILE_ERROR_RE = re.compile(
+    r"line \d+"
+    r"|\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?)\b"
+    r"|0x[0-9a-f]+|\b[0-9a-f]{8,}\b"
+    r"|[a-z]:\\[^\s'\"]+"
+    r"|/[\w./\-]+"
+    r"|\d{2,}"
+)
+
+
+def normalize_error(msg: str) -> str:
+    """Stable signature of an error message: volatile parts become ``<X>``,
+    whitespace collapsed."""
+    return " ".join(_VOLATILE_ERROR_RE.sub("<X>", msg.lower()).split())
 
 
 def warning_dedup_key(warning: Warning) -> str:
@@ -237,8 +261,12 @@ def warning_dedup_key(warning: Warning) -> str:
     an entirely new `Warning` object each time."""
     parts = [warning.signal]
     for key in _IDENTITY_DETAIL_KEYS:
+        if key == "last_error" and "loop_id" in warning.details:
+            continue  # a loop is its call (loop_id); the error text varies per run
         value = warning.details.get(key)
         if value:
+            if key in _ERROR_DETAIL_KEYS:
+                value = normalize_error(str(value))
             parts.append(f"{key}={value}")
     return "|".join(parts)
 
