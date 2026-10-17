@@ -12,6 +12,10 @@ SKIPPED = [
     {"type": "pr-link", "prNumber": 1, "prUrl": "https://example.com/pr/1"},
     {"type": "file-history-delta", "trackingPath": "a.py"},
     {"type": "continued-in", "continuedInSessionId": "s2"},
+    {"type": "api-request", "params": {"model": "claude-opus-5-5"}},
+    {"type": "api-request-shape", "shapeHash": "ab12", "shape": {"system": []}},
+    {"type": "api-request-blob", "hash": "cd34",
+     "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}},
     {"type": "user", "message": {"role": "user", "content": "fix the bug"}},
 ]
 # Kept: detectors scan their top-level "content" (a real secret_leak came

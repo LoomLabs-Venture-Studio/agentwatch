@@ -68,6 +68,8 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
 
     We extract actions from tool_use blocks and later merge results.
     """
+    if entry.get("type") in _NON_ACTION_TYPES:
+        return None
     try:
         msg = entry.get("message")
         if not isinstance(msg, dict):
@@ -268,8 +270,16 @@ def _parse_timestamp(entry: dict) -> datetime | None:
     return None
 
 
+# Claude Code 2.1.300+ also logs every model request: "api-request" (params,
+# hashes) and "api-request-shape" (system prompt + tool list), both timed.
+# "api-request-blob" (request message copies) is untimed and its type is
+# neither user nor assistant, so it never yields an action; listed so that
+# stays true.
 _NON_ACTION_TYPES = frozenset(
-    {"attachment", "pr-link", "file-history-delta", "continued-in"}
+    {
+        "attachment", "pr-link", "file-history-delta", "continued-in",
+        "api-request", "api-request-shape", "api-request-blob",
+    }
 )
 
 
@@ -280,11 +290,10 @@ def _parse_claude_code_flat(entry: dict) -> Action | None:
     # datetime.now() wrecks session duration (#38).
     if not (entry.get("timestamp") or entry.get("ts") or entry.get("time")):
         return None
-    # Timestamped bookkeeping entries and plain user prompts are not agent
-    # actions either, and no detector reads them (#46).
-    if entry.get("type") in _NON_ACTION_TYPES or (
-        entry.get("type") == "user" and isinstance(entry.get("message"), dict)
-    ):
+    # Plain user prompts are not agent actions either, and no detector reads
+    # them (#46); timestamped bookkeeping (_NON_ACTION_TYPES) is dropped by
+    # parse_claude_code_entry before it gets here.
+    if entry.get("type") == "user" and isinstance(entry.get("message"), dict):
         return None
     try:
         timestamp = _parse_timestamp(entry)

@@ -109,6 +109,10 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
 - PII: a card number followed by a CVV or expiry is now hidden, and phone
   numbers with an invalid NANP area code or exchange (`100-200-3000`) are no
   longer flagged (PR #140).
+- Claude Code 2.1.300+: the `api-request`, `api-request-shape` and
+  `api-request-blob` lines logged on every model turn are no longer parsed
+  as actions, which raised false `api-request` loops and diluted real ones
+  (PR #144).
 - `detect`: `Code.exe` and `Cursor.exe` map to their editor adapters
   (#100, PR #101).
 - `detect`: editor processes are credited to every candidate editor adapter
