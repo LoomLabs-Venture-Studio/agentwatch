@@ -10,7 +10,7 @@ import click
 
 from agentwatch import __version__
 from agentwatch.detectors import create_registry
-from agentwatch.detectors.base import Warning
+from agentwatch.detectors.base import Warning, findings_spend, format_tokens, format_usd
 from agentwatch.discovery import (
     AgentProcess,
     build_agent_tree,
@@ -234,6 +234,35 @@ def _default_log() -> tuple[Path | None, str | None]:
     return log, f"No session for {Path.cwd()}; using newest session from {project}"
 
 
+def _waste(warnings: list[Warning], stats) -> dict | None:
+    """Spend on the calls behind the findings vs the session's, or None when
+    no finding has token data. A call shared by two findings counts once."""
+    findings, tokens, cost = findings_spend(warnings)
+    if not findings:
+        return None
+    return {
+        "findings": findings,
+        "tokens": tokens,
+        "cost_usd": None if cost is None else round(cost, 4),
+        "session_tokens": stats.billed_tokens,
+        "session_cost_usd": None if stats.billed_cost is None else round(stats.billed_cost, 4),
+    }
+
+
+def _waste_line(waste: dict) -> str:
+    """'Waste: ~$X on N findings (Y% of session cost)'; tokens when unpriced."""
+    n = waste["findings"]
+    cost, session_cost = waste["cost_usd"], waste["session_cost_usd"]
+    if cost is not None:
+        amount = format_usd(cost)
+        share = f" ({cost / session_cost * 100:.0f}% of session cost)" if session_cost else ""
+    else:
+        amount = f"{format_tokens(waste['tokens'])} tok"
+        session = waste["session_tokens"]
+        share = f" ({waste['tokens'] / session * 100:.0f}% of session tokens)" if session else ""
+    return f"  Waste: {amount} on {n} finding{'s' if n != 1 else ''}{share}"
+
+
 def print_health_report(
     report,
     security_mode: bool = False,
@@ -287,7 +316,10 @@ def print_health_report(
         )
     if stats is not None and stats.peak_context_tokens:
         click.echo(f"  Peak context: {stats.peak_context_tokens:,} tokens (single action)")
-    if efficiency is not None or (stats is not None and stats.peak_context_tokens):
+    waste = _waste(report.warnings, stats) if stats is not None else None
+    if waste:
+        click.echo(click.style(_waste_line(waste), bold=True))
+    if efficiency is not None or (stats is not None and stats.peak_context_tokens) or waste:
         click.echo()
 
     # Warnings
@@ -305,6 +337,7 @@ def print_health_report(
                 f"     {w.emoji} "
                 + click.style(f"[{w.signal}]", fg=severity_color[w.severity.value])
                 + f" {w.message}"
+                + (click.style(f"  {w.cost_label}", bold=True) if w.cost_label else "")
             )
             # Show key details
             if w.details:
@@ -478,6 +511,7 @@ def check(
         output["session_fallback"] = note
         output["efficiency"] = efficiency.to_dict()
         output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
+        output["waste"] = _waste(warnings, buffer.stats)
         click.echo(json.dumps(output, indent=2))
     else:
         print_health_report(

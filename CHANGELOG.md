@@ -26,9 +26,22 @@ numbers refer to the GitHub repository.
   (#79, PR #80).
 - `agentwatch check` reports session efficiency in text and JSON output
   (#40, PR #51).
+- Dollar cost per health finding: each health warning carries the tokens
+  and USD of the API calls behind the actions it covers (`~$1.40 · 210k tok`)
+  in `check` text and `--json`, the `watch`/`watch-all` TUIs and the SIEM
+  export (`tokens`, `cost_usd`). `check` adds a `Waste: ~$X on N findings
+  (Y% of session cost)` line and a `waste` JSON object. Fields are absent,
+  never 0 or estimated, when the agent logs no tokens or the model has no
+  listed price.
 
 ### Changed
 
+- Pricing: one table in `cc_stats.PRICING` (Anthropic's price page,
+  2026-10-17) keyed by model id. `stats` priced every "opus" at $15/$75,
+  overstating current Opus (Opus 5.5 is $4/$20, Opus 4.5-5 $5/$25); an
+  unlisted model now shows "n/a" instead of Sonnet rates. Session cost counts
+  each Claude Code API call once (every content-block line repeats its usage)
+  and prices it by its own model, 1h cache writes at the 1h rate.
 - Synthetic PIDs are a crc32 of the session id, so they stay stable across
   runs (#90, PR #92).
 - Copilot in VS Code: finished requests settle for 1 s before they are
