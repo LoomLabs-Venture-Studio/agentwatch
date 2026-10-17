@@ -25,6 +25,7 @@ def _read_lines(path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+@pytest.mark.usefixtures("needs_siem")
 class TestSiemLoggerWarnings:
     def test_writes_one_json_line_per_warning(self, tmp_path):
         path = tmp_path / "siem.jsonl"
@@ -98,6 +99,7 @@ class TestSiemLoggerWarnings:
         assert entry["severity"] == expected_log_level_name
 
 
+@pytest.mark.usefixtures("needs_siem")
 class TestSiemLoggerReportSummary:
     def test_log_report_summary_fields(self, tmp_path):
         path = tmp_path / "siem.jsonl"
@@ -114,6 +116,7 @@ class TestSiemLoggerReportSummary:
         assert entry["severity"] == "INFO"
 
 
+@pytest.mark.usefixtures("needs_siem")
 class TestSiemLoggerAppendBehavior:
     def test_second_instance_appends_not_truncates(self, tmp_path):
         path = tmp_path / "siem.jsonl"
@@ -198,6 +201,7 @@ def _write_fixture_log(path) -> None:
 
 
 class TestCliSiemLogWiring:
+    @pytest.mark.usefixtures("needs_siem")
     def test_security_scan_siem_log_writes_findings(self, tmp_path):
         from click.testing import CliRunner
 
@@ -219,6 +223,7 @@ class TestCliSiemLogWiring:
         assert any(entry["event_type"] == "agentwatch.report_summary" for entry in lines)
         assert any(entry["signal"] == "credential_access" for entry in lines)
 
+    @pytest.mark.usefixtures("needs_siem")
     def test_check_security_siem_log_writes_findings(self, tmp_path):
         from click.testing import CliRunner
 
