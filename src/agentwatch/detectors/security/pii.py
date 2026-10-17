@@ -30,11 +30,12 @@ _PII_PATTERNS: list[tuple[re.Pattern, str]] = [
     ), "phone"),
     (re.compile(_START + r"(?!000|666|9)\d{3}-(?!00)\d{2}-(?!0000)\d{4}" + _END), "us_ssn"),
     # Fixed brand groupings, so a trailing CVV/expiry is not swallowed into
-    # the digit run: unseparated 13-19, 4-4-4-4, Amex 4-6-5 (one separator).
+    # the digit run: unseparated 13-19, 4-4-4-4, Amex 4-6-5. Each gap is an
+    # optional space/dash on its own, so mixed separators still match.
     # ponytail: separated 19-digit (4-4-4-4-3) cards are missed; add the
     # grouping if they show up.
     (re.compile(
-        _START + r"(?:\d{13,19}|\d{4}([ -])\d{4}\1\d{4}\1\d{4}|\d{4}([ -])\d{6}\2\d{5})"
+        _START + r"(?:\d{13,19}|\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}|\d{4}[ -]?\d{6}[ -]?\d{5})"
         + _END
     ), "credit_card"),
     (re.compile(
