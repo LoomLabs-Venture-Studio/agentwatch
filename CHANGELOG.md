@@ -113,6 +113,11 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
   `api-request-blob` lines logged on every model turn are no longer parsed
   as actions, which raised false `api-request` loops and diluted real ones
   (PR #144).
+- Loop detector: Claude Code's failed `tool_result` records are no longer a
+  loop key or a window slot, so repeated failing calls are reported on the
+  call itself, with its error. Tools with no file path or command (MCP
+  tools, WebSearch, ...) are keyed on a hash of their input, so distinct
+  calls are not a loop (PR #144).
 - `detect`: `Code.exe` and `Cursor.exe` map to their editor adapters
   (#100, PR #101).
 - `detect`: editor processes are credited to every candidate editor adapter

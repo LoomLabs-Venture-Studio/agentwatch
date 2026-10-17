@@ -90,3 +90,29 @@ def test_repeated_read_reaches_high(tmp_path):
     w = s.loop_warnings(tmp_path)[-1]
     assert w.severity == Severity.HIGH
     assert w.details["tool"] == "Read" and w.details["count"] == 10
+
+
+def test_identical_failing_bash_is_a_loop_on_the_bash_call(tmp_path):
+    s = _Session()
+    for _ in range(8):
+        s.call(BASH, fail=True)
+    w = s.loop_warnings(tmp_path)[-1]
+    assert w.details["tool"] == "Bash" and w.details["count"] == 8
+    assert w.severity == Severity.HIGH
+    assert w.details["last_command"] == _block(BASH)["input"]["command"]
+    assert "boom: widget failed" in w.details["last_error"]
+
+
+def test_distinct_mcp_inputs_are_not_a_loop(tmp_path):
+    s = _Session()
+    for i in range(12):
+        s.call(MCP, text=f"document.querySelectorAll('h{i}').length")
+    assert s.loop_warnings(tmp_path) == []
+
+
+def test_identical_mcp_inputs_are_a_loop(tmp_path):
+    s = _Session()
+    for _ in range(12):
+        s.call(MCP)
+    w = s.loop_warnings(tmp_path)[-1]
+    assert w.details["tool"] == _block(MCP)["name"] and w.severity == Severity.HIGH

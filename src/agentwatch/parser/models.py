@@ -38,9 +38,11 @@ class ToolType(Enum):
 # conversation as a "loop".
 # Claude Code's "system" and "queue-operation" entries and "text_output"
 # blocks stay actions (detectors scan their content) but are not tool calls.
+# Nor is "tool_result": the failed outcome of the tool call before it (error
+# detectors read it; a loop is keyed on the call itself).
 NON_TOOL_ROLE_LABELS = frozenset({
     "user_message", "assistant_message", "unknown_bubble",
-    "system", "queue-operation", "text_output",
+    "system", "queue-operation", "text_output", "tool_result",
 })
 
 # Token-usage-only records (Codex `token_count` events). Kept in the buffer so
