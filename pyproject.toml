@@ -44,7 +44,7 @@ siem = [
 ]
 
 [project.scripts]
-agentwatch = "agentwatch.cli:main"
+agentwatch = "agentwatch._entry:main"
 agentguard = "agentwatch.cli:security_main"
 
 [build-system]

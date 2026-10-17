@@ -161,6 +161,25 @@ src/agentwatch/
                        attributable(): process-kind adapters only, minus
                        Codex app-server threads, `kilo serve`/`opencode
                        serve` and Aider (synthetic timestamps)
+  coach.py             `agentwatch hook` (hidden): Claude Code PostToolUse/
+                       PostToolUseFailure hook. Tail (4 MB) of
+                       transcript_path -> parse_claude_code_entry ->
+                       health registry; new HIGH/CRITICAL PROGRESS/ERRORS
+                       warning -> hookSpecificOutput.additionalContext
+                       (<= 3 lines; evidence quoted with </> stripped, the
+                       Try line is fixed text per signal). Subagent
+                       payloads (agent_id) read <transcript>/subagents/
+                       agent-<id>.jsonl. The hook's own call is folded in
+                       when the transcript lags. Dedup by
+                       warning_dedup_key per session[.agent] in
+                       $CLAUDE_PLUGIN_DATA/coach, else %LOCALAPPDATA% or
+                       ~/.cache + agentwatch/coach (0700, owner-checked on
+                       POSIX, mkstemp writes, 7-day prune; also the latest
+                       warnings). Fails open: exit 0, no stdout; 5 s
+                       watchdog
+  _entry.py            Console-script entry: `hook` goes straight to
+                       coach.py without importing cli.py, the rest to
+                       cli.main
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
@@ -287,6 +306,11 @@ src/agentwatch/
                        calculate_team_health / calculate_security_score
     rot.py               RotScorer — EMA-smoothed "context rot" composite
                        metric + state machine
+
+  (repo root) .claude-plugin/marketplace.json -> plugin/ (the
+                       `agentwatch` Claude Code plugin):
+                       .claude-plugin/plugin.json, hooks/hooks.json
+                       (`agentwatch hook; exit 0`), skills/agentwatch-scrub
 
   ui/
     app.py               Single-agent Textual App (HealthBar,

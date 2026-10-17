@@ -603,14 +603,55 @@ dry-runs first and never prints the raw values. For one session log it uses
 `scrub` (a clean copy that also covers prompts and tool results); for
 in-place redaction across many logs it uses `audit --redact --pii`, which
 skips prompts and tool results. It moves a scrubbed session log out of
-`~/.claude/projects/` so it is not counted as another session. Install it by copying the
+`~/.claude/projects/` so it is not counted as another session. It ships in the
+[Claude Code plugin](#claude-code-plugin-coach), or install it alone by copying the
 folder:
 
 ```bash
-cp -r skills/agentwatch-scrub ~/.claude/skills/agentwatch-scrub
+cp -r plugin/skills/agentwatch-scrub ~/.claude/skills/agentwatch-scrub
 ```
 
 Claude Code only.
+
+## Claude Code plugin (coach)
+
+The `agentwatch` plugin coaches Claude Code while it works. After every tool
+call a hook runs agentwatch's health detectors on the live session. When a
+new HIGH or CRITICAL loop, thrash, error spiral or stuck pattern shows up, it
+adds a short note to Claude's context (what is wrong, the evidence, what to
+try). It never blocks a tool call, and it reports each problem once per
+session, again only if it clears and comes back. Context-size estimates are
+not coached. The plugin also includes the scrub skill.
+
+The plugin needs agentwatch **0.2.0 or later** on your PATH (`agentwatch hook`
+is not in 0.1.x, the current PyPI release). Until 0.2.0 is on PyPI, install
+from git:
+
+```bash
+pipx install git+https://github.com/LoomLabs-Venture-Studio/agentwatch@develop-overdrive
+```
+
+Then add the plugin. `/plugin marketplace add owner/repo` reads the default
+branch, which has no `plugin/` yet, so pin the branch with `#ref` for now:
+
+```
+/plugin marketplace add LoomLabs-Venture-Studio/agentwatch#develop-overdrive
+/plugin install agentwatch@agentwatch
+```
+
+Once `plugin/` is on the default branch, drop the `#develop-overdrive`. On
+Claude Code 2.1.275+ one step also works:
+`/plugin install agentwatch --marketplace LoomLabs-Venture-Studio/agentwatch#develop-overdrive`.
+To try it from a checkout without installing: `claude --plugin-dir ./plugin`.
+
+If `agentwatch` is not on PATH the hook does nothing. Any error, bad input or
+missing transcript also exits 0 silently. Subagents are coached from their
+own transcript. The note quotes tool output as evidence (with `<`/`>`
+removed); its advice line is fixed text. Dedup state is a small JSON file per
+session in the plugin's data dir (`$CLAUDE_PLUGIN_DATA/coach`), or else
+`%LOCALAPPDATA%\agentwatch\coach` on Windows and `~/.cache/agentwatch/coach`
+elsewhere (`0700`, never the shared temp dir). It also holds that session's
+latest health warnings; files older than 7 days are deleted.
 
 ## Configuration
 
