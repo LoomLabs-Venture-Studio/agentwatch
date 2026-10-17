@@ -126,6 +126,10 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
   (PR #144).
 - Breaking: `ContextPressureDetector` no longer takes a `model` argument;
   the window comes from the log (PR #144).
+- Warning dedup keys stay stable when a failure's error text changes run to
+  run (durations, pids, temp paths, timestamps): a loop is keyed on its
+  call, and other error text is normalized first. The coach, SIEM export
+  and the TUI no longer treat each repeat as a new warning (PR #148).
 - Security: `scrub` no longer leaks quoted secrets in `.json` files (Cline
   `api_conversation_history.json`, copied logs) or corrupts them: JSON input
   is redacted on decoded string values and is never written back invalid. A
