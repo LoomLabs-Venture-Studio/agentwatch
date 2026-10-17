@@ -181,3 +181,24 @@ class TestC2BeaconWordBoundaries:
     def test_real_beacons_still_fire(self, cmd):
         w = C2CommunicationDetector().check(_buf(*(["ls"] * 9 + [cmd])))
         assert w is not None and w.signal == "c2_beacon"
+
+
+@pytest.mark.parametrize("host", [12345, {"name": "evil.com"}, ["evil.com"], True])
+def test_moltbot_non_text_host_falls_back_to_url_host(host):
+    from agentwatch.parser.logs import parse_moltbot_entry
+
+    action = parse_moltbot_entry({
+        "ts": "2026-03-01T12:00:00Z",
+        "type": "tool_call",
+        "tool_call": {
+            "name": "web_fetch",
+            "input": {"host": host, "url": "https://webhook.site/abc"},
+        },
+    })
+    assert action is not None
+    assert action.network_host == "webhook.site"
+
+    buf = ActionBuffer()
+    buf.add(action)
+    warning = NetworkAnomalyDetector().check(buf)
+    assert warning is not None and warning.signal == "suspicious_host"
