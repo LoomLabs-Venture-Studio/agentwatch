@@ -283,9 +283,6 @@ _W_CACHE_HIT = 0.15
 _W_ACTIONS_TURN = 0.10
 _W_DURATION = 0.15
 
-# Context window sizes (tokens) for context pressure.
-_CONTEXT_WINDOW = 200_000
-_CONTEXT_WINDOW_1M = 1_000_000
 
 
 def _clamp01(x: float) -> float:
@@ -301,7 +298,7 @@ def calculate_efficiency(
     ``warnings`` is accepted for call-site compatibility but ignored — all
     signals are derived from the action buffer and its stats.
     """
-    from agentwatch.parser.models import turns_from_buffer
+    from agentwatch.parser.models import CONTEXT_WINDOW_200K, turns_from_buffer
 
     stats = buffer.stats
     duration = stats.duration_minutes
@@ -322,11 +319,9 @@ def calculate_efficiency(
     # not a cumulative sum: cache reads re-send the whole conversation every
     # call, so summing them saturates any normal session. Drops after
     # compaction. 0 when no per-call usage was reported.
-    # ponytail: 200K/1M window inferred from peak call size (a call >200K
-    # proves a 1M-window model); upgrade path is reading the model name from the log.
-    window = stats.context_window or (
-        _CONTEXT_WINDOW_1M if stats.peak_context_tokens > _CONTEXT_WINDOW else _CONTEXT_WINDOW
-    )
+    # Window: log-reported or proven (SessionStats.known_context_window);
+    # unknown counts as 200K here, a penalty is still useful as an estimate.
+    window = stats.known_context_window or CONTEXT_WINDOW_200K
     context_usage_pct = min(stats.last_context_tokens / window * 100, 100.0)
     pressure_penalty = _clamp01(context_usage_pct / 100.0)
 

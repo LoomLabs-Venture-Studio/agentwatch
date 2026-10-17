@@ -101,6 +101,11 @@ class Action:
         return self.network_host is not None or self.network_port is not None
 
 
+# Context window sizes (tokens). A call bigger than 200K proves a 1M window.
+CONTEXT_WINDOW_200K = 200_000
+CONTEXT_WINDOW_1M = 1_000_000
+
+
 # ponytail: a fixed cap on idle gaps between actions. A single tool call that
 # runs longer than this undercounts; per-agent or user-tunable caps if needed.
 IDLE_GAP_CAP = timedelta(minutes=30)
@@ -160,6 +165,15 @@ class SessionStats:
         takes to run.
         """
         return self.active_seconds / 60
+
+    @property
+    def known_context_window(self) -> int:
+        """The model's window as far as the log proves it: reported by the log
+        (Codex, a known Claude model), else 1M once a call exceeded 200K.
+        0 = unknown."""
+        if self.context_window:
+            return self.context_window
+        return CONTEXT_WINDOW_1M if self.peak_context_tokens > CONTEXT_WINDOW_200K else 0
 
     @property
     def activity_count(self) -> int:

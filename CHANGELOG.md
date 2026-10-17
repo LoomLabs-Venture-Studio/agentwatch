@@ -118,6 +118,14 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
   call itself, with its error. Tools with no file path or command (MCP
   tools, WebSearch, ...) are keyed on a hash of their input, so distinct
   calls are not a loop (PR #144).
+- Context pressure: `context_pressure`/`context_critical` measure the latest
+  call's context against the model's window instead of summing tokens over
+  the session against a fixed 180K (reported "231% full" on a 1M-window
+  session at 26%). Claude Code transcripts report the window from the model
+  id; with no known window or no reported usage, no percentage is claimed
+  (PR #144).
+- Breaking: `ContextPressureDetector` no longer takes a `model` argument;
+  the window comes from the log (PR #144).
 - `detect`: `Code.exe` and `Cursor.exe` map to their editor adapters
   (#100, PR #101).
 - `detect`: editor processes are credited to every candidate editor adapter

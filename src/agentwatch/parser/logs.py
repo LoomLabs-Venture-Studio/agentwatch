@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
-from .models import Action, ToolType
+from .models import CONTEXT_WINDOW_1M, Action, ToolType
 
 # Sensitive path patterns for security detection -- moved to
 # `security_patterns.py` (Sprint 14) so `parser.models.ActionBuffer.add()`'s
@@ -55,6 +56,22 @@ def classify_tool(tool_name: str) -> ToolType:
         return ToolType.MCP
 
     return ToolType.UNKNOWN
+
+
+# Claude models with a 1M-token window (per the Anthropic model table,
+# 2026-10). "[1m]" is Claude Code's 1M-context alias suffix.
+# ponytail: a new 1M family needs a row here; until then its window is
+# unknown, inferred from the first call over 200K, and no % is claimed.
+_CLAUDE_1M_MODELS = re.compile(
+    r"\[1m\]|claude-(fable|mythos|opus-5|opus-4-[678]|sonnet-5|sonnet-4-6|haiku-5)"
+)
+
+
+def claude_context_window(model: Any) -> int:
+    """Context window of a Claude model id, 0 = unknown."""
+    if isinstance(model, str) and _CLAUDE_1M_MODELS.search(model):
+        return CONTEXT_WINDOW_1M
+    return 0
 
 
 def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
@@ -114,6 +131,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
         )
 
         session_id = entry.get("sessionId")
+        context_window = claude_context_window(msg.get("model"))
 
         actions: list[Action] = []
 
@@ -166,6 +184,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                     cost_usd=cost_usd,
                     cache_creation_tokens=cache_creation_tokens,
                     cache_read_tokens=cache_read_tokens,
+                    context_window=context_window,
                     outgoing_data=outgoing_data,
                     session_id=session_id,
                     raw=block,
@@ -215,6 +234,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                 cost_usd=cost_usd,
                 cache_creation_tokens=cache_creation_tokens,
                 cache_read_tokens=cache_read_tokens,
+                context_window=context_window,
                 session_id=session_id,
                 raw={"type": "text", "text": joined[:500]},
             ))
