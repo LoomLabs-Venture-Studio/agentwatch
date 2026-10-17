@@ -133,6 +133,11 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
   the match, and a quoted `Bearer "..."` token is masked. JSON text inside
   a transcript string (a tool_result of `cat x.json`) is redacted too
   (PR #143).
+- Security: bare `key=value` / `key: value` secrets (`password=Hunter2!`,
+  `secret: ...`, `token=`, `api_key=`) are masked everywhere, with no
+  revealed tail. Values under 6 chars, without a digit or symbol, code
+  expressions and placeholders (`***`, `gho_****`, `<...>`, `${VAR}`,
+  `changeme`) are left alone (PR #143).
 - `detect`: `Code.exe` and `Cursor.exe` map to their editor adapters
   (#100, PR #101).
 - `detect`: editor processes are credited to every candidate editor adapter

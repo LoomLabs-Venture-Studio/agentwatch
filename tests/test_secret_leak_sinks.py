@@ -640,3 +640,71 @@ def test_flag_gap_glued_program_words(text, expected):
     from agentwatch.detectors.security.secret_scanner import _redact_text
 
     assert _redact_text(text)[0] == expected
+
+
+# Bare key=value / key: value secrets: no quotes, no env-var prefix.
+@pytest.mark.parametrize(
+    "text, secret",
+    [
+        ("password=Hunter2SuperSecret!", "Hunter2SuperSecret!"),
+        ("login --user bob PASSWORD=Hunter2SuperSecret! ok", "Hunter2SuperSecret!"),
+        ("passwd: s3cr3tPass", "s3cr3tPass"),
+        ("pwd=Abc123xyz", "Abc123xyz"),
+        ("Secret: 9fK2mQ7vX1", "9fK2mQ7vX1"),
+        ("client_secret=9fK2mQ7vX1", "9fK2mQ7vX1"),
+        ("token=tok_7Hq2Lm9P", "tok_7Hq2Lm9P"),
+        ("API_KEY: ak7Hq2Lm9PzX", "ak7Hq2Lm9PzX"),
+        ("api-key=ak7Hq2Lm9PzX", "ak7Hq2Lm9PzX"),
+        ("apikey = ak7Hq2Lm9PzX", "ak7Hq2Lm9PzX"),
+        ("password='Hunter2!'", "Hunter2!"),
+        ('{"password": "Hunter2!x"}', "Hunter2!x"),
+    ],
+)
+def test_bare_key_value_secret_masked(text, secret):
+    from agentwatch.detectors.security.secret_scanner import (
+        _redact_text,
+        redact_secrets,
+        redact_truncate,
+    )
+
+    assert secret not in redact_secrets(text)
+    assert secret not in redact_truncate(text, 200)
+    assert secret not in _redact_text(text)[0]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "password=abc12",  # under 6 chars
+        "password=***",
+        "password=********",
+        "password=<your-password>",
+        "password=${DB_PASSWORD}",
+        "password={{ db_password }}",
+        "password=changeme",
+        "PASSWORD=CHANGEME",
+        "PWD=/home/zaid/project",
+        "password=self.password",  # code, not a value
+        "api_key=os.environ['API_KEY']",
+        "token=get_token(user)",
+        "password: Optional[str] = None",
+        "secret: db-credentials",  # k8s Secret name
+        "max_tokens=4096",
+        "token_count: 123456",
+    ],
+)
+def test_bare_key_value_placeholders_left_alone(text):
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    assert redact_secrets(text) == text
+
+
+def test_bare_key_value_secret_live_detector():
+    from agentwatch.detectors.security.secret_scanner import _SECRET_PATTERNS, _first_live_match
+
+    text = "echo password=Hunter2SuperSecret! >> notes"
+    assert any(_first_live_match(p, label, text) for p, label in _SECRET_PATTERNS)
+
+
+def test_bare_key_value_linear_on_pathological_input():
+    _assert_linear(["token:", "secret: ", "password=(", "api_key=a.", 'pwd="\\"'], "redact_secrets")

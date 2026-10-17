@@ -252,6 +252,21 @@ _p(
     "url_credentials",
 )
 _p(r"\bbearer\s+['\"]?(?P<secret>[a-z0-9_\-.=~+/]{20,})", "bearer_header")
+# Bare key=value / key: value secrets (password=Hunter2!, client_secret: ...),
+# which the assignment patterns above miss: unquoted or under 8/20 chars. To
+# keep false positives low the value is 6+ chars with a digit or symbol (code
+# like "password=self.password" has neither), is not a call or subscript
+# ("get_token(", "Optional[str]"), and is no placeholder (***, <...>, ${VAR},
+# {{ var }}, %(x)s, changeme) or path (PWD=/home/...).
+_p(
+    r"(?<![a-z0-9])(?:password|passwd|pwd|secret|token|api[_-]?key|apikey)"
+    r"['\"]?[^\S\n]*[:=][^\S\n]*['\"]?"
+    r"(?![*<{%/]|changeme\b|[\w.]*[(\[])"
+    # The digit/symbol look-ahead is bounded: unbounded, every key in a long
+    # run ("token:token:...") scanned to its end (quadratic).
+    r"(?=[^\s'\"]{6})(?=[^\s'\"]{0,64}?[\d!@#^&*+=?~])" + _SECRET_VALUE,
+    "key_value_secret",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +417,7 @@ _REMEDIATION: dict[str, str] = {
     "password_assignment": "Remove hardcoded password, use env var or secret manager",
     "bearer_token": "Remove from file, rotate token, use env var",
     "generic_api_key": "Remove from file, use env var, rotate if committed to git",
+    "key_value_secret": "Remove hardcoded secret, use env var or secret manager, rotate it",
     "high_entropy_secret": "Review value—if a real secret, remove from file and rotate",
     "claude_api_key": (
         "Remove from file, use env var ANTHROPIC_API_KEY, rotate at console.anthropic.com"
