@@ -8,9 +8,9 @@ turn-level ``turns_since_progress`` sub-metric.
 from __future__ import annotations
 
 import hashlib
-import re
 from typing import TYPE_CHECKING
 
+from agentwatch.detectors.base import normalize_error
 from agentwatch.detectors.health._window import (
     scaled_action_window,
     session_maturity_factor,
@@ -19,14 +19,6 @@ from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
-
-_NORMALIZE_RE = re.compile(r"(line \d+|0x[0-9a-f]+|/[\w./\-]+|\d{2,})")
-
-
-def _normalize_error(msg: str) -> str:
-    """Strip volatile parts from error messages to get a stable signature."""
-    return _NORMALIZE_RE.sub("<X>", msg.lower()).strip()
-
 
 def _tool_call_hash(action) -> str:
     """Produce a short hash of tool name + normalized arguments."""
@@ -76,7 +68,7 @@ def _repeated_tool_calls(buffer: "ActionBuffer", window: int = 20) -> tuple[floa
 def _repeated_errors(buffer: "ActionBuffer", window: int = 20) -> tuple[float, list[str]]:
     """Score for repeated normalized error signatures."""
     recent = buffer.last(window)
-    errors = [_normalize_error(a.error_message) for a in recent if a.error_message]
+    errors = [normalize_error(a.error_message) for a in recent if a.error_message]
     if not errors:
         return 0.0, []
 
