@@ -195,7 +195,11 @@ _p(r"v1\.0-[a-f0-9]{24}-[a-f0-9]{146,}", "cloudflare_api_token")
 # would otherwise mistake for the value. A value never starts with ``$``
 # (a variable reference) or ``…``/``[`` (an already-masked value). A
 # trailing ":" is punctuation, not value ("-pXXX: Access denied", #31).
-_SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[](?:[^\s'\":]|:(?=[^\s'\"]))*+)"
+# A backslash escape pair is part of the value, so a shell-escaped quote
+# ("S3cret\"Pw0rd") does not end it. A value never starts with a backslash:
+# in raw JSON text the \" before a value is its quote, and the decoded-value
+# pass (_redact_line) redacts it there.
+_SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[\\](?:\\.|[^\s'\":\\]|:(?=[^\s'\"]))*+)"
 _p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env")
 # curl/mysql as a program word anywhere on a line (error text quotes
 # commands mid-line, behind prompts, bash -c, ssh, docker exec, xargs ...),
@@ -247,7 +251,7 @@ _p(
     r"[^\s:/@]+:(?P<secret>[^\s@/$…\[][^\s@/]*)@",
     "url_credentials",
 )
-_p(r"\bbearer\s+(?P<secret>[a-z0-9_\-.=~+/]{20,})", "bearer_header")
+_p(r"\bbearer\s+['\"]?(?P<secret>[a-z0-9_\-.=~+/]{20,})", "bearer_header")
 
 
 # ---------------------------------------------------------------------------
@@ -863,41 +867,65 @@ def _find_spans(
 
 
 def _redact_text(
-    text: str, patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS
+    text: str,
+    patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
+    found: list[dict] | None = None,
+    line: int | None = None,
 ) -> tuple[str, int]:
-    """Redact secret values in *text*. Returns (new_text, real_redaction_count)."""
+    """Redact secret values in *text*. Returns (new_text, real_redaction_count).
+
+    If *found* is given, a masked finding per redaction is appended to it,
+    on *line* or else on the line of *text* the value starts on.
+    """
     merged = _find_spans(text, patterns)
     pieces: list[str] = []
     pos = 0
-    for start, end, _label in merged:
+    lineno = 1  # line of *pos*, counted incrementally (spans are sorted)
+    for start, end, label in merged:
         pieces += [text[pos:start], _REDACTED]
+        lineno += text.count("\n", pos, start)
+        if found is not None:
+            found.append({
+                "type": label,
+                "line": line if line is not None else lineno,
+                "preview": _mask_value(text[start:end]),
+            })
+        lineno += text.count("\n", start, end)
         pos = end
     return "".join(pieces) + text[pos:], len(merged)
 
 
-def _redact_json_value(
-    obj: Any, patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS
-) -> tuple[Any, int]:
-    """Redact secrets inside every string value of a parsed JSON document."""
-    if isinstance(obj, str):
-        return _redact_text(obj, patterns)
-    if isinstance(obj, list):
-        total = 0
-        out_list = []
-        for item in obj:
-            new_item, n = _redact_json_value(item, patterns)
-            out_list.append(new_item)
-            total += n
-        return out_list, total
-    if isinstance(obj, dict):
-        total = 0
-        out_dict = {}
-        for k, v in obj.items():
-            new_v, n = _redact_json_value(v, patterns)
-            out_dict[k] = new_v
-            total += n
-        return out_dict, total
-    return obj, 0
+# A JSON string token; group 1 is set when it is an object key.
+_JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*+"(\s*:)?')
+
+
+def _redact_json_strings(
+    text: str, patterns: list[tuple[re.Pattern, str]], found: list[dict]
+) -> tuple[str, int]:
+    """Redact secrets in the decoded value of every string value of *text*,
+    a valid JSON document. Only strings that change are re-encoded, so every
+    other byte (layout, key order, escapes) is kept. Keys are left alone.
+    """
+    count = 0
+    pos, lineno = 0, 1  # line of *pos*, counted incrementally (sub goes in order)
+
+    def _sub(m: re.Match) -> str:
+        nonlocal count, pos, lineno
+        if m.group(1):
+            return m.group(0)
+        new_found: list[dict] = []
+        value, n = _redact_text(json.loads(m.group(0)), patterns, new_found, 0)
+        if not n:
+            return m.group(0)
+        count += n
+        lineno += text.count("\n", pos, m.start())
+        pos = m.start()
+        found.extend({**f, "line": lineno} for f in new_found)
+        # ensure_ascii=True keeps lone surrogates (e.g. a JS-truncated emoji
+        # "\ud83d") as \u escapes, so the text always encodes as valid UTF-8.
+        return json.dumps(value, ensure_ascii=True)
+
+    return _JSON_STRING_RE.sub(_sub, text), count
 
 
 _NOT_JSON = object()
@@ -924,39 +952,31 @@ def _json_skeleton(text: str) -> Any:
 
 
 def _redact_line(
-    line: str, patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS
+    line: str,
+    patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
+    found: list[dict] | None = None,
 ) -> tuple[str, int]:
-    """Redact one JSONL line (without its newline).
+    """Redact one JSONL line (without its newline) or one JSON document.
 
-    Invariant: a line that was valid JSON stays valid JSON with the same keys
-    and structure. Redaction is done on the raw text so every other byte is
-    preserved; if that would change the JSON structure (e.g. a match spanning
-    two string values), fall back to redacting the parsed string values and
-    re-serializing that one line.
+    Invariant: text that was valid JSON stays valid JSON with the same keys
+    and structure. The raw text is redacted first, which sees key/value
+    context (``"password": "..."``); if that would change the JSON structure
+    (e.g. a match spanning two string values) it is dropped. Then every
+    string value is redacted again after decoding its escapes: in the raw
+    text a shell quote is ``\\"`` and a newline ``\\n``, which hide secrets
+    ("...nmysql -p..."). *found* collects findings as for ``_redact_text``.
     """
-    new_line, count = _redact_text(line, patterns)
+    raw_found: list[dict] = []
+    new_line, count = _redact_text(line, patterns, raw_found)
     before = _json_skeleton(line)
-    if before is _NOT_JSON:
-        return (new_line, count) if count else (line, 0)
-    if count and _json_skeleton(new_line) != before:
-        obj, count = _redact_json_value(json.loads(line), patterns)
-        return (_dump_json_line(obj, line), count) if count else (line, 0)
-    # Some secrets only show once JSON escapes are decoded (a command after
-    # "\n" reads "...nmysql -p..." in the raw text). Re-check the decoded
-    # values so nothing a finding was reported for is left behind.
-    obj, extra = _redact_json_value(json.loads(new_line), patterns)
-    if extra:
-        return _dump_json_line(obj, line), count + extra
-    return (new_line, count) if count else (line, 0)
-
-
-def _dump_json_line(obj: Any, original: str) -> str:
-    # ensure_ascii=True keeps lone surrogates (e.g. a JS-truncated emoji
-    # "\ud83d") as \u escapes, so the line always encodes as valid UTF-8.
-    out = json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
-    if original.endswith("\r"):
-        out += "\r"  # keep CRLF line endings
-    return out
+    if before is not _NOT_JSON:
+        if count and _json_skeleton(new_line) != before:
+            new_line, count, raw_found = line, 0, []
+        new_line, extra = _redact_json_strings(new_line, patterns, raw_found)
+        count += extra
+    if found is not None:
+        found += raw_found
+    return new_line, count
 
 
 def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:
@@ -1030,15 +1050,30 @@ class ScrubResult:
     findings: list[dict] = field(default_factory=list)
 
 
-def _span_findings(text: str, patterns: list, line: int | None = None) -> list[dict]:
-    return [
-        {
-            "type": label,
-            "line": line if line is not None else text.count("\n", 0, start) + 1,
-            "preview": _mask_value(text[start:end]),
-        }
-        for start, end, label in _find_spans(text, patterns)
-    ]
+def _redact_lines(
+    text: str, patterns: list[tuple[re.Pattern, str]], findings: list[dict]
+) -> tuple[str, int]:
+    """``_redact_line`` on each line of *text*, findings on file line numbers.
+
+    Refuses (``ValueError``) a result where a JSON line would stop parsing.
+    """
+    new_lines: list[str] = []
+    redacted = 0
+    for lineno, line in enumerate(text.split("\n"), start=1):
+        found: list[dict] = []
+        new_line, n = _redact_line(line, patterns, found)
+        if n and _json_skeleton(new_line) is _NOT_JSON and _json_skeleton(line) is not _NOT_JSON:
+            raise ValueError(f"line {lineno}: scrubbed output would not be valid JSON; not written")
+        for f in found:
+            f["line"] += lineno - 1
+        findings += found
+        new_lines.append(new_line)
+        redacted += n
+    return "\n".join(new_lines), redacted
+
+
+# Around a JSON document: whitespace and a UTF-8 BOM.
+_JSON_PADDING = " \t\r\n﻿"
 
 
 def scrub_file(
@@ -1061,22 +1096,28 @@ def scrub_file(
         raise ValueError(f"{backup} already exists; move it away before --in-place")
     text = original.decode("utf-8", errors="surrogateescape")
     findings: list[dict] = []
-    if path.suffix.lower() == ".jsonl":
-        new_lines: list[str] = []
-        redacted = 0
-        for lineno, line in enumerate(text.split("\n"), start=1):
-            new_line, n = _redact_line(line, patterns)
-            new_lines.append(new_line)
-            redacted += n
-            # ponytail: findings come from the raw line, so a value only seen
-            # after JSON-escape decoding is redacted but not listed.
-            if n:
-                findings += _span_findings(line, patterns, lineno)
-        new_text = "\n".join(new_lines)
+    body = text.strip(_JSON_PADDING)
+    doc = _json_skeleton(body) if path.suffix.lower() != ".jsonl" else _NOT_JSON
+    if doc is not _NOT_JSON:
+        # One JSON document (.json, a Cline api_conversation_history.json,
+        # any file that parses): secrets in it hide behind JSON escapes.
+        lead = text[: len(text) - len(text.lstrip(_JSON_PADDING))]
+        new_body, redacted = _redact_line(body, patterns, findings)
+        if _json_skeleton(new_body) != doc:
+            raise ValueError(f"{path}: scrubbed output would not be valid JSON; not written")
+        new_text = lead + new_body + text[len(lead) + len(body) :]
+        for f in findings:
+            f["line"] += lead.count("\n")
+    elif path.suffix.lower() == ".jsonl":
+        new_text, redacted = _redact_lines(text, patterns, findings)
     else:
-        new_text, redacted = _redact_text(text, patterns)
-        findings = _span_findings(text, patterns)
+        # Whole text first: some secrets (PEM blocks) span lines. Then each
+        # line again, so JSON lines (a copied JSONL log) get the decoded pass.
+        new_text, redacted = _redact_text(text, patterns, findings)
+        new_text, extra = _redact_lines(new_text, patterns, findings)
+        redacted += extra
 
+    findings.sort(key=lambda f: f["line"])
     result = ScrubResult(path, None, None, dry_run, redacted, findings)
     if dry_run or (in_place and not redacted):
         return result

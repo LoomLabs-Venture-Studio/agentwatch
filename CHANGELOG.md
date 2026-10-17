@@ -126,6 +126,13 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
   (PR #144).
 - Breaking: `ContextPressureDetector` no longer takes a `model` argument;
   the window comes from the log (PR #144).
+- Security: `scrub` no longer leaks quoted secrets in `.json` files (Cline
+  `api_conversation_history.json`, copied logs) or corrupts them: JSON input
+  is redacted on decoded string values and is never written back invalid. A
+  shell-escaped quote inside a quoted value (`"S3cret\"Pw"`) no longer ends
+  the match, and a quoted `Bearer "..."` token is masked. JSON text inside
+  a transcript string (a tool_result of `cat x.json`) is redacted too
+  (PR #143).
 - `detect`: `Code.exe` and `Cursor.exe` map to their editor adapters
   (#100, PR #101).
 - `detect`: editor processes are credited to every candidate editor adapter
