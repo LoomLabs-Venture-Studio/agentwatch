@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from textual.widgets import ListView
 
 from agentwatch.detectors import create_registry
@@ -96,6 +97,7 @@ async def _seed_agent(app: MultiAgentWatchApp, pilot, path: Path, pid: int) -> N
     app.selected_path = path
 
 
+@pytest.mark.usefixtures("needs_siem")
 class TestPerAgentSiemExportDedup:
     async def test_still_open_warning_exported_once_per_agent(self, tmp_path):
         siem_path = tmp_path / "siem.jsonl"
@@ -288,6 +290,7 @@ class TestPerAgentFailureModes:
             assert app.is_running
 
 
+@pytest.mark.usefixtures("needs_siem")
 class TestOnUnmountClosesAllSiemHandles:
     async def test_on_unmount_closes_every_agent_siem_exporter(self, tmp_path):
         siem_path = tmp_path / "siem.jsonl"
