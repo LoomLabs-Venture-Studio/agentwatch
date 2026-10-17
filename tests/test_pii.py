@@ -25,11 +25,15 @@ REAL = [
     ("phone", "(415) 555-2671"),
     ("phone", "415-555-2671"),
     ("phone", "415.555.2671"),
+    ("phone", "(212) 200-3000"),
     ("us_ssn", "123-45-6789"),
     ("us_ssn", "219-09-9999"),
     ("credit_card", "4111 1111 1111 1111"),
     ("credit_card", "5500-0000-0000-0004"),
     ("credit_card", "378282246310005"),
+    ("credit_card", "4111111111111111"),
+    ("credit_card", "3782 822463 10005"),
+    ("credit_card", "3782-822463-10005"),
     ("street_address", "123 Main St"),
     ("street_address", "4500 Old Mill Road, Apt 4B"),
 ]
@@ -52,6 +56,13 @@ LOOKALIKES = [
     "4111 1111 1111 1112",  # Luhn-invalid 16 digits
     "ts=1760486400003",  # Luhn-valid 13-digit ms timestamp, no issuer prefix
     "sha deadbeef4111111111111111",
+    "run 4111 1111 1111 1112 123 ok",  # Luhn-invalid card + CVV
+    "order 41111111111111112",  # Luhn-invalid 17-digit run
+    "4111 1111-1111 1111",  # mixed separators
+    "100-200-3000",  # NANP area code starts 0/1
+    "212-100-3000",  # NANP exchange starts 0/1
+    "(100) 200-3000",
+    "(212) 100-3000",
     "fixed 3 bugs this way",
     "see line 42 of the main street",
 ]
@@ -69,6 +80,21 @@ def test_real_pii_is_redacted(label, value):
 @pytest.mark.parametrize("text", LOOKALIKES)
 def test_lookalikes_are_ignored(text):
     assert _redact_text(text, _ALL) == (text, 0)
+
+
+@pytest.mark.parametrize("card,tail", [
+    ("4111 1111 1111 1111", " 123"),
+    ("4111-1111-1111-1111", " 12/26"),
+    ("5500-0000-0000-0004", " 12 26"),
+    ("4111111111111111", " 123"),
+    ("3782 822463 10005", " 1234"),
+])
+def test_card_followed_by_cvv_or_expiry(card, tail):
+    text = f"pay with {card}{tail} ok"
+    new, count = _redact_text(text, _ALL)
+    assert count == 1
+    assert card not in new
+    assert tail in new
 
 
 def test_labels_and_luhn():

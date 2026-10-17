@@ -44,6 +44,9 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- PII: a card number followed by a CVV or expiry is now hidden, and phone
+  numbers with an invalid NANP area code or exchange (`100-200-3000`) are no
+  longer flagged.
 - `detect`: `Code.exe` and `Cursor.exe` map to their editor adapters
   (#100, PR #101).
 - `detect`: editor processes are credited to every candidate editor adapter
