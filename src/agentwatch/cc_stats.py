@@ -7,8 +7,10 @@ token usage breakdowns by tool type and bash command category.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 
 from agentwatch.path_encoding import encode_path_for_claude
@@ -43,21 +45,97 @@ class BashCategory(Enum):
     Other = "Other"
 
 
-# Pricing per million tokens: (input, output, cache_write, cache_read)
-_PRICING = {
-    "opus": (15.0, 75.0, 18.75, 1.50),
-    "sonnet": (3.0, 15.0, 3.75, 0.30),
-    "haiku": (1.0, 5.0, 1.25, 0.10),
+# The one price table: `stats`, the session cost and per-finding cost all
+# read it. USD per million tokens:
+#   (input, output, 5m cache write, cache read, 1h cache write)
+# Source: Anthropic API pricing, https://platform.claude.com/docs/en/about-claude/pricing
+# (first-party rates, fetched 2026-10-17). Bedrock/Vertex bill differently.
+# Keyed by model id; a dated snapshot ("-20250514") matches its base id. A
+# model not listed here has no price: callers show no cost, never a guess.
+PRICING: dict[str, tuple[float, float, float, float, float]] = {
+    "claude-fable-5-1": (10.0, 50.0, 12.50, 0.25, 20.0),
+    "claude-mythos-5-1": (10.0, 50.0, 12.50, 0.25, 20.0),
+    "claude-fable-5": (10.0, 50.0, 12.50, 1.00, 20.0),
+    "claude-mythos-5": (10.0, 50.0, 12.50, 1.00, 20.0),
+    "claude-opus-5-5": (4.0, 20.0, 5.00, 0.20, 8.0),
+    "claude-opus-5": (5.0, 25.0, 6.25, 0.50, 10.0),
+    "claude-opus-4-8": (5.0, 25.0, 6.25, 0.50, 10.0),
+    "claude-opus-4-7": (5.0, 25.0, 6.25, 0.50, 10.0),
+    "claude-opus-4-6": (5.0, 25.0, 6.25, 0.50, 10.0),
+    "claude-opus-4-5": (5.0, 25.0, 6.25, 0.50, 10.0),
+    "claude-opus-4-1": (15.0, 75.0, 18.75, 1.50, 30.0),
+    "claude-opus-4": (15.0, 75.0, 18.75, 1.50, 30.0),
+    "claude-sonnet-5-5": (2.0, 10.0, 2.50, 0.10, 4.0),
+    "claude-sonnet-5": (2.0, 10.0, 2.50, 0.20, 4.0),
+    "claude-sonnet-4-6": (3.0, 15.0, 3.75, 0.30, 6.0),
+    "claude-sonnet-4-5": (3.0, 15.0, 3.75, 0.30, 6.0),
+    "claude-sonnet-4": (3.0, 15.0, 3.75, 0.30, 6.0),
+    "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.01, 0.20),  # prompt <= 100k tokens
+    "claude-haiku-4-5": (1.0, 5.0, 1.25, 0.10, 2.0),
+    "claude-3-5-haiku": (0.80, 4.0, 1.00, 0.08, 1.60),
 }
+# Haiku 5.5 bills a request whose prompt (input + cache) is over 100k at these.
+_HAIKU_5_5_LONG = (0.50, 2.50, 0.625, 0.05, 1.0)
+# ponytail: Sonnet 4.5/4 long-context (>200k prompt) surcharge not modelled;
+# they bill at the base rate here.
+
+# What may follow a table id: a date snapshot, a Bedrock version, a "[1m]" tag.
+_ID_SUFFIX = re.compile(r"(?:[-@]\d{8})?(?:-v\d+(?::\d+)?)?(?:\[[^\]]*\])?")
+_KEYS_LONGEST_FIRST = sorted(PRICING, key=len, reverse=True)
 
 
-def _get_pricing(model: str) -> tuple[float, float, float, float]:
-    """Get per-million-token pricing for a model string."""
-    model = model.lower()
-    for key, rates in _PRICING.items():
-        if key in model:
-            return rates
-    return _PRICING["sonnet"]  # default
+@lru_cache(maxsize=256)
+def price_for(model: str | None) -> tuple[float, float, float, float, float] | None:
+    """Rates for *model*, or None when it is not in ``PRICING``.
+
+    Provider prefixes ("us.anthropic.", "anthropic/") are ignored. Only a date
+    or version may follow the table id, so "claude-opus-4-9" is unknown rather
+    than priced as "claude-opus-4".
+    """
+    if not model:
+        return None
+    m = model.lower()
+    start = m.find("claude-")
+    if start < 0:
+        return None
+    m = m[start:]
+    for key in _KEYS_LONGEST_FIRST:
+        if m.startswith(key) and _ID_SUFFIX.fullmatch(m[len(key):]):
+            return PRICING[key]
+    return None
+
+
+def usage_cost_usd(
+    model: str | None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_write_1h_tokens: int = 0,
+) -> float | None:
+    """USD for one API call's usage, or None for an unpriced model.
+
+    *cache_write_tokens* is all cache writes; *cache_write_1h_tokens* is the
+    part written with the 1-hour TTL (billed at the 1h rate).
+    """
+    rates = price_for(model)
+    if rates is None:
+        return None
+    prompt = input_tokens + cache_write_tokens + cache_read_tokens
+    if rates is PRICING["claude-haiku-5-5"] and prompt > 100_000:
+        rates = _HAIKU_5_5_LONG
+    write_1h = min(cache_write_1h_tokens, cache_write_tokens)
+    return (
+        input_tokens * rates[0]
+        + output_tokens * rates[1]
+        + (cache_write_tokens - write_1h) * rates[2]
+        + cache_read_tokens * rates[3]
+        + write_1h * rates[4]
+    ) / 1_000_000
+
+
+def _usd(cost: float | None) -> float | None:
+    return None if cost is None else round(cost, 2)
 
 
 @dataclass
@@ -66,7 +144,7 @@ class TrivialCall:
 
     command: str
     total_tokens: int
-    estimated_cost_usd: float
+    estimated_cost_usd: float | None
     session_id: str = ""
     user_prompt: str = ""
 
@@ -90,14 +168,20 @@ class TokenBucket:
             + self.cache_read_tokens
         )
 
-    def estimated_cost_usd(self, model: str = "sonnet") -> float:
-        r = _get_pricing(model)
-        return (
-            self.input_tokens * r[0]
-            + self.output_tokens * r[1]
-            + self.cache_write_tokens * r[2]
-            + self.cache_read_tokens * r[3]
-        ) / 1_000_000
+    def estimated_cost_usd(self, model: str = "sonnet") -> float | None:
+        """None when *model* has no listed price.
+
+        ponytail: every cache write at the 5m rate (Claude Code mostly writes
+        1h, so writes are understated) and Haiku 5.5's >100k tier ignored;
+        track the 1h split per bucket if `stats` needs it exact.
+        """
+        return usage_cost_usd(
+            model,
+            self.input_tokens,
+            self.output_tokens,
+            self.cache_write_tokens,
+            self.cache_read_tokens,
+        )
 
     def merge(self, other: TokenBucket) -> None:
         self.input_tokens += other.input_tokens
@@ -168,8 +252,8 @@ class StatsReport:
                 "cache_write_tokens": self.totals.cache_write_tokens,
                 "cache_read_tokens": self.totals.cache_read_tokens,
                 "total_tokens": self.totals.total_tokens,
-                "estimated_cost_usd": round(
-                    self.totals.estimated_cost_usd(self.model), 2
+                "estimated_cost_usd": _usd(
+                    self.totals.estimated_cost_usd(self.model)
                 ),
                 "cache_hit_ratio": round(self.cache_hit_ratio, 4),
             },
@@ -177,8 +261,8 @@ class StatsReport:
                 cat.value: {
                     "call_count": bucket.call_count,
                     "total_tokens": bucket.total_tokens,
-                    "estimated_cost_usd": round(
-                        bucket.estimated_cost_usd(self.model), 2
+                    "estimated_cost_usd": _usd(
+                        bucket.estimated_cost_usd(self.model)
                     ),
                 }
                 for cat, bucket in sorted(
@@ -201,13 +285,13 @@ class StatsReport:
             "efficiency": {
                 "trivial_calls": self.trivial.call_count,
                 "trivial_tokens": self.trivial.total_tokens,
-                "trivial_cost_usd": round(
-                    self.trivial.estimated_cost_usd(self.model), 2
+                "trivial_cost_usd": _usd(
+                    self.trivial.estimated_cost_usd(self.model)
                 ),
                 "substantive_calls": self.substantive.call_count,
                 "substantive_tokens": self.substantive.total_tokens,
-                "substantive_cost_usd": round(
-                    self.substantive.estimated_cost_usd(self.model), 2
+                "substantive_cost_usd": _usd(
+                    self.substantive.estimated_cost_usd(self.model)
                 ),
                 "trivial_pct": round(
                     self.trivial.total_tokens

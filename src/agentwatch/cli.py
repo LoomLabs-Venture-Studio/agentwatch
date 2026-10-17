@@ -1477,6 +1477,11 @@ def _fmt_tokens(n: int) -> str:
     return f"{n:,}"
 
 
+def _usd(cost: float | None) -> str:
+    """Dollar amount for `stats`; "n/a" when the model has no listed price."""
+    return "n/a" if cost is None else f"${cost:,.2f}"
+
+
 def _print_stats_report(report) -> None:
     """Print a formatted token usage report."""
     from agentwatch.cc_stats import ToolCategory
@@ -1510,7 +1515,7 @@ def _print_stats_report(report) -> None:
     )
     click.echo(
         f"  Total:   {_fmt_tokens(report.totals.total_tokens):>12}"
-        f"    Est. cost:   {click.style(f'${est_cost:>10,.2f}', bold=True)}"
+        f"    Est. cost:   {click.style(f'{_usd(est_cost):>11}', bold=True)}"
     )
     click.echo()
 
@@ -1538,7 +1543,7 @@ def _print_stats_report(report) -> None:
                 f"  {cat.value:<14} {count_str}"
                 f" {_fmt_tokens(bucket.total_tokens):>12}"
                 f" {pct:>5.1f}%"
-                f"   ${cost:>6,.2f}"
+                f"   {_usd(cost):>7}"
             )
             click.echo(f"    {_make_bar(pct / 100)}")
 
@@ -1614,7 +1619,7 @@ def _print_burn_report(report) -> None:
         f"    {triv_pct:>5.1f}%"
     )
     click.echo(
-        f"  Est. cost: {click.style(f'${triv_cost:,.2f}', fg='yellow', bold=True)}"
+        f"  Est. cost: {click.style(_usd(triv_cost), fg='yellow', bold=True)}"
     )
     click.echo(f"    {_make_bar(triv_pct / 100)}")
     click.echo()
@@ -1645,7 +1650,7 @@ def _print_burn_report(report) -> None:
         f"    {sub_pct:>5.1f}%"
     )
     click.echo(
-        f"  Est. cost: {click.style(f'${sub_cost:,.2f}', fg='green', bold=True)}"
+        f"  Est. cost: {click.style(_usd(sub_cost), fg='green', bold=True)}"
     )
     click.echo(f"    {_make_bar(sub_pct / 100)}")
     click.echo()
@@ -1663,7 +1668,7 @@ def _print_burn_report(report) -> None:
             )
         )
         click.echo(
-            f"  You could save ~${triv_cost:,.2f} by running simple commands yourself."
+            f"  You could save ~{_usd(triv_cost)} by running simple commands yourself."
         )
     elif triv_pct > 15:
         click.echo(
@@ -1708,7 +1713,7 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
         click.echo(
             f"  $ {click.style(cmd_display, bold=True)}"
             f"   {_fmt_tokens(tc.total_tokens):>10} tok"
-            f"   ${tc.estimated_cost_usd:,.2f}"
+            f"   {_usd(tc.estimated_cost_usd)}"
         )
         if show_prompts and tc.user_prompt:
             prompt = tc.user_prompt.strip().replace("\n", " ")
@@ -1719,11 +1724,12 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
             )
 
     click.echo()
-    total_cost = sum(tc.estimated_cost_usd for tc in calls)
+    costs = [tc.estimated_cost_usd for tc in calls]
+    total_cost = None if None in costs else sum(costs)
     click.echo(
         f"  {len(calls)} trivial calls"
         f" | {_fmt_tokens(sum(tc.total_tokens for tc in calls))} tokens"
-        f" | ${total_cost:,.2f} est. cost"
+        f" | {_usd(total_cost)} est. cost"
     )
     click.echo()
 

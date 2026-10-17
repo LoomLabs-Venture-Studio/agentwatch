@@ -254,8 +254,8 @@ class TestTokenBucket:
             cache_write_tokens=1_000_000,
             cache_read_tokens=1_000_000,
         )
-        # sonnet: 3 + 15 + 3.75 + 0.30 = 22.05
-        cost = b.estimated_cost_usd("sonnet")
+        # sonnet 4.6: 3 + 15 + 3.75 + 0.30 = 22.05
+        cost = b.estimated_cost_usd("claude-sonnet-4-6")
         assert abs(cost - 22.05) < 0.01
 
     def test_estimated_cost_opus(self):
@@ -265,9 +265,12 @@ class TestTokenBucket:
             cache_write_tokens=1_000_000,
             cache_read_tokens=1_000_000,
         )
-        # opus: 15 + 75 + 18.75 + 1.50 = 110.25
+        # opus 4.6: 5 + 25 + 6.25 + 0.50 = 36.75 (was billed at 4.1's $15/$75)
         cost = b.estimated_cost_usd("claude-opus-4-6")
-        assert abs(cost - 110.25) < 0.01
+        assert abs(cost - 36.75) < 0.01
+
+    def test_estimated_cost_unknown_model_is_none(self):
+        assert TokenBucket(input_tokens=1_000).estimated_cost_usd("gpt-5-codex") is None
 
 
 # ---------------------------------------------------------------------------
