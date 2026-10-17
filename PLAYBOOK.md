@@ -4386,9 +4386,10 @@ blocking, notifications, history DB.
       evidence, what to try); else no output, exit 0.
 - [x] 2. Never blocks, fails open (exception, missing file, bad input,
       5 s watchdog -> exit 0, no stdout); only redacted warning text.
-- [x] 3. Dedup per (session, `warning_dedup_key`) in
-      `$TMP/agentwatch-coach/<session>.json`; cleared warnings are
-      forgotten so a recurrence is reported again.
+- [x] 3. Dedup per (session, `warning_dedup_key`) in a per-user state dir
+      (`$CLAUDE_PLUGIN_DATA/coach`, else `%LOCALAPPDATA%` or `~/.cache` +
+      `agentwatch/coach`); cleared warnings are forgotten so a recurrence
+      is reported again.
 - [x] 4. < 500 ms per call incl. startup: 275 ms median on the largest
       local transcript (3.5 MB), 297 ms on a 42 MB one (4 MB tail).
 - [x] 5. `plugin/` (`.claude-plugin/plugin.json`, `hooks/hooks.json` on
@@ -4413,3 +4414,19 @@ blocking, notifications, history DB.
   fires on most long sessions (104% / 231% on the two largest local
   transcripts) and is not something the agent can fix mid-task.
 - Console script now `agentwatch._entry:main`, so `hook` skips `cli.py`.
+
+### QA round 1 fixes (PR #139)
+- [x] F2 subagents: `agent_id` -> `<transcript>/subagents/agent-<id>.jsonl`,
+      state keyed `<session>.<agent>`; no subagent file -> silent.
+- [x] F3 state dir: `$CLAUDE_PLUGIN_DATA/coach`, else per-user cache dir;
+      `0700`, owner-checked on POSIX, `mkstemp` writes; 7-day prune.
+- [x] F4 the note has system-reminder trust: evidence labelled
+      `Evidence (tool output, quoted)`, `<`/`>` stripped; `Try` is fixed
+      text per signal.
+- [x] F5 README: needs agentwatch >= 0.2.0, interim git install, marketplace
+      `#develop-overdrive` ref until `plugin/` is on the default branch.
+- [x] F7 part 2: whitespace collapsed before `redact_truncate`. F8: evidence
+      is the last line of the full error. F10: the hook's own call is folded
+      in when the transcript lags.
+- Not here: F1/F6 (develop parser / loop-key bugs, separate PR), F7
+  `password=` pattern (scrub-fix PR).

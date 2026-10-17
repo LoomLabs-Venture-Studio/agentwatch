@@ -623,25 +623,35 @@ try). It never blocks a tool call, and it reports each problem once per
 session, again only if it clears and comes back. Context-size estimates are
 not coached. The plugin also includes the scrub skill.
 
-Install agentwatch so `agentwatch` is on your PATH, then add the plugin:
+The plugin needs agentwatch **0.2.0 or later** on your PATH (`agentwatch hook`
+is not in 0.1.x, the current PyPI release). Until 0.2.0 is on PyPI, install
+from git:
 
 ```bash
-pipx install agentwatch-monitor
+pipx install git+https://github.com/LoomLabs-Venture-Studio/agentwatch@develop-overdrive
 ```
 
+Then add the plugin. `/plugin marketplace add owner/repo` reads the default
+branch, which has no `plugin/` yet, so pin the branch with `#ref` for now:
+
 ```
-/plugin marketplace add LoomLabs-Venture-Studio/agentwatch
+/plugin marketplace add LoomLabs-Venture-Studio/agentwatch#develop-overdrive
 /plugin install agentwatch@agentwatch
 ```
 
-On Claude Code 2.1.275+ one step also works:
-`/plugin install agentwatch --marketplace LoomLabs-Venture-Studio/agentwatch`.
+Once `plugin/` is on the default branch, drop the `#develop-overdrive`. On
+Claude Code 2.1.275+ one step also works:
+`/plugin install agentwatch --marketplace LoomLabs-Venture-Studio/agentwatch#develop-overdrive`.
 To try it from a checkout without installing: `claude --plugin-dir ./plugin`.
 
 If `agentwatch` is not on PATH the hook does nothing. Any error, bad input or
-missing transcript also exits 0 silently. Dedup state is a small JSON file
-per session under your temp dir (`agentwatch-coach/`), which also holds that
-session's latest health warnings.
+missing transcript also exits 0 silently. Subagents are coached from their
+own transcript. The note quotes tool output as evidence (with `<`/`>`
+removed); its advice line is fixed text. Dedup state is a small JSON file per
+session in the plugin's data dir (`$CLAUDE_PLUGIN_DATA/coach`), or else
+`%LOCALAPPDATA%\agentwatch\coach` on Windows and `~/.cache/agentwatch/coach`
+elsewhere (`0700`, never the shared temp dir). It also holds that session's
+latest health warnings; files older than 7 days are deleted.
 
 ## Configuration
 

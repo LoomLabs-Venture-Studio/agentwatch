@@ -166,10 +166,17 @@ src/agentwatch/
                        transcript_path -> parse_claude_code_entry ->
                        health registry; new HIGH/CRITICAL PROGRESS/ERRORS
                        warning -> hookSpecificOutput.additionalContext
-                       (<= 3 lines). Dedup by warning_dedup_key per session
-                       in $TMP/agentwatch-coach/<session>.json (also the
-                       latest warnings). Fails open: exit 0, no stdout;
-                       5 s watchdog
+                       (<= 3 lines; evidence quoted with </> stripped, the
+                       Try line is fixed text per signal). Subagent
+                       payloads (agent_id) read <transcript>/subagents/
+                       agent-<id>.jsonl. The hook's own call is folded in
+                       when the transcript lags. Dedup by
+                       warning_dedup_key per session[.agent] in
+                       $CLAUDE_PLUGIN_DATA/coach, else %LOCALAPPDATA% or
+                       ~/.cache + agentwatch/coach (0700, owner-checked on
+                       POSIX, mkstemp writes, 7-day prune; also the latest
+                       warnings). Fails open: exit 0, no stdout; 5 s
+                       watchdog
   _entry.py            Console-script entry: `hook` goes straight to
                        coach.py without importing cli.py, the rest to
                        cli.main
