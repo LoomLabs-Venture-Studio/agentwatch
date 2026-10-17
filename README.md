@@ -603,14 +603,45 @@ dry-runs first and never prints the raw values. For one session log it uses
 `scrub` (a clean copy that also covers prompts and tool results); for
 in-place redaction across many logs it uses `audit --redact --pii`, which
 skips prompts and tool results. It moves a scrubbed session log out of
-`~/.claude/projects/` so it is not counted as another session. Install it by copying the
+`~/.claude/projects/` so it is not counted as another session. It ships in the
+[Claude Code plugin](#claude-code-plugin-coach), or install it alone by copying the
 folder:
 
 ```bash
-cp -r skills/agentwatch-scrub ~/.claude/skills/agentwatch-scrub
+cp -r plugin/skills/agentwatch-scrub ~/.claude/skills/agentwatch-scrub
 ```
 
 Claude Code only.
+
+## Claude Code plugin (coach)
+
+The `agentwatch` plugin coaches Claude Code while it works. After every tool
+call a hook runs agentwatch's health detectors on the live session. When a
+new HIGH or CRITICAL loop, thrash, error spiral or stuck pattern shows up, it
+adds a short note to Claude's context (what is wrong, the evidence, what to
+try). It never blocks a tool call, and it reports each problem once per
+session, again only if it clears and comes back. Context-size estimates are
+not coached. The plugin also includes the scrub skill.
+
+Install agentwatch so `agentwatch` is on your PATH, then add the plugin:
+
+```bash
+pipx install agentwatch-monitor
+```
+
+```
+/plugin marketplace add LoomLabs-Venture-Studio/agentwatch
+/plugin install agentwatch@agentwatch
+```
+
+On Claude Code 2.1.275+ one step also works:
+`/plugin install agentwatch --marketplace LoomLabs-Venture-Studio/agentwatch`.
+To try it from a checkout without installing: `claude --plugin-dir ./plugin`.
+
+If `agentwatch` is not on PATH the hook does nothing. Any error, bad input or
+missing transcript also exits 0 silently. Dedup state is a small JSON file
+per session under your temp dir (`agentwatch-coach/`), which also holds that
+session's latest health warnings.
 
 ## Configuration
 

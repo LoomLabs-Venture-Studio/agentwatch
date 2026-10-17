@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 35 (scrub skill, 2026-10-15/16; PR #133), at the end of this file; Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
+> **Latest: Sprint 35 (develop-overdrive) Feature 1, coach hook (2026-10-17), at the end of this file; before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -4371,3 +4371,45 @@ Plan: `docs/superpowers/plans/2026-10-15-agentwatch-scrub-skill.md`.
 | Date | PR | Branch | Type | Status | Rejection Reason |
 |---|---|---|---|---|---|
 | 2026-10-16 | #133 | feature/agentwatch-skill | feature | approved: develop merged in (`346b85b`, PLAYBOOK conflict only), QA-found `audit --pii` text report dropping LOW findings fixed (`6ee59b1`), CI green 3.11/3.12, CTO review + QA PASS (1690 passed / 1 skipped; `audit` without `--pii` byte-identical to develop); squash-merged to `develop` under board standing policy | -- |
+
+### Sprint 35 (develop-overdrive) — Feature 1: coach hook (2026-10-17)
+**Type:** feature. Branch `feature/coach-hook` from `develop-overdrive` @
+`315ce51`; draft PR into `develop-overdrive`. A Claude Code plugin whose
+hook runs the existing health detectors on the live session and feeds a
+short corrective note back to the agent. Out of scope: PreToolUse security
+blocking, notifications, history DB.
+
+### Acceptance Criteria
+- [x] 1. Hidden `agentwatch hook`: hook JSON on stdin, transcript via the
+      Claude Code parser, existing health registry; a new HIGH/CRITICAL
+      warning -> `hookSpecificOutput.additionalContext` (<= 3 lines: what,
+      evidence, what to try); else no output, exit 0.
+- [x] 2. Never blocks, fails open (exception, missing file, bad input,
+      5 s watchdog -> exit 0, no stdout); only redacted warning text.
+- [x] 3. Dedup per (session, `warning_dedup_key`) in
+      `$TMP/agentwatch-coach/<session>.json`; cleared warnings are
+      forgotten so a recurrence is reported again.
+- [x] 4. < 500 ms per call incl. startup: 275 ms median on the largest
+      local transcript (3.5 MB), 297 ms on a 42 MB one (4 MB tail).
+- [x] 5. `plugin/` (`.claude-plugin/plugin.json`, `hooks/hooks.json` on
+      PostToolUse + PostToolUseFailure, `skills/agentwatch-scrub` moved
+      in); repo-root `.claude-plugin/marketplace.json`; silent no-op
+      without `agentwatch` on PATH (`agentwatch hook; exit 0`).
+- [x] 6. `tests/test_coach.py`: loop fires, healthy silent, dedup +
+      recurrence, fail-open (garbage, missing transcript, timeout), schema.
+- [x] 7. README "Claude Code plugin (coach)", CLAUDE.md module map, this
+      section.
+- [x] 8. `python -m pytest tests/ -q` and `ruff check .` green.
+- [x] 9. Live: `claude -p --plugin-dir ./plugin` (Claude Code 2.1.302)
+      ran a failing command 8 times; the coach note reached Claude once,
+      after run 5, and was not repeated.
+
+### Decisions
+- Hook, not a plugin monitor: monitors get no session id or transcript
+  path and never run under `-p`.
+- No Stop hook: Stop `additionalContext` makes the turn continue, which
+  would force a stuck agent to keep going.
+- CONTEXT detectors not coached: `context_critical` is an estimate that
+  fires on most long sessions (104% / 231% on the two largest local
+  transcripts) and is not something the agent can fix mid-task.
+- Console script now `agentwatch._entry:main`, so `hook` skips `cli.py`.
