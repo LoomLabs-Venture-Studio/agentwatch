@@ -24,11 +24,20 @@ _PII_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?<![\w.+%-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w-])"),
      "email"),
     (re.compile(
-        _START + r"(?:\+\d(?:[ -]?\d){9,14}|\(\d{3}\) ?\d{3}-\d{4}|\d{3}([-.])\d{3}\1\d{4})"
-        + _END
+        # NANP: area code and exchange start 2-9.
+        _START + r"(?:\+\d(?:[ -]?\d){9,14}|\([2-9]\d\d\) ?[2-9]\d\d-\d{4}"
+        r"|[2-9]\d\d([-.])[2-9]\d\d\1\d{4})" + _END
     ), "phone"),
     (re.compile(_START + r"(?!000|666|9)\d{3}-(?!00)\d{2}-(?!0000)\d{4}" + _END), "us_ssn"),
-    (re.compile(_START + r"\d(?:[ -]?\d){12,18}" + _END), "credit_card"),
+    # Fixed brand groupings, so a trailing CVV/expiry is not swallowed into
+    # the digit run: unseparated 13-19, 4-4-4-4, Amex 4-6-5. Each gap is an
+    # optional space/dash on its own, so mixed separators still match.
+    # ponytail: separated 19-digit (4-4-4-4-3) cards are missed; add the
+    # grouping if they show up.
+    (re.compile(
+        _START + r"(?:\d{13,19}|\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}|\d{4}[ -]?\d{6}[ -]?\d{5})"
+        + _END
+    ), "credit_card"),
     (re.compile(
         r"(?<![\w.-])\d{1,5} (?:[A-Z][a-z]*\.? ){1,4}(?:" + _SUFFIXES + r")\b"
         r"(?:,? (?:Apt|Suite|Unit)\.? #?\w+)?"
