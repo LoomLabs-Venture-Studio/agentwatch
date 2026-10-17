@@ -661,6 +661,72 @@ agentwatch itself sees the same redirect, so this only matters when you look
 for the files by hand. This also applies to a pipx/venv install built on the
 Store Python; a python.org Python has no redirect.
 
+### Status line
+
+`agentwatch statusline` puts one short word in Claude Code's status line when
+the session is unhealthy, and prints nothing when it is healthy:
+
+```
+⚠ loop ~$1.40
+```
+
+The word is the most severe current HIGH/CRITICAL coach finding: `loop`,
+`thrash`, `errors` or `stuck` (yellow for HIGH, red for CRITICAL), plus the
+cost of the API calls behind it when that is known. It reads only the
+coach's state file for the session, never the transcript, so it needs the
+plugin's hook (above) and runs in about 150 ms on Windows, most of it Python
+startup. It prints nothing when there is no state for the session yet (no
+tool call so far, or no coach), when the state is older than 10 minutes, or
+on any error, and always exits 0. `--ok` prints a dim `✓ agentwatch` when
+the coach's last check was healthy. `NO_COLOR` turns colors off.
+
+Plugins cannot set the main status line (a plugin's settings only apply
+`agent` and `subagentStatusLine`), so this is a one-line manual setup in
+`~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "agentwatch statusline"
+  }
+}
+```
+
+Use `"agentwatch statusline --ok"` to see the check mark when all is well.
+On Windows, Claude Code runs the command through Git Bash (or PowerShell
+without Git Bash); if you give a full path to `agentwatch`, write it with
+forward slashes.
+
+**Already have a status line script?** Call `agentwatch statusline` from
+inside it with the same stdin and append what it prints:
+
+```bash
+#!/usr/bin/env bash
+input=$(cat)
+model=$(printf '%s' "$input" | jq -r '.model.display_name')
+aw=$(printf '%s' "$input" | agentwatch statusline)
+echo "[$model] ${aw}"
+```
+
+In a PowerShell script use `$aw = $json | agentwatch statusline`. If the `⚠`
+comes out garbled, the console code page is not UTF-8: set
+`[Console]::OutputEncoding = [Text.Encoding]::UTF8` first. (A BOM that
+PowerShell adds to piped stdin is ignored.)
+
+**[ccstatusline](https://github.com/sirmalloc/ccstatusline):** its Custom
+Command widget passes the same Claude Code JSON on stdin (plus
+`terminal_width`). Add a Custom Command widget with the command
+`agentwatch statusline` and turn on "preserve colors" (otherwise
+ccstatusline strips the colors and applies its own). In
+`~/.config/ccstatusline/settings.json` the widget is:
+
+```json
+{ "id": "agentwatch", "type": "custom-command", "commandPath": "agentwatch statusline", "preserveColors": true }
+```
+
+The widget's default timeout (1000 ms) is plenty.
+
 ## Configuration
 
 ```python

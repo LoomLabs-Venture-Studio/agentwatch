@@ -174,12 +174,27 @@ src/agentwatch/
                        warning_dedup_key per session[.agent] in
                        $CLAUDE_PLUGIN_DATA/coach, else %LOCALAPPDATA% or
                        ~/.cache + agentwatch/coach (0700, owner-checked on
-                       POSIX, mkstemp writes, 7-day prune; also the latest
-                       warnings). Fails open: exit 0, no stdout; 5 s
-                       watchdog
-  _entry.py            Console-script entry: `hook` goes straight to
-                       coach.py without importing cli.py, the rest to
-                       cli.main
+                       POSIX, mkstemp writes, 7-day prune; plugin dir
+                       unwritable -> user_state_dir(); also the latest
+                       warnings with cost_usd). state_path(dir, key) is the
+                       one file-name rule. Evidence `"` -> `'`. Fails open:
+                       exit 0, no stdout; 5 s watchdog
+  statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
+                       command. Stdin session_id -> newest coach state file
+                       across state_dirs() (state_dir, <CLAUDE_CONFIG_DIR or
+                       ~/.claude>/plugins/data/agentwatch*/coach -- the
+                       status line gets no CLAUDE_PLUGIN_DATA -- and
+                       user_state_dir); worst HIGH/CRITICAL of the mapped
+                       signals -> `⚠ loop|thrash|errors|stuck ~$x` (yellow/
+                       red, NO_COLOR). Healthy: nothing, `--ok` dim
+                       `✓ agentwatch`. No state / > 10 min old / any error:
+                       nothing, exit 0. No transcript parsing; imports only
+                       stdlib + coach (~150 ms on Windows)
+  _entry.py            Console-script entry: `hook` and `statusline` go
+                       straight to coach.py / statusline.py without
+                       importing cli.py, the rest to cli.main. The package
+                       __init__ (and parser/__init__'s discovery
+                       re-exports) load lazily (PEP 562) so this stays cheap
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess

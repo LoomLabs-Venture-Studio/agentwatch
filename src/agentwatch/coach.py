@@ -26,11 +26,11 @@ import os
 import re
 import stat
 import sys
-import tempfile
-import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
+
+# tempfile, threading and datetime are imported where used: `agentwatch statusline`
+# imports this module for its state helpers on every status line update.
 
 EVENTS = ("PostToolUse", "PostToolUseFailure")
 # Seconds before the watchdog exits 0 silently. hooks.json allows 10.
@@ -101,6 +101,8 @@ def _private_dir(path: Path) -> bool:
 
 def _writable_state_dir() -> Path | None:
     """state_dir(), or the per-user dir when that one cannot be written."""
+    import tempfile
+
     for directory in dict.fromkeys((state_dir(), user_state_dir())):
         try:
             if not _private_dir(directory):
@@ -129,18 +131,31 @@ def _load_reported(path: Path) -> set[str]:
         return set()
 
 
+def state_path(directory: Path, key: str) -> Path:
+    """The state file for a session (or session.agent) key, always inside *directory*."""
+    return directory / (re.sub(r"[^A-Za-z0-9_.-]", "_", key)[:150] + ".json")
+
+
+def _snapshot(warning) -> dict:
+    snap = {"severity": warning.severity.value, "signal": warning.signal,
+            "message": warning.message}
+    if warning.cost_usd is not None:
+        snap["cost_usd"] = round(warning.cost_usd, 4)
+    return snap
+
+
 def _save(path: Path, reported: set[str], warnings: list) -> None:
+    import tempfile
+    from datetime import datetime, timezone
+
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({
                 "updated": datetime.now(timezone.utc).isoformat(),
                 "reported": sorted(reported),
-                # Latest health snapshot, for a future `agentwatch statusline`.
-                "warnings": [
-                    {"severity": w.severity.value, "signal": w.signal, "message": w.message}
-                    for w in warnings
-                ],
+                # Latest health snapshot, read by `agentwatch statusline`.
+                "warnings": [_snapshot(w) for w in warnings],
             }, f)
         os.replace(tmp, path)
     except BaseException:
@@ -285,7 +300,7 @@ def run(stdin_text: str) -> str | None:
         if directory is None:
             return None
         _prune(directory)
-        state = directory / (re.sub(r"[^A-Za-z0-9_.-]", "_", key)[:150] + ".json")
+        state = state_path(directory, key)
         # Forget warnings that cleared, so a recurrence is reported again.
         reported = _load_reported(state) & severe.keys()
         new = [k for k in severe if k not in reported]
@@ -304,6 +319,8 @@ def run(stdin_text: str) -> str | None:
 
 def main() -> None:
     """Entry for `agentwatch hook`: always exits 0, prints JSON or nothing."""
+    import threading
+
     watchdog = threading.Timer(BUDGET_S, os._exit, args=(0,))
     watchdog.daemon = True
     watchdog.start()

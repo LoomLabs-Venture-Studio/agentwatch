@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 35 (develop-overdrive) Feature 1, coach hook (2026-10-17), at the end of this file; before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
+> **Latest: Sprint 35 (develop-overdrive) Feature 3, `agentwatch statusline` (2026-10-18), at the end of this file; before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -4430,3 +4430,50 @@ blocking, notifications, history DB.
       in when the transcript lags.
 - Not here: F1/F6 (develop parser / loop-key bugs, separate PR), F7
   `password=` pattern (scrub-fix PR).
+
+### Sprint 35 (develop-overdrive) — Feature 3: `agentwatch statusline` (2026-10-18)
+**Type:** feature. Branch `feature/statusline` from `develop-overdrive` @
+`3b9ad79`; draft PR into `develop-overdrive`. One short word in Claude
+Code's status line when the session is unhealthy, from the coach's state.
+
+### Acceptance Criteria
+- [x] 1. `agentwatch statusline` reads the statusLine JSON (`session_id`) and
+      prints at most one line; routed through `_entry` like `hook`; reads
+      only the coach state file (coach.state_path / state_dir /
+      user_state_dir), no transcript. 147 ms median wall on Windows via the
+      console script (Store Python 3.13 venv; bare `python -c pass` is
+      119 ms on the same machine).
+- [x] 2. Worst HIGH/CRITICAL of loop / thrash / errors / stuck (mapped from
+      signal; context and security signals ignored) + `~$x` when priced.
+      Healthy: nothing, `--ok` dim `✓ agentwatch`. No state or > 10 min
+      old: nothing. NO_COLOR respected.
+- [x] 3. Fails open: exit 0, no output on any error.
+- [x] 4. Coach snapshot warnings carry `cost_usd` when present.
+- [x] 5. README "Status line": settings.json snippet, calling it from an
+      existing script, ccstatusline Custom Command (source-checked @
+      bed8501: same JSON + `terminal_width` on stdin, 1000 ms default
+      timeout, `preserveColors`). Plugins only apply `agent` and
+      `subagentStatusLine`, so manual setup.
+- [x] 6. `fix(coach)`: evidence `"` -> `'`; unwritable CLAUDE_PLUGIN_DATA
+      falls back to the per-user dir; README Store-Python note; lazy
+      `Path.home()` in cc_stats, parser/logs and agents/agy (all on the
+      hook's import path).
+- [x] 7. `tests/test_statusline.py`; full suite + ruff green.
+- [x] 8. Live: `claude --settings <file> --session-id <uuid>` (2.1.302) with
+      a wrapper statusLine script around `agentwatch statusline`, a
+      pre-written coach state in `~/.claude/plugins/data/agentwatch-inline/
+      coach/`: printed `⚠ loop ~$1.40` (NO_COLOR=1 inherited) and, second
+      run without NO_COLOR, red `⚠ errors <$0.01`; debug log "StatusLine
+      ... completed with status 0".
+
+### Decisions
+- The status line command gets no `CLAUDE_PLUGIN_DATA` (live-checked), so
+  it globs `<config>/plugins/data/agentwatch*/coach` and takes the newest
+  state file for the session.
+- `--ok` shows the check mark only after a fresh healthy coach check; with
+  no state it prints nothing (no check has run, so no claim of health).
+- Main session only; subagent state (`<session>.<agent>.json`) not shown.
+- `agentwatch/__init__.py` exports are lazy (PEP 562): the eager imports
+  cost ~280 ms per call. That exposed a latent circular import
+  (cursor_discovery -> parser -> cursor_discovery), fixed by making
+  parser's discovery re-exports lazy too.

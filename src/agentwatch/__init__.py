@@ -23,37 +23,35 @@ Features:
 
 __version__ = "0.2.0"
 
-from agentwatch.cc_stats import (
-    BashCategory,
-    StatsReport,
-    ToolCategory,
-    compute_stats,
-)
-from agentwatch.detectors import (
-    Category,
-    Detector,
-    DetectorRegistry,
-    SecurityDetector,
-    Severity,
-    Warning,
-    create_registry,
-)
-from agentwatch.health import HealthReport, calculate_health, calculate_security_score
-from agentwatch.parser import (
-    Action,
-    ActionBuffer,
-    LogWatcher,
-    SessionStats,
-    find_latest_session,
-    parse_file,
-)
-from agentwatch.themes import (
-    THEMES,
-    StatusTheme,
-    get_theme,
-    list_themes,
-    set_theme,
-)
+# Public names load on first access (PEP 562), so `import agentwatch._entry`
+# (the hook and the status line, run on every tool call / UI update) does not
+# pay for the parser, detectors and Textual.
+_EXPORTS = {
+    "agentwatch.cc_stats": ("BashCategory", "StatsReport", "ToolCategory", "compute_stats"),
+    "agentwatch.detectors": ("Category", "Detector", "DetectorRegistry", "SecurityDetector",
+                             "Severity", "Warning", "create_registry"),
+    "agentwatch.health": ("HealthReport", "calculate_health", "calculate_security_score"),
+    "agentwatch.parser": ("Action", "ActionBuffer", "LogWatcher", "SessionStats",
+                          "find_latest_session", "parse_file"),
+    "agentwatch.themes": ("THEMES", "StatusTheme", "get_theme", "list_themes", "set_theme"),
+}
+_MODULE_OF = {name: module for module, names in _EXPORTS.items() for name in names}
+
+
+def __getattr__(name: str):
+    module = _MODULE_OF.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+
+    value = getattr(importlib.import_module(module), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_MODULE_OF))
+
 
 __all__ = [
     # Version
