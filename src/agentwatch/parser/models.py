@@ -179,26 +179,13 @@ class SessionStats:
 
     @property
     def estimated_cost(self) -> float | None:
-        # Priced per call from the model's rates (or the agent's own cost)
-        if self.billed_tokens and self.billed_cost is not None:
+        # Each API call once, priced by its own model (or the agent's own
+        # cost). None when any call with tokens has no price: never a guess.
+        if self.billed_tokens:
             return self.billed_cost
-        # Prefer real cost accumulated from log entries
         if self.total_cost > 0:
-            return self.total_cost
-        if self.unpriced:
-            return None  # e.g. Codex: no price for its models here (#82)
-        # No model name: estimate at Sonnet 4.6 rates (session display only;
-        # per-finding cost never estimates).
-        if self.total_cache_creation or self.total_cache_read:
-            return usage_cost_usd(
-                "claude-sonnet-4-6",
-                self.total_input_tokens,
-                self.total_output_tokens,
-                self.total_cache_creation,
-                self.total_cache_read,
-            )
-        # Fallback: blended rate when no breakdown is available
-        return (self.total_tokens / 1_000_000) * 5
+            return self.total_cost  # cost logged without token counts
+        return None if self.unpriced else 0.0
 
 
 def call_tokens(action: Action) -> int:

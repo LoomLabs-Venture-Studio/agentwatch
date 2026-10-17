@@ -251,15 +251,19 @@ def _waste(warnings: list[Warning], stats) -> dict | None:
 
 def _waste_line(waste: dict) -> str:
     """'Waste: ~$X on N findings (Y% of session cost)'; tokens when unpriced."""
+    def pct(part: float, whole: float) -> str:
+        share = part / whole * 100
+        return "<1%" if share < 0.5 else f"{share:.0f}%"
+
     n = waste["findings"]
     cost, session_cost = waste["cost_usd"], waste["session_cost_usd"]
     if cost is not None:
         amount = format_usd(cost)
-        share = f" ({cost / session_cost * 100:.0f}% of session cost)" if session_cost else ""
+        share = f" ({pct(cost, session_cost)} of session cost)" if session_cost else ""
     else:
         amount = f"{format_tokens(waste['tokens'])} tok"
         session = waste["session_tokens"]
-        share = f" ({waste['tokens'] / session * 100:.0f}% of session tokens)" if session else ""
+        share = f" ({pct(waste['tokens'], session)} of session tokens)" if session else ""
     return f"  Waste: {amount} on {n} finding{'s' if n != 1 else ''}{share}"
 
 
@@ -1536,7 +1540,7 @@ def _print_stats_report(report) -> None:
     click.echo()
 
     # Totals
-    est_cost = report.totals.estimated_cost_usd(report.model)
+    est_cost = report.totals.estimated_cost_usd()
     click.echo("  TOTALS")
     click.echo("  " + "\u2500" * 50)
     click.echo(
@@ -1567,7 +1571,7 @@ def _print_stats_report(report) -> None:
 
         for cat, bucket in sorted_tools:
             pct = bucket.total_tokens / total * 100
-            cost = bucket.estimated_cost_usd(report.model)
+            cost = bucket.estimated_cost_usd()
             count_str = (
                 f"{bucket.call_count:>5}"
                 if cat != ToolCategory.Thinking
@@ -1637,8 +1641,8 @@ def _print_burn_report(report) -> None:
 
     triv_pct = triv.total_tokens / total * 100
     sub_pct = sub.total_tokens / total * 100
-    triv_cost = triv.estimated_cost_usd(report.model)
-    sub_cost = sub.estimated_cost_usd(report.model)
+    triv_cost = triv.estimated_cost_usd()
+    sub_cost = sub.estimated_cost_usd()
 
     # Trivial
     click.echo(

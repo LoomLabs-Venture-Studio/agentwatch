@@ -164,6 +164,16 @@ def test_unknown_model_keeps_tokens_drops_cost(tmp_path):
     assert "cost_usd" not in loop.to_dict()
     assert loop.cost_label.endswith(" tok") and "$" not in loop.cost_label
     assert buffer.stats.billed_cost is None
+    # QA #145: no Sonnet-rate guess for the session either.
+    assert buffer.stats.estimated_cost is None
+
+
+def test_check_json_unknown_model_session_cost_is_null(tmp_path):
+    log = loop_log(tmp_path / "s1.jsonl", model="claude-opus-4-9")
+    out = json.loads(CliRunner().invoke(cli, ["check", "--log", str(log), "--json"]).stdout)
+    assert out["efficiency"]["cost_total"] is None
+    assert out["waste"]["session_cost_usd"] is None
+    assert out["waste"]["tokens"] is not None
 
 
 def test_agent_without_token_data_has_no_cost_fields():
@@ -264,3 +274,12 @@ def _tokenless_loop():
         buffer.add(Action(timestamp=T0, tool_name="bash", tool_type=ToolType.BASH,
                           success=True, command=f"ls{i % 1}"))
     return buffer
+
+
+@pytest.mark.parametrize("cost, share", [(0.004, "<1%"), (0.006, "1%"), (0.5, "50%")])
+def test_waste_share_under_half_a_percent_reads_below_one(cost, share):
+    from agentwatch.cli import _waste_line
+
+    line = _waste_line({"findings": 2, "tokens": 10, "cost_usd": cost,
+                        "session_tokens": 100, "session_cost_usd": 1.0})
+    assert f"({share} of session cost)" in line

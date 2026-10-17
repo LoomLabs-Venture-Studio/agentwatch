@@ -38,10 +38,13 @@ numbers refer to the GitHub repository.
 
 - Pricing: one table in `cc_stats.PRICING` (Anthropic's price page,
   2026-10-17) keyed by model id. `stats` priced every "opus" at $15/$75,
-  overstating current Opus (Opus 5.5 is $4/$20, Opus 4.5-5 $5/$25); an
-  unlisted model now shows "n/a" instead of Sonnet rates. Session cost counts
-  each Claude Code API call once (every content-block line repeats its usage)
-  and prices it by its own model, 1h cache writes at the 1h rate.
+  overstating current Opus (Opus 5.5 is $4/$20, Opus 4.5-5 $5/$25). `stats`
+  and the session cost now price each API call by its own model, with 1h
+  cache writes at the 1h rate, through the same `usage_cost_usd()`; `stats`
+  used the report's dominant model and the 5m rate for every call. Session
+  cost counts each Claude Code call once (every content-block line repeats
+  its usage). An unlisted model makes the cost "n/a" instead of a Sonnet-rate
+  guess.
 - Synthetic PIDs are a crc32 of the session id, so they stay stable across
   runs (#90, PR #92).
 - Copilot in VS Code: finished requests settle for 1 s before they are

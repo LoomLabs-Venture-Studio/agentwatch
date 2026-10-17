@@ -158,6 +158,13 @@ class TokenBucket:
     cache_write_tokens: int = 0
     cache_read_tokens: int = 0
     call_count: int = 0
+    # Sum of each call's own price (its model, 1h/5m writes split): the same
+    # usage_cost_usd() `check` bills with. None once a call with tokens had
+    # no listed price -- no partial sum, no guess.
+    cost_usd: float | None = 0.0
+
+    def add_cost(self, cost: float | None) -> None:
+        self.cost_usd = None if self.cost_usd is None or cost is None else self.cost_usd + cost
 
     @property
     def total_tokens(self) -> int:
@@ -168,20 +175,9 @@ class TokenBucket:
             + self.cache_read_tokens
         )
 
-    def estimated_cost_usd(self, model: str = "sonnet") -> float | None:
-        """None when *model* has no listed price.
-
-        ponytail: every cache write at the 5m rate (Claude Code mostly writes
-        1h, so writes are understated) and Haiku 5.5's >100k tier ignored;
-        track the 1h split per bucket if `stats` needs it exact.
-        """
-        return usage_cost_usd(
-            model,
-            self.input_tokens,
-            self.output_tokens,
-            self.cache_write_tokens,
-            self.cache_read_tokens,
-        )
+    def estimated_cost_usd(self) -> float | None:
+        """USD of the calls added to this bucket; None if any was unpriced."""
+        return self.cost_usd
 
     def merge(self, other: TokenBucket) -> None:
         self.input_tokens += other.input_tokens
@@ -189,6 +185,7 @@ class TokenBucket:
         self.cache_write_tokens += other.cache_write_tokens
         self.cache_read_tokens += other.cache_read_tokens
         self.call_count += other.call_count
+        self.add_cost(other.cost_usd)
 
 
 @dataclass
@@ -253,7 +250,7 @@ class StatsReport:
                 "cache_read_tokens": self.totals.cache_read_tokens,
                 "total_tokens": self.totals.total_tokens,
                 "estimated_cost_usd": _usd(
-                    self.totals.estimated_cost_usd(self.model)
+                    self.totals.estimated_cost_usd()
                 ),
                 "cache_hit_ratio": round(self.cache_hit_ratio, 4),
             },
@@ -262,7 +259,7 @@ class StatsReport:
                     "call_count": bucket.call_count,
                     "total_tokens": bucket.total_tokens,
                     "estimated_cost_usd": _usd(
-                        bucket.estimated_cost_usd(self.model)
+                        bucket.estimated_cost_usd()
                     ),
                 }
                 for cat, bucket in sorted(
@@ -286,12 +283,12 @@ class StatsReport:
                 "trivial_calls": self.trivial.call_count,
                 "trivial_tokens": self.trivial.total_tokens,
                 "trivial_cost_usd": _usd(
-                    self.trivial.estimated_cost_usd(self.model)
+                    self.trivial.estimated_cost_usd()
                 ),
                 "substantive_calls": self.substantive.call_count,
                 "substantive_tokens": self.substantive.total_tokens,
                 "substantive_cost_usd": _usd(
-                    self.substantive.estimated_cost_usd(self.model)
+                    self.substantive.estimated_cost_usd()
                 ),
                 "trivial_pct": round(
                     self.trivial.total_tokens
@@ -662,6 +659,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
                     "input_tokens": 0,
                     "output_tokens": 0,
                     "cache_write": 0,
+                    "cache_write_1h": 0,
                     "cache_read": 0,
                     "tool_blocks": {},  # block_id -> (tool_name, tool_input)
                     "has_thinking": False,
@@ -686,6 +684,11 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             md["cache_read"] = max(
                 md["cache_read"], usage.get("cache_read_input_tokens", 0)
             )
+            split = usage.get("cache_creation")
+            if isinstance(split, dict):
+                md["cache_write_1h"] = max(
+                    md["cache_write_1h"], split.get("ephemeral_1h_input_tokens") or 0
+                )
             if msg.get("model"):
                 md["model"] = msg["model"]
 
@@ -742,6 +745,15 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             ]
 
         n = len(categories)
+        # Each call priced on its own model and usage, then split evenly.
+        tokens = (
+            md["input_tokens"] + md["output_tokens"] + md["cache_write"] + md["cache_read"]
+        )
+        call_cost = usage_cost_usd(
+            md["model"], md["input_tokens"], md["output_tokens"],
+            md["cache_write"], md["cache_read"], md["cache_write_1h"],
+        ) if tokens else 0.0
+        share = None if call_cost is None else call_cost / n
         per_input = md["input_tokens"] // n
         per_output = md["output_tokens"] // n
         per_cw = md["cache_write"] // n
@@ -764,6 +776,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
                 md["cache_read"] - per_cr * n if extra else 0
             )
             bucket.call_count += 1
+            bucket.add_cost(share)
 
         # Bash sub-categories
         bash_cmds_by_idx = dict(bash_commands)
@@ -775,6 +788,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             sub.cache_write_tokens += per_cw
             sub.cache_read_tokens += per_cr
             sub.call_count += 1
+            sub.add_cost(share)
 
         # Trivial vs substantive classification
         # Resolve user prompt for this message (walk parentUuid)
@@ -797,12 +811,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
                     tc = TrivialCall(
                         command=cmd,
                         total_tokens=call_tokens,
-                        estimated_cost_usd=TokenBucket(
-                            input_tokens=per_input,
-                            output_tokens=per_output,
-                            cache_write_tokens=per_cw,
-                            cache_read_tokens=per_cr,
-                        ).estimated_cost_usd(md.get("model", "sonnet")),
+                        estimated_cost_usd=share,
                         session_id=session_id,
                     )
                     # Lazily resolve user prompt once per message
@@ -819,6 +828,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             target.cache_write_tokens += per_cw
             target.cache_read_tokens += per_cr
             target.call_count += 1
+            target.add_cost(share)
 
         # Totals (full amount, not split)
         report.totals.input_tokens += md["input_tokens"]
@@ -826,6 +836,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
         report.totals.cache_write_tokens += md["cache_write"]
         report.totals.cache_read_tokens += md["cache_read"]
         report.totals.call_count += 1
+        report.totals.add_cost(call_cost)
 
     # Dominant model
     if model_counts:
