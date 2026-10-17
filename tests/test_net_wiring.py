@@ -154,6 +154,33 @@ class TestWatchAll:
             await app._refresh_processes()
             assert sampler.tracked == set()
 
+    async def test_refresh_retracks_when_log_gets_new_pid(self, monkeypatch):
+        monkeypatch.setattr("agentwatch.ui.multi_app.find_running_agents", lambda cache: [])
+        a, b = Path("a.jsonl"), Path("b.jsonl")
+        app = MultiAgentWatchApp(agent_processes=[])
+        app._net_sampler = sampler = FakeSampler()
+        app.watcher = FakeWatcher(new=[_proc(100, a), _proc(100, b)])
+        async with app.run_test() as pilot:
+            await app._refresh_processes()
+            await pilot.pause()
+            assert sampler.tracked == {100}
+
+            # a's session is resumed by a new process; b still belongs to 100
+            app.watcher.new, app.watcher.procs = [], {a: _proc(200, a), b: _proc(100, b)}
+            await app._refresh_processes()
+            assert app.agents[a]["pid"] == 200 and sampler.tracked == {100, 200}
+            assert app._team_by_pid[200] == 200
+
+            app.watcher.procs[b] = _proc(300, b)  # last holder of 100 moves on
+            await app._refresh_processes()
+            assert sampler.tracked == {200, 300} and 100 not in app._team_by_pid
+
+            action = _action(T0)
+            app.watcher.events = [("action", (action, a))]
+            app.run_worker(app._watch_loop())
+            await _until(pilot, lambda: len(app.agents[a]["buffer"]))
+            assert action.observed_endpoints == [EP] and sampler.calls[-1][0] == 200
+
 
 class TestWatch:
     def _run(self, tmp_path, monkeypatch, procs):
