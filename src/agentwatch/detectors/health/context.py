@@ -69,85 +69,43 @@ class ContextRotDetector(Detector):
 
 
 class ContextPressureDetector(Detector):
-    """Estimates context window usage and warns when filling up."""
+    """Warns when the current context fills the model's window.
+
+    Current context is the latest call's input + cache tokens
+    (``SessionStats.last_context_tokens``), not a sum over the session:
+    every call re-sends the conversation, so a sum passes 100% on any long
+    session. It drops after compaction. No usage reported, or no known
+    window (``SessionStats.known_context_window``): no percentage claimed.
+    """
 
     category = Category.CONTEXT
     name = "context_pressure"
     description = "Context window filling up"
 
-    # Rough estimate: average tokens per action type
-    TOKENS_PER_ACTION = {
-        "read": 500,
-        "edit": 200,
-        "bash": 300,
-        "write": 150,
-        "default": 150,
-    }
-
-    # Approximate context limits by model
-    CONTEXT_LIMITS = {
-        "claude": 180_000,
-        "gpt4": 128_000,
-        "default": 128_000,
-    }
-
-    def __init__(
-        self,
-        warning_threshold: float = 0.7,
-        critical_threshold: float = 0.85,
-        model: str = "claude",
-    ):
+    def __init__(self, warning_threshold: float = 0.7, critical_threshold: float = 0.85):
         self.warning_threshold = warning_threshold
         self.critical_threshold = critical_threshold
-        self.context_limit = self.CONTEXT_LIMITS.get(model, self.CONTEXT_LIMITS["default"])
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < 10:
+        stats = buffer.stats
+        tokens, window = stats.last_context_tokens, stats.known_context_window
+        if not (tokens and window):
             return None
-
-        # Estimate tokens used
-        estimated_tokens = 0
-        for action in buffer.actions:  # All buffered actions represent cumulative context
-            action_type = action.tool_type.value
-            tokens = self.TOKENS_PER_ACTION.get(
-                action_type,
-                self.TOKENS_PER_ACTION["default"]
-            )
-
-            # Use actual tokens if available
-            if action.tokens_in or action.tokens_out:
-                tokens = action.tokens_in + action.tokens_out
-
-            estimated_tokens += tokens
-
-        usage_ratio = estimated_tokens / self.context_limit
-
-        if usage_ratio >= self.critical_threshold:
-            return Warning(
-                category=self.category,
-                severity=Severity.HIGH,
-                signal="context_critical",
-                message=f"Context window ~{int(usage_ratio * 100)}% full",
-                details={
-                    "estimated_tokens": estimated_tokens,
-                    "usage_percent": int(usage_ratio * 100),
-                    "limit": self.context_limit,
-                },
-            )
-        elif usage_ratio >= self.warning_threshold:
-            return Warning(
-                category=self.category,
-                severity=Severity.MEDIUM,
-                signal="context_pressure",
-                message=f"Context window ~{int(usage_ratio * 100)}% full",
-                details={
-                    "estimated_tokens": estimated_tokens,
-                    "usage_percent": int(usage_ratio * 100),
-                    "limit": self.context_limit,
-                },
-            )
-
-        return None
+        usage_ratio = min(tokens / window, 1.0)
+        if usage_ratio < self.warning_threshold:
+            return None
+        critical = usage_ratio >= self.critical_threshold
+        return Warning(
+            category=self.category,
+            severity=Severity.HIGH if critical else Severity.MEDIUM,
+            signal="context_critical" if critical else "context_pressure",
+            message=f"Context window ~{int(usage_ratio * 100)}% full",
+            details={
+                "estimated_tokens": tokens,
+                "usage_percent": int(usage_ratio * 100),
+                "limit": window,
+            },
+        )
 
 
 class RediscoveryDetector(Detector):
