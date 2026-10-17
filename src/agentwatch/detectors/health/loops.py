@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter
+from itertools import islice
 
 from agentwatch.parser.models import NON_TOOL_ROLE_LABELS, ActionBuffer
 
@@ -12,6 +15,22 @@ from ..security.secret_scanner import redact_secrets, redact_truncate
 # Cap for details["last_command"]. Every display slices to <= 100 chars; 200
 # keeps extra context for SIEM consumers and the live dedup key.
 _LAST_COMMAND_MAX_CHARS = 200
+
+
+def _loop_key(a) -> str:
+    """Identify an action for loop counting: tool + file path, else command.
+
+    With neither (MCP tools, WebSearch, ...), a short hash of the tool input:
+    31 javascript_tool calls with 19 different scripts are not a loop.
+    """
+    target = a.file_path or a.command
+    if not target and a.raw.get("input") is not None:
+        # ponytail: only parsers whose raw holds the input dict (Claude Code,
+        # Cline) get the hash; others still key on the tool name alone.
+        dump = json.dumps(a.raw["input"], sort_keys=True, default=str)
+        target = hashlib.sha1(dump.encode()).hexdigest()[:8]
+    return f"{a.tool_name}:{target or ''}"
+
 
 class LoopDetector(Detector):
     """Detects when agent is stuck in a loop."""
@@ -28,35 +47,40 @@ class LoopDetector(Detector):
         if len(buffer) < self.window:
             return None
 
-        recent = buffer.last(self.window)
-
-        # Check for repeated identical tool calls. Exclude parsers' role-label
-        # sentinels (e.g. Cursor's "user_message"/"assistant_message" -- see
-        # NON_TOOL_ROLE_LABELS) since those mark conversation turns, not
-        # repeated tool invocations, and would otherwise flag any ordinary
-        # multi-turn conversation as a "loop".
-        # Without a file path, the command identifies the action: four
-        # different Bash commands are not a loop.
-        def key(a) -> str:
-            return f"{a.tool_name}:{a.file_path or a.command or ''}"
-
-        tool_sequence = [key(a) for a in recent if a.tool_name not in NON_TOOL_ROLE_LABELS]
-        if not tool_sequence:
+        # The last `window` tool calls. Parsers' role-label sentinels (Cursor's
+        # "user_message"/"assistant_message", Claude Code's "text_output",
+        # "tool_result", ... -- see NON_TOOL_ROLE_LABELS) mark conversation
+        # turns and call outcomes, not tool invocations: they are neither
+        # counted nor allowed to take window slots, or a real loop with a
+        # failed result after every call only ever fills half the window.
+        recent = list(islice(
+            (a for a in reversed(buffer.actions) if a.tool_name not in NON_TOOL_ROLE_LABELS),
+            self.window,
+        ))[::-1]
+        if not recent:
             return None
-        counts = Counter(tool_sequence)
+        counts = Counter(_loop_key(a) for a in recent)
 
         most_common, count = counts.most_common(1)[0]
 
         if count >= self.threshold:
             # Gather the actual commands/errors for context
-            matching = [a for a in recent if key(a) == most_common]
+            matching = [a for a in recent if _loop_key(a) == most_common]
             tool, path = matching[0].tool_name, matching[0].file_path or ""
             last_cmd = next((a.command for a in reversed(matching) if a.command), None)
             if last_cmd:
                 # Exported to SIEM via details/suggestion: mask secrets, and cap
                 # the length so a huge heredoc isn't regex-scanned every tick.
                 last_cmd = redact_truncate(last_cmd, _LAST_COMMAND_MAX_CHARS)
-            last_err = next((a.error_message for a in reversed(matching) if a.error_message), None)
+            # Claude Code reports a failure as a separate tool_result action,
+            # linked to its call by tool_use_id.
+            failures = {
+                a.raw.get("tool_use_id"): a.error_message
+                for a in buffer.actions
+                if a.tool_name == "tool_result" and a.error_message and a.raw.get("tool_use_id")
+            }
+            errors = (a.error_message or failures.get(a.raw.get("id")) for a in reversed(matching))
+            last_err = next((e for e in errors if e), None)
             if last_err:
                 last_err = redact_secrets(last_err)
 

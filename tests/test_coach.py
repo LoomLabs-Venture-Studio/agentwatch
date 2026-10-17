@@ -104,6 +104,8 @@ def test_silent_on_healthy_session(tmp_path):
 
 def test_dedup_then_rereport_after_clear(tmp_path):
     loop = _looping(tmp_path)
+    # Two HIGH findings (loop, error_blindness): one note per call.
+    assert coach.run(_payload(loop)) is not None
     assert coach.run(_payload(loop)) is not None
     assert coach.run(_payload(loop)) is None  # same loop: not nagged again
     assert coach.run(_payload(loop, session="other")) is not None  # per session
@@ -303,9 +305,9 @@ def test_evidence_is_last_line_of_full_error(tmp_path):
 # F10: the hook's own call counts even before the transcript has it -----------
 
 def test_current_failed_call_is_folded_in(tmp_path):
-    transcript = _repeat_error(tmp_path, "AssertionError: boom", n=7)  # 14 actions
+    transcript = _repeat_error(tmp_path, "AssertionError: boom", n=5)  # MEDIUM 5x loop
     data = json.loads(_payload(transcript, event="PostToolUseFailure"))
-    data.update(tool_use_id="t6", error="AssertionError: boom")  # already logged
+    data.update(tool_use_id="t4", error="AssertionError: boom")  # already logged
     assert coach.run(json.dumps(data)) is None
     data.update(tool_use_id="t99")  # not in the transcript yet
     assert coach.run(json.dumps(data)) is not None

@@ -368,7 +368,8 @@ src/agentwatch/
 
 ## Build Commands
 ```bash
-pip install -e ".[dev]"        # install package + pytest/ruff dev deps
+pip install -e ".[dev]"        # install package + pytest/ruff dev deps (SIEM tests skip)
+pip install -e ".[dev,siem,llm]"  # everything CI installs; runs every test, none skipped for SIEM
 python -m pytest tests/ -v     # run tests
 ruff check .                   # lint
 agentwatch check                # manual smoke test (health scan of a running agent)

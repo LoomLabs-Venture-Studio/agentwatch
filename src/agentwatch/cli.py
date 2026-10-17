@@ -929,6 +929,7 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
 
     if once:
         missing = netmod.missing_pids(pids)
+        status = 1 if pids and set(pids) <= set(missing) else 0  # every --pid gone
         targets = find_targets()
         tracker.poll(targets)
         endpoints = tracker.summary(wait=0)  # poll() already waited for rDNS
@@ -942,7 +943,7 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
             if not targets:
                 doc["message"] = no_target
             click.echo(json.dumps(doc, indent=2))
-            return
+            sys.exit(status)
         for pid in missing:
             click.echo(f"pid {pid} not found", err=True)
         if not targets:
@@ -952,7 +953,7 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
             _print_incoming(listeners, clients)
         if unwatched():
             click.echo("\n  " + _unwatched_line(unwatched()))
-        return
+        sys.exit(status)
 
     def emit(event: str, text: str, **fields) -> None:
         click.echo(json.dumps({"event": event, **fields}) if json_output else text)

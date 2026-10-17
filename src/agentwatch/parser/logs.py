@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
-from .models import Action, ToolType
+from .models import CONTEXT_WINDOW_1M, Action, ToolType
 
 # Sensitive path patterns for security detection -- moved to
 # `security_patterns.py` (Sprint 14) so `parser.models.ActionBuffer.add()`'s
@@ -57,6 +58,22 @@ def classify_tool(tool_name: str) -> ToolType:
     return ToolType.UNKNOWN
 
 
+# Claude models with a 1M-token window (per the Anthropic model table,
+# 2026-10). "[1m]" is Claude Code's 1M-context alias suffix.
+# ponytail: a new 1M family needs a row here; until then its window is
+# unknown, inferred from the first call over 200K, and no % is claimed.
+_CLAUDE_1M_MODELS = re.compile(
+    r"\[1m\]|claude-(fable|mythos|opus-5|opus-4-[678]|sonnet-5|sonnet-4-6|haiku-5)"
+)
+
+
+def claude_context_window(model: Any) -> int:
+    """Context window of a Claude model id, 0 = unknown."""
+    if isinstance(model, str) and _CLAUDE_1M_MODELS.search(model):
+        return CONTEXT_WINDOW_1M
+    return 0
+
+
 def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
     """Parse a Claude Code JSONL log entry.
 
@@ -68,6 +85,8 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
 
     We extract actions from tool_use blocks and later merge results.
     """
+    if entry.get("type") in _NON_ACTION_TYPES:
+        return None
     try:
         msg = entry.get("message")
         if not isinstance(msg, dict):
@@ -120,6 +139,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
         } if entry_type == "assistant" else {}
 
         session_id = entry.get("sessionId")
+        context_window = claude_context_window(msg.get("model"))
 
         actions: list[Action] = []
 
@@ -172,6 +192,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                     cost_usd=cost_usd,
                     cache_creation_tokens=cache_creation_tokens,
                     cache_read_tokens=cache_read_tokens,
+                    context_window=context_window,
                     outgoing_data=outgoing_data,
                     session_id=session_id,
                     raw=block,
@@ -222,6 +243,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                 cost_usd=cost_usd,
                 cache_creation_tokens=cache_creation_tokens,
                 cache_read_tokens=cache_read_tokens,
+                context_window=context_window,
                 session_id=session_id,
                 raw={"type": "text", "text": joined[:500]},
                 **call,
@@ -278,8 +300,16 @@ def _parse_timestamp(entry: dict) -> datetime | None:
     return None
 
 
+# Claude Code 2.1.300+ also logs every model request: "api-request" (params,
+# hashes) and "api-request-shape" (system prompt + tool list), both timed.
+# "api-request-blob" (request message copies) is untimed and its type is
+# neither user nor assistant, so it never yields an action; listed so that
+# stays true.
 _NON_ACTION_TYPES = frozenset(
-    {"attachment", "pr-link", "file-history-delta", "continued-in"}
+    {
+        "attachment", "pr-link", "file-history-delta", "continued-in",
+        "api-request", "api-request-shape", "api-request-blob",
+    }
 )
 
 
@@ -290,11 +320,10 @@ def _parse_claude_code_flat(entry: dict) -> Action | None:
     # datetime.now() wrecks session duration (#38).
     if not (entry.get("timestamp") or entry.get("ts") or entry.get("time")):
         return None
-    # Timestamped bookkeeping entries and plain user prompts are not agent
-    # actions either, and no detector reads them (#46).
-    if entry.get("type") in _NON_ACTION_TYPES or (
-        entry.get("type") == "user" and isinstance(entry.get("message"), dict)
-    ):
+    # Plain user prompts are not agent actions either, and no detector reads
+    # them (#46); timestamped bookkeeping (_NON_ACTION_TYPES) is dropped by
+    # parse_claude_code_entry before it gets here.
+    if entry.get("type") == "user" and isinstance(entry.get("message"), dict):
         return None
     try:
         timestamp = _parse_timestamp(entry)
