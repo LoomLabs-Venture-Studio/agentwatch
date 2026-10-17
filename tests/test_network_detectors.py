@@ -183,8 +183,7 @@ class TestC2BeaconWordBoundaries:
         assert w is not None and w.signal == "c2_beacon"
 
 
-@pytest.mark.parametrize("host", [12345, {"name": "evil.com"}, ["evil.com"], True])
-def test_moltbot_non_text_host_falls_back_to_url_host(host):
+def _moltbot_fetch(**tool_input) -> Action:
     from agentwatch.parser.logs import parse_moltbot_entry
 
     action = parse_moltbot_entry({
@@ -192,13 +191,36 @@ def test_moltbot_non_text_host_falls_back_to_url_host(host):
         "type": "tool_call",
         "tool_call": {
             "name": "web_fetch",
-            "input": {"host": host, "url": "https://webhook.site/abc"},
+            "input": {"url": "https://webhook.site/abc", **tool_input},
         },
     })
     assert action is not None
+    return action
+
+
+@pytest.mark.parametrize(
+    "host", [12345, {"name": "evil.com"}, ["evil.com"], True, "", "  "]
+)
+def test_moltbot_non_text_host_falls_back_to_url_host(host):
+    action = _moltbot_fetch(host=host)
     assert action.network_host == "webhook.site"
 
     buf = ActionBuffer()
     buf.add(action)
     warning = NetworkAnomalyDetector().check(buf)
     assert warning is not None and warning.signal == "suspicious_host"
+
+
+@pytest.mark.parametrize("port", [[4444], {"p": 1}, "4444", True])
+def test_moltbot_non_int_port_dropped_and_detector_still_fires(port):
+    action = _moltbot_fetch(port=port)
+    assert action.network_port is None
+
+    buf = ActionBuffer()
+    buf.add(action)
+    warning = NetworkAnomalyDetector().check(buf)
+    assert warning is not None and warning.signal == "suspicious_host"
+
+
+def test_moltbot_int_port_kept():
+    assert _moltbot_fetch(port=4444).network_port == 4444
