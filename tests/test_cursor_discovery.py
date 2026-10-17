@@ -103,11 +103,11 @@ def user_dir(tmp_path):
 
 class TestFileUriToPath:
     def test_decodes_windows_drive_uri(self):
-        uri = "file:///c%3A/Users/Zaid/Desktop/claude%20work/agentwatch/agentwatch-main"
+        uri = "file:///c%3A/Users/alice/Desktop/claude%20work/agentwatch/agentwatch-main"
         result = _file_uri_to_path(uri)
         assert str(result) in (
-            "c:\\Users\\Zaid\\Desktop\\claude work\\agentwatch\\agentwatch-main",
-            "c:/Users/Zaid/Desktop/claude work/agentwatch/agentwatch-main",
+            "c:\\Users\\alice\\Desktop\\claude work\\agentwatch\\agentwatch-main",
+            "c:/Users/alice/Desktop/claude work/agentwatch/agentwatch-main",
         )
 
     def test_non_file_uri_returns_none(self):

@@ -4,8 +4,8 @@ project directory naming scheme.
 Claude Code stores per-project session logs under ``~/.claude/projects/``,
 keyed by an encoded form of the project's absolute working directory: every
 character outside ``[A-Za-z0-9]`` becomes ``-``, e.g.
-``C:\\Users\\Zaid\\Desktop\\claude work\\...`` ->
-``C--Users-Zaid-Desktop-claude-work-...``. Names over 200 characters are cut
+``C:\\Users\\alice\\Desktop\\claude work\\...`` ->
+``C--Users-alice-Desktop-claude-work-...``. Names over 200 characters are cut
 to 200 and suffixed with ``-`` plus a base-36 string hash of the path (#75;
 read from the Claude Code 2.x CLI binary, where it is
 ``s.replace(/[^a-zA-Z0-9]/g, "-")`` and a Java-style ``(h << 5) - h + c``
@@ -44,7 +44,7 @@ def encode_path_for_claude(path: Path) -> str:
     """Encode a filesystem path to Claude Code's project directory format.
 
     e.g., /Users/zaid/my_project -> -Users-zaid-my-project
-    e.g., C:\\Users\\Zaid\\my project -> C--Users-Zaid-my-project
+    e.g., C:\\Users\\alice\\my project -> C--Users-alice-my-project
     """
     # ponytail: one "-" per code point; JS emits two for chars outside the
     # BMP (emoji). Count UTF-16 units if such paths ever show up.
