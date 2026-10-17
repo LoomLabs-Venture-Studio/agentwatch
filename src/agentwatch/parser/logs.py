@@ -23,15 +23,20 @@ from .security_patterns import (
     is_sensitive_path,  # noqa: F401 -- re-exported, see comment above
 )
 
-# Common agent log locations
-DEFAULT_SEARCH_PATHS = [
-    Path.home() / ".claude" / "projects",
-    Path.home() / ".claude" / "logs",
-    Path.home() / ".moltbot" / "agents",
-    Path.home() / ".clawdbot" / "agents",
-    Path.cwd() / ".logs",
-    Path.cwd() / "logs",
-]
+
+def __getattr__(name: str):
+    # DEFAULT_SEARCH_PATHS (common agent log locations) is lazy: Path.home()
+    # raises without a home dir, and that must not break importing the parser.
+    if name == "DEFAULT_SEARCH_PATHS":
+        return [
+            Path.home() / ".claude" / "projects",
+            Path.home() / ".claude" / "logs",
+            Path.home() / ".moltbot" / "agents",
+            Path.home() / ".clawdbot" / "agents",
+            Path.cwd() / ".logs",
+            Path.cwd() / "logs",
+        ]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def classify_tool(tool_name: str) -> ToolType:
@@ -819,9 +824,10 @@ def find_log_files(base_path: Path | None = None) -> list[Path]:
     """Find all relevant log files for known agents."""
     log_files = []
 
-    search_paths = DEFAULT_SEARCH_PATHS
     if base_path:
         search_paths = [base_path]
+    else:  # a monkeypatched value, else the lazy default
+        search_paths = globals().get("DEFAULT_SEARCH_PATHS") or __getattr__("DEFAULT_SEARCH_PATHS")
 
     for search_path in search_paths:
         if search_path.exists():

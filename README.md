@@ -650,8 +650,16 @@ own transcript. The note quotes tool output as evidence (with `<`/`>`
 removed); its advice line is fixed text. Dedup state is a small JSON file per
 session in the plugin's data dir (`$CLAUDE_PLUGIN_DATA/coach`), or else
 `%LOCALAPPDATA%\agentwatch\coach` on Windows and `~/.cache/agentwatch/coach`
-elsewhere (`0700`, never the shared temp dir). It also holds that session's
-latest health warnings; files older than 7 days are deleted.
+elsewhere (`0700`, never the shared temp dir). If the plugin's data dir
+cannot be written, the per-user dir is used instead. It also holds that
+session's latest health warnings; files older than 7 days are deleted.
+
+With the Microsoft Store Python on Windows, writes to `%LOCALAPPDATA%` are
+redirected into the app's private folder, so the state is really under
+`%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.X_<id>\LocalCache\Local\agentwatch\coach`.
+agentwatch itself sees the same redirect, so this only matters when you look
+for the files by hand. This also applies to a pipx/venv install built on the
+Store Python; a python.org Python has no redirect.
 
 ## Configuration
 

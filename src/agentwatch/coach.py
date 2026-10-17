@@ -70,10 +70,15 @@ _DEFAULT_TIP = "Stop, re-read the goal, and change approach."
 
 
 def state_dir() -> Path:
-    """$CLAUDE_PLUGIN_DATA/coach, else a per-user cache dir (never shared /tmp)."""
+    """$CLAUDE_PLUGIN_DATA/coach, else the per-user cache dir (never shared /tmp)."""
     plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")
     if plugin_data:
         return Path(plugin_data) / "coach"
+    return user_state_dir()
+
+
+def user_state_dir() -> Path:
+    """%LOCALAPPDATA% or ~/.cache + agentwatch/coach."""
     if sys.platform == "win32":
         root = os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local"
     else:
@@ -92,6 +97,19 @@ def _private_dir(path: Path) -> bool:
     if st.st_mode & 0o077:
         os.chmod(path, 0o700)
     return True
+
+
+def _writable_state_dir() -> Path | None:
+    """state_dir(), or the per-user dir when that one cannot be written."""
+    for directory in dict.fromkeys((state_dir(), user_state_dir())):
+        try:
+            if not _private_dir(directory):
+                return None  # not ours (POSIX): stay silent, do not fall back
+            with tempfile.TemporaryFile(dir=directory):
+                return directory
+        except OSError:
+            continue
+    return None
 
 
 def _prune(directory: Path) -> None:
@@ -221,7 +239,8 @@ def format_message(warning, actions: list = ()) -> str:
     lines = [f"agentwatch coach [{warning.severity.value}]: {_clean(warning.message)}"]
     evidence = _evidence(warning, list(actions))
     if evidence:
-        lines.append(f'Evidence (tool output, quoted): "{_clean(evidence)}"')
+        quoted = _clean(evidence).replace('"', "'")  # tool output cannot close the quote
+        lines.append(f'Evidence (tool output, quoted): "{quoted}"')
     lines.append(f"Try: {_TIPS.get(warning.signal, _DEFAULT_TIP)}")
     return "\n".join(lines)
 
@@ -262,8 +281,8 @@ def run(stdin_text: str) -> str | None:
             if w.severity.value in _SEVERE and w.category.value in _COACHED
         }
 
-        directory = state_dir()
-        if not _private_dir(directory):
+        directory = _writable_state_dir()
+        if directory is None:
             return None
         _prune(directory)
         state = directory / (re.sub(r"[^A-Za-z0-9_.-]", "_", key)[:150] + ".json")

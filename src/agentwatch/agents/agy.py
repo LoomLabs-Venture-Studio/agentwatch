@@ -14,8 +14,14 @@ if TYPE_CHECKING:
     from agentwatch.discovery import AgentProcess
     from agentwatch.parser.models import Action
 
-# No documented override for this location (unlike CODEX_HOME/COPILOT_HOME).
-AGY_HOME = Path.home() / ".gemini" / "antigravity-cli"
+
+def __getattr__(name: str):
+    # AGY_HOME is lazy: Path.home() raises without a home dir, and this module is
+    # imported by every detector registry (the coach hook included).
+    # No documented override for this location (unlike CODEX_HOME/COPILOT_HOME).
+    if name == "AGY_HOME":
+        return Path.home() / ".gemini" / "antigravity-cli"
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def resolve_agy_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, str | None]:
@@ -38,7 +44,8 @@ def resolve_agy_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, str
         path = Path(f.path)
         if path.parent.name == "presence" and path.suffix == ".lock":
             cid = path.stem
-            log = AGY_HOME / "brain" / cid / ".system_generated" / "logs" / "transcript.jsonl"
+            home = globals().get("AGY_HOME") or __getattr__("AGY_HOME")
+            log = home / "brain" / cid / ".system_generated" / "logs" / "transcript.jsonl"
             return (log if log.exists() else None), cid
     return None, None
 
