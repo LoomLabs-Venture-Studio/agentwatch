@@ -184,3 +184,66 @@ def test_scrub_refuses_to_write_invalid_json(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="not be valid JSON"):
         secret_scanner.scrub_file(path)
     assert list(tmp_path.iterdir()) == [path]
+
+
+def _nested_transcript(tmp_path):
+    """A Claude Code transcript where a tool_result holds `cat many.json`:
+    JSON text inside a JSON string, so each value is escaped twice."""
+    inner = json.dumps([{"command": c} for c in _CMDS], indent=1)
+    lines = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cat many.json"}},
+        ]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": inner},
+        ]}},
+    ]
+    path = tmp_path / "nested.jsonl"
+    path.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_scrub_hides_secrets_in_json_inside_a_tool_result(tmp_path):
+    from agentwatch.detectors.security.secret_scanner import scrub_file
+
+    r = scrub_file(_nested_transcript(tmp_path))
+    out = r.output.read_text(encoding="utf-8")
+    assert _leaks(out) == []
+    content = json.loads(out.splitlines()[1])["message"]["content"][0]["content"]
+    assert [list(o) for o in json.loads(content)] == [["command"]] * len(_CMDS)
+
+
+def test_scrub_nested_json_findings_not_fewer_than_develop(tmp_path):
+    """develop listed 5 (mostly bogus 1-char) findings on this file; fewer
+    would read as "cleaner" while secrets are left behind."""
+    from agentwatch.detectors.security.secret_scanner import scrub_file
+
+    r = scrub_file(_nested_transcript(tmp_path), dry_run=True)
+    assert len(r.findings) == r.redacted >= len(_QUOTED_SECRETS) > 5
+    assert {f["line"] for f in r.findings} == {2}
+
+
+def test_nested_json_redacted_at_every_layer():
+    text = "x"
+    for _ in range(8):
+        text = json.dumps({"cmd": 'mysql -p"Pw0rdS3cret9" ' + text})
+    new, count = _redact_line(text)
+    assert count == 8
+    assert "Pw0rdS3cret9" not in new
+
+
+@pytest.mark.parametrize("unit", ['\\"a\\" ', "\\\\", '"\\', 'x\\"'])
+def test_nested_json_pass_linear_on_unbalanced_quotes(unit):
+    """An unterminated quote in nested text must not rescan from every quote."""
+    import time
+
+    def run(n):
+        line = json.dumps({"c": unit * (n // len(unit))})
+        best = float("inf")
+        for _ in range(3):
+            t0 = time.perf_counter()
+            _redact_line(line)
+            best = min(best, time.perf_counter() - t0)
+        return best
+
+    assert run(200_000) / run(50_000) < 8.0

@@ -198,8 +198,9 @@ _p(r"v1\.0-[a-f0-9]{24}-[a-f0-9]{146,}", "cloudflare_api_token")
 # A backslash escape pair is part of the value, so a shell-escaped quote
 # ("S3cret\"Pw0rd") does not end it. A value never starts with a backslash:
 # in raw JSON text the \" before a value is its quote, and the decoded-value
-# pass (_redact_line) redacts it there.
-_SECRET_VALUE = r"(?P<secret>[^\s'\"$…\[\\](?:\\.|[^\s'\":\\]|:(?=[^\s'\"]))*+)"
+# pass (_redact_line) redacts it there. A backtick ends it: markdown and
+# shell quote commands in them (`password=...`).
+_SECRET_VALUE = r"(?P<secret>[^\s'\"`$…\[\\](?:\\.|[^\s'\"`:\\]|:(?=[^\s'\"`]))*+)"
 _p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env")
 # curl/mysql as a program word anywhere on a line (error text quotes
 # commands mid-line, behind prompts, bash -c, ssh, docker exec, xargs ...),
@@ -252,21 +253,25 @@ _p(
     "url_credentials",
 )
 _p(r"\bbearer\s+['\"]?(?P<secret>[a-z0-9_\-.=~+/]{20,})", "bearer_header")
-# Bare key=value / key: value secrets (password=Hunter2!, client_secret: ...),
-# which the assignment patterns above miss: unquoted or under 8/20 chars. To
-# keep false positives low the value is 6+ chars with a digit or symbol (code
-# like "password=self.password" has neither), is not a call or subscript
-# ("get_token(", "Optional[str]"), and is no placeholder (***, <...>, ${VAR},
-# {{ var }}, %(x)s, changeme) or path (PWD=/home/...).
+# Bare key=value / key: value secrets (password=Hunter2!, token: ...), which
+# the assignment patterns above miss: unquoted or under 8/20 chars. To keep
+# false positives low the key is a whole word (not exe_token=), and the value
+# is 6+ chars with a digit or symbol (code like "password=self.password" has
+# neither), is not a call or subscript ("get_token(", "Optional[str]"), and is
+# no placeholder (***, gho_****, <...>, ${VAR}, {{ var }}, %(x)s, changeme) or
+# path (PWD=/home/...). Its masked form never shows a tail (_NO_TAIL_LABELS).
 _p(
-    r"(?<![a-z0-9])(?:password|passwd|pwd|secret|token|api[_-]?key|apikey)"
+    r"(?<!\w)(?:password|passwd|pwd|secret|token|api[_-]?key|apikey)"
     r"['\"]?[^\S\n]*[:=][^\S\n]*['\"]?"
-    r"(?![*<{%/]|changeme\b|[\w.]*[(\[])"
-    # The digit/symbol look-ahead is bounded: unbounded, every key in a long
-    # run ("token:token:...") scanned to its end (quadratic).
-    r"(?=[^\s'\"]{6})(?=[^\s'\"]{0,64}?[\d!@#^&*+=?~])" + _SECRET_VALUE,
+    # The look-aheads that scan the value are bounded: unbounded, every key in
+    # a long run ("token:token:...") scanned to its end (quadratic).
+    r"(?![*<{%/]|changeme\b|[\w.]*[(\[]|[^\s'\"`]{0,64}?\*{3})"
+    r"(?=[^\s'\"`]{6})(?=[^\s'\"`]{0,64}?[\d!@#^&*+=?~])" + _SECRET_VALUE,
     "key_value_secret",
 )
+# Labels whose masked value never reveals its last chars, however long: a
+# password-like value has no "which key to rotate" hint worth leaking.
+_NO_TAIL_LABELS = frozenset({"key_value_secret"})
 
 
 # ---------------------------------------------------------------------------
@@ -492,9 +497,9 @@ def mask_secret(match_text: str) -> str:
     return _mask_value(value)
 
 
-def _mask_value(value: str) -> str:
+def _mask_value(value: str, label: str | None = None) -> str:
     """Display-safe form of a bare secret *value* (see ``mask_secret``)."""
-    if len(value) >= _MASK_TAIL_MIN_LEN:
+    if len(value) >= _MASK_TAIL_MIN_LEN and label not in _NO_TAIL_LABELS:
         return "…" + value[-_MASK_TAIL_CHARS:]
     return f"[hidden, {len(value)} chars]"
 
@@ -504,11 +509,11 @@ def _match_value(m: re.Match) -> str:
     return m.group("secret") if "secret" in m.re.groupindex else m.group(0)
 
 
-def _mask_match_value(m: re.Match) -> str:
+def _mask_match_value(m: re.Match, label: str | None = None) -> str:
     """Masked secret of *m*. A ``secret`` group is already the bare value, so
     it is not split again on ``=``/``:`` (#64)."""
     if "secret" in m.re.groupindex:
-        return _mask_value(m.group("secret"))
+        return _mask_value(m.group("secret"), label)
     return mask_secret(m.group(0))
 
 
@@ -522,7 +527,7 @@ def _mask_match(m: re.Match, label: str) -> str:
     if "secret" not in m.re.groupindex and label not in _ASSIGNMENT_LABELS:
         return mask_secret(m.group(0))
     start, end = _value_span(m, label)
-    return m.string[m.start() : start] + _mask_match_value(m) + m.string[end : m.end()]
+    return m.string[m.start() : start] + _mask_match_value(m, label) + m.string[end : m.end()]
 
 
 def redact_secrets(text: str) -> str:
@@ -645,7 +650,7 @@ class SecretLeakScanner(SecurityDetector):
                             "channel": channel,
                             "file_path": file_path,
                             "tool": tool_name,
-                            "matched_prefix": _mask_match_value(m),
+                            "matched_prefix": _mask_match_value(m, secret_type),
                             "remediation": _REMEDIATION.get(
                                 secret_type,
                                 "Remove from file, use env var, rotate if committed to git",
@@ -745,7 +750,7 @@ def audit_log_file(
                         log_file=log_path.name,
                         session_id=session_id,
                         project_name=project_name,
-                        matched_prefix=_mask_match_value(m),
+                        matched_prefix=_mask_match_value(m, secret_type),
                         severity=_SEVERITY_LABEL.get(severity, "medium"),
                         remediation=remediation,
                         timestamp=ts_str,
@@ -904,23 +909,31 @@ def _redact_text(
             found.append({
                 "type": label,
                 "line": line if line is not None else lineno,
-                "preview": _mask_value(text[start:end]),
+                "preview": _mask_value(text[start:end], label),
             })
         lineno += text.count("\n", start, end)
         pos = end
     return "".join(pieces) + text[pos:], len(merged)
 
 
-# A JSON string token; group 1 is set when it is an object key.
-_JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*+"(\s*:)?')
+# A JSON string token; group 1 is set when it is an object key. An
+# unterminated one (only in nested, non-JSON text) runs to the end of the
+# text and fails to decode: failing the match instead would rescan the rest
+# of the text from every later quote (quadratic).
+_JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*+(?:"(\s*:)?|\\?\Z)')
 
 
 def _redact_json_strings(
     text: str, patterns: list[tuple[re.Pattern, str]], found: list[dict]
 ) -> tuple[str, int]:
     """Redact secrets in the decoded value of every string value of *text*,
-    a valid JSON document. Only strings that change are re-encoded, so every
-    other byte (layout, key order, escapes) is kept. Keys are left alone.
+    a JSON document. Only strings that change are re-encoded, so every other
+    byte (layout, key order, escapes) is kept. Keys are left alone.
+
+    A decoded value that still holds escapes can be JSON text itself (a
+    tool_result of ``cat many.json``), whose ``\\"`` hide its secrets just as
+    they did one layer up: its string tokens are redacted the same way. That
+    text need not be valid JSON, so a token that does not decode is skipped.
     """
     count = 0
     pos, lineno = 0, 1  # line of *pos*, counted incrementally (sub goes in order)
@@ -929,8 +942,17 @@ def _redact_json_strings(
         nonlocal count, pos, lineno
         if m.group(1):
             return m.group(0)
+        try:
+            value = json.loads(m.group(0))
+        except ValueError:  # only in nested text: quotes that are not a token
+            return m.group(0)
         new_found: list[dict] = []
-        value, n = _redact_text(json.loads(m.group(0)), patterns, new_found, 0)
+        value, n = _redact_text(value, patterns, new_found, 0)
+        if "\\" in value:
+            # ponytail: one recursion per escape layer; each layer halves the
+            # backslashes, so depth stays logarithmic in the string length.
+            value, extra = _redact_json_strings(value, patterns, new_found)
+            n += extra
         if not n:
             return m.group(0)
         count += n

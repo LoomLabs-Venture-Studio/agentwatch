@@ -651,7 +651,6 @@ def test_flag_gap_glued_program_words(text, expected):
         ("passwd: s3cr3tPass", "s3cr3tPass"),
         ("pwd=Abc123xyz", "Abc123xyz"),
         ("Secret: 9fK2mQ7vX1", "9fK2mQ7vX1"),
-        ("client_secret=9fK2mQ7vX1", "9fK2mQ7vX1"),
         ("token=tok_7Hq2Lm9P", "tok_7Hq2Lm9P"),
         ("API_KEY: ak7Hq2Lm9PzX", "ak7Hq2Lm9PzX"),
         ("api-key=ak7Hq2Lm9PzX", "ak7Hq2Lm9PzX"),
@@ -708,3 +707,22 @@ def test_bare_key_value_secret_live_detector():
 
 def test_bare_key_value_linear_on_pathological_input():
     _assert_linear(["token:", "secret: ", "password=(", "api_key=a.", 'pwd="\\"'], "redact_secrets")
+
+
+def test_key_value_secret_stops_at_backtick_and_shows_no_tail():
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    assert (
+        redact_secrets("run `password=Hunter2SuperSecret!` now")
+        == "run `password=[hidden, 19 chars]` now"
+    )
+    assert redact_secrets("password=Hunter2SuperSecret!Longer") == (
+        "password=[hidden, 25 chars]"
+    )
+
+
+@pytest.mark.parametrize("text", ['exe_token="gpt4all"', "Token: gho_****", "token=ab****cd"])
+def test_key_value_secret_false_positives(text):
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    assert redact_secrets(text) == text
