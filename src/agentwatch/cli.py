@@ -2031,6 +2031,20 @@ def hook():
 
 
 @cli.command()
+@click.option("--ok", is_flag=True, help="When healthy, print a dim check mark and 'agentwatch'")
+def statusline(ok: bool):
+    """Claude Code status line: a short warning (loop ~$1.40) when unhealthy.
+
+    Reads the status line JSON on stdin and the coach's state for that
+    session (needs the agentwatch plugin's hook). Prints nothing when healthy,
+    with no recent state, or on any error. See the README for settings.json.
+    """
+    from agentwatch.statusline import main as statusline_main
+
+    statusline_main(ok)
+
+
+@cli.command()
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--secrets-only", is_flag=True, help="Hide secrets only, not personal info")
 @click.option(

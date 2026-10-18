@@ -26,11 +26,11 @@ import os
 import re
 import stat
 import sys
-import tempfile
-import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
+
+# tempfile, threading and datetime are imported where used: `agentwatch statusline`
+# imports this module for its state helpers on every status line update.
 
 EVENTS = ("PostToolUse", "PostToolUseFailure")
 # Seconds before the watchdog exits 0 silently. hooks.json allows 10.
@@ -39,6 +39,9 @@ BUDGET_S = 5.0
 # 500 actions anyway; widen if a detector ever needs older history.
 TAIL_BYTES = 4_000_000
 STATE_MAX_AGE_S = 7 * 24 * 3600
+# File in user_state_dir() naming the dir the hook writes state to (no .json,
+# so never pruned).
+POINTER = "state-dir"
 _MAX_LINE = 200
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # Context estimates (context_pressure) are not something the agent can act on
@@ -70,10 +73,15 @@ _DEFAULT_TIP = "Stop, re-read the goal, and change approach."
 
 
 def state_dir() -> Path:
-    """$CLAUDE_PLUGIN_DATA/coach, else a per-user cache dir (never shared /tmp)."""
+    """$CLAUDE_PLUGIN_DATA/coach, else the per-user cache dir (never shared /tmp)."""
     plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")
     if plugin_data:
         return Path(plugin_data) / "coach"
+    return user_state_dir()
+
+
+def user_state_dir() -> Path:
+    """%LOCALAPPDATA% or ~/.cache + agentwatch/coach."""
     if sys.platform == "win32":
         root = os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local"
     else:
@@ -94,6 +102,21 @@ def _private_dir(path: Path) -> bool:
     return True
 
 
+def _writable_state_dir() -> Path | None:
+    """state_dir(), or the per-user dir when that one cannot be written."""
+    import tempfile
+
+    for directory in dict.fromkeys((state_dir(), user_state_dir())):
+        try:
+            if not _private_dir(directory):
+                return None  # not ours (POSIX): stay silent, do not fall back
+            with tempfile.TemporaryFile(dir=directory):
+                return directory
+        except OSError:
+            continue
+    return None
+
+
 def _prune(directory: Path) -> None:
     cutoff = time.time() - STATE_MAX_AGE_S
     for p in directory.iterdir():
@@ -111,23 +134,57 @@ def _load_reported(path: Path) -> set[str]:
         return set()
 
 
-def _save(path: Path, reported: set[str], warnings: list) -> None:
+def state_path(directory: Path, key: str) -> Path:
+    """The state file for a session (or session.agent) key, always inside *directory*."""
+    return directory / (re.sub(r"[^A-Za-z0-9_.-]", "_", key)[:150] + ".json")
+
+
+def _snapshot(warning) -> dict:
+    snap = {"severity": warning.severity.value, "signal": warning.signal,
+            "message": warning.message}
+    if warning.cost_usd is not None:
+        snap["cost_usd"] = round(warning.cost_usd, 4)
+    return snap
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    import tempfile
+
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({
-                "updated": datetime.now(timezone.utc).isoformat(),
-                "reported": sorted(reported),
-                # Latest health snapshot, for a future `agentwatch statusline`.
-                "warnings": [
-                    {"severity": w.severity.value, "signal": w.signal, "message": w.message}
-                    for w in warnings
-                ],
-            }, f)
+            f.write(text)
         os.replace(tmp, path)
     except BaseException:
         os.unlink(tmp)
         raise
+
+
+def _save(path: Path, reported: set[str], warnings: list) -> None:
+    from datetime import datetime, timezone
+
+    _atomic_write(path, json.dumps({
+        "updated": datetime.now(timezone.utc).isoformat(),
+        "reported": sorted(reported),
+        # Latest health snapshot, read by `agentwatch statusline`.
+        "warnings": [_snapshot(w) for w in warnings],
+    }))
+
+
+def _write_pointer(directory: Path) -> None:
+    """Record *directory* in the per-user dir for `agentwatch statusline`, which
+    runs without CLAUDE_PLUGIN_DATA. Written only when it changes."""
+    pointer = user_state_dir() / POINTER
+    try:
+        if pointer.read_text(encoding="utf-8") == str(directory):
+            return
+    except OSError:
+        pass
+    try:
+        if _private_dir(pointer.parent):
+            _atomic_write(pointer, str(directory))
+    except OSError:
+        pass
 
 
 def _parse(entries):
@@ -221,7 +278,8 @@ def format_message(warning, actions: list = ()) -> str:
     lines = [f"agentwatch coach [{warning.severity.value}]: {_clean(warning.message)}"]
     evidence = _evidence(warning, list(actions))
     if evidence:
-        lines.append(f'Evidence (tool output, quoted): "{_clean(evidence)}"')
+        quoted = _clean(evidence).replace('"', "'")  # tool output cannot close the quote
+        lines.append(f'Evidence (tool output, quoted): "{quoted}"')
     lines.append(f"Try: {_TIPS.get(warning.signal, _DEFAULT_TIP)}")
     return "\n".join(lines)
 
@@ -262,17 +320,19 @@ def run(stdin_text: str) -> str | None:
             if w.severity.value in _SEVERE and w.category.value in _COACHED
         }
 
-        directory = state_dir()
-        if not _private_dir(directory):
+        directory = _writable_state_dir()
+        if directory is None:
             return None
         _prune(directory)
-        state = directory / (re.sub(r"[^A-Za-z0-9_.-]", "_", key)[:150] + ".json")
+        state = state_path(directory, key)
         # Forget warnings that cleared, so a recurrence is reported again.
         reported = _load_reported(state) & severe.keys()
         new = [k for k in severe if k not in reported]
         if new:
             reported.add(new[0])  # one note per call; the rest come next call
         _save(state, reported, warnings)
+        if directory != user_state_dir():
+            _write_pointer(directory)
         if not new:
             return None
         return json.dumps({"hookSpecificOutput": {
@@ -285,6 +345,8 @@ def run(stdin_text: str) -> str | None:
 
 def main() -> None:
     """Entry for `agentwatch hook`: always exits 0, prints JSON or nothing."""
+    import threading
+
     watchdog = threading.Timer(BUDGET_S, os._exit, args=(0,))
     watchdog.daemon = True
     watchdog.start()

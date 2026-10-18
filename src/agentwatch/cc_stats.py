@@ -537,7 +537,17 @@ def classify_bash_command(cmd: str) -> BashCategory:
 # Project directory mapping
 # ---------------------------------------------------------------------------
 
-CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+def __getattr__(name: str):
+    # CLAUDE_PROJECTS_DIR is lazy: Path.home() raises without a home dir, and
+    # that must not break `import agentwatch.cc_stats` (the coach hook needs it).
+    if name == "CLAUDE_PROJECTS_DIR":
+        return Path.home() / ".claude" / "projects"
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _projects_dir() -> Path:
+    """CLAUDE_PROJECTS_DIR, honouring a monkeypatched/assigned value."""
+    return globals().get("CLAUDE_PROJECTS_DIR") or __getattr__("CLAUDE_PROJECTS_DIR")
 
 
 def cwd_to_project_dir(cwd: Path | None = None) -> Path | None:
@@ -550,7 +560,7 @@ def cwd_to_project_dir(cwd: Path | None = None) -> Path | None:
         cwd = Path.cwd()
     cwd = cwd.resolve()
     dir_name = encode_path_for_claude(cwd)
-    project_dir = CLAUDE_PROJECTS_DIR / dir_name
+    project_dir = _projects_dir() / dir_name
     if project_dir.is_dir():
         return project_dir
     return None
@@ -558,9 +568,10 @@ def cwd_to_project_dir(cwd: Path | None = None) -> Path | None:
 
 def find_all_project_dirs() -> list[Path]:
     """Find all Claude Code project directories."""
-    if not CLAUDE_PROJECTS_DIR.is_dir():
+    projects = _projects_dir()
+    if not projects.is_dir():
         return []
-    return [p for p in CLAUDE_PROJECTS_DIR.iterdir() if p.is_dir()]
+    return [p for p in projects.iterdir() if p.is_dir()]
 
 
 def project_dir_to_name(project_dir: Path) -> str:
