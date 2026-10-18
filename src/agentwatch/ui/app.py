@@ -24,6 +24,7 @@ from agentwatch.themes import ascii_safe, get_theme, security_status_from_score
 from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
 if TYPE_CHECKING:
+    from agentwatch.alerts import Alerter
     from agentwatch.detectors.base import Warning
     from agentwatch.health.score import EfficiencyReport
     from agentwatch.parser.models import Action
@@ -426,9 +427,12 @@ class AgentWatchApp(App):
         siem_log: Path | None = None,
         llm: bool = False,
         llm_model: str = DEFAULT_OLLAMA_MODEL,
+        alerter: Alerter | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self.alerter = alerter
+        self._alert_ident: tuple[str | None, str] | None = None  # (agent, project)
         self.log_path = log_path
         self.security_mode = security_mode
         self.siem_log = siem_log
@@ -487,6 +491,10 @@ class AgentWatchApp(App):
         self.title = f"AgentWatch - {self.log_path.name}"
         if self.security_mode:
             self.title += " [SECURITY]"
+        if self.alerter is not None and not self.is_headless:
+            from agentwatch.alerts import tui_warn
+
+            self.alerter.warn = tui_warn(self)
 
         # Initialize components
         from agentwatch.detectors import create_registry
@@ -606,7 +614,11 @@ class AgentWatchApp(App):
         """Find the agent's pid off the UI thread and start sampling it."""
         # ponytail: resolved once at mount; an agent started after `watch` is
         # not picked up (re-run discovery periodically if that matters).
-        proc = await asyncio.to_thread(self._find_own_process)
+        proc = None
+        try:
+            proc = await asyncio.to_thread(self._find_own_process)
+        finally:
+            self._alert_ident = self._ident(proc)  # alerts wait for this
         if proc is None:
             return
         if not attributable(proc):
@@ -615,6 +627,16 @@ class AgentWatchApp(App):
         self._net_sampler.track(proc.pid)
         self._net_sampler.start()
         self._net_pid = proc.pid
+
+    def _ident(self, proc) -> tuple[str | None, str]:
+        """(agent type, project) for alert text; the log's adapter and folder
+        when no running process owns the log."""
+        if proc is not None:
+            return proc.agent_type, proc.project_name or self.log_path.parent.name
+        from agentwatch.agents import adapter_for
+
+        adapter = adapter_for(self.log_path)
+        return (adapter.name if adapter else None), self.log_path.parent.name
 
     def _on_action(self, action: Action) -> None:
         """Callback for new actions from watcher."""
@@ -719,6 +741,8 @@ class AgentWatchApp(App):
             efficiency_score=eff.score,
             rot_score=rot_value,
         )
+        if self.alerter is not None and self._alert_ident is not None:
+            self.alerter.observe(str(self.log_path), *self._alert_ident, warnings, report)
 
         # Update health bar
         health_bar = self.query_one("#health-bar", HealthBar)

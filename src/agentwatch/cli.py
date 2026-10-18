@@ -545,6 +545,54 @@ def check(
     sys.exit(0)
 
 
+def _check_webhook(ctx, param, value: str | None) -> str | None:
+    """http(s) only. The URL is a secret: never echoed, even when invalid."""
+    if value is None:
+        return None
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise click.BadParameter("must be an http:// or https:// URL (value not shown)")
+    return value
+
+
+def _alert_options(f):
+    """--notify / --notify-min / --webhook, shared by watch and watch-all."""
+    f = click.option(
+        "--webhook",
+        envvar="AGENTWATCH_WEBHOOK",
+        show_envvar=True,
+        callback=_check_webhook,
+        default=None,
+        metavar="URL",
+        help='POST each alert as JSON {"text": ...} (Slack-compatible) to URL. '
+             "The URL is treated as a secret and never printed",
+    )(f)
+    f = click.option(
+        "--notify-min",
+        type=click.Choice(["high", "critical"]),
+        default="critical",
+        show_default=True,
+        help="Lowest finding severity that alerts (--notify and --webhook)",
+    )(f)
+    return click.option(
+        "--notify",
+        is_flag=True,
+        help="Desktop notification when a session turns Critical or a new "
+             "finding at --notify-min or above appears",
+    )(f)
+
+
+def _make_alerter(notify: bool, notify_min: str, webhook: str | None, headless: bool = False):
+    if not (notify or webhook or headless):
+        return None
+    from agentwatch.alerts import Alerter, print_line
+
+    return Alerter(notify=notify, notify_min=notify_min, webhook=webhook,
+                   log=print_line if headless else None)
+
+
 @cli.command()
 @click.option(
     "--log", "-l",
@@ -578,12 +626,16 @@ def check(
     show_default=True,
     help="Local Ollama model to use for --llm",
 )
+@_alert_options
 def watch(
     log: Path | None,
     security: bool,
     siem_log: Path | None,
     llm: bool,
     llm_model: str,
+    notify: bool,
+    notify_min: str,
+    webhook: str | None,
 ):
     """Watch agent logs in real-time with a TUI dashboard."""
     # Import here to avoid slow startup for non-watch commands
@@ -607,6 +659,7 @@ def watch(
         siem_log=siem_log,
         llm=llm,
         llm_model=llm_model,
+        alerter=_make_alerter(notify, notify_min, webhook),
     )
     app.run()
 
@@ -1153,18 +1206,30 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
     show_default=True,
     help="Local Ollama model to use for --llm",
 )
+@click.option(
+    "--headless",
+    is_flag=True,
+    help="No dashboard: print one line per new warning to stdout (for "
+         "background runs). Waits for agents if none are running yet",
+)
+@_alert_options
 def watch_all(
     security: bool,
     all_logs: bool,
     siem_log: Path | None,
     llm: bool,
     llm_model: str,
+    headless: bool,
+    notify: bool,
+    notify_min: str,
+    webhook: str | None,
 ):
     """Watch agent logs in real-time with a multi-agent dashboard.
 
     By default, auto-discovers active agent processes and monitors only their
     log files. Use --all-logs to scan all known log directories instead.
     """
+    alerter = _make_alerter(notify, notify_min, webhook, headless)
     from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
     from agentwatch.ui.multi_app import MultiAgentWatchApp
 
@@ -1180,11 +1245,12 @@ def watch_all(
             siem_log=siem_log,
             llm=llm,
             llm_model=llm_model,
+            alerter=alerter,
         )
     else:
         # Process-based discovery
         agents = build_agent_tree(find_running_agents())
-        if not agents:
+        if not agents and not headless:
             click.echo("No running agent processes found.", err=True)
             click.echo("Use --all-logs to scan all log directories instead.", err=True)
             sys.exit(1)
@@ -1194,8 +1260,15 @@ def watch_all(
             siem_log=siem_log,
             llm=llm,
             llm_model=llm_model,
+            alerter=alerter,
         )
 
+    if headless:
+        # Same engine, Textual's headless driver: no screen I/O; Ctrl+C exits
+        # through the app's normal shutdown (on_unmount closes SIEM logs).
+        click.echo("agentwatch: watching headless (Ctrl+C to stop)", err=True)
+        app.run(headless=True)
+        return
     app.run()
 
 
