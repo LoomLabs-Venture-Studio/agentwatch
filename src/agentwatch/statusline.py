@@ -15,12 +15,13 @@ state older than STALE_S, or any error: nothing, exit 0.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import time
 from pathlib import Path
 
-from agentwatch.coach import state_dir, state_path, user_state_dir
+from agentwatch.coach import POINTER, state_dir, state_path, user_state_dir
 
 STALE_S = 600
 _LABELS = {
@@ -37,11 +38,18 @@ _DIM, _RESET = "\x1b[2m", "\x1b[0m"
 
 def state_dirs() -> list[Path]:
     """Every dir the coach may have written to. The status line runs from
-    settings.json without CLAUDE_PLUGIN_DATA, so look in the plugin's data dir
-    (<config>/plugins/data/agentwatch*/coach) as well as the per-user dir."""
-    config = os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude"
-    plugin = sorted((Path(config) / "plugins" / "data").glob("agentwatch*/coach"))
-    return list(dict.fromkeys([state_dir(), *plugin, user_state_dir()]))
+    settings.json without CLAUDE_PLUGIN_DATA, so it follows the hook's pointer
+    file in the per-user dir; before the hook has written one, it looks in the
+    plugin's data dirs, <config>/plugins/data/agentwatch-<marketplace>/coach."""
+    user = user_state_dir()
+    try:
+        plugin = [Path((user / POINTER).read_text(encoding="utf-8").strip())]
+    except OSError:
+        plugin = []
+    if not plugin or not plugin[0].is_absolute():
+        config = os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude"
+        plugin = sorted((Path(config) / "plugins" / "data").glob("agentwatch-*/coach"))
+    return list(dict.fromkeys([state_dir(), *plugin, user]))
 
 
 def _load(session_id: str) -> dict | None:
@@ -61,9 +69,12 @@ def _load(session_id: str) -> dict | None:
 
 
 def _cost(value: object) -> str:
+    # Bounded: a corrupt or hostile state file must not print "~$1e+300" or "nan".
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return ""
-    return " <$0.01" if value < 0.005 else f" ~${value:,.2f}"
+    if not (math.isfinite(value) and 0 <= value < 10_000):
+        return ""
+    return " <$0.01" if value < 0.01 else f" ~${value:,.2f}"
 
 
 def render(stdin_text: str, ok: bool = False) -> str:

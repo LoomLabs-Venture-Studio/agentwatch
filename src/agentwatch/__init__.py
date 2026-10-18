@@ -39,14 +39,22 @@ _MODULE_OF = {name: module for module, names in _EXPORTS.items() for name in nam
 
 
 def __getattr__(name: str):
-    module = _MODULE_OF.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
 
-    value = getattr(importlib.import_module(module), name)
-    globals()[name] = value
-    return value
+    module = _MODULE_OF.get(name)
+    if module is not None:
+        value = getattr(importlib.import_module(module), name)
+        globals()[name] = value
+        return value
+    if not name.startswith("_"):
+        # A submodule (agentwatch.parser, .detectors, ...): the eager imports
+        # used to make these attributes as a side effect.
+        try:
+            return importlib.import_module(f"{__name__}.{name}")
+        except ModuleNotFoundError as e:
+            if e.name != f"{__name__}.{name}":
+                raise
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:

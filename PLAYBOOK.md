@@ -4467,9 +4467,22 @@ Code's status line when the session is unhealthy, from the coach's state.
       ... completed with status 0".
 
 ### Decisions
-- The status line command gets no `CLAUDE_PLUGIN_DATA` (live-checked), so
-  it globs `<config>/plugins/data/agentwatch*/coach` and takes the newest
-  state file for the session.
+- The status line command gets no `CLAUDE_PLUGIN_DATA` (live-checked). The
+  hook writes its state dir to a pointer file in the per-user dir
+  (`state-dir`, only when it changes) and the status line follows it; with
+  no pointer yet it globs `<config>/plugins/data/agentwatch-*/coach` (Claude
+  Code names the dir `<plugin>-<marketplace>`, e.g. `agentwatch-inline`)
+  and takes the newest state file for the session.
+
+### QA round 1 fixes (PR #146)
+- [x] Planted `plugins/data/agentwatch-evil/coach/<sid>.json` can no longer
+      override or hide the real warning once the hook has written the
+      pointer; the fallback glob is `agentwatch-*`.
+- [x] Cost shown only when finite and 0 <= x < 10,000; `<$0.01` strictly
+      below 0.01 (no flip at 0.005).
+- [x] `agentwatch.parser` / `.detectors` / ... are attributes again after
+      a plain `import agentwatch` (submodules in the lazy `__getattr__`).
+- Rebased onto develop-overdrive @ `3968c41` (#149).
 - `--ok` shows the check mark only after a fresh healthy coach check; with
   no state it prints nothing (no check has run, so no claim of health).
 - Main session only; subagent state (`<session>.<agent>.json`) not shown.

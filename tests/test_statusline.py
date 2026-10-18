@@ -84,7 +84,9 @@ def test_most_severe_warning_wins(tmp_path):
 
 @pytest.mark.parametrize(("cost", "text"), [
     (1.4, " ~$1.40"), (1234.5, " ~$1,234.50"), (0.001, " <$0.01"), (None, ""),
-    ("1.4", ""), (True, ""),
+    ("1.4", ""), (True, ""), (0, " <$0.01"), (0.005, " <$0.01"), (0.0099, " <$0.01"),
+    (0.01, " ~$0.01"), (9999.99, " ~$9,999.99"), (10_000, ""), (1e300, ""), (-0.5, ""),
+    (float("nan"), ""), (float("inf"), ""), (float("-inf"), ""),
 ])
 def test_cost_formatting(tmp_path, cost, text):
     _state(tmp_path, [_w("loop", cost=cost)])
@@ -137,16 +139,41 @@ def test_newest_state_across_dirs_wins(tmp_path, monkeypatch):
 def test_state_dirs_cover_plugin_data_and_user_dir(tmp_path, monkeypatch):
     # The statusline runs from settings.json, without CLAUDE_PLUGIN_DATA, so it
     # finds the plugin's coach dir under the Claude config dir itself.
+    _real_dirs(tmp_path, monkeypatch)
+    data = tmp_path / "plugins" / "data"
+    plugin = data / "agentwatch-agentwatch" / "coach"  # <name>-<marketplace>
+    inline = data / "agentwatch-inline" / "coach"  # --plugin-dir
+    for d in (plugin, inline, data / "other-plugin" / "coach", data / "agentwatchx" / "coach"):
+        d.mkdir(parents=True)
+    dirs = statusline.state_dirs()
+    assert plugin in dirs and inline in dirs
+    assert coach.user_state_dir() in dirs
+    assert not any("other-plugin" in str(d) or "agentwatchx" in str(d) for d in dirs)
+
+
+def _real_dirs(tmp_path, monkeypatch):
     monkeypatch.undo()
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    plugin = tmp_path / "plugins" / "data" / "agentwatch-agentwatch" / "coach"
-    plugin.mkdir(parents=True)
-    (tmp_path / "plugins" / "data" / "other-plugin" / "coach").mkdir(parents=True)
-    dirs = statusline.state_dirs()
-    assert plugin in dirs
-    assert coach.user_state_dir() in dirs
-    assert not any("other-plugin" in str(d) for d in dirs)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "local"))
+
+
+def test_pointer_from_the_hook_beats_a_planted_plugin_dir(tmp_path, monkeypatch):
+    # A planted plugins/data/agentwatch-evil/coach/<sid>.json must not hide or
+    # override the real warning once the hook has recorded where it writes.
+    _real_dirs(tmp_path, monkeypatch)
+    data = tmp_path / "plugins" / "data"
+    real, evil = data / "agentwatch-agentwatch" / "coach", data / "agentwatch-evil" / "coach"
+    for directory, warnings, age in ((real, [_w("loop", cost=1.4)], 60), (evil, [], 0)):
+        directory.mkdir(parents=True)
+        path = coach.state_path(directory, SID)
+        path.write_text(json.dumps({"warnings": warnings}), encoding="utf-8")
+        os.utime(path, (time.time() - age,) * 2)
+    coach._write_pointer(real)
+    assert evil not in statusline.state_dirs()
+    assert _plain(statusline.render(_stdin())) == "⚠ loop ~$1.40"
 
 
 @pytest.mark.parametrize("stdin", [
@@ -253,3 +280,15 @@ def test_latency_smoke(tmp_path):
                        env=_env(tmp_path), timeout=60, check=True)
         times.append(time.perf_counter() - start)
     assert min(times) < 2.0
+
+
+def test_empty_or_relative_pointer_falls_back_to_plugin_glob(tmp_path, monkeypatch):
+    _real_dirs(tmp_path, monkeypatch)
+    plugin = tmp_path / "plugins" / "data" / "agentwatch-inline" / "coach"
+    plugin.mkdir(parents=True)
+    pointer = coach.user_state_dir() / coach.POINTER
+    pointer.parent.mkdir(parents=True)
+    for text in ("", "relative/dir"):
+        pointer.write_text(text, encoding="utf-8")
+        dirs = statusline.state_dirs()
+        assert plugin in dirs and Path(".") not in dirs and Path("relative/dir") not in dirs

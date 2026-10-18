@@ -336,6 +336,21 @@ def test_unwritable_plugin_data_falls_back_to_user_dir(tmp_path, monkeypatch):
     assert (tmp_path / "user-state" / "sess-1.json").is_file()
 
 
+def test_hook_records_its_state_dir_for_the_statusline(tmp_path):
+    coach.run(_payload(_looping(tmp_path)))
+    pointer = tmp_path / "user-state" / coach.POINTER
+    assert pointer.read_text(encoding="utf-8") == str(tmp_path / "state")
+    mtime = pointer.stat().st_mtime_ns
+    coach.run(_payload(_healthy(tmp_path)))
+    assert pointer.stat().st_mtime_ns == mtime  # unchanged: not rewritten
+
+
+def test_no_pointer_when_state_is_in_the_user_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(coach, "state_dir", lambda: tmp_path / "user-state")
+    coach.run(_payload(_looping(tmp_path)))
+    assert not (tmp_path / "user-state" / coach.POINTER).exists()
+
+
 def test_user_state_dir_ignores_plugin_data(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
     assert tmp_path not in REAL_USER_STATE_DIR().parents

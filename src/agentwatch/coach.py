@@ -39,6 +39,9 @@ BUDGET_S = 5.0
 # 500 actions anyway; widen if a detector ever needs older history.
 TAIL_BYTES = 4_000_000
 STATE_MAX_AGE_S = 7 * 24 * 3600
+# File in user_state_dir() naming the dir the hook writes state to (no .json,
+# so never pruned).
+POINTER = "state-dir"
 _MAX_LINE = 200
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # Context estimates (context_pressure) are not something the agent can act on
@@ -144,23 +147,44 @@ def _snapshot(warning) -> dict:
     return snap
 
 
-def _save(path: Path, reported: set[str], warnings: list) -> None:
+def _atomic_write(path: Path, text: str) -> None:
     import tempfile
-    from datetime import datetime, timezone
 
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({
-                "updated": datetime.now(timezone.utc).isoformat(),
-                "reported": sorted(reported),
-                # Latest health snapshot, read by `agentwatch statusline`.
-                "warnings": [_snapshot(w) for w in warnings],
-            }, f)
+            f.write(text)
         os.replace(tmp, path)
     except BaseException:
         os.unlink(tmp)
         raise
+
+
+def _save(path: Path, reported: set[str], warnings: list) -> None:
+    from datetime import datetime, timezone
+
+    _atomic_write(path, json.dumps({
+        "updated": datetime.now(timezone.utc).isoformat(),
+        "reported": sorted(reported),
+        # Latest health snapshot, read by `agentwatch statusline`.
+        "warnings": [_snapshot(w) for w in warnings],
+    }))
+
+
+def _write_pointer(directory: Path) -> None:
+    """Record *directory* in the per-user dir for `agentwatch statusline`, which
+    runs without CLAUDE_PLUGIN_DATA. Written only when it changes."""
+    pointer = user_state_dir() / POINTER
+    try:
+        if pointer.read_text(encoding="utf-8") == str(directory):
+            return
+    except OSError:
+        pass
+    try:
+        if _private_dir(pointer.parent):
+            _atomic_write(pointer, str(directory))
+    except OSError:
+        pass
 
 
 def _parse(entries):
@@ -307,6 +331,8 @@ def run(stdin_text: str) -> str | None:
         if new:
             reported.add(new[0])  # one note per call; the rest come next call
         _save(state, reported, warnings)
+        if directory != user_state_dir():
+            _write_pointer(directory)
         if not new:
             return None
         return json.dumps({"hookSpecificOutput": {

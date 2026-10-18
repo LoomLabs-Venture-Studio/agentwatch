@@ -181,12 +181,15 @@ src/agentwatch/
                        exit 0, no stdout; 5 s watchdog
   statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
-                       across state_dirs() (state_dir, <CLAUDE_CONFIG_DIR or
-                       ~/.claude>/plugins/data/agentwatch*/coach -- the
-                       status line gets no CLAUDE_PLUGIN_DATA -- and
-                       user_state_dir); worst HIGH/CRITICAL of the mapped
-                       signals -> `⚠ loop|thrash|errors|stuck ~$x` (yellow/
-                       red, NO_COLOR). Healthy: nothing, `--ok` dim
+                       across state_dirs(): state_dir, the dir named in
+                       user_state_dir()/state-dir (coach.POINTER, written
+                       by the hook; the status line gets no
+                       CLAUDE_PLUGIN_DATA), else <CLAUDE_CONFIG_DIR or
+                       ~/.claude>/plugins/data/agentwatch-*/coach, and
+                       user_state_dir; worst HIGH/CRITICAL of the mapped
+                       signals -> `⚠ loop|thrash|errors|stuck ~$x` (cost
+                       only if finite, 0 <= x < 10k; < 0.01 -> `<$0.01`;
+                       yellow/red, NO_COLOR). Healthy: nothing, `--ok` dim
                        `✓ agentwatch`. No state / > 10 min old / any error:
                        nothing, exit 0. No transcript parsing; imports only
                        stdlib + coach (~150 ms on Windows)
