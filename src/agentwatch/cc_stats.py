@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
 from itertools import islice
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 from agentwatch.path_encoding import encode_path_for_claude
 
@@ -577,6 +577,14 @@ def find_all_project_dirs() -> list[Path]:
 
 
 _WORKTREE = re.compile(r"[\\/]\.claude[\\/]worktrees(?:[\\/]|$)")
+_WINDOWS_PATH = re.compile(r"^[A-Za-z]:|\\")
+_ROOT = re.compile(r"/|[a-z]:\\")  # a lowercased POSIX root or drive anchor
+
+
+def _recorded_path(path: str) -> PurePath:
+    """A path a log recorded, parsed by its own OS's rules (whatever this one
+    is): a drive letter or a backslash means Windows."""
+    return PureWindowsPath(path) if _WINDOWS_PATH.search(path) else PurePosixPath(path)
 
 
 def project_name(cwd: str | Path | None) -> str | None:
@@ -585,14 +593,19 @@ def project_name(cwd: str | Path | None) -> str | None:
     worktree (``<project>/.claude/worktrees/agent-<id>``) is its project."""
     if not cwd:
         return None
-    cwd = _WORKTREE.split(str(cwd), maxsplit=1)[0]
+    path = _recorded_path(_WORKTREE.split(str(cwd), maxsplit=1)[0])
+    parts = [p.lower() for p in path.parts]
+    # Any OS's home layout (C:\Users\<name>, /home/<name>, /Users/<name>), so a
+    # log recorded on another OS can't store a user name either.
+    if len(parts) == 3 and parts[1] in ("users", "home") and _ROOT.fullmatch(parts[0]):
+        return "~"
     try:
         home = os.path.normcase(os.path.abspath(Path.home()))
-        if os.path.normcase(os.path.abspath(cwd)) == home:
+        if os.path.normcase(os.path.abspath(str(path))) == home:
             return "~"
     except (RuntimeError, OSError, ValueError):
         pass  # no home dir
-    return Path(cwd).name or None
+    return path.name or None
 
 
 def recorded_cwd(jsonl: Path, max_lines: int = 50) -> str | None:

@@ -248,6 +248,26 @@ def test_worktree_cwd_is_its_project(cwd):
     assert project_name(cwd) == "agentwatch-main"
 
 
+# Recorded paths are parsed by the recording OS's rules, on any OS running this.
+@pytest.mark.parametrize("cwd, expect", [
+    ("C:\\work\\agentwatch-main", "agentwatch-main"),
+    ("/home/u/work/agentwatch-main", "agentwatch-main"),
+    ("\\\\fileserver\\share\\team\\proj", "proj"),
+    ("\\\\fileserver\\share", None),
+    ("C:/work\\mixed/proj", "proj"),
+    ("D:\\code\\proj\\", "proj"),
+    ("C:\\Users\\Victim Name", "~"),
+    ("c:/users/victim/", "~"),
+    ("/home/victim", "~"),
+    ("/Users/victim", "~"),
+    ("C:\\Users\\victim\\proj", "proj"),
+])
+def test_project_name_any_os(cwd, expect):
+    from agentwatch.cc_stats import project_name
+
+    assert project_name(cwd) == expect
+
+
 def test_project_names_from_recorded_cwd(env, tmp_path, monkeypatch):
     from pathlib import Path
 

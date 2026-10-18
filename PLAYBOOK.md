@@ -4582,3 +4582,10 @@ webhook, after alerts #150), any cloud or team sync.
       15 `agent-…` projects -> 0 on the live DB.
 - [x] Path-like tokens in stored messages drop URL query strings and
       fragments (`api?token=abc123def` -> `api`).
+- [x] CI (Linux) fix + privacy: a recorded cwd is parsed by its own OS's
+      rules (drive letter or backslash -> PureWindowsPath, else
+      PurePosixPath), not this OS's `os.path`, so a Windows cwd read on
+      Linux/macOS no longer stores the whole path. `C:\Users\<name>`,
+      `/home/<name>` and `/Users/<name>` are `~` on any OS. Tests: Windows,
+      POSIX, UNC, mixed separators, trailing separator. history's
+      `_base`/`_SEP` already split on both separators.
