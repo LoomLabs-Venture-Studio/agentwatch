@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -10,7 +11,8 @@ import click
 
 from agentwatch import __version__
 from agentwatch.detectors import create_registry
-from agentwatch.detectors.base import Warning, findings_spend, format_tokens, format_usd
+from agentwatch.detectors.base import Warning, format_tokens, format_usd
+from agentwatch.detectors.base import waste_summary as _waste
 from agentwatch.discovery import (
     AgentProcess,
     build_agent_tree,
@@ -232,21 +234,6 @@ def _default_log() -> tuple[Path | None, str | None]:
     except ValueError:
         project = str(log.parent)
     return log, f"No session for {Path.cwd()}; using newest session from {project}"
-
-
-def _waste(warnings: list[Warning], stats) -> dict | None:
-    """Spend on the calls behind the findings vs the session's, or None when
-    no finding has token data. A call shared by two findings counts once."""
-    findings, tokens, cost = findings_spend(warnings)
-    if not findings:
-        return None
-    return {
-        "findings": findings,
-        "tokens": tokens,
-        "cost_usd": None if cost is None else round(cost, 4),
-        "session_tokens": stats.billed_tokens,
-        "session_cost_usd": None if stats.billed_cost is None else round(stats.billed_cost, 4),
-    }
 
 
 def _waste_line(waste: dict) -> str:
@@ -2020,6 +2007,106 @@ def audit(
     elif "high" in severities:
         sys.exit(1)
     sys.exit(0)
+
+
+def _history_db():
+    from agentwatch.history import connect
+
+    try:
+        return connect()
+    except (OSError, RuntimeError, sqlite3.Error) as e:
+        click.echo(f"Error: history DB: {e}", err=True)
+        sys.exit(1)
+
+
+def _sync_line(counts: dict, seconds: float) -> str:
+    scanned = counts["new"] + counts["updated"]
+    line = (f"Synced {scanned} log(s) ({counts['new']} new, {counts['updated']} updated), "
+            f"{counts['unchanged']} unchanged in {seconds:.1f}s")
+    if counts["active"]:
+        line += f"; {counts['active']} still being written (--include-active)"
+    return line
+
+
+@cli.group()
+def history():
+    """Local session history behind `agentwatch report`.
+
+    Stores per session: agent, session id, project folder name, times,
+    actions, tokens, cost, health score and findings (signal, severity, cost,
+    a short redacted message). No transcript text, prompts, commands or full
+    paths. Kept until `history prune`.
+    """
+
+
+@history.command("sync")
+@click.option("--days", type=click.FloatRange(min=0, min_open=True), default=None,
+              help="Only logs written in the last N days")
+@click.option("--include-active", is_flag=True,
+              help="Also logs written in the last 60 s (sessions still running)")
+def history_sync(days: float | None, include_active: bool):
+    """Record every agent's sessions (only new or changed logs are read)."""
+    import time
+
+    from agentwatch.history import sync
+
+    t = time.perf_counter()
+    counts = sync(_history_db(), days=days, include_active=include_active)
+    click.echo(_sync_line(counts, time.perf_counter() - t))
+
+
+@history.command("prune")
+@click.option("--older-than", "older_than", required=True, metavar="Nd",
+              help="Delete sessions last active more than N days ago, e.g. 90d")
+def history_prune(older_than: str):
+    """Delete old sessions. A later sync without --days reads their logs
+    again if they are still on disk."""
+    import re
+
+    from agentwatch.history import prune
+
+    m = re.fullmatch(r"(\d+)d?", older_than.strip())
+    if not m:
+        raise click.BadParameter("use a number of days, e.g. 90d", param_hint="--older-than")
+    n = prune(_history_db(), int(m.group(1)))
+    click.echo(f"Removed {n} session(s) last active more than {m.group(1)} days ago")
+
+
+@history.command("path")
+def history_path():
+    """Print the history DB location."""
+    from agentwatch.history import db_path
+
+    click.echo(str(db_path()))
+
+
+@cli.command()
+@click.option("--days", type=click.IntRange(min=1), default=7, show_default=True,
+              help="Report period")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON (stable schema)")
+@click.option("--agent", default=None, help="Only this agent (e.g. claude-code)")
+@click.option("--project", default=None, help="Only this project folder name")
+@click.option("--no-sync", is_flag=True, help="Use the history DB as is")
+def report(days: int, json_output: bool, agent: str | None, project: str | None,
+           no_sync: bool):
+    """What your agents cost you: spend, waste, costliest findings, trend.
+
+    Syncs the history first (this period and the one before), then reports
+    on sessions whose last action is in the last N days.
+    """
+    from agentwatch.history import sync
+    from agentwatch.report import build, render
+
+    conn = _history_db()
+    if not no_sync:
+        counts = sync(conn, days=2 * days)
+        if counts["new"] + counts["updated"] and not json_output:
+            click.echo(f"(synced {counts['new'] + counts['updated']} log(s))", err=True)
+    rep = build(conn, days=days, agent=agent, project=project)
+    if json_output:
+        click.echo(json.dumps(rep, indent=2))
+    else:
+        click.echo("\n".join(render(rep)))
 
 
 @cli.command(hidden=True)

@@ -8,6 +8,19 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- `agentwatch report`: what your agents cost you over the last 7 days (or
+  `--days N`), across agents and projects: sessions, spend, tokens, waste
+  (`check`'s waste figure summed over sessions, with its % of spend), the 3
+  costliest findings, a per-agent and per-project breakdown, security
+  finding counts and the change against the previous period. Sessions with
+  no price show as n/a and are left out of spend and %. `--agent`,
+  `--project`, `--json` (schema 1, documented in the README), `--no-sync`.
+- `agentwatch history sync|prune|path`: a local SQLite history of sessions
+  and findings behind the report (`%LOCALAPPDATA%\agentwatch\history.db`, or
+  `~/.local/share/agentwatch/`). Only new or changed logs are read; logs
+  still being written wait unless `--include-active`. No transcript text,
+  prompts, commands or full paths are stored. Kept until `history prune
+  --older-than 90d`.
 - Claude Code plugin (`plugin/`) with a health coach: a PostToolUse hook runs
   `agentwatch hook`, which checks the live session with the health detectors
   and adds a short note (problem, evidence, what to try) to Claude's context
@@ -23,6 +36,10 @@ numbers refer to the GitHub repository.
 
 ### Changed
 
+- `stats` and `audit` name a Claude Code project after the `cwd` its
+  transcripts record, so `agentwatch-main` is no longer shown as `main`
+  (the old name decoded the project dir, which can't tell `-` from `/`).
+  A session run in the home folder is named `~`, not the user name.
 - Pricing: one table in `cc_stats.PRICING` (Anthropic's price page,
   2026-10-17) keyed by model id. `stats` priced every "opus" at $15/$75,
   overstating current Opus (Opus 5.5 is $4/$20, Opus 4.5-5 $5/$25). `stats`

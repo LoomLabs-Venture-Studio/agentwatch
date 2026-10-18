@@ -4490,3 +4490,102 @@ Code's status line when the session is unhealthy, from the coach's state.
   cost ~280 ms per call. That exposed a latent circular import
   (cursor_discovery -> parser -> cursor_discovery), fixed by making
   parser's discovery re-exports lazy too.
+
+
+### Sprint 35 (develop-overdrive) — Feature 5: session history + `agentwatch report` (2026-10-18)
+**Type:** feature. Branch `feature/history-report` from `develop-overdrive` @
+`8dd8365`; draft PR into `develop-overdrive`. A local SQLite history of every
+agent's sessions and findings, and a weekly "what your agents cost you"
+report on top of it. Out of scope: sending the report (notification /
+webhook, after alerts #150), any cloud or team sync.
+
+### Acceptance Criteria
+- [x] 1. Store: stdlib sqlite3 at `data_dir()/history.db`
+      (`%LOCALAPPDATA%\agentwatch`, else `$XDG_DATA_HOME` or
+      `~/.local/share` + `agentwatch`; dir via `coach._private_dir`, 0700 on
+      POSIX). `sessions` + `findings`, `PRAGMA user_version` + a
+      `_MIGRATIONS` list. Keyed by a hash of the log path, never the path;
+      finding identity is a hash of `warning_dedup_key` (it holds paths and
+      commands). README documents every stored field.
+- [x] 2. `history sync`: every adapter's new `history_logs()` /
+      `history_meta()` (each adapter's own root helper), skip by (size,
+      mtime_ns), logs < 60 s old wait unless `--include-active`, `--days N`.
+      Live (~180 logs: 148 Claude Code incl. subagents, 32 Copilot in VS
+      Code, 1 Codex): first sync 15.2 s (10 worker processes), re-sync
+      0.0-0.1 s in-process, 0.6 s wall.
+- [x] 3. `report [--days 7] [--json] [--agent] [--project] [--no-sync]`:
+      totals, waste (`waste_summary`, moved from `cli._waste`, per session
+      then summed), top 3 findings, per agent/project, security counts,
+      trend vs the previous period; n/a sessions counted but left out of
+      spend and %. JSON schema 1 in the README.
+- [x] 4. `history prune --older-than 90d`, `history path`; unlimited
+      retention by default, documented.
+- [x] 5. Warm `report` 0.48-0.78 s wall (console script, sync included).
+- [x] 6. `tests/test_history.py`, `tests/test_report.py`: schema/migration,
+      incremental (unchanged skipped, grown updated, deleted kept), dedup per
+      session, waste/score match `check --json`, DB bytes hold no secret,
+      prompt, command or path, report math, `--json` keys.
+- [x] 7. Live: waste of the 3 costliest real sessions equals `check --json`;
+      report in the PR body.
+- [x] 8. README "Weekly Report", CLAUDE.md module map, this section,
+      CHANGELOG.
+- [x] 9. Full suite + ruff green; no new dependency, no new env var.
+
+### Decisions
+- Security finding messages are not stored: some quote the command or path
+  (`Access to sensitive directory: cat > "C--...`, seen live). Health
+  messages are kept (one_line, paths cut to the last part, 120 chars).
+- One log file = one session. Cursor, OpenCode and Kilo keep every session
+  in one DB that changes on every write (re-parsing all of it each sync), and
+  Aider has no fixed log location: not in history yet.
+- `secret_scanner.one_line` added here identical to #150, so the rebase is
+  clean whichever lands first.
+- First sync parses in a `ProcessPoolExecutor` from 8 changed logs: the
+  per-action security scan is ~95 % of the time (94 s single-process).
+- A changed log is re-scanned whole and its findings replaced, so a session
+  matches `check` on the same file; `first_seen` survives re-scans.
+
+### QA round 1 fixes (PR #151)
+- [x] Home-dir sessions are project `~`, not the user name (Claude Code and
+      every adapter via `folder_name` / `cc_stats.project_name`).
+- [x] Paths with spaces: the warning's own path details, then the message's
+      path slot (after `on ` / `file: ` / `Re-reading ` / `Edited `, up to
+      ` (`, ` after long gaps`, ` Nx with` or the end), then slash tokens,
+      all cut to the basename. QA repros + a quoted path tested.
+- [x] Two first runs at once: migrations run under `BEGIN IMMEDIATE` with
+      the version re-read inside and `IF NOT EXISTS` (2-process test, 3
+      rounds; the old code failed it).
+- [x] Broken process pool -> the rest of the logs run serially; Ctrl+C ->
+      `shutdown(wait=False, cancel_futures=True)`.
+- [x] Claude Code project names come from the recorded `cwd`
+      (`agentwatch-main`, not `main`), dir-name decode as fallback; `stats`
+      and `audit` change too (CHANGELOG).
+- [x] Stored messages drop the redaction's last-4-chars tail (`[secret]`);
+      top-findings dates are UTC like the period.
+- [x] A BEL byte in PLAYBOOK.md and CLAUDE.md (a shell heredoc turned the
+      backslash before `agentwatch` into an escape) is fixed; no other
+      control bytes in tracked text files.
+- [x] Waste label: "on stalls, loops, rereads and repeated errors".
+- [x] Security line: "N leak findings". The secret detectors share no
+      secret identity (`secret_in_command` carries only the tool), so
+      merging per secret would be a guess; the counts are findings.
+- [x] Unpriced sessions store waste NULL, not 0 (the report already left
+      them out).
+- Live re-run on a fresh DB (183 logs): first sync 7.1 s wall (file cache
+  warm; 15.2 s cold before), re-sync 0.35 s, `report` 0.34-0.37 s wall.
+  Store Python redirects the DB into its LocalCache, like the coach state
+  (README note).
+
+### QA round 2 fixes (PR #151)
+- [x] Subagents in worktrees record cwd `<project>/.claude/worktrees/agent-<id>`
+      (either separator): named after `<project>` (`cc_stats.project_name`),
+      15 `agent-…` projects -> 0 on the live DB.
+- [x] Path-like tokens in stored messages drop URL query strings and
+      fragments (`api?token=abc123def` -> `api`).
+- [x] CI (Linux) fix + privacy: a recorded cwd is parsed by its own OS's
+      rules (drive letter or backslash -> PureWindowsPath, else
+      PurePosixPath), not this OS's `os.path`, so a Windows cwd read on
+      Linux/macOS no longer stores the whole path. `C:\Users\<name>`,
+      `/home/<name>` and `/Users/<name>` are `~` on any OS. Tests: Windows,
+      POSIX, UNC, mixed separators, trailing separator. history's
+      `_base`/`_SEP` already split on both separators.

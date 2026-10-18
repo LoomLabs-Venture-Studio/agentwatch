@@ -7,11 +7,13 @@ token usage breakdowns by tool type and bash command category.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
-from pathlib import Path
+from itertools import islice
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 from agentwatch.path_encoding import encode_path_for_claude
 
@@ -574,10 +576,69 @@ def find_all_project_dirs() -> list[Path]:
     return [p for p in projects.iterdir() if p.is_dir()]
 
 
-def project_dir_to_name(project_dir: Path) -> str:
-    """Extract a readable project name from a project directory path."""
+_WORKTREE = re.compile(r"[\\/]\.claude[\\/]worktrees(?:[\\/]|$)")
+_WINDOWS_PATH = re.compile(r"^[A-Za-z]:|\\")
+_ROOT = re.compile(r"/|[a-z]:\\")  # a lowercased POSIX root or drive anchor
+
+
+def _recorded_path(path: str) -> PurePath:
+    """A path a log recorded, parsed by its own OS's rules (whatever this one
+    is): a drive letter or a backslash means Windows."""
+    return PureWindowsPath(path) if _WINDOWS_PATH.search(path) else PurePosixPath(path)
+
+
+def project_name(cwd: str | Path | None) -> str | None:
+    """Project name of a working directory: its last component, or "~" for
+    the home dir (never the user name). None when unknown. A Claude Code
+    worktree (``<project>/.claude/worktrees/agent-<id>``) is its project."""
+    if not cwd:
+        return None
+    path = _recorded_path(_WORKTREE.split(str(cwd), maxsplit=1)[0])
+    parts = [p.lower() for p in path.parts]
+    # Any OS's home layout (C:\Users\<name>, /home/<name>, /Users/<name>), so a
+    # log recorded on another OS can't store a user name either.
+    if len(parts) == 3 and parts[1] in ("users", "home") and _ROOT.fullmatch(parts[0]):
+        return "~"
+    try:
+        home = os.path.normcase(os.path.abspath(Path.home()))
+        if os.path.normcase(os.path.abspath(str(path))) == home:
+            return "~"
+    except (RuntimeError, OSError, ValueError):
+        pass  # no home dir
+    return path.name or None
+
+
+def recorded_cwd(jsonl: Path, max_lines: int = 50) -> str | None:
+    """The first ``cwd`` a Claude Code transcript records in its first lines."""
+    try:
+        with open(jsonl, encoding="utf-8", errors="ignore") as f:
+            for line in islice(f, max_lines):
+                try:
+                    cwd = json.loads(line).get("cwd")
+                except (ValueError, AttributeError):
+                    continue
+                if isinstance(cwd, str) and cwd:
+                    return cwd
+    except OSError:
+        pass
+    return None
+
+
+def project_dir_to_name(project_dir: Path, log: Path | None = None) -> str:
+    """Readable project name of a Claude Code project dir: the last component
+    of the cwd its transcripts record (*log* first), else decoded from the
+    dir name, which can't tell "-" from "/" ("agentwatch-main" reads "main").
+    "~" for the home dir."""
+    for jsonl in ([log] if log else []) + sorted(project_dir.glob("*.jsonl"))[:3]:
+        name = project_name(recorded_cwd(jsonl))
+        if name:
+            return name
     name = project_dir.name  # e.g. -Users-zaid-Projects-agentwatch
-    # Take the last component as the project name
+    try:
+        if name == encode_path_for_claude(Path.home()):
+            return "~"
+    except (RuntimeError, OSError):
+        pass
     parts = name.strip("-").split("-")
     return parts[-1] if parts else name
 
