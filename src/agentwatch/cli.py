@@ -2080,6 +2080,35 @@ def history_path():
     click.echo(str(db_path()))
 
 
+@cli.command()
+@click.option("--days", type=click.IntRange(min=1), default=7, show_default=True,
+              help="Report period")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON (stable schema)")
+@click.option("--agent", default=None, help="Only this agent (e.g. claude-code)")
+@click.option("--project", default=None, help="Only this project folder name")
+@click.option("--no-sync", is_flag=True, help="Use the history DB as is")
+def report(days: int, json_output: bool, agent: str | None, project: str | None,
+           no_sync: bool):
+    """What your agents cost you: spend, waste, costliest findings, trend.
+
+    Syncs the history first (this period and the one before), then reports
+    on sessions whose last action is in the last N days.
+    """
+    from agentwatch.history import sync
+    from agentwatch.report import build, render
+
+    conn = _history_db()
+    if not no_sync:
+        counts = sync(conn, days=2 * days)
+        if counts["new"] + counts["updated"] and not json_output:
+            click.echo(f"(synced {counts['new'] + counts['updated']} log(s))", err=True)
+    rep = build(conn, days=days, agent=agent, project=project)
+    if json_output:
+        click.echo(json.dumps(rep, indent=2))
+    else:
+        click.echo("\n".join(render(rep)))
+
+
 @cli.command(hidden=True)
 def hook():
     """Claude Code coach hook: reads hook JSON on stdin (see plugin/)."""
