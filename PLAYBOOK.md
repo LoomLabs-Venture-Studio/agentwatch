@@ -4578,3 +4578,32 @@ an unattended session goes bad with no TUI on screen.
       appends `sudo` to the fixture log after the baseline and gets exactly
       one alert.
 - `AGENTWATCH_WEBHOOK` kept (board decision pending).
+
+### QA round 1 fixes (PR #150)
+- [x] 1 (MEDIUM) Control chars: `secret_scanner.one_line(text, limit)` (next
+      to redact_truncate, which both callers already used) maps every
+      non-printable char to a space (QA's `[\x00-\x1f\x7f-\x9f]` plus bidi
+      overrides and zero-width chars), collapses, redacts, bounds. Used for
+      alert agent/project (60 chars each), signal, message, headless line,
+      and coach._clean (the note kept ESC before). net._printable (DNS
+      names, "?" replacement) left as is.
+- [x] 2 Webhook text Slack-escaped (`& < >`) in `_post`; the toast keeps
+      the raw (cleaned) text.
+- [x] 3 Opener built with a no-redirect HTTPRedirectHandler subclass: any
+      3xx is an HTTPError (302 to another host and to ftp:// both refused,
+      not followed); post_webhook also refuses non-http(s).
+- [x] 4 `--webhook "http://[::1/x"`: BadParameter, value not echoed;
+      mask_url returns `<invalid url>` instead of raising.
+- [x] 5 One delivery worker per Alerter (lock + list, exits when idle):
+      one notifier process at a time; more than COALESCE_AT (3) queued ->
+      one "agentwatch: N new alerts" summary with the first 3 heads. Burst
+      check, `watch-all --headless --all-logs --notify-existing --notify-min
+      high` over this machine's logs: 43 alerts -> 2 deliveries (1 + "42 new
+      alerts"), peak 1 PowerShell child, 6 threads.
+- [x] 6 `_ALERT_LABELS`: statusline labels + every security signal (kept
+      out of statusline._LABELS, whose keys pick what the status line
+      shows). Plain http:// webhook warns once on stderr at startup.
+- Tests: control chars in message/project/agent (printable, one line,
+      bounded), coach uses the helper, Slack escaping, redirect refused
+      (other host, ftp), non-http refused, malformed URL, plain-http
+      warning, queue bound + coalescing (real threads), labels.

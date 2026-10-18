@@ -210,13 +210,20 @@ src/agentwatch/
                        sent (history loads async, so not one pass);
                        --notify-existing disables it; headless log not
                        baselined. Text: `agentwatch:
-                       <Agent> · <project> — <label> ~$x` (statusline
-                       _LABELS/_cost) + redact_truncate'd message.
+                       <Agent> · <project> — <label> ~$x` (_ALERT_LABELS =
+                       statusline _LABELS + security signals; _cost) +
+                       message; agent, project, signal and message all go
+                       through secret_scanner.one_line (non-printables ->
+                       space, collapsed, redacted, bounded).
                        Desktop: powershell -EncodedCommand fixed toast
                        script, text as ASCII JSON on stdin (PowerShell's own
                        AppId); osascript run-handler argv; notify-send --.
-                       Webhook: urllib POST {"text"}, 5 s. Sends on daemon
-                       threads; failure -> warn once (URL masked), beep on
+                       Webhook: POST {"text"} Slack-escaped (& < >), 5 s,
+                       opener without redirects (3xx = failure), http(s)
+                       only; plain http warns at startup. One delivery
+                       worker (one notifier process at a time); > 3 queued
+                       -> one "N new alerts" summary. Failure -> warn once
+                       (URL masked), beep on
                        Windows toast failure; TUIs route warn to a toast
                        (tui_warn). Headless = MultiAgentWatchApp.run(
                        headless=True), the same engine
@@ -340,6 +347,8 @@ src/agentwatch/
                        constraints
     security/*.py        Security detectors: credentials, injection,
                        network, privilege, supply_chain, secret_scanner
+                       (also redact_truncate and one_line, the shared
+                       safe-display-line helper used by coach and alerts)
     security/pii.py      PII patterns + validators (email, phone, US SSN,
                        Luhn-checked card, street address; look-alikes
                        rejected), stdlib only; imported by

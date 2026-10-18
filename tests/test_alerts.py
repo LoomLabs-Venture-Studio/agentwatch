@@ -229,8 +229,46 @@ def test_unlabelled_signal_and_no_project():
     a = Alerter(notify=True, notify_existing=True)
     sent = []
     a._desktop = lambda t, b: sent.append(t)
-    a.observe("s", None, "agent.jsonl", [_w(signal="privilege_escalation")], _report())
-    assert sent == ["agentwatch: agent.jsonl — privilege_escalation"]
+    a.observe("s", None, "agent.jsonl", [_w(signal="made_up_signal")], _report())
+    assert sent == ["agentwatch: agent.jsonl — made_up_signal"]
+
+
+def test_security_signals_have_labels():
+    r = _Recorder()
+    r.observe([_w(signal="privilege_escalation"), _w(signal="dangerous_command")])
+    assert [t.split(" — ")[1] for t, _ in r.sent] == ["privilege escalation",
+                                                     "dangerous command"]
+
+
+CONTROL = "\x1b[2J\x07\x1b]52;c;ZXZpbA==\x07\r\nCRITICAL forged\u202e\x9b\x00\t"
+
+
+def _printable(text: str) -> bool:
+    return all(c.isprintable() for c in text)
+
+
+def test_control_chars_in_message_project_and_agent_are_cleaned():
+    lines, sent = [], []
+    a = Alerter(notify=True, notify_existing=True, log=lines.append)
+    a._desktop = lambda t, b: sent.append((t, b))
+    a.observe("s", f"claude{CONTROL}code", f"repo{CONTROL}" + "x" * 500,
+              [_w(message=f"boom{CONTROL}end")], _report())
+    [(title, body)] = sent
+    [line] = lines
+    for text in (title, body, line):
+        assert _printable(text), repr(text)
+        assert "\x1b" not in text and "\n" not in text
+    assert body.startswith("boom [2J ]52;c;ZXZpbA== CRITICAL forged")
+    project = title.split(" · ")[1].split(" — ")[0]
+    assert len(project) <= alerts._NAME_MAX
+
+
+def test_coach_note_text_is_cleaned_by_the_same_helper():
+    from agentwatch import coach
+    from agentwatch.detectors.security.secret_scanner import one_line
+
+    assert coach._clean(f"a{CONTROL}b") == one_line(f"a{CONTROL}b", coach._MAX_LINE)
+    assert _printable(coach._clean(f"a{CONTROL}b"))
 
 
 def test_message_redacted_and_collapsed():
@@ -325,17 +363,102 @@ def test_webhook_unreachable_never_raises():
 def test_post_webhook_timeout_is_bounded(monkeypatch):
     seen = {}
 
-    def fake_urlopen(req, timeout):
+    def fake_open(req, timeout):
         seen["timeout"] = timeout
         raise OSError("boom")
 
-    monkeypatch.setattr(alerts.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(alerts._OPENER, "open", fake_open)
     with pytest.raises(OSError):
         post_webhook("http://x/y", "t")
     assert seen["timeout"] == 5
 
 
+def test_webhook_text_is_slack_escaped(server):
+    a = Alerter(webhook=server, notify=True, notify_existing=True)
+    desktop = []
+    a._desktop = lambda t, b: desktop.append(b)
+    a.observe("s", "claude-code", "<!channel>", [_w(message="a & <http://evil|click> <!here>")],
+              _report())
+    text = json.loads(_Hook.received[0][2])["text"]
+    assert "<" not in text and ">" not in text
+    assert "&lt;!channel&gt;" in text
+    assert "a &amp; &lt;http://evil|click&gt; &lt;!here&gt;" in text
+    assert desktop == ["a & <http://evil|click> <!here>"]  # toast text is not Slack
+
+
+class _Redirect(BaseHTTPRequestHandler):
+    location = ""
+
+    def do_POST(self):  # noqa: N802
+        self.send_response(302)
+        self.send_header("Location", type(self).location)
+        self.end_headers()
+
+    def log_message(self, *a):
+        pass
+
+
+@pytest.mark.parametrize("target", ["other-host", "ftp"])
+def test_webhook_redirect_is_refused(server, target):
+    _Redirect.location = (server.replace("SECRETPATH", "followed") if target == "other-host"
+                          else "ftp://127.0.0.1/x")
+    srv = HTTPServer(("127.0.0.1", 0), _Redirect)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        warned = []
+        a = Alerter(webhook=f"http://127.0.0.1:{srv.server_port}/hook/SECRET",
+                    notify_existing=True)
+        a.warn = warned.append
+        a.observe("s", "a", "p", [_w()], _report())
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert _Hook.received == []  # never followed
+    assert len(warned) == 1 and "302" in warned[0] and "SECRET" not in warned[0]
+
+
+def test_post_webhook_rejects_non_http():
+    with pytest.raises(ValueError):
+        post_webhook("file:///etc/passwd", "t")
+
+
+def test_queue_is_bounded_and_coalesced(monkeypatch):
+    """One worker, one notifier at a time; alerts that pile up while it is busy
+    become one summary."""
+    monkeypatch.setattr(alerts, "Thread", threading.Thread)
+    gate, delivered, running, peak = threading.Event(), [], [0], [0]
+
+    def slow_desktop(title, body):
+        running[0] += 1
+        peak[0] = max(peak[0], running[0])
+        gate.wait(5)
+        delivered.append((title, body))
+        running[0] -= 1
+
+    a = Alerter(notify=True, notify_existing=True)
+    a._desktop = slow_desktop
+    a.observe("s", "claude-code", "p", [_w(signal="first")], _report())
+    a.observe("s", "claude-code", "p",
+              [_w(signal="first")] + [_w(signal=f"sig{i}") for i in range(12)], _report())
+    assert threading.active_count() < 20
+    gate.set()
+    for _ in range(100):
+        if len(delivered) == 2:
+            break
+        threading.Event().wait(0.05)
+    assert peak[0] == 1
+    assert [t for t, _ in delivered] == ["agentwatch: Claude Code · p — first",
+                                         "agentwatch: 12 new alerts"]
+    assert delivered[1][1].endswith("... and 9 more")
+
+
+def test_small_batch_not_coalesced():
+    batch = [("t1", "b"), ("t2", "b"), ("t3", "b")]
+    assert Alerter._coalesce(batch) == batch
+
+
 def test_mask_url():
+    assert mask_url("http://[::1/x") == "<invalid url>"
     assert mask_url("https://hooks.slack.com/services/A/B/C") == "https://hooks.slack.com/***"
     assert mask_url("https://user:pw@example.com:8443/x?k=1") == "https://example.com/***"
 
@@ -446,6 +569,22 @@ def test_desktop_failure_warns_once(monkeypatch, outcome):
 # --- CLI + headless engine -------------------------------------------------
 
 
+def test_webhook_option_rejects_malformed_url_without_traceback():
+    res = CliRunner().invoke(cli, ["watch-all", "--webhook", "http://[::1/SECRETX"])
+    assert res.exit_code == 2
+    assert "SECRETX" not in res.output and "Traceback" not in res.output
+    assert not isinstance(res.exception, ValueError)
+
+
+def test_plain_http_webhook_warns(monkeypatch):
+    monkeypatch.setattr("agentwatch.cli.find_running_agents", lambda *a: [])
+    monkeypatch.setattr("agentwatch.ui.multi_app.MultiAgentWatchApp.run", lambda self, **kw: None)
+    res = CliRunner().invoke(cli, ["watch-all", "--headless", "--webhook",
+                                   "http://hooks.example.com/SECRET"])
+    assert res.exit_code == 0, res.output
+    assert "plain http" in res.output and "SECRET" not in res.output
+
+
 def test_webhook_option_rejects_non_http_without_echo():
     res = CliRunner().invoke(cli, ["watch-all", "--webhook", "file:///etc/SECRETFILE"])
     assert res.exit_code == 2
@@ -525,4 +664,4 @@ async def test_headless_engine_smoke(tmp_path, monkeypatch):
                 break
     assert any("[loop]" in line for line in lines)
     assert any("[privilege_escalation]" in line for line in lines)
-    assert sent == ["agentwatch: s1.jsonl — privilege_escalation"]
+    assert sent == ["agentwatch: s1.jsonl — privilege escalation"]

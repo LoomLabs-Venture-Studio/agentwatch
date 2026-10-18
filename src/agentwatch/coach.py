@@ -247,10 +247,9 @@ def _last_line(text: object) -> str:
 
 
 def _clean(text: object) -> str:
-    from agentwatch.detectors.security.secret_scanner import redact_truncate
+    from agentwatch.detectors.security.secret_scanner import one_line
 
-    collapsed = " ".join(str(text).split())
-    return redact_truncate(collapsed, _MAX_LINE).replace("<", "").replace(">", "")
+    return one_line(text, _MAX_LINE).replace("<", "").replace(">", "")
 
 
 def _evidence(warning, actions: list) -> str | None:

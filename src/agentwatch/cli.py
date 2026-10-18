@@ -551,9 +551,18 @@ def _check_webhook(ctx, param, value: str | None) -> str | None:
         return None
     from urllib.parse import urlsplit
 
-    parts = urlsplit(value)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
+    try:
+        parts = urlsplit(value)
+        ok = parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:  # e.g. "http://[::1/x"
+        ok = False
+    if not ok:
         raise click.BadParameter("must be an http:// or https:// URL (value not shown)")
+    if parts.scheme == "http":
+        from agentwatch.alerts import mask_url
+
+        click.echo(f"agentwatch: warning: webhook {mask_url(value)} is plain http; "
+                   "alert text is sent unencrypted", err=True)
     return value
 
 

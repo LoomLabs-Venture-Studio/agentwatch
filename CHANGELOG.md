@@ -21,6 +21,13 @@ numbers refer to the GitHub repository.
   Findings a session already has when first seen are a silent baseline
   (`--notify-existing` alerts on them too).
 
+### Security
+
+- Coach notes, alerts and headless lines replace control characters
+  (terminal escapes, BEL, newlines, bidi overrides) with spaces through one
+  shared helper (`secret_scanner.one_line`); the coach note previously kept
+  ESC sequences.
+
 - Claude Code plugin (`plugin/`) with a health coach: a PostToolUse hook runs
   `agentwatch hook`, which checks the live session with the health detectors
   and adds a short note (problem, evidence, what to try) to Claude's context

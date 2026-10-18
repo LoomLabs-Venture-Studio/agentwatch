@@ -34,13 +34,13 @@ import sys
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
-from threading import Thread
+from threading import Lock, Thread
 from time import monotonic as _monotonic
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from agentwatch.detectors.base import Severity, findings_spend, warning_dedup_key
-from agentwatch.detectors.security.secret_scanner import redact_truncate
+from agentwatch.detectors.security.secret_scanner import one_line
 from agentwatch.statusline import _LABELS, _cost
 from agentwatch.themes import ascii_safe, get_theme
 
@@ -55,6 +55,27 @@ BASELINE_S = 5.0
 WEBHOOK_TIMEOUT_S = 5
 NOTIFY_TIMEOUT_S = 30
 _MESSAGE_MAX = 200
+_NAME_MAX = 60
+COALESCE_AT = 3  # more alerts than this waiting -> one summary alert
+# Short labels: statusline's (health) plus the security signals. Kept out of
+# statusline._LABELS, whose keys decide which signals the status line shows.
+_ALERT_LABELS = {
+    **_LABELS,
+    "privilege_escalation": "privilege escalation", "dangerous_command": "dangerous command",
+    "mass_delete": "mass delete", "mass_overwrite": "mass overwrite",
+    "credential_access": "credential access", "credential_exfil": "credential exfil",
+    "secret_leak": "secret leak", "secret_in_command": "secret leak",
+    "secret_in_output": "secret leak", "sensitive_directory": "sensitive dir",
+    "prompt_injection": "injection", "indirect_injection": "injection",
+    "hidden_instruction": "injection",
+    "c2_beacon": "beacon", "repeated_beacon": "beacon", "dns_exfil": "exfil",
+    "exfil_pattern": "exfil", "data_upload": "upload", "large_outgoing": "upload",
+    "suspicious_host": "suspicious host", "suspicious_port": "suspicious port",
+    "undeclared_egress": "undeclared egress",
+    "malicious_skill": "malicious skill", "skill_credential_access": "skill credentials",
+    "skill_network": "skill network", "skill_install": "skill install",
+    "skill_chain": "skill chain", "new_skill": "new skill",
+}
 _RANK = {Severity.LOW: 0, Severity.MEDIUM: 1, Severity.HIGH: 2, Severity.CRITICAL: 3}
 NOTIFY_LEVELS = {"high": Severity.HIGH, "critical": Severity.CRITICAL}
 
@@ -111,19 +132,41 @@ def notify_command(
 
 def mask_url(url: str) -> str:
     """'https://hooks.slack.com/***': a webhook URL's path is its secret."""
-    parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.hostname or '?'}/***"
+    try:
+        parts = urlsplit(url)
+        return f"{parts.scheme}://{parts.hostname or '?'}/***"
+    except ValueError:
+        return "<invalid url>"
+
+
+def slack_escape(text: str) -> str:
+    """Slack's three control characters, so `<!channel>` or `<http://x|y>` in a
+    path or repo name is shown, not acted on."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is a failure: the POST never follows to another host or scheme."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def post_webhook(url: str, text: str, timeout: float = WEBHOOK_TIMEOUT_S) -> None:
-    """POST {"text": text} (Slack-compatible); raises on any failure."""
+    """POST {"text": text} (Slack-compatible); raises on any failure, a 3xx
+    included."""
+    if urlsplit(url).scheme not in ("http", "https"):
+        raise ValueError("webhook URL must be http(s)")
     req = urllib.request.Request(
         url,
         data=json.dumps({"text": text}).encode("utf-8"),
         headers={"Content-Type": "application/json", "User-Agent": "agentwatch"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _OPENER.open(req, timeout=timeout) as resp:
         resp.read()
 
 
@@ -154,16 +197,18 @@ def _warn_stderr(msg: str) -> None:
 
 
 def _clean(message: str) -> str:
-    return redact_truncate(" ".join(message.split()), _MESSAGE_MAX)
+    return one_line(message, _MESSAGE_MAX)
 
 
 def _label(signal: str) -> str:
-    return _LABELS.get(signal, signal)
+    return _ALERT_LABELS.get(signal) or one_line(signal, _NAME_MAX)
 
 
 def who(agent: str | None, project: str | None) -> str:
-    """'Claude Code · myproj'."""
-    name = agent.replace("-", " ").title() if agent else ""
+    """'Claude Code · myproj'. Both come from logs and process data, so they
+    are cleaned like a message."""
+    name = one_line(agent.replace("-", " ").title(), _NAME_MAX) if agent else ""
+    project = one_line(project, _NAME_MAX) if project else ""
     return f" {ascii_safe('·', '|')} ".join(p for p in (name, project) if p) or "agent"
 
 
@@ -194,6 +239,9 @@ class Alerter:
         self.warn: Callable[[str], None] = _warn_stderr
         self._warned: set[str] = set()
         self._sessions: dict[str, _Session] = {}
+        self._pending: list[tuple[str, str]] = []
+        self._lock = Lock()
+        self._busy = False
 
     def observe(
         self,
@@ -252,16 +300,44 @@ class Alerter:
     def _log_line(name: str, w: Warning) -> str:
         cost = f"  {w.cost_label}" if w.cost_label else ""
         return (f"{datetime.now():%H:%M:%S} {w.severity.value.upper():8} {name} "
-                f"[{w.signal}] {_clean(w.message)}{cost}")
+                f"[{one_line(w.signal, _NAME_MAX)}] {_clean(w.message)}{cost}")
 
     def _send(self, label: str, name: str, message: str) -> None:
-        title = f"agentwatch: {name} {ascii_safe('—', '-')} {label}"
-        body = _clean(message)
-        if self.notify:
-            Thread(target=self._desktop, args=(title, body), daemon=True).start()
-        if self.webhook:
-            text = f"{title}\n{body}" if body else title
-            Thread(target=self._post, args=(text,), daemon=True).start()
+        """Queue one alert for the single delivery worker."""
+        item = (f"agentwatch: {name} {ascii_safe('—', '-')} {label}", _clean(message))
+        with self._lock:
+            self._pending.append(item)
+            if self._busy:
+                return
+            self._busy = True
+        Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        """Deliver queued alerts one at a time (one notifier process at most),
+        until the queue is empty."""
+        while True:
+            with self._lock:
+                batch, self._pending = self._pending, []
+                if not batch:
+                    self._busy = False
+                    return
+            for title, body in self._coalesce(batch):
+                # ponytail: one worker for both sinks; a slow webhook (5 s) delays
+                # the next toast. Split per sink if that matters.
+                if self.notify:
+                    self._desktop(title, body)
+                if self.webhook:
+                    text = f"{title}\n{body}" if body else title
+                    self._post(text)
+
+    @staticmethod
+    def _coalesce(batch: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        if len(batch) <= COALESCE_AT:
+            return batch
+        heads = [title.removeprefix("agentwatch: ") for title, _ in batch]
+        more = len(heads) - COALESCE_AT
+        body = "\n".join(heads[:COALESCE_AT]) + f"\n... and {more} more"
+        return [(f"agentwatch: {len(batch)} new alerts", body)]
 
     def _warn_once(self, kind: str, msg: str) -> None:
         if kind in self._warned:
@@ -299,7 +375,7 @@ class Alerter:
 
     def _post(self, text: str) -> None:
         try:
-            post_webhook(self.webhook, text)
+            post_webhook(self.webhook, slack_escape(text))
         except Exception as exc:
             masked = mask_url(self.webhook)
             detail = str(exc).replace(self.webhook, masked)

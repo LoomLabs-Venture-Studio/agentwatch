@@ -389,6 +389,16 @@ The webhook gets `POST` JSON `{"text": "..."}` (5 s timeout, sent in the
 background). The URL is a secret: AgentWatch never prints it (errors show
 `https://hooks.slack.com/***`), and a failing webhook is reported once and
 never stops monitoring. `AGENTWATCH_WEBHOOK` is only read, never written.
+Redirects are not followed (a 3xx counts as a failure), `& < >` are escaped
+so a path or repo name cannot ping `<!channel>` or post a disguised link, and
+a plain `http://` URL gets a startup warning (alert text would travel
+unencrypted).
+
+Alert text is one line per field: control characters (terminal escapes,
+bells, newlines) become spaces and long names are cut, so a crafted project
+name cannot clear your terminal, write your clipboard or fake a log line.
+Alerts are delivered one at a time; if more than three pile up, they arrive
+as one summary (`agentwatch: 12 new alerts`).
 
 Run headless in the background:
 
