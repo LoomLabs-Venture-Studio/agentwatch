@@ -236,6 +236,18 @@ def test_two_first_runs_at_once(tmp_path):
         conn.close()
 
 
+@pytest.mark.parametrize("cwd", [
+    "C:\\work\\agentwatch-main\\.claude\\worktrees\\agent-a0e4f1",
+    "/home/u/agentwatch-main/.claude/worktrees/agent-a0e4f1",
+    "/home/u/agentwatch-main/.claude/worktrees/agent-a0e4f1/src/pkg",
+    "/home/u/agentwatch-main/.claude/worktrees",
+])
+def test_worktree_cwd_is_its_project(cwd):
+    from agentwatch.cc_stats import project_name
+
+    assert project_name(cwd) == "agentwatch-main"
+
+
 def test_project_names_from_recorded_cwd(env, tmp_path, monkeypatch):
     from pathlib import Path
 
@@ -339,6 +351,9 @@ SPACED = "C:\\Users\\Victim Spacename\\Documents\\plan.txt"
      "Edited plan.txt 5x with no successful test in between"),
     ("Repeated action: Read on /srv/my files/a b.py (6x)", {"path": "/srv/my files/a b.py"},
      "Repeated action: Read on a b.py (6x)"),
+    ("Re-reading file: https://h.example/v1/api?token=abc123def (3x)", {},
+     "Re-reading file: api (3x)"),
+    ("Fetched https://h.example/v1/api#frag?x=1 and /x/y?k=v ok", {}, "Fetched api and y ok"),
 ])
 def test_safe_message_cuts_paths_with_spaces(message, details, expect):
     assert history.safe_message(message, details) == expect

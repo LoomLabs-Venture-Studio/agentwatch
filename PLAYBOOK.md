@@ -4575,3 +4575,10 @@ webhook, after alerts #150), any cloud or team sync.
   warm; 15.2 s cold before), re-sync 0.35 s, `report` 0.34-0.37 s wall.
   Store Python redirects the DB into its LocalCache, like the coach state
   (README note).
+
+### QA round 2 fixes (PR #151)
+- [x] Subagents in worktrees record cwd `<project>/.claude/worktrees/agent-<id>`
+      (either separator): named after `<project>` (`cc_stats.project_name`),
+      15 `agent-…` projects -> 0 on the live DB.
+- [x] Path-like tokens in stored messages drop URL query strings and
+      fragments (`api?token=abc123def` -> `api`).

@@ -576,11 +576,16 @@ def find_all_project_dirs() -> list[Path]:
     return [p for p in projects.iterdir() if p.is_dir()]
 
 
+_WORKTREE = re.compile(r"[\\/]\.claude[\\/]worktrees(?:[\\/]|$)")
+
+
 def project_name(cwd: str | Path | None) -> str | None:
     """Project name of a working directory: its last component, or "~" for
-    the home dir (never the user name). None when unknown."""
+    the home dir (never the user name). None when unknown. A Claude Code
+    worktree (``<project>/.claude/worktrees/agent-<id>``) is its project."""
     if not cwd:
         return None
+    cwd = _WORKTREE.split(str(cwd), maxsplit=1)[0]
     try:
         home = os.path.normcase(os.path.abspath(Path.home()))
         if os.path.normcase(os.path.abspath(cwd)) == home:

@@ -150,7 +150,9 @@ _MASK_TAIL = re.compile("….{0,4}")  # redaction keeps a secret's last 4 chars
 
 
 def _base(path: str) -> str:
-    return _SEP.split(path.strip("'\"`").rstrip("\\/"))[-1]
+    """Last part of a path or URL, without quotes, query string or fragment."""
+    path = re.split(r"[?#]", path.strip("'\"`"), maxsplit=1)[0]
+    return _SEP.split(path.rstrip("\\/"))[-1]
 
 
 def safe_message(message: str, details: dict[str, Any] | None = None) -> str:
