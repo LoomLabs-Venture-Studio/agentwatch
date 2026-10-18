@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 35 (develop-overdrive) Feature 3, `agentwatch statusline` (2026-10-18), at the end of this file; before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
+> **Latest: Sprint 35 (develop-overdrive) Feature 4, alerts (2026-10-18), at the end of this file; before it Feature 3, `agentwatch statusline` (2026-10-18); before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -4490,3 +4490,71 @@ Code's status line when the session is unhealthy, from the coach's state.
   cost ~280 ms per call. That exposed a latent circular import
   (cursor_discovery -> parser -> cursor_discovery), fixed by making
   parser's discovery re-exports lazy too.
+
+### Sprint 35 (develop-overdrive) — Feature 4: alerts (2026-10-18)
+**Type:** feature. Branch `feature/alerts` from `develop-overdrive` @
+`8dd8365` (after #146); draft PR into `develop-overdrive`. Tell the user when
+an unattended session goes bad with no TUI on screen.
+
+### Acceptance Criteria
+- [x] 1. `watch-all --headless`: the same `MultiAgentWatchApp` engine on
+      Textual's headless driver (no fork, nothing extracted: the driver does
+      no screen I/O). One stdout line per new warning (any severity, per
+      (session, `warning_dedup_key`)), flushed. Ctrl+C exits 0 through the
+      app's normal shutdown. With no agents running it waits for them
+      instead of exiting.
+- [x] 2. `--notify` on `watch` and `watch-all` (headless or not): Critical
+      overall status or a new finding at `--notify-min high|critical`
+      (default critical). Windows: `powershell -NoProfile -NonInteractive
+      -EncodedCommand` fixed ToastNotificationManager script, PowerShell's
+      own AppId, on a daemon thread; on failure a `winsound.MessageBeep`
+      and one warning. macOS `osascript`, Linux `notify-send`; none: warn
+      once and continue. No new deps.
+- [x] 3. `--webhook URL` / `AGENTWATCH_WEBHOOK` (read only): urllib POST
+      `{"text": ...}`, 5 s timeout, daemon thread; failure warns once with
+      the URL masked (`scheme://host/***`); http(s) only, an invalid value
+      is rejected without echoing it.
+- [x] 4. One alert per (session, `warning_dedup_key`); overall Critical once
+      per episode and at most once per session per 10 min; cleared ->
+      forgotten -> recurrence alerts.
+- [x] 5. Text only as argv/stdin, no shell: PowerShell gets ASCII JSON on
+      stdin into XML text nodes (script constant), AppleScript gets
+      run-handler argv, notify-send `--`. Tested with quotes, backticks,
+      `$()`, `$env:`, `<b>`, newlines; real PowerShell round-trip test.
+- [x] 6. `tests/test_alerts.py` (35): rate limiting, text/redaction, webhook
+      payload + 500 + refused (local http.server), backend selection,
+      escaping, CLI, headless engine smoke on a fixture transcript.
+- [x] 7. Live (Windows 10 19045): `watch --log <fixture> --security --notify
+      --webhook http://127.0.0.1:8765/...` in a new console -> toast in
+      `ToastNotificationManager.History` ("agentwatch: Claude Code · myproj
+      — privilege_escalation") and the local server got the JSON. Direct
+      fire with quotes/backticks/`$()`/newline/`<b>&amp;` text: rc 0, shown
+      verbatim. `watch-all --headless --security --notify` against the live
+      Claude Code session printed its warning; a real console Ctrl+C
+      (GenerateConsoleCtrlEvent) exited 0, no traceback. README's hidden
+      `Start-Process` background example run as written.
+- [x] 8. README "Alerts", CLAUDE.md module map + env var, this section,
+      CHANGELOG.
+- [x] 9. Full suite + ruff green.
+
+### Decisions
+- Headless is Textual's headless driver, not an extracted engine: the engine
+  already runs headless (`app.run(headless=True)`; print reaches the real
+  stdout, SIGINT is handled), so there is no second loop to keep in sync.
+- A finding alert in the same pass stands in for the overall-Critical alert
+  (they nearly always coincide), so one bad turn gives one notification.
+- `--notify-min` also gates `--webhook`; the headless log is unfiltered.
+- Labels and cost reuse statusline's `_LABELS` / `_cost` (no third
+  formatter); unmapped signals (security) show the signal name.
+- Single `watch` waits for its process lookup before alerting so the text
+  names the project (falls back to the log's folder).
+- Windows toast uses PowerShell's registered AppId: an unregistered one
+  makes Show() succeed with no toast on Windows 10.
+- In the TUIs a sink failure shows as a Textual toast (stderr is hidden).
+
+### Limits
+- macOS and Linux backends are unit-tested (argv) only, not live-run.
+- A detector whose warning flickers on and off between passes re-alerts on
+  each return (same rule as the coach).
+- Background runs with no console (`pythonw`) have no stdout for headless
+  lines; redirect stdout as in the README.

@@ -193,6 +193,27 @@ src/agentwatch/
                        `✓ agentwatch`. No state / > 10 min old / any error:
                        nothing, exit 0. No transcript parsing; imports only
                        stdlib + coach (~150 ms on Windows)
+  alerts.py            Alerter for `watch`/`watch-all` `--notify`,
+                       `--webhook URL` (env AGENTWATCH_WEBHOOK) and
+                       `watch-all --headless`. observe(session, agent,
+                       project, warnings, report) after each scoring pass:
+                       headless -> one stdout line per new warning
+                       (print_line: sys.__stdout__, flushed); alerts -> one
+                       per (session, warning_dedup_key) at >= --notify-min
+                       (high|critical, default critical) + overall Critical
+                       (theme level_3) once per episode, <= 1 per session
+                       per 10 min, folded into a finding alert sent the same
+                       pass; cleared keys forgotten. Text: `agentwatch:
+                       <Agent> · <project> — <label> ~$x` (statusline
+                       _LABELS/_cost) + redact_truncate'd message.
+                       Desktop: powershell -EncodedCommand fixed toast
+                       script, text as ASCII JSON on stdin (PowerShell's own
+                       AppId); osascript run-handler argv; notify-send --.
+                       Webhook: urllib POST {"text"}, 5 s. Sends on daemon
+                       threads; failure -> warn once (URL masked), beep on
+                       Windows toast failure; TUIs route warn to a toast
+                       (tui_warn). Headless = MultiAgentWatchApp.run(
+                       headless=True), the same engine
   _entry.py            Console-script entry: `hook` and `statusline` go
                        straight to coach.py / statusline.py without
                        importing cli.py, the rest to cli.main. The package
@@ -341,7 +362,10 @@ src/agentwatch/
                        helpers, including the Tier-2 goal-alignment advisory
     multi_app.py          Multi-agent Textual App (MultiLogWatcher + team
                        health aggregation); same `--siem-log`/`--llm`/
-                       goal-alignment wiring as app.py, applied per-agent
+                       goal-alignment wiring as app.py, applied per-agent;
+                       `alerter` (alerts.py) fed from both scoring paths.
+                       `watch-all --headless` runs it on Textual's headless
+                       driver (no screen I/O; SIGINT exits cleanly)
     live_integrations.py  Shared live-TUI SIEM export + Tier-2 LLM triage
                        wiring for app.py/multi_app.py's 1s refresh loop:
                        `warning_dedup_key()` (content-based identity so a
@@ -688,3 +712,6 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   _find_own_process` so TUI tests never scan real processes.
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
+
+- `AGENTWATCH_WEBHOOK` (read only, Sprint 35 Feature 4): default for
+  `watch`/`watch-all --webhook URL`. A secret; never printed.

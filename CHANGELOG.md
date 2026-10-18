@@ -8,6 +8,17 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- Alerts for unattended sessions. `watch-all --headless` runs the watch-all
+  engine without the dashboard and prints one line per new warning (and
+  waits for agents if none are running yet). `--notify` on `watch` and
+  `watch-all` shows a desktop notification (Windows toast, macOS
+  `osascript`, Linux `notify-send`; no new dependencies) when a session turns
+  Critical or a new finding at `--notify-min` (`critical` by default, or
+  `high`) appears. `--webhook URL` (or `AGENTWATCH_WEBHOOK`) posts the same
+  alerts as Slack-compatible JSON `{"text": ...}`. One alert per finding per
+  session, a Critical session at most once per 10 minutes; text is the
+  agent, project, label, cost and the redacted warning message only.
+
 - Claude Code plugin (`plugin/`) with a health coach: a PostToolUse hook runs
   `agentwatch hook`, which checks the live session with the health detectors
   and adds a short note (problem, evidence, what to try) to Claude's context

@@ -52,6 +52,9 @@ agentwatch watch --security
 # Monitor all running agents
 agentwatch watch-all
 
+# No dashboard: log new warnings, desktop-notify on critical ones
+agentwatch watch-all --headless --notify
+
 # List running agent processes
 agentwatch ps
 
@@ -330,6 +333,73 @@ an OpenCode/Kilo database finds no process (`Net: no live process`); use
 `watch-all`. One-shot `check` / `security-scan` never sample. Claude Code,
 Codex and Gemini log a tool call when it starts, so a Bash command's
 connection may be reported on the next action.
+
+### Alerts
+
+Agents run unattended, so AgentWatch can tell you when a session goes bad
+without a dashboard on screen.
+
+```bash
+# No dashboard: one line per new warning on stdout; Ctrl+C to stop
+agentwatch watch-all --headless
+
+# Desktop notification on a Critical session or a new CRITICAL finding
+agentwatch watch-all --notify
+agentwatch watch --notify --security
+
+# Also alert on HIGH findings
+agentwatch watch-all --headless --notify --notify-min high
+
+# Post alerts to a Slack (or Discord/Teams-style) incoming webhook
+agentwatch watch-all --headless --webhook https://hooks.slack.com/services/...
+export AGENTWATCH_WEBHOOK=https://hooks.slack.com/services/...   # same, from the environment
+```
+
+Headless output looks like:
+
+```
+14:02:11 HIGH     Claude Code · myproj [loop] Repeated action: Bash (8x)  ~$1.40 · 210k tok
+```
+
+An alert reads `agentwatch: Claude Code · myproj — loop ~$1.40`, followed
+by the warning's own message with secrets redacted; no other transcript
+content is sent. You get one alert per finding per session (it alerts again
+if the finding clears and comes back) and at most one "critical" alert per
+session every 10 minutes. `--notify-min` (`critical` by default, or `high`)
+applies to `--notify` and `--webhook`; the headless log shows every new
+warning.
+
+- **Windows:** a toast from Windows PowerShell (`powershell -NoProfile`,
+  shown under "Windows PowerShell" in the notification center). If the toast
+  fails, AgentWatch beeps and warns once.
+- **macOS:** `osascript` (`display notification`). Allow notifications for
+  Script Editor / your terminal in System Settings if nothing appears.
+- **Linux:** `notify-send`, if it is on `PATH` (package `libnotify-bin` or
+  `libnotify`).
+- No notifier: one warning on stderr, then monitoring continues.
+
+The webhook gets `POST` JSON `{"text": "..."}` (5 s timeout, sent in the
+background). The URL is a secret: AgentWatch never prints it (errors show
+`https://hooks.slack.com/***`), and a failing webhook is reported once and
+never stops monitoring. `AGENTWATCH_WEBHOOK` is only read, never written.
+
+Run headless in the background:
+
+```bash
+# macOS / Linux
+nohup agentwatch watch-all --headless --notify > ~/agentwatch-alerts.log 2>&1 &
+```
+
+```powershell
+# Windows (PowerShell)
+Start-Process agentwatch -ArgumentList "watch-all","--headless","--notify" `
+  -WindowStyle Hidden -RedirectStandardOutput "$env:USERPROFILE\agentwatch-alerts.log"
+```
+
+A hidden window has no Ctrl+C; stop it with `Stop-Process -Name agentwatch`.
+
+`--headless` runs the same engine as the `watch-all` dashboard (process
+discovery every 5 s, per-agent scoring); it only skips drawing it.
 
 ### Process Discovery
 
