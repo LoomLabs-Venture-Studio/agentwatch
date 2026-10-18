@@ -40,6 +40,8 @@ class AgentAdapter(Protocol):
         self, path: Path, session_id: str | None = None, **opts: Any
     ) -> Iterator[Action]: ...
     def is_live(self, proc: AgentProcess) -> bool: ...
+    def history_logs(self) -> Iterator[Path]: ...
+    def history_meta(self, path: Path) -> tuple[str, str | None]: ...
 
 
 class BaseAdapter:
@@ -72,8 +74,23 @@ class BaseAdapter:
     def is_live(self, proc: AgentProcess) -> bool:
         return proc.log_file is not None and proc.log_file.exists()
 
+    def history_logs(self) -> Iterator[Path]:
+        """Every session log this agent keeps on disk, one session per file,
+        for `agentwatch history`. None by default (DB stores, Aider)."""
+        return iter(())
+
+    def history_meta(self, path: Path) -> tuple[str, str | None]:
+        """(session id, project folder name or None) of a history_logs() file."""
+        return path.stem, None
+
     def __repr__(self) -> str:
         return f"<{type(self).__name__} {self.name!r}>"
+
+
+def folder_name(cwd: Any) -> str | None:
+    """Last component of a recorded working directory (a project name, never
+    the path), or None."""
+    return (Path(cwd).name or None) if isinstance(cwd, str) and cwd else None
 
 
 def source_path(source: AgentProcess | Path) -> Path:

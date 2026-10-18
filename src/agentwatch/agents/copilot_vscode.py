@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Iterator
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -107,3 +108,20 @@ class CopilotVscodeAdapter(BaseAdapter):
         from agentwatch.parser.copilot_vscode import parse_copilot_vscode
 
         yield from parse_copilot_vscode(path, session_id)
+
+    def history_logs(self) -> Iterator[Path]:
+        from agentwatch.vscode_paths import default_user_dir
+
+        return (default_user_dir("Code") / "workspaceStorage").glob("*/chatSessions/*.jsonl")
+
+    def history_meta(self, path: Path) -> tuple[str, str | None]:
+        cwd = _workspace_map(path.parents[3]).get(path.parent.parent.name)
+        return path.stem, cwd.name if cwd else None
+
+
+@lru_cache(maxsize=4)
+def _workspace_map(user_dir: Path) -> dict[str, Path]:
+    # ponytail: cached per process; only the one-shot `history sync` calls it.
+    from agentwatch.cursor_discovery import build_workspace_map
+
+    return build_workspace_map(user_dir)
