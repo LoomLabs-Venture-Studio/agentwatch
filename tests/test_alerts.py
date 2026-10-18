@@ -390,6 +390,9 @@ class _Redirect(BaseHTTPRequestHandler):
     location = ""
 
     def do_POST(self):  # noqa: N802
+        # Read the body first: closing with unread data is a TCP reset on
+        # Windows, which the client can see instead of the 302.
+        self.rfile.read(int(self.headers["Content-Length"]))
         self.send_response(302)
         self.send_header("Location", type(self).location)
         self.end_headers()
@@ -450,6 +453,54 @@ def test_queue_is_bounded_and_coalesced(monkeypatch):
     assert [t for t, _ in delivered] == ["agentwatch: Claude Code · p — first",
                                          "agentwatch: 12 new alerts"]
     assert delivered[1][1].endswith("... and 9 more")
+
+
+def _wait_for(cond, timeout=5.0):
+    for _ in range(int(timeout / 0.05)):
+        if cond():
+            return True
+        threading.Event().wait(0.05)
+    return cond()
+
+
+def test_sink_raising_does_not_kill_the_worker(monkeypatch):
+    monkeypatch.setattr(alerts, "Thread", threading.Thread)
+    delivered, warned, calls = [], [], [0]
+
+    def flaky_desktop(title, body):
+        calls[0] += 1
+        if calls[0] == 1:
+            raise RuntimeError("WinRT exploded")
+        delivered.append(title)
+
+    def bad_post(text):
+        raise KeyError("http://hooks.example.com/SECRET")
+
+    a = Alerter(notify=True, webhook="http://hooks.example.com/SECRET", notify_existing=True)
+    a._desktop, a._post, a.warn = flaky_desktop, bad_post, warned.append
+    a.observe("s", "claude-code", "p", [_w(signal="first")], _report())
+    assert _wait_for(lambda: not a._busy)
+    a.observe("s", "claude-code", "p", [_w(signal="first"), _w(signal="second")], _report())
+    assert _wait_for(lambda: delivered)
+    assert delivered == ["agentwatch: Claude Code · p — second"]
+    assert sorted(warned) == ["notify delivery failed: RuntimeError",
+                              "webhook delivery failed: KeyError"]  # once each, no URL
+
+
+def test_worker_crash_resets_busy(monkeypatch):
+    monkeypatch.setattr(alerts, "Thread", threading.Thread)
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)  # expected crash
+    delivered = []
+    a = Alerter(notify=True, notify_existing=True)
+    a._desktop = lambda t, b: delivered.append(t)
+    real = Alerter._coalesce
+    a._coalesce = lambda batch: (_ for _ in ()).throw(MemoryError())
+    a.observe("s", "claude-code", "p", [_w(signal="first")], _report())
+    assert _wait_for(lambda: not a._busy)
+    a._coalesce = real
+    a.observe("s", "claude-code", "p", [_w(signal="first"), _w(signal="second")], _report())
+    assert _wait_for(lambda: delivered)  # the crashed batch is lost, later ones are not
+    assert delivered == ["agentwatch: Claude Code · p — second"]
 
 
 def test_small_batch_not_coalesced():

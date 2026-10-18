@@ -314,21 +314,34 @@ class Alerter:
 
     def _run(self) -> None:
         """Deliver queued alerts one at a time (one notifier process at most),
-        until the queue is empty."""
-        while True:
+        until the queue is empty. A sink that raises is warned about once and
+        skipped; the worker never dies holding _busy."""
+        try:
+            while True:
+                with self._lock:
+                    batch, self._pending = self._pending, []
+                    if not batch:
+                        self._busy = False  # same lock as the check: no lost wakeup
+                        return
+                for title, body in self._coalesce(batch):
+                    # ponytail: one worker for both sinks; a slow webhook (5 s)
+                    # delays the next toast. Split per sink if that matters.
+                    if self.notify:
+                        self._safely("notify", self._desktop, title, body)
+                    if self.webhook:
+                        self._safely("webhook", self._post,
+                                     f"{title}\n{body}" if body else title)
+        except BaseException:
             with self._lock:
-                batch, self._pending = self._pending, []
-                if not batch:
-                    self._busy = False
-                    return
-            for title, body in self._coalesce(batch):
-                # ponytail: one worker for both sinks; a slow webhook (5 s) delays
-                # the next toast. Split per sink if that matters.
-                if self.notify:
-                    self._desktop(title, body)
-                if self.webhook:
-                    text = f"{title}\n{body}" if body else title
-                    self._post(text)
+                self._busy = False  # unexpected exit: the next _send starts a worker
+            raise
+
+    def _safely(self, kind: str, deliver, *args) -> None:
+        try:
+            deliver(*args)
+        except Exception as exc:
+            # Type only: a webhook error's text can hold the URL.
+            self._warn_once(kind, f"{kind} delivery failed: {type(exc).__name__}")
 
     @staticmethod
     def _coalesce(batch: list[tuple[str, str]]) -> list[tuple[str, str]]:

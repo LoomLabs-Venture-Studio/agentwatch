@@ -4607,3 +4607,17 @@ an unattended session goes bad with no TUI on screen.
       bounded), coach uses the helper, Slack escaping, redirect refused
       (other host, ftp), non-http refused, malformed URL, plain-http
       warning, queue bound + coalescing (real threads), labels.
+
+### QA round 2 fix (PR #150, QA passed on 1d101fa)
+- [x] `Alerter._run`: each sink call is wrapped (`_safely`): any exception
+      warns once per sink with the exception type only (a webhook error's
+      text can hold the URL) and delivery continues. An unexpected exit
+      outside a sink resets `_busy`, so the next alert starts a new worker
+      (that batch is lost). `_busy` is still cleared under the same lock as
+      the empty-queue check, so no wakeup is lost.
+- Tests: `_desktop` raising RuntimeError and the webhook raising, then a
+      second alert is still delivered and each sink warned once; worker
+      crash outside a sink resets `_busy`. The redirect test server now
+      reads the request body before replying (one unreproduced flake: an
+      unread body is a TCP reset on Windows).
+- Not merged: the board still has to approve `AGENTWATCH_WEBHOOK`.
