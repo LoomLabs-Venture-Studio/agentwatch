@@ -570,6 +570,12 @@ def _alert_options(f):
              "The URL is treated as a secret and never printed",
     )(f)
     f = click.option(
+        "--notify-existing",
+        is_flag=True,
+        help="Also alert on findings a session already has when it is first "
+             "seen (default: those are a silent baseline)",
+    )(f)
+    f = click.option(
         "--notify-min",
         type=click.Choice(["high", "critical"]),
         default="critical",
@@ -584,13 +590,14 @@ def _alert_options(f):
     )(f)
 
 
-def _make_alerter(notify: bool, notify_min: str, webhook: str | None, headless: bool = False):
+def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook: str | None,
+                  headless: bool = False):
     if not (notify or webhook or headless):
         return None
     from agentwatch.alerts import Alerter, print_line
 
     return Alerter(notify=notify, notify_min=notify_min, webhook=webhook,
-                   log=print_line if headless else None)
+                   log=print_line if headless else None, notify_existing=notify_existing)
 
 
 @cli.command()
@@ -635,6 +642,7 @@ def watch(
     llm_model: str,
     notify: bool,
     notify_min: str,
+    notify_existing: bool,
     webhook: str | None,
 ):
     """Watch agent logs in real-time with a TUI dashboard."""
@@ -659,7 +667,7 @@ def watch(
         siem_log=siem_log,
         llm=llm,
         llm_model=llm_model,
-        alerter=_make_alerter(notify, notify_min, webhook),
+        alerter=_make_alerter(notify, notify_min, notify_existing, webhook),
     )
     app.run()
 
@@ -1222,6 +1230,7 @@ def watch_all(
     headless: bool,
     notify: bool,
     notify_min: str,
+    notify_existing: bool,
     webhook: str | None,
 ):
     """Watch agent logs in real-time with a multi-agent dashboard.
@@ -1229,7 +1238,7 @@ def watch_all(
     By default, auto-discovers active agent processes and monitors only their
     log files. Use --all-logs to scan all known log directories instead.
     """
-    alerter = _make_alerter(notify, notify_min, webhook, headless)
+    alerter = _make_alerter(notify, notify_min, notify_existing, webhook, headless)
     from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
     from agentwatch.ui.multi_app import MultiAgentWatchApp
 

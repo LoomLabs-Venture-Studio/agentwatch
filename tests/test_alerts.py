@@ -9,7 +9,6 @@ import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -41,15 +40,19 @@ def _report(critical=False, score=None):
 
 
 class _Recorder:
-    """Alerter whose sends are captured instead of dispatched."""
+    """Alerter whose sends are captured instead of dispatched. No startup
+    baseline unless asked (notify_existing=False): most tests are about what
+    happens after it."""
 
     def __init__(self, **kw):
+        kw.setdefault("notify_existing", True)
         self.sent: list[tuple[str, str]] = []
         self.alerter = Alerter(notify=True, **kw)
         self.alerter._desktop = lambda title, body: self.sent.append((title, body))
 
-    def observe(self, warnings, report=None, session="s1"):
-        self.alerter.observe(session, "claude-code", "myproj", warnings, report or _report())
+    def observe(self, warnings, report=None, session="s1", actions=10):
+        self.alerter.observe(session, "claude-code", "myproj", warnings, report or _report(),
+                             actions=actions)
 
 
 @pytest.fixture(autouse=True)
@@ -144,6 +147,73 @@ def test_no_sinks_no_sends():
     a.observe("s", "claude-code", "p", [_w()], _report(critical=True))
 
 
+# --- startup baseline ----------------------------------------------------
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(alerts, "_monotonic", lambda: now[0])
+    return now
+
+
+def test_startup_existing_findings_send_nothing_then_new_one_sends(clock):
+    r = _Recorder(notify_existing=False, notify_min="high")
+    old = [_w(severity=Severity.CRITICAL), _w(signal="thrash", severity=Severity.HIGH)]
+    r.observe(old, _report(critical=True), actions=400)
+    clock[0] += alerts.BASELINE_S + 1
+    r.observe(old, _report(critical=True), actions=400)
+    assert r.sent == []
+    r.observe([*old, _w(signal="error_spiral")], _report(critical=True), actions=401)
+    assert [t for t, _ in r.sent] == ["agentwatch: Claude Code · myproj — errors"]
+
+
+def test_session_discovered_later_is_baselined_too(clock):
+    r = _Recorder(notify_existing=False)
+    r.observe([], actions=5)
+    clock[0] += 3600
+    r.observe([_w()], session="late", actions=900)  # its log already has history
+    assert r.sent == []
+
+
+def test_baseline_waits_for_history_to_load(clock):
+    """A pass before the log is read (no actions) does not start the clock, so a
+    history load that blocks past BASELINE_S is still baselined."""
+    r = _Recorder(notify_existing=False)
+    r.observe([], actions=0)
+    clock[0] += 30
+    r.observe([_w()], _report(critical=True), actions=2000)
+    clock[0] += 1
+    r.observe([_w()], _report(critical=True), actions=2000)
+    assert r.sent == []
+
+
+def test_critical_at_startup_then_recurrence_alerts(clock):
+    r = _Recorder(notify_existing=False)
+    medium = [_w(severity=Severity.MEDIUM)]
+    r.observe(medium, _report(critical=True), actions=50)
+    clock[0] += alerts.BASELINE_S + 1
+    r.observe(medium, _report(critical=True), actions=50)  # still the same episode
+    assert r.sent == []
+    r.observe(medium, _report(), actions=51)
+    r.observe(medium, _report(critical=True), actions=52)
+    assert [t for t, _ in r.sent] == ["agentwatch: Claude Code · myproj — critical 20%"]
+
+
+def test_notify_existing_alerts_at_startup(clock):
+    r = _Recorder(notify_existing=True)
+    r.observe([_w()], actions=400)
+    assert len(r.sent) == 1
+
+
+def test_headless_log_not_baselined(clock):
+    lines = []
+    a = Alerter(log=lines.append, notify=True)
+    a._desktop = lambda *_: pytest.fail("baseline sent")
+    a.observe("s", "claude-code", "p", [_w()], _report(), actions=400)
+    assert len(lines) == 1
+
+
 # --- text ----------------------------------------------------------------
 
 
@@ -156,7 +226,7 @@ def test_text_format_with_cost():
 
 
 def test_unlabelled_signal_and_no_project():
-    a = Alerter(notify=True)
+    a = Alerter(notify=True, notify_existing=True)
     sent = []
     a._desktop = lambda t, b: sent.append(t)
     a.observe("s", None, "agent.jsonl", [_w(signal="privilege_escalation")], _report())
@@ -220,7 +290,7 @@ def server():
 
 
 def test_webhook_payload(server):
-    a = Alerter(webhook=server)
+    a = Alerter(webhook=server, notify_existing=True)
     a.observe("s", "claude-code", "myproj", [_w(cost=1.4)], _report())
     [(path, ctype, body)] = _Hook.received
     assert path == "/services/T000/SECRETPATH"
@@ -233,7 +303,7 @@ def test_webhook_payload(server):
 def test_webhook_http_error_warns_once_masked(server):
     _Hook.status = 500
     warned = []
-    a = Alerter(webhook=server)
+    a = Alerter(webhook=server, notify_existing=True)
     a.warn = warned.append
     a.observe("s", "a", "p", [_w(signal="one")], _report())
     a.observe("s", "a", "p", [_w(signal="one"), _w(signal="two")], _report())
@@ -246,7 +316,7 @@ def test_webhook_http_error_warns_once_masked(server):
 def test_webhook_unreachable_never_raises():
     warned = []
     url = "http://127.0.0.1:9/hooks/SECRET"  # discard port: refused
-    a = Alerter(webhook=url)
+    a = Alerter(webhook=url, notify_existing=True)
     a.warn = warned.append
     a.observe("s", "a", "p", [_w()], _report())
     assert len(warned) == 1 and "SECRET" not in warned[0]
@@ -394,9 +464,13 @@ def test_headless_starts_with_no_agents_and_reads_env_webhook(monkeypatch):
     res = CliRunner().invoke(cli, ["watch-all", "--headless", "--notify"])
     assert res.exit_code == 0, res.output
     assert seen["headless"] is True and seen["procs"] is True
+    assert seen["alerter"].notify_existing is False
     assert seen["alerter"].webhook == "https://hooks.example.com/SECRET"
     assert seen["alerter"].notify and seen["alerter"].log is alerts.print_line
     assert "SECRET" not in res.output
+    res = CliRunner().invoke(cli, ["watch-all", "--headless", "--notify", "--notify-existing"])
+    assert res.exit_code == 0, res.output
+    assert seen["alerter"].notify_existing is True
 
 
 def test_watch_all_without_headless_still_needs_agents(monkeypatch):
@@ -405,14 +479,14 @@ def test_watch_all_without_headless_still_needs_agents(monkeypatch):
     assert res.exit_code == 1
 
 
-def _fixture_log(path: Path) -> Path:
-    """A Claude Code transcript: a failing loop, then `sudo` (CRITICAL)."""
+def _entries(commands: list[str], start: int = 0) -> str:
+    """Claude Code transcript lines: each command a failing Bash call."""
 
     def ts(i):
         return f"2026-10-17T10:00:{i:02d}Z"
 
     entries = []
-    for i, cmd in enumerate(["pytest tests/test_x.py"] * 8 + ["sudo chmod 777 /etc/passwd"]):
+    for i, cmd in enumerate(commands, start):
         entries.append({"type": "assistant", "sessionId": "s1", "timestamp": ts(i),
                         "message": {"role": "assistant", "content": [
                             {"type": "tool_use", "id": f"t{i}", "name": "Bash",
@@ -421,21 +495,31 @@ def _fixture_log(path: Path) -> Path:
                         "message": {"role": "user", "content": [
                             {"type": "tool_result", "tool_use_id": f"t{i}",
                              "content": "AssertionError: boom", "is_error": True}]}})
-    path.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
-    return path
+    return "".join(json.dumps(e) + "\n" for e in entries)
 
 
-async def test_headless_engine_smoke(tmp_path):
-    """The watch-all engine, run headless on a fixture, logs and alerts."""
+async def test_headless_engine_smoke(tmp_path, monkeypatch):
+    """The watch-all engine, run headless on a fixture: the log's history (a
+    HIGH loop) is logged but baselined; `sudo` appended later alerts once."""
     from agentwatch.ui.multi_app import MultiAgentWatchApp
 
-    log = _fixture_log(tmp_path / "s1.jsonl")
+    monkeypatch.setattr(alerts, "BASELINE_S", 1.0)
+    log = tmp_path / "s1.jsonl"
+    log.write_text(_entries(["pytest tests/test_x.py"] * 8), encoding="utf-8")
     lines, sent = [], []
-    alerter = Alerter(notify=True, log=lines.append)
+    alerter = Alerter(notify=True, notify_min="high", log=lines.append)
     alerter._desktop = lambda t, b: sent.append(t)
     app = MultiAgentWatchApp(watch_paths=[log], security_mode=True, alerter=alerter)
     async with app.run_test(headless=True) as pilot:
         for _ in range(50):
+            await pilot.pause(0.1)
+            if any("[loop]" in line for line in lines):
+                break
+        await pilot.pause(1.5)  # past the baseline
+        assert sent == []
+        with log.open("a", encoding="utf-8") as f:
+            f.write(_entries(["sudo chmod 777 /etc/passwd"], start=8))
+        for _ in range(80):
             await pilot.pause(0.1)
             if sent:
                 break

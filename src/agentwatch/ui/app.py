@@ -742,7 +742,10 @@ class AgentWatchApp(App):
             rot_score=rot_value,
         )
         if self.alerter is not None and self._alert_ident is not None:
-            self.alerter.observe(str(self.log_path), *self._alert_ident, warnings, report)
+            self.alerter.observe(
+                str(self.log_path), *self._alert_ident, warnings, report,
+                actions=self._buffer.stats.action_count,
+            )
 
         # Update health bar
         health_bar = self.query_one("#health-bar", HealthBar)

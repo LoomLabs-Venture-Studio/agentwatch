@@ -10,6 +10,14 @@ health report after every scoring pass. It decides what is new and fans out:
   `CRITICAL_COOLDOWN_S`). A warning that clears is forgotten, so a recurrence
   alerts again.
 
+Alerts start from a baseline: what a session already shows when it is first
+seen (its log's history) is recorded as alerted without sending, so opening
+`watch-all` over old sessions is not a burst. The baseline lasts `BASELINE_S`
+from the session's first pass with actions, not just one pass, because
+history loads asynchronously (a pass can run before the log is read, or
+between a watcher's chunks). `notify_existing` turns it off. The headless log
+is not baselined: it prints the current warnings at start.
+
 Text is agent + project, a short label, the cost if known, and the warning's
 own message after secret redaction; never other transcript content. Text
 reaches subprocesses as argv or stdin, never through a shell string. Sends
@@ -43,6 +51,7 @@ if TYPE_CHECKING:
     from agentwatch.health.score import HealthReport
 
 CRITICAL_COOLDOWN_S = 600
+BASELINE_S = 5.0
 WEBHOOK_TIMEOUT_S = 5
 NOTIFY_TIMEOUT_S = 30
 _MESSAGE_MAX = 200
@@ -162,8 +171,9 @@ def who(agent: str | None, project: str | None) -> str:
 class _Session:
     logged: set[str] = field(default_factory=set)
     alerted: set[str] = field(default_factory=set)
-    critical: bool = False  # this Critical episode already alerted
+    critical: bool = False  # this Critical episode already alerted (or baselined)
     last_critical: float = float("-inf")
+    baseline_until: float | None = None  # set at the first pass with actions
 
 
 class Alerter:
@@ -174,8 +184,10 @@ class Alerter:
         notify_min: str = "critical",
         webhook: str | None = None,
         log: Callable[[str], None] | None = None,
+        notify_existing: bool = False,
     ) -> None:
         self.notify = notify
+        self.notify_existing = notify_existing
         self.min_severity = NOTIFY_LEVELS[notify_min]
         self.webhook = webhook
         self.log = log
@@ -190,8 +202,10 @@ class Alerter:
         project: str | None,
         warnings: list[Warning],
         report: HealthReport,
+        actions: int = 0,
     ) -> None:
-        """Feed one scoring pass for *session*; emit whatever is new."""
+        """Feed one scoring pass for *session* (*actions*: its buffer's action
+        count, which starts the baseline clock); emit whatever is new."""
         s = self._sessions.setdefault(session, _Session())
         name = who(agent, project)
         by_key = {warning_dedup_key(w): w for w in warnings}
@@ -206,6 +220,14 @@ class Alerter:
             return
         floor = _RANK[self.min_severity]
         hot = {k: w for k, w in by_key.items() if _RANK[w.severity] >= floor}
+        critical = report.status == get_theme().level_3
+        now = _monotonic()
+        if actions and s.baseline_until is None:
+            s.baseline_until = now + BASELINE_S
+        if not self.notify_existing and (s.baseline_until is None or now < s.baseline_until):
+            s.alerted = set(hot)  # already there: not news
+            s.critical = critical  # last_critical untouched: a recurrence alerts
+            return
         sent = False
         for key, w in hot.items():
             if key not in s.alerted:
@@ -213,10 +235,9 @@ class Alerter:
                 sent = True
         s.alerted = set(hot)
 
-        if report.status != get_theme().level_3:
+        if not critical:
             s.critical = False
             return
-        now = _monotonic()
         if s.critical or now - s.last_critical < CRITICAL_COOLDOWN_S:
             return
         if not sent:  # a finding alert this pass already said it

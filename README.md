@@ -369,6 +369,13 @@ session every 10 minutes. `--notify-min` (`critical` by default, or `high`)
 applies to `--notify` and `--webhook`; the headless log shows every new
 warning.
 
+Findings a session already has when AgentWatch first sees it (its log's
+history, at startup or when a session is discovered later) are a silent
+baseline, so opening `watch-all` over old sessions does not fire a burst of
+alerts; only findings that appear afterwards, and a session turning
+Critical afterwards, alert. Add `--notify-existing` to alert on those too.
+The headless log still prints them.
+
 - **Windows:** a toast from Windows PowerShell (`powershell -NoProfile`,
   shown under "Windows PowerShell" in the notification center). If the toast
   fails, AgentWatch beeps and warns once.

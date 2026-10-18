@@ -4558,3 +4558,23 @@ an unattended session goes bad with no TUI on screen.
   each return (same rule as the coach).
 - Background runs with no console (`pythonw`) have no stdout for headless
   lines; redirect stdout as in the README.
+
+### CTO review fix (PR #150)
+- [x] Startup baseline: what a session already shows when first seen (at
+      startup, or discovered later with history) is recorded as alerted
+      without sending; only later findings and later transitions into
+      Critical alert. `--notify-existing` opts back in. The headless log is
+      not baselined.
+- The baseline is a window (`BASELINE_S` = 5 s from the session's first pass
+      with actions), not a single pass: a pass can run before the watcher
+      has read the log (empty buffer), and a large log loads in one blocking
+      step, so "first pass" alone would alert on the history. A pass with no
+      actions does not start the clock.
+- Critical at baseline counts as the current episode; if it clears and
+      recurs, it alerts at once (no cooldown consumed).
+- Tests: pre-existing HIGH/CRITICAL + Critical at startup -> 0 alerts, a
+      new finding afterwards -> 1; later-discovered session; history load
+      blocking past the window; `--notify-existing`; headless smoke now
+      appends `sudo` to the fixture log after the baseline and gets exactly
+      one alert.
+- `AGENTWATCH_WEBHOOK` kept (board decision pending).

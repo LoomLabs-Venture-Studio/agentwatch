@@ -196,14 +196,20 @@ src/agentwatch/
   alerts.py            Alerter for `watch`/`watch-all` `--notify`,
                        `--webhook URL` (env AGENTWATCH_WEBHOOK) and
                        `watch-all --headless`. observe(session, agent,
-                       project, warnings, report) after each scoring pass:
+                       project, warnings, report, actions) after each
+                       scoring pass:
                        headless -> one stdout line per new warning
                        (print_line: sys.__stdout__, flushed); alerts -> one
                        per (session, warning_dedup_key) at >= --notify-min
                        (high|critical, default critical) + overall Critical
                        (theme level_3) once per episode, <= 1 per session
                        per 10 min, folded into a finding alert sent the same
-                       pass; cleared keys forgotten. Text: `agentwatch:
+                       pass; cleared keys forgotten. Startup baseline:
+                       for BASELINE_S (5 s) from a session's first pass
+                       with actions, findings/Critical are recorded, not
+                       sent (history loads async, so not one pass);
+                       --notify-existing disables it; headless log not
+                       baselined. Text: `agentwatch:
                        <Agent> · <project> — <label> ~$x` (statusline
                        _LABELS/_cost) + redact_truncate'd message.
                        Desktop: powershell -EncodedCommand fixed toast

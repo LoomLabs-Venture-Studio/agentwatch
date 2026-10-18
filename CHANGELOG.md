@@ -18,6 +18,8 @@ numbers refer to the GitHub repository.
   alerts as Slack-compatible JSON `{"text": ...}`. One alert per finding per
   session, a Critical session at most once per 10 minutes; text is the
   agent, project, label, cost and the redacted warning message only.
+  Findings a session already has when first seen are a silent baseline
+  (`--notify-existing` alerts on them too).
 
 - Claude Code plugin (`plugin/`) with a health coach: a PostToolUse hook runs
   `agentwatch hook`, which checks the live session with the health detectors
