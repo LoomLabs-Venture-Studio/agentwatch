@@ -72,4 +72,4 @@ class ClaudeCodeAdapter(BaseAdapter):
             project_dir = _projects_dir() / path.relative_to(_projects_dir()).parts[0]
         except (ValueError, IndexError):
             return path.stem, None
-        return path.stem, project_dir_to_name(project_dir)
+        return path.stem, project_dir_to_name(project_dir, log=path)

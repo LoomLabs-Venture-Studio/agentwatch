@@ -41,10 +41,10 @@ ACTIVE_S = 60  # a log written this recently is still being written
 _POOL_MIN = 8  # parse in worker processes from this many changed logs
 _MSG_LIMIT = 120
 
-# One script per schema version; connect() runs the ones the DB lacks.
-_MIGRATIONS = [
+# Statements per schema version; migrate() runs the ones the DB lacks.
+_MIGRATIONS: list[list[str]] = [[
     """
-    CREATE TABLE sessions (
+    CREATE TABLE IF NOT EXISTS sessions (
         log_hash TEXT PRIMARY KEY,
         agent TEXT NOT NULL,
         session_id TEXT,
@@ -62,9 +62,10 @@ _MIGRATIONS = [
         size INTEGER NOT NULL,
         mtime_ns INTEGER NOT NULL,
         synced REAL NOT NULL
-    );
-    CREATE INDEX sessions_ended ON sessions(ended);
-    CREATE TABLE findings (
+    )""",
+    "CREATE INDEX IF NOT EXISTS sessions_ended ON sessions(ended)",
+    """
+    CREATE TABLE IF NOT EXISTS findings (
         log_hash TEXT NOT NULL REFERENCES sessions(log_hash) ON DELETE CASCADE,
         key_hash TEXT NOT NULL,
         signal TEXT NOT NULL,
@@ -75,9 +76,8 @@ _MIGRATIONS = [
         tokens INTEGER,
         first_seen REAL NOT NULL,
         PRIMARY KEY (log_hash, key_hash)
-    );
-    """,
-]
+    )""",
+]]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
 
@@ -108,13 +108,24 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if version > SCHEMA_VERSION:
-        raise RuntimeError(
-            f"history DB schema {version} is newer than this agentwatch ({SCHEMA_VERSION})"
-        )
-    for v in range(version, SCHEMA_VERSION):
-        conn.executescript(f"BEGIN; {_MIGRATIONS[v]} PRAGMA user_version = {v + 1}; COMMIT;")
+    if conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION:
+        return
+    # One writer at a time: two first runs must not both create the tables.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"history DB schema {version} is newer than this agentwatch ({SCHEMA_VERSION})"
+            )
+        for steps in _MIGRATIONS[version:]:
+            for statement in steps:
+                conn.execute(statement)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def log_hash(path: Path) -> str:
@@ -125,16 +136,37 @@ def _key_hash(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
+_SEP = re.compile(r"[\\/]")
 _PATHISH = re.compile(r"[^\s'\"()\[\]]*[\\/][^\s'\"()\[\]]*")
+# The path slot of health messages: "... on <path> (4x)", "Re-reading file: <path>
+# (3x)", "Re-reading <path> after long gaps", "Edited <path> 5x with ...". Paths
+# can hold spaces, so the slot runs to the text that follows it.
+_AFTER = re.compile(
+    r"(Re-reading file: |file: |Re-reading | on |Edited )(.+?)"
+    r"(?= \(| after long gaps| \d+x with|$)"
+)
+_PATH_DETAILS = ("file_path", "file", "path")
+_MASK_TAIL = re.compile("….{0,4}")  # redaction keeps a secret's last 4 chars
 
 
-def safe_message(message: str) -> str:
-    """One line, secrets redacted, every path-like token cut to its last part, <= 120."""
+def _base(path: str) -> str:
+    return _SEP.split(path.strip("'\"`").rstrip("\\/"))[-1]
+
+
+def safe_message(message: str, details: dict[str, Any] | None = None) -> str:
+    """One line, <= 120 chars, secrets hidden (their tail too), every path cut
+    to its last part: the warning's own path details (spaces and all), the
+    path slot of health messages, then any other token with a slash."""
     from agentwatch.detectors.security.secret_scanner import one_line
 
     s = one_line(message, 1000)  # redact before cutting: a secret can contain "/"
-    s = _PATHISH.sub(lambda m: re.split(r"[\\/]", m.group().rstrip("\\/"))[-1], s)
-    return one_line(s, _MSG_LIMIT)
+    for key in _PATH_DETAILS:
+        value = (details or {}).get(key)
+        if isinstance(value, str) and _SEP.search(value):
+            s = s.replace(one_line(value, 1000), _base(value))
+    s = _AFTER.sub(lambda m: m[1] + _base(m[2]) if _SEP.search(m[2]) else m[0], s)
+    s = _PATHISH.sub(lambda m: _base(m[0]), s)
+    return one_line(_MASK_TAIL.sub("[secret]", s), _MSG_LIMIT)
 
 
 def _epoch(dt: Any) -> float | None:
@@ -176,6 +208,7 @@ def _scan(agent: str, path: str) -> dict[str, Any]:
     waste = waste_summary(warnings, stats)
     tokens = stats.billed_tokens or None
     has_usage = tokens is not None or stats.total_cost > 0  # else cost unknown, not $0
+    cost = stats.estimated_cost if has_usage else None
     findings: dict[str, dict[str, Any]] = {}
     for w in warnings:  # severity order: the first of a key is the worst
         findings.setdefault(_key_hash(warning_dedup_key(w)), {
@@ -183,7 +216,7 @@ def _scan(agent: str, path: str) -> dict[str, Any]:
             "severity": w.severity.value,
             "category": w.category.value,
             # Security messages can quote a command or path: not kept.
-            "message": safe_message(w.message) if w.is_health else None,
+            "message": safe_message(w.message, w.details) if w.is_health else None,
             "cost_usd": w.cost_usd,
             "tokens": w.tokens,
         })
@@ -192,10 +225,10 @@ def _scan(agent: str, path: str) -> dict[str, Any]:
         "started": _epoch(stats.start_time),
         "ended": _epoch(stats.last_action_time),
         "tokens": tokens,
-        "cost_usd": stats.estimated_cost if has_usage else None,
+        "cost_usd": cost,
         "waste_findings": waste["findings"] if waste else 0,
         "waste_tokens": waste["tokens"] if waste else 0,
-        "waste_usd": waste["cost_usd"] if waste else 0.0,
+        "waste_usd": waste["cost_usd"] if waste else (None if cost is None else 0.0),
         "health_score": score,
         "status": THEME_CLASSIC.status_from_score(score),  # theme-independent
         "findings": findings,
@@ -286,17 +319,29 @@ def sync(
                 todo.append((adapter, path, h, st))
                 counts["updated" if h in known else "new"] += 1
 
+    def store(i: int, res: dict[str, Any]) -> None:
+        adapter, path, h, st = todo[i]
+        _store(conn, h, adapter.name, *adapter.history_meta(path), st, res, now)
+
     jobs = [(a.name, str(p)) for a, p, _, _ in todo]
+    done = 0
     if len(jobs) >= _POOL_MIN:
         from concurrent.futures import ProcessPoolExecutor
+        from concurrent.futures.process import BrokenProcessPool
 
-        with ProcessPoolExecutor() as pool:
-            results = pool.map(scan_log, *zip(*jobs))
-            for (adapter, path, h, st), res in zip(todo, results):
-                _store(conn, h, adapter.name, *adapter.history_meta(path), st, res, now)
-    else:
-        for (adapter, path, h, st), job in zip(todo, jobs):
-            _store(conn, h, adapter.name, *adapter.history_meta(path), st, scan_log(*job), now)
+        pool = None
+        try:
+            pool = ProcessPoolExecutor()
+            for res in pool.map(scan_log, *zip(*jobs)):
+                store(done, res)
+                done += 1
+        except (BrokenProcessPool, OSError):
+            pass  # a worker died or none could start: the rest run in this process
+        finally:
+            if pool is not None:  # on Ctrl+C too: drop the queued logs
+                pool.shutdown(wait=False, cancel_futures=True)
+    for i in range(done, len(jobs)):
+        store(i, scan_log(*jobs[i]))
     return counts
 
 

@@ -86,7 +86,7 @@ def test_migration_hook_runs_only_missing_steps(env, monkeypatch):
     history.sync(conn)
     conn.close()
     monkeypatch.setattr(history, "_MIGRATIONS", [*history._MIGRATIONS,
-                                                 "ALTER TABLE sessions ADD COLUMN note TEXT;"])
+                                                 ["ALTER TABLE sessions ADD COLUMN note TEXT"]])
     monkeypatch.setattr(history, "SCHEMA_VERSION", len(history._MIGRATIONS))
     conn = history.connect()
     assert conn.execute("PRAGMA user_version").fetchone()[0] == history.SCHEMA_VERSION
@@ -166,6 +166,104 @@ def test_sync_in_worker_processes(env, monkeypatch):
     assert _rows(conn, "SELECT count(*), sum(waste_findings > 0) FROM sessions") == [(2, 2)]
 
 
+class _FakePool:
+    """map() yields one real result, then raises *error*."""
+    shutdowns: list = []
+
+    def __init__(self, error):
+        self.error = error
+
+    def map(self, fn, *args):
+        yield fn(*(a[0] for a in args))
+        raise self.error
+
+    def shutdown(self, **kwargs):
+        _FakePool.shutdowns.append(kwargs)
+
+
+def test_broken_pool_falls_back_to_serial(env, monkeypatch):
+    from concurrent.futures.process import BrokenProcessPool
+
+    for name in "abc":
+        write_log(env / f"{name}.jsonl")
+    monkeypatch.setattr(history, "_POOL_MIN", 2)
+    monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor",
+                        lambda: _FakePool(BrokenProcessPool("worker died")))
+    _FakePool.shutdowns.clear()
+    conn = history.connect()
+    assert history.sync(conn)["new"] == 3
+    assert _rows(conn, "SELECT count(*), sum(waste_findings > 0) FROM sessions") == [(3, 3)]
+    assert _FakePool.shutdowns == [{"wait": False, "cancel_futures": True}]
+
+
+def test_ctrl_c_cancels_queued_logs(env, monkeypatch):
+    for name in "ab":
+        write_log(env / f"{name}.jsonl")
+    monkeypatch.setattr(history, "_POOL_MIN", 2)
+    monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor",
+                        lambda: _FakePool(KeyboardInterrupt()))
+    _FakePool.shutdowns.clear()
+    conn = history.connect()
+    with pytest.raises(KeyboardInterrupt):
+        history.sync(conn)
+    assert _FakePool.shutdowns == [{"wait": False, "cancel_futures": True}]
+    assert _rows(conn, "SELECT count(*) FROM sessions") == [(1,)]  # the one finished
+
+
+_CONNECT_AT = """
+import sys, time
+from pathlib import Path
+from agentwatch.history import connect
+time.sleep(max(0.0, float(sys.argv[2]) - time.time()))
+connect(Path(sys.argv[1])).close()
+"""
+
+
+def test_two_first_runs_at_once(tmp_path):
+    import subprocess
+    import sys
+
+    for round_ in range(3):
+        db = tmp_path / f"r{round_}" / "history.db"
+        start = str(time.time() + 1.5)
+        procs = [subprocess.Popen([sys.executable, "-c", _CONNECT_AT, str(db), start],
+                                  stderr=subprocess.PIPE, text=True) for _ in range(2)]
+        for p in procs:
+            _, err = p.communicate(timeout=60)
+            assert p.returncode == 0, err
+        conn = sqlite3.connect(db)
+        assert conn.execute("PRAGMA user_version").fetchone() == (history.SCHEMA_VERSION,)
+        conn.close()
+
+
+def test_project_names_from_recorded_cwd(env, tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from agentwatch.agents.base import folder_name
+    from agentwatch.cc_stats import project_dir_to_name
+    from agentwatch.path_encoding import encode_path_for_claude
+
+    home = tmp_path / "home" / "Victim Name"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    projects = env.parent
+    in_home = projects / encode_path_for_claude(home)
+    dashed = projects / "C--work-agentwatch-main"
+    for d, cwd in ((in_home, str(home)), (dashed, "C:\\work\\agentwatch-main")):
+        d.mkdir(parents=True)
+        (d / "s.jsonl").write_text(json.dumps({"type": "summary", "cwd": cwd}) + "\n",
+                                   encoding="utf-8")
+        write_log(d / "s.jsonl")
+    conn = history.connect()
+    history.sync(conn)
+    assert sorted(p for (p,) in _rows(conn, "SELECT project FROM sessions")) == [
+        "agentwatch-main", "~"]
+    assert project_dir_to_name(projects / encode_path_for_claude(home / "x")) == "x"
+    empty = projects / encode_path_for_claude(home)
+    (empty / "s.jsonl").unlink()  # no transcript to read a cwd from: decoded, still "~"
+    assert project_dir_to_name(empty) == "~"
+    assert folder_name(str(home)) == "~" and folder_name(str(home / "proj")) == "proj"
+
+
 def test_unreadable_log_is_remembered_not_counted(env):
     env.mkdir(parents=True)
     bad = env / "bad.jsonl"
@@ -228,11 +326,28 @@ def test_db_holds_no_transcript_text_or_paths(env):
     assert messages and all(len(m) <= 120 for m in messages)
 
 
-def test_safe_message():
-    msg = f"Re-reading {PRIVATE_DIR}\\a.py and /home/bob/b.py\x1b[31m {SECRET} " + "x" * 300
-    out = history.safe_message(msg)
-    assert "a.py" in out and "b.py" in out
-    assert "secretuser" not in out and "bob" not in out and SECRET[4:] not in out
+SPACED = "C:\\Users\\Victim Spacename\\Documents\\plan.txt"
+
+
+@pytest.mark.parametrize("message, details, expect", [
+    (f"Repeated action: Edit on {SPACED} (8x)", {}, "Repeated action: Edit on plan.txt (8x)"),
+    ("Re-reading file: /Users/john doe/notes/plan.md (5x)", {},
+     "Re-reading file: plan.md (5x)"),
+    (f'Edit→test→fail cycle on "{SPACED}" (3x)', {}, "Edit→test→fail cycle on plan.txt (3x)"),
+    (f"Re-reading {SPACED} after long gaps (4x)", {}, "Re-reading plan.txt after long gaps (4x)"),
+    (f"Edited {SPACED} 5x with no successful test in between", {"file": SPACED},
+     "Edited plan.txt 5x with no successful test in between"),
+    ("Repeated action: Read on /srv/my files/a b.py (6x)", {"path": "/srv/my files/a b.py"},
+     "Repeated action: Read on a b.py (6x)"),
+])
+def test_safe_message_cuts_paths_with_spaces(message, details, expect):
+    assert history.safe_message(message, details) == expect
+
+
+def test_safe_message_hides_secrets_and_controls():
+    out = history.safe_message(f"Error\x1b[31m in {PRIVATE_DIR}\\a.py: {SECRET} " + "x" * 300)
+    assert "a.py" in out and "secretuser" not in out
+    assert SECRET[-4:] not in out and "\u2026" not in out and "[secret]" in out
     assert "\x1b" not in out and len(out) <= 120
 
 

@@ -7,10 +7,12 @@ token usage breakdowns by tool type and bash command category.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
+from itertools import islice
 from pathlib import Path
 
 from agentwatch.path_encoding import encode_path_for_claude
@@ -574,10 +576,51 @@ def find_all_project_dirs() -> list[Path]:
     return [p for p in projects.iterdir() if p.is_dir()]
 
 
-def project_dir_to_name(project_dir: Path) -> str:
-    """Extract a readable project name from a project directory path."""
+def project_name(cwd: str | Path | None) -> str | None:
+    """Project name of a working directory: its last component, or "~" for
+    the home dir (never the user name). None when unknown."""
+    if not cwd:
+        return None
+    try:
+        home = os.path.normcase(os.path.abspath(Path.home()))
+        if os.path.normcase(os.path.abspath(cwd)) == home:
+            return "~"
+    except (RuntimeError, OSError, ValueError):
+        pass  # no home dir
+    return Path(cwd).name or None
+
+
+def recorded_cwd(jsonl: Path, max_lines: int = 50) -> str | None:
+    """The first ``cwd`` a Claude Code transcript records in its first lines."""
+    try:
+        with open(jsonl, encoding="utf-8", errors="ignore") as f:
+            for line in islice(f, max_lines):
+                try:
+                    cwd = json.loads(line).get("cwd")
+                except (ValueError, AttributeError):
+                    continue
+                if isinstance(cwd, str) and cwd:
+                    return cwd
+    except OSError:
+        pass
+    return None
+
+
+def project_dir_to_name(project_dir: Path, log: Path | None = None) -> str:
+    """Readable project name of a Claude Code project dir: the last component
+    of the cwd its transcripts record (*log* first), else decoded from the
+    dir name, which can't tell "-" from "/" ("agentwatch-main" reads "main").
+    "~" for the home dir."""
+    for jsonl in ([log] if log else []) + sorted(project_dir.glob("*.jsonl"))[:3]:
+        name = project_name(recorded_cwd(jsonl))
+        if name:
+            return name
     name = project_dir.name  # e.g. -Users-zaid-Projects-agentwatch
-    # Take the last component as the project name
+    try:
+        if name == encode_path_for_claude(Path.home()):
+            return "~"
+    except (RuntimeError, OSError):
+        pass
     parts = name.strip("-").split("-")
     return parts[-1] if parts else name
 

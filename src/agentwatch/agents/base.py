@@ -88,9 +88,11 @@ class BaseAdapter:
 
 
 def folder_name(cwd: Any) -> str | None:
-    """Last component of a recorded working directory (a project name, never
-    the path), or None."""
-    return (Path(cwd).name or None) if isinstance(cwd, str) and cwd else None
+    """Project name of a recorded working directory (last component, "~" for
+    the home dir; never the path), or None."""
+    from agentwatch.cc_stats import project_name
+
+    return project_name(cwd) if isinstance(cwd, str) else None
 
 
 def source_path(source: AgentProcess | Path) -> Path:

@@ -4501,7 +4501,7 @@ webhook, after alerts #150), any cloud or team sync.
 
 ### Acceptance Criteria
 - [x] 1. Store: stdlib sqlite3 at `data_dir()/history.db`
-      (`%LOCALAPPDATA%gentwatch`, else `$XDG_DATA_HOME` or
+      (`%LOCALAPPDATA%\agentwatch`, else `$XDG_DATA_HOME` or
       `~/.local/share` + `agentwatch`; dir via `coach._private_dir`, 0700 on
       POSIX). `sessions` + `findings`, `PRAGMA user_version` + a
       `_MIGRATIONS` list. Keyed by a hash of the log path, never the path;
@@ -4544,3 +4544,34 @@ webhook, after alerts #150), any cloud or team sync.
   per-action security scan is ~95 % of the time (94 s single-process).
 - A changed log is re-scanned whole and its findings replaced, so a session
   matches `check` on the same file; `first_seen` survives re-scans.
+
+### QA round 1 fixes (PR #151)
+- [x] Home-dir sessions are project `~`, not the user name (Claude Code and
+      every adapter via `folder_name` / `cc_stats.project_name`).
+- [x] Paths with spaces: the warning's own path details, then the message's
+      path slot (after `on ` / `file: ` / `Re-reading ` / `Edited `, up to
+      ` (`, ` after long gaps`, ` Nx with` or the end), then slash tokens,
+      all cut to the basename. QA repros + a quoted path tested.
+- [x] Two first runs at once: migrations run under `BEGIN IMMEDIATE` with
+      the version re-read inside and `IF NOT EXISTS` (2-process test, 3
+      rounds; the old code failed it).
+- [x] Broken process pool -> the rest of the logs run serially; Ctrl+C ->
+      `shutdown(wait=False, cancel_futures=True)`.
+- [x] Claude Code project names come from the recorded `cwd`
+      (`agentwatch-main`, not `main`), dir-name decode as fallback; `stats`
+      and `audit` change too (CHANGELOG).
+- [x] Stored messages drop the redaction's last-4-chars tail (`[secret]`);
+      top-findings dates are UTC like the period.
+- [x] A BEL byte in PLAYBOOK.md and CLAUDE.md (a shell heredoc turned the
+      backslash before `agentwatch` into an escape) is fixed; no other
+      control bytes in tracked text files.
+- [x] Waste label: "on stalls, loops, rereads and repeated errors".
+- [x] Security line: "N leak findings". The secret detectors share no
+      secret identity (`secret_in_command` carries only the tool), so
+      merging per secret would be a guess; the counts are findings.
+- [x] Unpriced sessions store waste NULL, not 0 (the report already left
+      them out).
+- Live re-run on a fresh DB (183 logs): first sync 7.1 s wall (file cache
+  warm; 15.2 s cold before), re-sync 0.35 s, `report` 0.34-0.37 s wall.
+  Store Python redirects the DB into its LocalCache, like the coach state
+  (README note).

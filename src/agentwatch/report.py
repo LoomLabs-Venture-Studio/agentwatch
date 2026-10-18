@@ -16,7 +16,9 @@ from typing import Any
 
 JSON_SCHEMA = 1
 TOP_FINDINGS = 3
-# Security finding categories as the report groups them.
+# Security finding categories as the report groups them. Counts are findings,
+# not secrets: one secret can raise several (secret_leak + secret_in_command),
+# and the detectors share no secret identity to merge them by.
 SECURITY_GROUPS = {
     "credential": "leaks",
     "network": "egress",
@@ -119,7 +121,7 @@ def build(
             {
                 "signal": f["signal"], "severity": f["severity"], "agent": f["agent"],
                 "project": f["project"], "cost_usd": _r(f["cost_usd"]), "tokens": f["tokens"],
-                "date": datetime.fromtimestamp(f["first_seen"]).date().isoformat(),
+                "date": datetime.fromtimestamp(f["first_seen"], timezone.utc).date().isoformat(),
                 "message": f["message"],
             }
             for f in top
@@ -168,7 +170,8 @@ def render(rep: dict[str, Any], limit: int = 10) -> list[str]:
                  f"Tokens {_tok(t['tokens'])}")
     pct = "" if t["waste_pct"] is None else (
         " (<1%)" if t["waste_pct"] < 0.5 else f" ({t['waste_pct']:.0f}%)")
-    lines.append(f"  Waste: {_usd(t['waste_usd'])}{pct} on loops/thrash/error spirals")
+    lines.append(f"  Waste: {_usd(t['waste_usd'])}{pct} "
+                 "on stalls, loops, rereads and repeated errors")
     p, tr = rep["previous"], rep["trend"]
     lines.append(f"  vs previous {days} days: spend {_signed(tr['cost_usd'])}, "
                  f"waste {_signed(tr['waste_usd'])}  ({_n(p['sessions'], 'session')}, "
@@ -194,6 +197,6 @@ def render(rep: dict[str, Any], limit: int = 10) -> list[str]:
             lines.append(f"    ... and {len(groups) - limit} more")
 
     s = rep["security"]
-    lines += ["", f"  Security: {_n(s['total'], 'finding')} ({s['leaks']} leaks, "
+    lines += ["", f"  Security: {_n(s['total'], 'finding')} ({s['leaks']} leak findings, "
               f"{s['egress']} egress, {s['injection']} injection, {s['other']} other)"]
     return lines

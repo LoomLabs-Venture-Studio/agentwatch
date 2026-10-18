@@ -203,19 +203,23 @@ src/agentwatch/
                        __init__ (and parser/__init__'s discovery
                        re-exports) load lazily (PEP 562) so this stays cheap
   history.py           `agentwatch history`: stdlib sqlite3 at data_dir()/
-                       history.db (%LOCALAPPDATA%gentwatch, else
+                       history.db (%LOCALAPPDATA%\agentwatch, else
                        $XDG_DATA_HOME or ~/.local/share + agentwatch; dir via
                        coach._private_dir, 0700). PRAGMA user_version +
-                       _MIGRATIONS list. sessions keyed by log_hash (sha256
+                       _MIGRATIONS (statement lists, IF NOT EXISTS) run
+                       under BEGIN IMMEDIATE, version re-read inside. sessions keyed by log_hash (sha256
                        of the path, never the path), findings by (log_hash,
                        sha256 of warning_dedup_key). sync(): every adapter's
                        history_logs(), skip unchanged (size, mtime_ns),
                        active (< 60 s) and --days; changed logs re-scanned
                        whole (registry "all", `check`'s health score and
                        waste_summary), findings replaced, first_seen kept;
-                       >= 8 logs -> ProcessPoolExecutor. Health finding
-                       messages via safe_message (one_line, paths cut to the
-                       last part, 120); security messages not stored.
+                       >= 8 logs -> ProcessPoolExecutor (broken pool ->
+                       rest serial; Ctrl+C cancels queued). Health finding
+                       messages via safe_message (one_line; detail paths,
+                       the message's path slot and slash tokens cut to the
+                       last part; secret mask tail dropped; 120); security
+                       messages not stored.
                        Deleted logs stay; prune(days)
   report.py            `agentwatch report`: build() (JSON schema 1) over
                        sessions whose last action is in the period, plus the
@@ -242,7 +246,10 @@ src/agentwatch/
                        encoding="utf-8", errors="ignore" (matches
                        parser/logs.py's precedent) so a stray non-UTF-8
                        byte skips that line instead of crashing `stats
-                       --all`
+                       --all`. project_dir_to_name(dir, log): basename of
+                       the transcripts' recorded cwd, else the dir-name
+                       decode; project_name(): "~" for the home dir (also
+                       agents.base.folder_name, used by history)
   themes.py             Pluggable status-label/emoji/color themes shared by
                        CLI, health scoring, and the TUI
 

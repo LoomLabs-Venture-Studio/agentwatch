@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import psutil
 
-from .base import BaseAdapter, Watcher, sniff_jsonl_format, source_path
+from .base import BaseAdapter, Watcher, folder_name, sniff_jsonl_format, source_path
 
 if TYPE_CHECKING:
     from agentwatch.discovery import AgentProcess
@@ -116,7 +116,7 @@ class CopilotVscodeAdapter(BaseAdapter):
 
     def history_meta(self, path: Path) -> tuple[str, str | None]:
         cwd = _workspace_map(path.parents[3]).get(path.parent.parent.name)
-        return path.stem, cwd.name if cwd else None
+        return path.stem, folder_name(str(cwd)) if cwd else None
 
 
 @lru_cache(maxsize=4)

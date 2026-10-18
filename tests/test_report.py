@@ -86,11 +86,11 @@ def test_no_previous_period_has_no_trend(conn):
 def test_render(conn):
     text = "\n".join(report.render(report.build(conn, days=7, now=NOW)))
     assert "Sessions 3   Spend ~$15.00" in text
-    assert "Waste: ~$3.00 (20%) on loops/thrash/error spirals" in text
+    assert "Waste: ~$3.00 (20%) on stalls, loops, rereads and repeated errors" in text
     assert "spend +$11.00, waste +$2.50" in text
     assert "1 session without a price" in text
     assert "n/a" in text  # codex row
-    assert "Security: 3 findings (1 leaks, 1 egress, 1 injection, 0 other)" in text
+    assert "Security: 3 findings (1 leak findings, 1 egress, 1 injection, 0 other)" in text
 
 
 JSON_KEYS = {"schema", "period", "filters", "totals", "top_findings", "by_agent",

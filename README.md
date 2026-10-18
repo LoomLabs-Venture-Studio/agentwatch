@@ -560,7 +560,7 @@ agentwatch history path
 agentwatch report: last 7 days (2026-10-11 to 2026-10-18)
 
   Sessions 83   Spend ~$222.11   Tokens 380.4M
-  Waste: ~$10.72 (5%) on loops/thrash/error spirals
+  Waste: ~$10.72 (5%) on stalls, loops, rereads and repeated errors
   vs previous 7 days: spend +$103.57, waste +$10.52  (43 sessions, ~$118.54)
   Note: 1 session without a price (no token data or an unlisted model): n/a, left out of spend and %.
 
@@ -578,8 +578,10 @@ agentwatch report: last 7 days (2026-10-11 to 2026-10-18)
   once) summed over sessions. A session with no token data or an unlisted
   model is n/a: counted, but left out of spend and the waste %, never
   guessed.
-- Security counts leaks (credential findings), egress (network,
-  exfiltration), injection and other (privilege, supply chain).
+- Security counts findings, not secrets: leak findings (credential
+  category; one secret can raise more than one, e.g. `secret_leak` and
+  `secret_in_command`), egress (network, exfiltration), injection and other
+  (privilege, supply chain). Dates are UTC.
 - Sources: Claude Code (subagent transcripts too), Codex, Copilot CLI,
   Gemini CLI, Antigravity, Copilot in VS Code and Cline, one session per log
   file. Not yet: Cursor, OpenCode and Kilo (one database holds every session)
@@ -589,12 +591,15 @@ agentwatch report: last 7 days (2026-10-11 to 2026-10-18)
 on Windows, `$XDG_DATA_HOME/agentwatch/history.db` or
 `~/.local/share/agentwatch/history.db` elsewhere; the folder is 0700 on
 POSIX). Per session: agent, session id, project folder name (the last part of
-the path only), a hash of the log path, first/last action time, action count,
+the path only, `~` for the home folder), a hash of the log path, first/last action time, action count,
 tokens, USD (empty when unknown), the waste figure, health score and status,
 the log's size and mtime. Per finding: a hash of its identity, signal,
 severity, category, tokens, USD, first seen, and for health findings a short
 message (one line, at most 120 chars, secrets redacted, paths cut to the file
 name). No transcript text, prompts, commands, tool output or full paths.
+With the Microsoft Store Python the file is redirected like the coach state
+(see the Claude Code plugin section): `history path` prints the path
+agentwatch uses, the bytes live under `...\Packages\PythonSoftwareFoundation.Python.3.X_<id>\LocalCache\Local\agentwatch`.
 Nothing leaves the machine. Kept until `history prune` (no limit by default);
 a sync without `--days` re-reads pruned sessions whose logs are still on disk.
 
@@ -608,9 +613,9 @@ a sync without `--days` re-reads pruned sessions whose logs are still on disk.
 | `totals` | `sessions`, `unpriced_sessions`, `cost_usd`, `tokens`, `waste_usd`, `waste_pct`, `waste_findings` |
 | `previous` | the same as `totals`, for the period before |
 | `trend` | `cost_usd`, `waste_usd`: this period minus the previous one |
-| `top_findings` | up to 3: `signal`, `severity`, `agent`, `project`, `cost_usd`, `tokens`, `date`, `message` |
+| `top_findings` | up to 3: `signal`, `severity`, `agent`, `project`, `cost_usd`, `tokens`, `date` (UTC), `message` |
 | `by_agent`, `by_project` | `totals` fields plus `agent` / `project`, costliest first |
-| `security` | `total`, `leaks`, `egress`, `injection`, `other` |
+| `security` | finding counts: `total`, `leaks`, `egress`, `injection`, `other` |
 
 USD values are null when unknown (no priced session, or no previous period).
 

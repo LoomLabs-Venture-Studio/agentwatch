@@ -36,6 +36,10 @@ numbers refer to the GitHub repository.
 
 ### Changed
 
+- `stats` and `audit` name a Claude Code project after the `cwd` its
+  transcripts record, so `agentwatch-main` is no longer shown as `main`
+  (the old name decoded the project dir, which can't tell `-` from `/`).
+  A session run in the home folder is named `~`, not the user name.
 - Pricing: one table in `cc_stats.PRICING` (Anthropic's price page,
   2026-10-17) keyed by model id. `stats` priced every "opus" at $15/$75,
   overstating current Opus (Opus 5.5 is $4/$20, Opus 4.5-5 $5/$25). `stats`
