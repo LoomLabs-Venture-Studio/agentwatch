@@ -66,7 +66,7 @@ want a "fitness tracker + security guard" for those agents.
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
                        detect, net, list-detectors, security-scan, themes, stats,
-                       audit, scrub. `scrub PATH` redacts secrets + PII in one
+                       audit, scrub, report, history sync|prune|path. `scrub PATH` redacts secrets + PII in one
                        file (copy by default, `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
                        (output without `--pii` unchanged)
@@ -85,7 +85,11 @@ src/agentwatch/
                        written in the last 30 min, synthetic pid).
                        Process matching is
                        first-match-wins per PID in that order; adapter_for()
-                       picks the first adapter whose claims() accepts a path
+                       picks the first adapter whose claims() accepts a path.
+                       history_logs()/history_meta(): every on-disk session
+                       log (one session per file) + (session id, project
+                       folder name), from each adapter's own root helper;
+                       none for cursor/opencode/kilo (one DB) and aider
   discovery.py         Finds running agent OS processes by matching each
                        process adapter's pattern against the program
                        (program_path: argv[0], or the script after an
@@ -198,6 +202,25 @@ src/agentwatch/
                        importing cli.py, the rest to cli.main. The package
                        __init__ (and parser/__init__'s discovery
                        re-exports) load lazily (PEP 562) so this stays cheap
+  history.py           `agentwatch history`: stdlib sqlite3 at data_dir()/
+                       history.db (%LOCALAPPDATA%gentwatch, else
+                       $XDG_DATA_HOME or ~/.local/share + agentwatch; dir via
+                       coach._private_dir, 0700). PRAGMA user_version +
+                       _MIGRATIONS list. sessions keyed by log_hash (sha256
+                       of the path, never the path), findings by (log_hash,
+                       sha256 of warning_dedup_key). sync(): every adapter's
+                       history_logs(), skip unchanged (size, mtime_ns),
+                       active (< 60 s) and --days; changed logs re-scanned
+                       whole (registry "all", `check`'s health score and
+                       waste_summary), findings replaced, first_seen kept;
+                       >= 8 logs -> ProcessPoolExecutor. Health finding
+                       messages via safe_message (one_line, paths cut to the
+                       last part, 120); security messages not stored.
+                       Deleted logs stay; prune(days)
+  report.py            `agentwatch report`: build() (JSON schema 1) over
+                       sessions whose last action is in the period, plus the
+                       previous one for the trend; unpriced sessions counted
+                       but out of spend and waste %; render() text
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
@@ -305,7 +328,8 @@ src/agentwatch/
 
   detectors/
     base.py              Detector / SecurityDetector ABCs, Category,
-                       Severity, Warning dataclass
+                       Severity, Warning dataclass; findings_spend /
+                       waste_summary (`check`'s waste line, history)
     registry.py          DetectorRegistry; create_registry(mode=
                        "health"|"security"|"all") auto-collects detectors
     health/*.py          Health detectors: loops, tool_thrash, stall/stuck,
