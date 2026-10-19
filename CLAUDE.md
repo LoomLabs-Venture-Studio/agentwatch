@@ -249,7 +249,10 @@ src/agentwatch/
                        --all`. project_dir_to_name(dir, log): basename of
                        the transcripts' recorded cwd, else the dir-name
                        decode; project_name(): "~" for the home dir (also
-                       agents.base.folder_name, used by history)
+                       agents.base.folder_name, used by history).
+                       PRICING (one per-model price table) +
+                       usage_cost_usd(): per-call USD for `stats`, session
+                       cost and per-finding cost; unlisted model -> n/a
   themes.py             Pluggable status-label/emoji/color themes shared by
                        CLI, health scoring, and the TUI
 
@@ -335,7 +338,9 @@ src/agentwatch/
 
   detectors/
     base.py              Detector / SecurityDetector ABCs, Category,
-                       Severity, Warning dataclass; findings_spend /
+                       Severity, Warning dataclass (tokens / cost_usd of the
+                       calls behind a finding, absent if unpriced, #145);
+                       findings_spend /
                        waste_summary (`check`'s waste line, history)
     registry.py          DetectorRegistry; create_registry(mode=
                        "health"|"security"|"all") auto-collects detectors
@@ -717,5 +722,12 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   Live smoke-tested on Windows 10 unelevated (2026-10-15); macOS/Linux
   fixture-tested only. `tests/conftest.py` stubs `AgentWatchApp.
   _find_own_process` so TUI tests never scan real processes.
+- **Sprint 35 (develop-overdrive) limits:** coach and statusline are Claude
+  Code only; CONTEXT warnings are not coached; the status line shows the
+  main session only (no subagents) and needs manual settings.json setup.
+  Per-finding cost is absent when the agent logs no tokens or the model is
+  not in `cc_stats.PRICING`. History skips Cursor, OpenCode, Kilo (one DB
+  per app) and Aider (no fixed log location) and does not store security
+  finding messages. Alerts (#150) are not merged yet.
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.

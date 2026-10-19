@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 35 (develop-overdrive) Feature 3, `agentwatch statusline` (2026-10-18), at the end of this file; before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
+> **Latest: Sprint 35 (develop-overdrive) Feature 5, session history + `agentwatch report` (#151, 2026-10-18), and the Sprint 35 status block at the end of this file; Feature 4 alerts (#150) is open as a draft, parked on a board decision. Before it Feature 3, `agentwatch statusline` (#146, 2026-10-18); before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -4589,3 +4589,34 @@ webhook, after alerts #150), any cloud or team sync.
       `/home/<name>` and `/Users/<name>` are `~` on any OS. Tests: Windows,
       POSIX, UNC, mixed separators, trailing separator. history's
       `_base`/`_SEP` already split on both separators.
+
+### PR Log (Sprint 35, develop-overdrive)
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
+| 2026-10-17 | #139 | feature/coach-hook | feature | merged to develop-overdrive (`d9244a0`) | -- |
+| 2026-10-17 | #140 | fix/pii-card-phone | fix | merged to develop (`4aa6cf6`) | -- |
+| 2026-10-17 | #141 | fix/net-pid-tracking | fix | merged to develop (`47685a1`) | -- |
+| 2026-10-17 | #142 | chore/release-prep-0.2.0 | chore | merged to develop (`4adf482`) | -- |
+| 2026-10-17 | #143 | fix/scrub-secret-leaks | fix | merged to develop (`59c7dc4`) | -- |
+| 2026-10-17 | #144 | fix/claude-api-request-loops | fix | merged to develop (`b300b00`) | -- |
+| 2026-10-17 | #145 | feature/finding-cost | feature | merged to develop-overdrive (`3b9ad79`) | -- |
+| 2026-10-17 | #147 | chore/sync-develop-2026-10-18 | chore | merged to develop-overdrive (`6610871`) | -- |
+| 2026-10-17 | #148 | fix/dedup-key-volatile-error | fix | merged to develop (`4931575`) | -- |
+| 2026-10-17 | #149 | develop | chore | merged to develop-overdrive (`3968c41`) | -- |
+| 2026-10-18 | #146 | feature/statusline | feature | merged to develop-overdrive (`8dd8365`) | -- |
+| 2026-10-18 | #151 | feature/history-report | feature | merged to develop-overdrive (`9f7e43c`) | -- |
+| 2026-10-18 | #150 | feature/alerts | feature | open, draft: parked on board decision (`AGENTWATCH_WEBHOOK`) | -- |
+
+### Sprint 35 (develop-overdrive) status (2026-10-19)
+- Feature 1, coach hook (`agentwatch hook` + Claude Code plugin): #139, merged.
+- Feature 2, dollar cost per finding (`~$x · N tok`, `check` waste line): #145, merged.
+- Feature 3, `agentwatch statusline`: #146, merged.
+- Feature 4, alerts (`watch-all --headless`, `--notify`, `--webhook`): #150, open
+  draft. QA passed on `1d101fa`; `e1e8271` awaits QA re-check; branch is behind
+  develop-overdrive (CHANGELOG/PLAYBOOK conflicts). Parked.
+- Feature 5, session history + `agentwatch report`: #151, merged.
+- develop fixes #140-#144, #148 reached develop-overdrive via syncs #147/#149.
+- Open board decision: the new `AGENTWATCH_WEBHOOK` env var (#150). Env vars
+  need board approval; #150 does not merge until it is decided.
+- Open issues: #108 (macOS), #109 (Windows non-Store Claude Desktop), both
+  waiting on hardware.
