@@ -15,6 +15,11 @@ numbers refer to the GitHub repository.
   finding counts and the change against the previous period. Sessions with
   no price show as n/a and are left out of spend and %. `--agent`,
   `--project`, `--json` (schema 1, documented in the README), `--no-sync`.
+- `agentwatch statusline`: one short word in Claude Code's status line
+  (`⚠ loop ~$1.40`) for the most severe current HIGH/CRITICAL coach
+  finding, nothing when healthy (`--ok` shows a dim check mark). Reads only
+  the coach's state file and always exits 0; a one-line setup in
+  `~/.claude/settings.json` (PR #146).
 - `agentwatch history sync|prune|path`: a local SQLite history of sessions
   and findings behind the report (`%LOCALAPPDATA%\agentwatch\history.db`, or
   `~/.local/share/agentwatch/`). Only new or changed logs are read; logs
