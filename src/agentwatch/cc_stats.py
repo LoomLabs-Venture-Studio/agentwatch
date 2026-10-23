@@ -6,6 +6,7 @@ token usage breakdowns by tool type and bash command category.
 
 from __future__ import annotations
 
+import fileinput
 import json
 import os
 import re
@@ -682,7 +683,10 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
     user_messages: dict[str, str] = {}  # uuid -> content snippet
     parent_map: dict[str, str] = {}  # assistant first_uuid -> parentUuid
 
-    with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as f:
+    # A session's subagents log to <session>/subagents/*.jsonl; their calls are
+    # billed too. One pass over all files, so a message.id seen twice counts once.
+    files = [jsonl_path, *sorted(jsonl_path.with_suffix("").glob("subagents/*.jsonl"))]
+    with fileinput.input(files, encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
             if not line:

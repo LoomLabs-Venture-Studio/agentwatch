@@ -258,6 +258,12 @@ class TestTokenBucket:
         cost = usage_cost_usd("claude-opus-4-6", 10**6, 10**6, 10**6, 10**6)
         assert abs(cost - 36.75) < 0.01
 
+    def test_cost_by_model_id_old_opus_and_unknown(self):
+        """QA: Opus hard-coded at $15/$75; unknown models priced as Sonnet."""
+        assert abs(usage_cost_usd("claude-opus-4-1-20250805", 10**6, 10**6) - 90) < 1e-9
+        assert abs(usage_cost_usd("claude-opus-5-5", 10**6, 10**6) - 24) < 1e-9
+        assert usage_cost_usd("claude-opus-4-9", 10**6, 10**6) is None
+
     def test_bucket_cost_is_sum_of_calls_and_unpriced_poisons_it(self):
         a, b = TokenBucket(), TokenBucket()
         a.add_cost(1.25)
@@ -890,6 +896,55 @@ class TestComputeStats:
         report = compute_stats(project_dir=pdir, session_id="abc-123")
         assert report.session_count == 1
         assert report.totals.input_tokens == 100
+
+    def test_project_cost_prices_each_model_and_matches_burn_list(self, tmp_path, monkeypatch):
+        """QA: merge kept the first file's model, so a mostly-Opus project got
+        Sonnet prices and the --burn total disagreed with the --list sum."""
+        projects = tmp_path / "projects"
+        pdir = projects / "-test"
+        pdir.mkdir(parents=True)
+
+        def git(mid, model):
+            return _make_assistant_line(mid, [{"type": "tool_use", "id": "t" + mid,
+                                               "name": "Bash", "input": {"command": "git status"}}],
+                                        model=model)
+
+        (pdir / "a.jsonl").write_text(git("s1", "claude-sonnet-4-5"))
+        (pdir / "b.jsonl").write_text("\n".join(git(f"o{i}", "claude-opus-4-1") for i in range(3)))
+        monkeypatch.setattr("agentwatch.cc_stats.CLAUDE_PROJECTS_DIR", projects)
+
+        report = compute_stats(project_dir=pdir)
+        expected = (usage_cost_usd("claude-sonnet-4-5", 100, 50, 200, 1000)
+                    + 3 * usage_cost_usd("claude-opus-4-1", 100, 50, 200, 1000))
+        assert abs(report.totals.estimated_cost_usd() - expected) < 1e-12
+        listed = sum(tc.estimated_cost_usd for tc in report.trivial_calls)
+        assert abs(report.trivial.estimated_cost_usd() - listed) < 1e-12
+
+    def test_subagent_transcripts_counted_once(self, tmp_path, monkeypatch):
+        """QA: stats skipped <session>/subagents/*.jsonl (usage ~2.5x low)."""
+        projects = tmp_path / "projects"
+        pdir = projects / "-test"
+        sub = pdir / "abc-123" / "subagents"
+        sub.mkdir(parents=True)
+        (pdir / "abc-123.jsonl").write_text(_make_assistant_line(
+            "m1", [{"type": "text", "text": "a"}], input_tokens=100))
+        # Same id as a parent line (an old sidechain copy) must not double count.
+        (sub / "agent-x.jsonl").write_text("\n".join([
+            _make_assistant_line("m2", [
+                {"type": "tool_use", "id": "t2", "name": "Bash",
+                 "input": {"command": "ls"}},
+            ], input_tokens=40),
+            _make_assistant_line("m1", [{"type": "text", "text": "a"}], input_tokens=100),
+        ]))
+        (pdir / "def-456.jsonl").write_text(_make_assistant_line(
+            "m3", [{"type": "text", "text": "b"}], input_tokens=999))
+        monkeypatch.setattr("agentwatch.cc_stats.CLAUDE_PROJECTS_DIR", projects)
+
+        one = compute_stats(project_dir=pdir, session_id="abc-123")
+        assert (one.session_count, one.message_count, one.totals.input_tokens) == (1, 2, 140)
+        assert [tc.session_id for tc in one.trivial_calls] == ["abc-123"]
+        every = compute_stats(project_dir=pdir)
+        assert (every.session_count, every.totals.input_tokens) == (2, 1139)
 
     def test_all_projects(self, tmp_path, monkeypatch):
         """--all scans across all projects."""
