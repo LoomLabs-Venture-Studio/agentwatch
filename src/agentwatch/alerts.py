@@ -208,6 +208,11 @@ def _label(signal: str) -> str:
     return _ALERT_LABELS.get(signal) or one_line(signal, _NAME_MAX)
 
 
+def _usd(v: float) -> str:
+    """'$5.00', but '$0.004' rather than a misleading '$0.00' below a cent."""
+    return f"${v:,.2f}" if v >= 0.01 else f"${v:.4g}"
+
+
 def who(agent: str | None, project: str | None) -> str:
     """'Claude Code · myproj'. Both come from logs and process data, so they
     are cleaned like a message."""
@@ -276,7 +281,7 @@ class Alerter:
         if (self.budget is not None and cost is not None and cost >= self.budget
                 and not s.budget_hit):
             s.budget_hit = True  # once per session; exempt from the baseline
-            label, msg = f"budget ${self.budget:,.2f} hit", f"session cost ${cost:,.2f}"
+            label, msg = f"budget {_usd(self.budget)} hit", f"session cost {_usd(cost)}"
             if self.log is not None:
                 self.log(f"{datetime.now():%H:%M:%S} {'BUDGET':8} {name} [budget] {label}: {msg}")
             self._send(label, name, msg)

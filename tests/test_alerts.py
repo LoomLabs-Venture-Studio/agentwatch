@@ -259,6 +259,20 @@ def test_budget_once_per_session():
     assert len(r.sent) == 2
 
 
+def test_budget_rise_dip_rise_alerts_once():
+    r, see = _budget()
+    for cost in (5.5, 4.0, 6.0):
+        see(cost)
+    assert len(r.sent) == 1
+
+
+def test_budget_sub_cent_not_shown_as_zero():
+    r = _Recorder(budget=0.005)
+    r.alerter.observe("s1", "claude-code", "myproj", [], _report(), actions=10, cost=0.006)
+    assert r.sent == [("agentwatch: Claude Code · myproj — budget $0.005 hit",
+                       "session cost $0.006")]
+
+
 @pytest.mark.parametrize("bad", ["0", "-1", "abc", "nan", "inf", "-inf"])
 def test_budget_option_rejects_bad_values(bad):
     res = CliRunner().invoke(cli, ["watch-all", "--budget", bad])
@@ -281,6 +295,11 @@ def test_budget_alone_enables_notify(monkeypatch, tmp_path):
     res = CliRunner().invoke(cli, ["watch", "--log", str(log), "--budget", "2.5"])
     assert res.exit_code == 0, res.output
     assert seen["alerter"].notify and seen["alerter"].budget == 2.5
+    seen.clear()
+    res = CliRunner().invoke(cli, ["watch-all", "--headless", "--budget", "5",
+                                   "--webhook", "https://example.com/hook"])
+    assert res.exit_code == 0, res.output
+    assert not seen["alerter"].notify and seen["alerter"].budget == 5.0
 
 
 # --- text ----------------------------------------------------------------
