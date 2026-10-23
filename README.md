@@ -379,6 +379,26 @@ alerts; only findings that appear afterwards, and a session turning
 Critical afterwards, alert. Add `--notify-existing` to alert on those too.
 The headless log still prints them.
 
+#### Budget alert
+
+```bash
+# One alert per session when its estimated cost reaches $5
+agentwatch watch-all --budget 5
+agentwatch watch-all --headless --budget 5 --webhook https://hooks.slack.com/services/...
+```
+
+The alert reads `agentwatch: Claude Code · myproj — budget $5.00 hit` with
+`session cost $5.12` as its body (headless also prints one `BUDGET` line).
+Each session alerts once, the first time its cost reaches or passes the
+limit; it does not repeat as the cost keeps rising. A session already over
+budget when AgentWatch first sees it alerts at startup (the budget alert is
+not part of the silent baseline). `--budget` alone turns on desktop
+notifications; with `--webhook` it posts there instead (add `--notify` for
+both). The amount must be a positive number of USD.
+
+Agents whose cost AgentWatch cannot price (Codex, Gemini, Copilot VS Code)
+can never trigger it, and `agentwatch statusline` does not show the budget.
+
 - **Windows:** a toast from Windows PowerShell (`powershell -NoProfile`,
   shown under "Windows PowerShell" in the notification center). If the toast
   fails, AgentWatch beeps and warns once.

@@ -8,6 +8,11 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- `--budget USD` on `watch` and `watch-all`: one alert per session when its
+  estimated cost first reaches the limit, through the same desktop/webhook/
+  headless sinks. A session already over budget when first seen alerts at
+  startup; `--budget` alone turns on desktop notifications. Sessions with an
+  unknown cost (Codex, Gemini, Copilot VS Code) never alert.
 - Alerts for unattended sessions. `watch-all --headless` runs the watch-all
   engine without the dashboard and prints one line per new warning (and
   waits for agents if none are running yet). `--notify` on `watch` and
