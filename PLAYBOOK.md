@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 35 (develop-overdrive) Feature 4, alerts (2026-10-18), at the end of this file; before it Feature 3, `agentwatch statusline` (2026-10-18); before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
+> **Latest: Sprint 35 (develop-overdrive) Feature 5, session history + `agentwatch report` (2026-10-18), at the end of this file, followed only by the Feature 6 budget alert plan; before it Feature 4, alerts (2026-10-18); before it Feature 3, `agentwatch statusline` (2026-10-18); before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -4625,15 +4625,6 @@ an unattended session goes bad with no TUI on screen.
       fallback for `--webhook`, the flag wins when both are set (test
       `test_webhook_flag_overrides_env`).
 
-### Next: Feature 6 budget alert (after #150 merges)
-Board decisions (2026-10-23):
-- `--budget USD` on `watch` and `watch-all`.
-- One alert per session when `SessionStats.estimated_cost` reaches the
-  limit; an unknown cost (no price) never alerts.
-- A session already over budget at startup DOES alert: exempt from the
-  silent startup baseline.
-- `--budget` alone turns on desktop notifications (no `--notify` needed).
-
 ### Sprint 35 (develop-overdrive) — Feature 5: session history + `agentwatch report` (2026-10-18)
 **Type:** feature. Branch `feature/history-report` from `develop-overdrive` @
 `8dd8365`; draft PR into `develop-overdrive`. A local SQLite history of every
@@ -4731,3 +4722,12 @@ webhook, after alerts #150), any cloud or team sync.
       `/home/<name>` and `/Users/<name>` are `~` on any OS. Tests: Windows,
       POSIX, UNC, mixed separators, trailing separator. history's
       `_base`/`_SEP` already split on both separators.
+
+### Next: Feature 6 budget alert (after #150 merges)
+Board decisions (2026-10-23):
+- `--budget USD` on `watch` and `watch-all`.
+- One alert per session when `SessionStats.estimated_cost` reaches the
+  limit; an unknown cost (no price) never alerts.
+- A session already over budget at startup DOES alert: exempt from the
+  silent startup baseline.
+- `--budget` alone turns on desktop notifications (no `--notify` needed).

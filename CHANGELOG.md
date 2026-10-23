@@ -21,13 +21,6 @@ numbers refer to the GitHub repository.
   Findings a session already has when first seen are a silent baseline
   (`--notify-existing` alerts on them too).
 
-### Security
-
-- Coach notes, alerts and headless lines replace control characters
-  (terminal escapes, BEL, newlines, bidi overrides) with spaces through one
-  shared helper (`secret_scanner.one_line`); the coach note previously kept
-  ESC sequences.
-
 - `agentwatch report`: what your agents cost you over the last 7 days (or
   `--days N`), across agents and projects: sessions, spend, tokens, waste
   (`check`'s waste figure summed over sessions, with its % of spend), the 3
@@ -53,6 +46,13 @@ numbers refer to the GitHub repository.
   (Y% of session cost)` line and a `waste` JSON object. Fields are absent,
   never 0 or estimated, when the agent logs no tokens or the model has no
   listed price.
+
+### Security
+
+- Coach notes, alerts and headless lines replace control characters
+  (terminal escapes, BEL, newlines, bidi overrides) with spaces through one
+  shared helper (`secret_scanner.one_line`); the coach note previously kept
+  ESC sequences.
 
 ### Changed
 
