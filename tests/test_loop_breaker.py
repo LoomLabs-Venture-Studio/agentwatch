@@ -191,3 +191,35 @@ def test_end_to_end_real_transcript_fixture(tmp_path):
                                 "tool_use_id": "toolu_6"}))
     assert _denied(pre)
     assert "so far)" in pre and "boom" not in pre
+
+
+@pytest.mark.parametrize("command", ["cd /x && pytest", "cd /x && cd y && FOO=1 pytest -q",
+                                     "uv run pytest", "CI=1 npm run test", "./gradlew test"])
+def test_allowlist_forms_are_never_denied(tmp_path, command):
+    t = _loop(tmp_path, command=command)
+    assert _hook(t, "PreToolUse", {"command": command}) is None
+
+
+@pytest.mark.parametrize("command", ["sleepy", "pytestfoo -x"])
+def test_allowlist_needs_word_boundary(tmp_path, command):
+    t = _loop(tmp_path, command=command)
+    assert _denied(_hook(t, "PreToolUse", {"command": command}))
+
+
+@pytest.mark.parametrize("tool", ["Agent", "Task"])
+def test_agent_call_parity(tmp_path, tool):
+    tool_input = {"description": "look", "prompt": "find it", "subagent_type": "Explore"}
+    t = _transcript(tmp_path, [(tool, tool_input)] * 6)
+    buffer = ActionBuffer()
+    for action in parse_file(t):
+        buffer.add(action)
+    assert LoopDetector().check(buffer).details["loop_id"] == coach.call_loop_id(tool, tool_input)
+    _hook(t, "PostToolUse", tool_input, tool=tool, tool_use_id="t5")
+    assert _denied(_hook(t, "PreToolUse", tool_input, tool=tool))
+
+
+def test_relative_vs_absolute_path_fails_open(tmp_path):
+    t = _transcript(tmp_path, [("Read", {"file_path": "/p/a.py"})] * 6)
+    _hook(t, "PostToolUse", {"file_path": "/p/a.py"}, tool="Read", tool_use_id="t5")
+    assert _hook(t, "PreToolUse", {"file_path": "a.py"}, tool="Read") is None
+    assert _denied(_hook(t, "PreToolUse", {"file_path": "/p/a.py"}, tool="Read"))  # was armed

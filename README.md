@@ -828,10 +828,15 @@ right after the block is allowed (one block per loop); once the loop is no
 longer HIGH it is forgotten, so a new loop blocks again. Bash commands that
 repeat on purpose are never blocked (the warning still fires): `sleep`,
 `gh run watch`, `gh pr checks`, `git status`, `git log`, `git diff`,
-`pytest`, `python -m pytest`, `npm test`, `pnpm test`, `yarn test`,
-`cargo test`, `go test`, `make test`. It reads only the coach's state file
-(no transcript parsing) and stores only a hash of the action, never the
-command or path. Any error lets the call through. Set
+`pytest`, `python -m pytest`, `python3 -m pytest`, `uv run pytest`,
+`npm test`, `npm run test`, `pnpm test`, `pnpm run test`, `yarn test`,
+`yarn run test`, `bun test`, `npx jest`, `npx vitest`, `cargo test`,
+`go test`, `make test`, `./gradlew test`, `mvn test`. They match as whole
+words, after any leading `cd <path> &&` and `VAR=value` prefixes (so
+`cd app && pytest` is allowed, `sleepy` is not). It reads only the coach's
+state file (no transcript parsing); the armed loop entry holds only a hash of
+the action, its count and cost, never the command or path. Any error lets the
+call through. Set
 `AGENTWATCH_LOOP_BREAKER=off` (board approved; default on) to turn it off.
 Claude Code only: other agents have no PreToolUse hook and keep getting
 warnings in `watch`/`watch-all` and alerts.

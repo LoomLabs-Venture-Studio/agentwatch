@@ -80,9 +80,14 @@ _TIPS = {
 }
 _DEFAULT_TIP = "Stop, re-read the goal, and change approach."
 # Bash commands that repeat on purpose (polling, test runs): warned, never blocked.
+# Matched as whole words after any leading `cd <path> &&` and `VAR=value ` prefixes.
 LOOP_ALLOW = ("sleep", "gh run watch", "gh pr checks", "git status", "git log",
-              "git diff", "pytest", "python -m pytest", "npm test", "pnpm test",
-              "yarn test", "cargo test", "go test", "make test")
+              "git diff", "pytest", "python -m pytest", "python3 -m pytest",
+              "uv run pytest", "npm test", "npm run test", "pnpm test", "pnpm run test",
+              "yarn test", "yarn run test", "bun test", "npx jest", "npx vitest",
+              "cargo test", "go test", "make test", "./gradlew test", "mvn test")
+_LOOP_ALLOW_RE = re.compile(r"(?:\s*(?:cd\s+\S+\s*&&|[A-Za-z_]\w*=\S*\s))*\s*(?:"
+                            + "|".join(map(re.escape, LOOP_ALLOW)) + r")(?:\s|$)")
 
 
 def state_dir() -> Path:
@@ -343,15 +348,19 @@ def _breaker(payload: dict, key: str) -> str | None:
     if not isinstance(name, str):
         return None
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
-    if name == "Bash" and isinstance(command, str) and command.lstrip().startswith(LOOP_ALLOW):
+    if name == "Bash" and isinstance(command, str) and _LOOP_ALLOW_RE.match(command):
         return None
     directory = _writable_state_dir()
     if directory is None:
         return None
     path = state_path(directory, key)
+    armed = _load_armed(path)
+    if not armed.get("loop_id") or armed.get("blocked"):
+        return None
+    loop_id = call_loop_id(name, tool_input)  # parser import, before the read-modify-write
     state = json.loads(path.read_text(encoding="utf-8"))
     armed = state["armed"]
-    if armed.get("blocked") or armed.get("loop_id") != call_loop_id(name, tool_input):
+    if armed.get("blocked") or armed.get("loop_id") != loop_id:
         return None
     armed["blocked"] = True
     _atomic_write(path, json.dumps(state))
