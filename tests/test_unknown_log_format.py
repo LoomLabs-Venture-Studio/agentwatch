@@ -149,6 +149,17 @@ class TestCli:
         assert "unsupported log format" in result.output
         assert str(p) in result.output
 
+    @pytest.mark.parametrize("command,flag", [
+        ("check", "--log"), ("security-scan", "--log"), ("watch", "--log"),
+        ("check", "--analytics-log"), ("security-scan", "--analytics-log"),
+    ])
+    def test_directory_is_a_clean_usage_error(self, tmp_path, command, flag):
+        """QA: --log <dir> crashed with an IsADirectoryError traceback."""
+        result = CliRunner().invoke(cli, [command, flag, str(tmp_path)])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)  # no traceback
+        assert "is a directory" in result.output
+
     def test_audit_skips_unsupported_file(self, tmp_path, monkeypatch):
         proj = tmp_path / "proj"
         proj.mkdir()
