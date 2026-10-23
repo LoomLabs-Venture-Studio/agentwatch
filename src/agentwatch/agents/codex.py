@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .base import BaseAdapter, Watcher, sniff_jsonl_format, source_path
+from .base import BaseAdapter, Watcher, folder_name, sniff_jsonl_format, source_path
 
 if TYPE_CHECKING:
     from agentwatch.discovery import AgentProcess
@@ -42,3 +42,14 @@ class CodexAdapter(BaseAdapter):
         from agentwatch.parser.logs import _parse_jsonl
 
         return _parse_jsonl(path, session_id)
+
+    def history_logs(self) -> Iterator[Path]:
+        from agentwatch.discovery import _codex_sessions_root
+
+        return _codex_sessions_root().rglob("rollout-*.jsonl")
+
+    def history_meta(self, path: Path) -> tuple[str, str | None]:
+        from agentwatch.discovery import _read_codex_session_meta
+
+        meta = _read_codex_session_meta(path) or {}
+        return str(meta.get("id") or path.stem), folder_name(meta.get("cwd"))

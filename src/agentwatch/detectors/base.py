@@ -202,6 +202,22 @@ def findings_spend(warnings: "Iterable[Warning]") -> tuple[int, int | None, floa
     return len(spent), tokens, cost
 
 
+def waste_summary(warnings: "Iterable[Warning]", stats: Any) -> dict[str, Any] | None:
+    """Spend on the calls behind the findings vs the session's (*stats*, a
+    SessionStats), or None when no finding has token data. A call shared by
+    two findings counts once. `check`'s waste line and `agentwatch history`."""
+    findings, tokens, cost = findings_spend(warnings)
+    if not findings:
+        return None
+    return {
+        "findings": findings,
+        "tokens": tokens,
+        "cost_usd": None if cost is None else round(cost, 4),
+        "session_tokens": stats.billed_tokens,
+        "session_cost_usd": None if stats.billed_cost is None else round(stats.billed_cost, 4),
+    }
+
+
 def format_cost(cost: float | None, tokens: int | None) -> str | None:
     """Shared cost text for check, the TUIs and the waste line."""
     if tokens is None:

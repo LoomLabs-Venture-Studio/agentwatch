@@ -73,3 +73,10 @@ class AgyAdapter(BaseAdapter):
         from agentwatch.parser.logs import _parse_jsonl
 
         return _parse_jsonl(path, session_id)
+
+    def history_logs(self) -> Iterator[Path]:
+        home = globals().get("AGY_HOME") or __getattr__("AGY_HOME")
+        return (home / "brain").glob("*/.system_generated/logs/transcript.jsonl")
+
+    def history_meta(self, path: Path) -> tuple[str, str | None]:
+        return path.parents[2].name, None  # the transcript records no cwd
