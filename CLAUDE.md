@@ -182,7 +182,15 @@ src/agentwatch/
                        unwritable -> user_state_dir(); also the latest
                        warnings with cost_usd). state_path(dir, key) is the
                        one file-name rule. Evidence `"` -> `'`. Fails open:
-                       exit 0, no stdout; 5 s watchdog
+                       exit 0, no stdout; 5 s watchdog. Loop breaker
+                       (Feature 7): a HIGH `loop` warning is stored as
+                       state["armed"] {loop_id, count, cost_usd, blocked}
+                       (hashes only; dropped once the loop is not HIGH).
+                       PreToolUse reads only that file; call_loop_id() keys
+                       the call via parse_claude_code_entry + loops._loop_key
+                       (same id as LoopDetector) and denies the first match
+                       once (permissionDecision deny, fixed reason).
+                       LOOP_ALLOW Bash prefixes are never denied.
   statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
@@ -761,3 +769,6 @@ Do NOT create, modify, or expose env vars without documenting in PR and getting 
 
 - `AGENTWATCH_WEBHOOK` (read only, Sprint 35 Feature 4): default for
   `watch`/`watch-all --webhook URL`. A secret; never printed.
+- `AGENTWATCH_LOOP_BREAKER` (read only, Feature 7, board approved): `off`
+  (case-insensitive) turns off the coach hook's PreToolUse loop breaker.
+  Default on.

@@ -815,9 +815,26 @@ The `agentwatch` plugin coaches Claude Code while it works. After every tool
 call a hook runs agentwatch's health detectors on the live session. When a
 new HIGH or CRITICAL loop, thrash, error spiral or stuck pattern shows up, it
 adds a short note to Claude's context (what is wrong, the evidence, what to
-try). It never blocks a tool call, and it reports each problem once per
-session, again only if it clears and comes back. Context-size estimates are
-not coached. The plugin also includes the scrub skill.
+try). It reports each problem once per session, again only if it clears
+and comes back. Context-size estimates are not coached. The plugin also
+includes the scrub skill.
+
+**Loop breaker.** When the same action has run 6 or more times in the last
+10 tool calls (a HIGH loop), the plugin's PreToolUse hook blocks the next
+identical call once and tells Claude why: "agentwatch blocked this call: the
+same action ran 6 times in the last 10 calls (~$0.42 so far). Change
+approach: read the last error and fix its cause, or ask the user." A retry
+right after the block is allowed (one block per loop); once the loop is no
+longer HIGH it is forgotten, so a new loop blocks again. Bash commands that
+repeat on purpose are never blocked (the warning still fires): `sleep`,
+`gh run watch`, `gh pr checks`, `git status`, `git log`, `git diff`,
+`pytest`, `python -m pytest`, `npm test`, `pnpm test`, `yarn test`,
+`cargo test`, `go test`, `make test`. It reads only the coach's state file
+(no transcript parsing) and stores only a hash of the action, never the
+command or path. Any error lets the call through. Set
+`AGENTWATCH_LOOP_BREAKER=off` (board approved; default on) to turn it off.
+Claude Code only: other agents have no PreToolUse hook and keep getting
+warnings in `watch`/`watch-all` and alerts.
 
 The plugin needs agentwatch **0.2.0 or later** on your PATH (`agentwatch hook`
 is not in 0.1.x, the current PyPI release). Until 0.2.0 is on PyPI, install

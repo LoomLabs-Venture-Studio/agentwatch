@@ -8,6 +8,11 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- Loop circuit breaker in the Claude Code plugin: a PreToolUse hook denies,
+  once, the next call that repeats a HIGH loop (6+ identical actions in the
+  last 10 calls), with a fixed reason shown to Claude. Retries are allowed,
+  common polling/test commands are never blocked, and any error lets the call
+  through. `AGENTWATCH_LOOP_BREAKER=off` turns it off. Claude Code only.
 - `--budget USD` on `watch` and `watch-all`: one alert per session when its
   estimated cost first reaches the limit, through the same desktop/webhook/
   headless sinks. A session already over budget when first seen alerts at

@@ -4731,3 +4731,24 @@ Board decisions (2026-10-23):
 - [x] A session already over budget at startup DOES alert: exempt from the
   silent startup baseline.
 - [x] `--budget` alone turns on desktop notifications (no `--notify` needed).
+
+### Feature 7: loop circuit breaker (feature/loop-breaker, 2026-10-23)
+Board-approved spec. Claude Code plugin only.
+- [x] PostToolUse: HIGH `loop` warning -> state["armed"] = loop_id, count,
+  cost_usd, blocked (hashes only, no command/path text).
+- [x] PreToolUse (same `agentwatch hook`, hooks.json timeout 5, `; exit 0`):
+  reads only the state file; key via `coach.call_loop_id` (CC parser +
+  `loops._loop_key`), parity test for Bash, Edit, Write, Read, MCP.
+- [x] 7th identical call after a HIGH loop denied (exit 0,
+  `hookSpecificOutput.permissionDecision: "deny"`, fixed reason, cost only
+  when known, no transcript text, no `<`/`>`).
+- [x] Retry right after a denial allowed (block once per loop).
+- [x] Loop no longer HIGH -> armed entry dropped, a new loop blocks again.
+- [x] Allowlist `coach.LOOP_ALLOW` (Bash prefixes): never denied, warning
+  still fires.
+- [x] `AGENTWATCH_LOOP_BREAKER=off` (case-insensitive): prints nothing.
+  Board approved; default on.
+- [x] Fail open: bad JSON, missing/corrupt state, any exception, watchdog.
+- [x] Subagents keyed `session.agent_id` like the coach; separate state.
+- [x] End-to-end test on the real Claude Code 2.1.30x fixture.
+- [x] No interaction with `--budget`.
