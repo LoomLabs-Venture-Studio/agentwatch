@@ -4577,7 +4577,8 @@ an unattended session goes bad with no TUI on screen.
       blocking past the window; `--notify-existing`; headless smoke now
       appends `sudo` to the fixture log after the baseline and gets exactly
       one alert.
-- `AGENTWATCH_WEBHOOK` kept (board decision pending).
+- `AGENTWATCH_WEBHOOK` kept: board approved option B (2026-10-23), env var
+      as fallback for `--webhook`, the flag wins.
 
 ### QA round 1 fixes (PR #150)
 - [x] 1 (MEDIUM) Control chars: `secret_scanner.one_line(text, limit)` (next
@@ -4620,7 +4621,18 @@ an unattended session goes bad with no TUI on screen.
       crash outside a sink resets `_busy`. The redirect test server now
       reads the request body before replying (one unreproduced flake: an
       unread body is a TCP reset on Windows).
-- Not merged: the board still has to approve `AGENTWATCH_WEBHOOK`.
+- `AGENTWATCH_WEBHOOK`: board approved option B (2026-10-23): read-only
+      fallback for `--webhook`, the flag wins when both are set (test
+      `test_webhook_flag_overrides_env`).
+
+### Next: Feature 6 budget alert (after #150 merges)
+Board decisions (2026-10-23):
+- `--budget USD` on `watch` and `watch-all`.
+- One alert per session when `SessionStats.estimated_cost` reaches the
+  limit; an unknown cost (no price) never alerts.
+- A session already over budget at startup DOES alert: exempt from the
+  silent startup baseline.
+- `--budget` alone turns on desktop notifications (no `--notify` needed).
 
 ### Sprint 35 (develop-overdrive) — Feature 5: session history + `agentwatch report` (2026-10-18)
 **Type:** feature. Branch `feature/history-report` from `develop-overdrive` @

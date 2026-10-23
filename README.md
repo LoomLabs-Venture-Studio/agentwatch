@@ -355,7 +355,7 @@ agentwatch watch-all --headless --notify --notify-min high
 
 # Post alerts to a Slack (or Discord/Teams-style) incoming webhook
 agentwatch watch-all --headless --webhook https://hooks.slack.com/services/...
-export AGENTWATCH_WEBHOOK=https://hooks.slack.com/services/...   # same, from the environment
+export AGENTWATCH_WEBHOOK=https://hooks.slack.com/services/...   # same, from the environment (--webhook wins if both are set)
 ```
 
 Headless output looks like:
@@ -391,7 +391,8 @@ The headless log still prints them.
 The webhook gets `POST` JSON `{"text": "..."}` (5 s timeout, sent in the
 background). The URL is a secret: AgentWatch never prints it (errors show
 `https://hooks.slack.com/***`), and a failing webhook is reported once and
-never stops monitoring. `AGENTWATCH_WEBHOOK` is only read, never written.
+never stops monitoring. `AGENTWATCH_WEBHOOK` is only read, never written; if both it and
+`--webhook` are set, the flag wins.
 Redirects are not followed (a 3xx counts as a failure), `& < >` are escaped
 so a path or repo name cannot ping `<!channel>` or post a disguised link, and
 a plain `http://` URL gets a startup warning (alert text would travel
