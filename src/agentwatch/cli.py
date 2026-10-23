@@ -2194,7 +2194,7 @@ def history_path():
 
 
 @cli.command()
-@click.option("--days", type=click.IntRange(min=1), default=7, show_default=True,
+@click.option("--days", type=click.IntRange(min=1, max=10000), default=7, show_default=True,
               help="Report period")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON (stable schema)")
 @click.option("--agent", default=None, help="Only this agent (e.g. claude-code)")

@@ -165,7 +165,8 @@ def render(rep: dict[str, Any], limit: int = 10) -> list[str]:
     scope = "".join(f"  {k}={v}" for k, v in rep["filters"].items() if v)
     lines = [f"agentwatch report: last {days} days ({start} to {end}){scope}", ""]
     if not t["sessions"]:
-        return lines + ["  No sessions in this period. Run `agentwatch history sync`."]
+        return lines + ["  No sessions in this period. Run `agentwatch history sync`",
+                        "  (add `--include-active` for sessions still being written)."]
     lines.append(f"  Sessions {t['sessions']}   Spend {_usd(t['cost_usd'])}   "
                  f"Tokens {_tok(t['tokens'])}")
     pct = "" if t["waste_pct"] is None else (
