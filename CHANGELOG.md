@@ -58,9 +58,9 @@ numbers refer to the GitHub repository.
 - `stats` now counts subagent transcripts (`<session>/subagents/*.jsonl`),
   also under `--session <id>`; usage was about 2.5x too low. A message id
   seen in both files counts once.
-- `--log` / `--analytics-log` given a directory (`check`, `security-scan`,
-  `watch`, `agentguard`) is a one-line usage error instead of an
-  `IsADirectoryError` traceback.
+- `--log`, `--analytics-log`, `--siem-log` and `--audit-log` given a
+  directory (`check`, `security-scan`, `watch`, `watch-all`, `agentguard`) is
+  a one-line usage error instead of an `IsADirectoryError` traceback.
 
 ### Security
 

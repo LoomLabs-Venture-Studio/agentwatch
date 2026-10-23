@@ -47,6 +47,8 @@ from agentwatch.themes import (
 # Every --log/--analytics-log names one file: a directory is a clean usage
 # error here, not an IsADirectoryError traceback from the parser.
 _LOG_FILE = click.Path(exists=True, dir_okay=False, path_type=Path)
+# --siem-log/--audit-log are appended to and may not exist yet; same rule.
+_OUT_FILE = click.Path(dir_okay=False, path_type=Path)
 
 
 def _export_siem_log(
@@ -434,7 +436,7 @@ def cli(theme: str):
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion "
          "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
@@ -634,7 +636,7 @@ def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook:
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion, "
          "as new warnings appear (requires the 'siem' extra: pip install "
@@ -1215,7 +1217,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion, "
          "as new warnings appear, per agent (requires the 'siem' extra: "
@@ -1353,14 +1355,14 @@ def list_detectors(security: bool):
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion "
          "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
 )
 @click.option(
     "--audit-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append one JSON-lines entry per security detector's run (triggered "
          "or not) to this file -- a 'prove you checked' compliance trail, "
