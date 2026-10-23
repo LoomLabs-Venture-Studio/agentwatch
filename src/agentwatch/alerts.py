@@ -18,6 +18,10 @@ history loads asynchronously (a pass can run before the log is read, or
 between a watcher's chunks). `notify_existing` turns it off. The headless log
 is not baselined: it prints the current warnings at start.
 
+`--budget USD`: one alert per session when its estimated cost first reaches
+the limit. Not baselined (a session already over budget alerts at start);
+unknown cost (unpriced agents) never alerts.
+
 Text is agent + project, a short label, the cost if known, and the warning's
 own message after secret redaction; never other transcript content. Text
 reaches subprocesses as argv or stdin, never through a shell string. Sends
@@ -219,6 +223,7 @@ class _Session:
     critical: bool = False  # this Critical episode already alerted (or baselined)
     last_critical: float = float("-inf")
     baseline_until: float | None = None  # set at the first pass with actions
+    budget_hit: bool = False
 
 
 class Alerter:
@@ -230,8 +235,10 @@ class Alerter:
         webhook: str | None = None,
         log: Callable[[str], None] | None = None,
         notify_existing: bool = False,
+        budget: float | None = None,
     ) -> None:
         self.notify = notify
+        self.budget = budget
         self.notify_existing = notify_existing
         self.min_severity = NOTIFY_LEVELS[notify_min]
         self.webhook = webhook
@@ -251,9 +258,11 @@ class Alerter:
         warnings: list[Warning],
         report: HealthReport,
         actions: int = 0,
+        cost: float | None = None,
     ) -> None:
         """Feed one scoring pass for *session* (*actions*: its buffer's action
-        count, which starts the baseline clock); emit whatever is new."""
+        count, which starts the baseline clock; *cost*: its estimated cost,
+        None if unknown); emit whatever is new."""
         s = self._sessions.setdefault(session, _Session())
         name = who(agent, project)
         by_key = {warning_dedup_key(w): w for w in warnings}
@@ -263,6 +272,14 @@ class Alerter:
                 if key not in s.logged:
                     self.log(self._log_line(name, w))
             s.logged = set(by_key)
+
+        if (self.budget is not None and cost is not None and cost >= self.budget
+                and not s.budget_hit):
+            s.budget_hit = True  # once per session; exempt from the baseline
+            label, msg = f"budget ${self.budget:,.2f} hit", f"session cost ${cost:,.2f}"
+            if self.log is not None:
+                self.log(f"{datetime.now():%H:%M:%S} {'BUDGET':8} {name} [budget] {label}: {msg}")
+            self._send(label, name, msg)
 
         if not (self.notify or self.webhook):
             return

@@ -745,6 +745,7 @@ class AgentWatchApp(App):
             self.alerter.observe(
                 str(self.log_path), *self._alert_ident, warnings, report,
                 actions=self._buffer.stats.action_count,
+                cost=self._buffer.stats.estimated_cost,
             )
 
         # Update health bar

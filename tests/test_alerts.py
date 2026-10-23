@@ -214,6 +214,75 @@ def test_headless_log_not_baselined(clock):
     assert len(lines) == 1
 
 
+# --- budget --------------------------------------------------------------
+
+
+def _budget(**kw):
+    r = _Recorder(budget=5.0, **kw)
+    return r, lambda cost, session="s1", actions=10: r.alerter.observe(
+        session, "claude-code", "myproj", [], _report(), actions=actions, cost=cost)
+
+
+def test_budget_crossing_alerts_once():
+    r, see = _budget()
+    see(4.99)
+    assert r.sent == []
+    see(5.0)
+    see(5.12)
+    see(9.0)
+    assert r.sent == [("agentwatch: Claude Code · myproj — budget $5.00 hit", "session cost $5.00")]
+
+
+def test_budget_under_or_unknown_cost_never_alerts():
+    r, see = _budget()
+    for cost in (0.0, 1.0, 4.99, None, None):
+        see(cost)
+    assert r.sent == []
+
+
+def test_budget_already_over_alerts_during_baseline(clock):
+    lines = []
+    r, see = _budget(notify_existing=False, log=lines.append)
+    see(5.12, actions=400)
+    assert [b for _, b in r.sent] == ["session cost $5.12"]
+    assert len(lines) == 1 and "budget $5.00 hit: session cost $5.12" in lines[0]
+    clock[0] += alerts.BASELINE_S + 1
+    see(6.0, actions=401)
+    assert len(r.sent) == 1
+
+
+def test_budget_once_per_session():
+    r, see = _budget()
+    see(6.0, session="a")
+    see(7.0, session="b")
+    see(8.0, session="a")
+    assert len(r.sent) == 2
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "abc", "nan", "inf", "-inf"])
+def test_budget_option_rejects_bad_values(bad):
+    res = CliRunner().invoke(cli, ["watch-all", "--budget", bad])
+    assert res.exit_code == 2, res.output
+
+
+def test_budget_alone_enables_notify(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr("agentwatch.cli.find_running_agents", lambda *a: [])
+    monkeypatch.setattr("agentwatch.ui.multi_app.MultiAgentWatchApp.run",
+                        lambda self, **kw: seen.update(alerter=self.alerter))
+    monkeypatch.setattr("agentwatch.ui.app.AgentWatchApp.run",
+                        lambda self, **kw: seen.update(alerter=self.alerter))
+    res = CliRunner().invoke(cli, ["watch-all", "--headless", "--budget", "5"])
+    assert res.exit_code == 0, res.output
+    assert seen["alerter"].notify and seen["alerter"].budget == 5.0
+    log = tmp_path / "s.jsonl"
+    log.write_text(_entries(["ls"]))
+    seen.clear()
+    res = CliRunner().invoke(cli, ["watch", "--log", str(log), "--budget", "2.5"])
+    assert res.exit_code == 0, res.output
+    assert seen["alerter"].notify and seen["alerter"].budget == 2.5
+
+
 # --- text ----------------------------------------------------------------
 
 
