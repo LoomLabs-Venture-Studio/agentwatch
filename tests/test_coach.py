@@ -186,7 +186,7 @@ def test_plugin_and_marketplace_manifests():
     manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text("utf-8"))
     assert manifest["name"] == entry["name"]
     hooks = json.loads((plugin_dir / "hooks" / "hooks.json").read_text("utf-8"))["hooks"]
-    for event in ("PostToolUse", "PostToolUseFailure"):
+    for event in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
         assert "agentwatch hook" in hooks[event][0]["hooks"][0]["command"]
     assert (plugin_dir / "skills" / "agentwatch-scrub" / "SKILL.md").is_file()
 

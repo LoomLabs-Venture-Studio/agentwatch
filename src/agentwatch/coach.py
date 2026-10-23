@@ -17,6 +17,15 @@ nothing on stdout.
 The note is shown to Claude as a system reminder, so transcript text in it
 is labelled as quoted tool output, stripped of `<`/`>`, and kept out of the
 "Try" line, which is fixed text per signal.
+
+Loop breaker: when a `loop` warning is HIGH, the PostToolUse pass "arms" it in
+the session state (loop_id hash, count, cost; never command text). On
+PreToolUse the hook reads only that state, keys the incoming call the way
+LoopDetector does, and if it is the armed loop's next call denies it once with
+`{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision":
+"deny", "permissionDecisionReason": <fixed text>}}` (the reason is shown to
+Claude). The retry is allowed; the entry is dropped when the loop is no longer
+HIGH, so a new loop blocks again. AGENTWATCH_LOOP_BREAKER=off disables it.
 """
 
 from __future__ import annotations
@@ -70,6 +79,10 @@ _TIPS = {
                                "of retrying variants.",
 }
 _DEFAULT_TIP = "Stop, re-read the goal, and change approach."
+# Bash commands that repeat on purpose (polling, test runs): warned, never blocked.
+LOOP_ALLOW = ("sleep", "gh run watch", "gh pr checks", "git status", "git log",
+              "git diff", "pytest", "python -m pytest", "npm test", "pnpm test",
+              "yarn test", "cargo test", "go test", "make test")
 
 
 def state_dir() -> Path:
@@ -134,6 +147,28 @@ def _load_reported(path: Path) -> set[str]:
         return set()
 
 
+def _load_armed(path: Path) -> dict:
+    try:
+        armed = json.loads(path.read_text(encoding="utf-8"))["armed"]
+        return armed if isinstance(armed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _armed(warnings: list, old: dict) -> dict | None:
+    """The HIGH loop to block on the next PreToolUse, keeping its blocked flag."""
+    loop = next((w for w in warnings
+                 if w.signal == "loop" and w.severity.value == "high"), None)
+    if loop is None:
+        return None
+    loop_id = loop.details["loop_id"]
+    armed = {"loop_id": loop_id, "count": loop.details["count"],
+             "blocked": old.get("loop_id") == loop_id and bool(old.get("blocked"))}
+    if loop.cost_usd is not None:
+        armed["cost_usd"] = round(loop.cost_usd, 4)
+    return armed
+
+
 def state_path(directory: Path, key: str) -> Path:
     """The state file for a session (or session.agent) key, always inside *directory*."""
     return directory / (re.sub(r"[^A-Za-z0-9_.-]", "_", key)[:150] + ".json")
@@ -160,15 +195,18 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
-def _save(path: Path, reported: set[str], warnings: list) -> None:
+def _save(path: Path, reported: set[str], warnings: list, armed: dict | None = None) -> None:
     from datetime import datetime, timezone
 
-    _atomic_write(path, json.dumps({
+    data = {
         "updated": datetime.now(timezone.utc).isoformat(),
         "reported": sorted(reported),
         # Latest health snapshot, read by `agentwatch statusline`.
         "warnings": [_snapshot(w) for w in warnings],
-    }))
+    }
+    if armed:
+        data["armed"] = armed  # read by the PreToolUse loop breaker
+    _atomic_write(path, json.dumps(data))
 
 
 def _write_pointer(directory: Path) -> None:
@@ -283,24 +321,77 @@ def format_message(warning, actions: list = ()) -> str:
     return "\n".join(lines)
 
 
+def call_loop_id(tool_name: str, tool_input: object) -> str:
+    """LoopDetector's details["loop_id"] for one call: built through the same
+    Claude Code parser and `_loop_key`, so the two always agree."""
+    import hashlib
+
+    from agentwatch.detectors.health.loops import _loop_key
+
+    block = {"type": "tool_use", "name": tool_name,
+             "input": tool_input if isinstance(tool_input, dict) else {}}
+    action = next(_parse([{"type": "assistant",
+                           "message": {"role": "assistant", "content": [block]}}]))
+    return hashlib.sha1(_loop_key(action).encode()).hexdigest()[:12]
+
+
+def _breaker(payload: dict, key: str) -> str | None:
+    """PreToolUse: deny the armed loop's next call, once. Reads only state."""
+    if os.environ.get("AGENTWATCH_LOOP_BREAKER", "").strip().lower() == "off":
+        return None
+    name, tool_input = payload["tool_name"], payload.get("tool_input")
+    if not isinstance(name, str):
+        return None
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if name == "Bash" and isinstance(command, str) and command.lstrip().startswith(LOOP_ALLOW):
+        return None
+    directory = _writable_state_dir()
+    if directory is None:
+        return None
+    path = state_path(directory, key)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    armed = state["armed"]
+    if armed.get("blocked") or armed.get("loop_id") != call_loop_id(name, tool_input):
+        return None
+    armed["blocked"] = True
+    _atomic_write(path, json.dumps(state))
+
+    from agentwatch.detectors.base import format_usd
+
+    cost = armed.get("cost_usd")
+    known = isinstance(cost, (int, float)) and cost >= 0.005  # format_usd: no "<$0.01"
+    spent = f" ({format_usd(cost)} so far)" if known else ""
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            f"agentwatch blocked this call: the same action ran {int(armed['count'])} "
+            f"times in the last 10 calls{spent}. Change approach: read the last error "
+            "and fix its cause, or ask the user."),
+    }})
+
+
 def run(stdin_text: str) -> str | None:
     """Return the hook's stdout JSON, or None to print nothing."""
     try:
         payload = json.loads(stdin_text)
         event = payload["hook_event_name"]
         session_id = payload["session_id"]
-        transcript = Path(payload["transcript_path"])
         agent_id = payload.get("agent_id")
-        if event not in EVENTS or not isinstance(session_id, str):
+        if not isinstance(session_id, str):
             return None
-        key = session_id
+        key = session_id if agent_id is None else f"{session_id}.{agent_id}"
+        if agent_id is not None and (not isinstance(agent_id, str) or not _ID.fullmatch(agent_id)):
+            return None
+        if event == "PreToolUse":
+            return _breaker(payload, key)
+        transcript = Path(payload["transcript_path"])
+        if event not in EVENTS:
+            return None
         if agent_id is not None:
             # Subagent hooks carry the parent's transcript_path; the subagent's
             # own log is <transcript>/subagents/agent-<agent_id>.jsonl.
-            if not isinstance(agent_id, str) or not _ID.fullmatch(agent_id):
-                return None
             transcript = transcript.with_suffix("") / "subagents" / f"agent-{agent_id}.jsonl"
-            key = f"{session_id}.{agent_id}"
         if not transcript.is_file():
             return None
 
@@ -329,7 +420,7 @@ def run(stdin_text: str) -> str | None:
         new = [k for k in severe if k not in reported]
         if new:
             reported.add(new[0])  # one note per call; the rest come next call
-        _save(state, reported, warnings)
+        _save(state, reported, warnings, _armed(warnings, _load_armed(state)))
         if directory != user_state_dir():
             _write_pointer(directory)
         if not new:
