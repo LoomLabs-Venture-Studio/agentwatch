@@ -53,6 +53,15 @@ numbers refer to the GitHub repository.
   never 0 or estimated, when the agent logs no tokens or the model has no
   listed price.
 
+### Fixed
+
+- `stats` now counts subagent transcripts (`<session>/subagents/*.jsonl`),
+  also under `--session <id>`; usage was about 2.5x too low. A message id
+  seen in both files counts once.
+- `--log` / `--analytics-log` given a directory (`check`, `security-scan`,
+  `watch`, `agentguard`) is a one-line usage error instead of an
+  `IsADirectoryError` traceback.
+
 ### Security
 
 - Coach notes, alerts and headless lines replace control characters
