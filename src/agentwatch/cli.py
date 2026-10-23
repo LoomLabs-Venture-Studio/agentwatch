@@ -44,6 +44,12 @@ from agentwatch.themes import (
     set_theme,
 )
 
+# Every --log/--analytics-log names one file: a directory is a clean usage
+# error here, not an IsADirectoryError traceback from the parser.
+_LOG_FILE = click.Path(exists=True, dir_okay=False, path_type=Path)
+# --siem-log/--audit-log are appended to and may not exist yet; same rule.
+_OUT_FILE = click.Path(dir_okay=False, path_type=Path)
+
 
 def _export_siem_log(
     siem_log: Path,
@@ -407,13 +413,13 @@ def cli(theme: str):
 @cli.command()
 @click.option(
     "--log", "-l",
-    type=click.Path(exists=True, path_type=Path),
+    type=_LOG_FILE,
     help="Path to agent log file (JSONL, Aider Markdown chat history, or "
          "Cursor's state.vscdb); auto-detects if not specified",
 )
 @click.option(
     "--analytics-log",
-    type=click.Path(exists=True, path_type=Path),
+    type=_LOG_FILE,
     default=None,
     help="Path to an Aider --analytics-log JSONL sidecar (optional, "
          "backfills tokens/cost onto an Aider Markdown --log)",
@@ -430,7 +436,7 @@ def cli(theme: str):
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion "
          "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
@@ -619,7 +625,7 @@ def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook:
 @cli.command()
 @click.option(
     "--log", "-l",
-    type=click.Path(exists=True, path_type=Path),
+    type=_LOG_FILE,
     help="Path to agent log file (JSONL, Aider Markdown chat history, or "
          "Cursor's state.vscdb); auto-detects if not specified",
 )
@@ -630,7 +636,7 @@ def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook:
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion, "
          "as new warnings appear (requires the 'siem' extra: pip install "
@@ -1211,7 +1217,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion, "
          "as new warnings appear, per agent (requires the 'siem' extra: "
@@ -1331,13 +1337,13 @@ def list_detectors(security: bool):
 @cli.command()
 @click.option(
     "--log", "-l",
-    type=click.Path(exists=True, path_type=Path),
+    type=_LOG_FILE,
     help="Path to agent log file (JSONL, Aider Markdown chat history, or "
          "Cursor's state.vscdb)",
 )
 @click.option(
     "--analytics-log",
-    type=click.Path(exists=True, path_type=Path),
+    type=_LOG_FILE,
     default=None,
     help="Path to an Aider --analytics-log JSONL sidecar (optional, "
          "backfills tokens/cost onto an Aider Markdown --log)",
@@ -1349,14 +1355,14 @@ def list_detectors(security: bool):
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion "
          "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
 )
 @click.option(
     "--audit-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append one JSON-lines entry per security detector's run (triggered "
          "or not) to this file -- a 'prove you checked' compliance trail, "
@@ -2433,7 +2439,7 @@ def _build_guard_cli():
         pass
 
     @guard_cli.command(name="scan")
-    @click.option("--log", "-l", type=click.Path(exists=True, path_type=Path))
+    @click.option("--log", "-l", type=_LOG_FILE)
     @click.option("--json", "json_output", is_flag=True)
     def guard_scan(log, json_output):
         """Run security scan."""
@@ -2441,14 +2447,14 @@ def _build_guard_cli():
         ctx.invoke(security_scan, log=log, json_output=json_output)
 
     @guard_cli.command(name="watch")
-    @click.option("--log", "-l", type=click.Path(exists=True, path_type=Path))
+    @click.option("--log", "-l", type=_LOG_FILE)
     def guard_watch(log):
         """Watch for security issues in real-time."""
         ctx = click.Context(watch)
         ctx.invoke(watch, log=log, security=True)
 
     @guard_cli.command(name="check")
-    @click.option("--log", "-l", type=click.Path(exists=True, path_type=Path))
+    @click.option("--log", "-l", type=_LOG_FILE)
     @click.option("--json", "json_output", is_flag=True)
     def guard_check(log, json_output):
         """Run full check with security enabled."""
