@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import sys
 from pathlib import Path
@@ -553,8 +554,24 @@ def _check_webhook(ctx, param, value: str | None) -> str | None:
     return value
 
 
+def _check_budget(ctx, param, value: float | None) -> float | None:
+    # FloatRange would let nan through.
+    if value is not None and not (math.isfinite(value) and value > 0):
+        raise click.BadParameter("must be a positive amount in USD")
+    return value
+
+
 def _alert_options(f):
-    """--notify / --notify-min / --webhook, shared by watch and watch-all."""
+    """--notify / --notify-min / --webhook / --budget, shared by watch and watch-all."""
+    f = click.option(
+        "--budget",
+        type=float,
+        callback=_check_budget,
+        default=None,
+        metavar="USD",
+        help="Alert once per session when its estimated cost reaches USD "
+             "(turns on --notify unless --webhook is given)",
+    )(f)
     f = click.option(
         "--webhook",
         envvar="AGENTWATCH_WEBHOOK",
@@ -587,13 +604,16 @@ def _alert_options(f):
 
 
 def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook: str | None,
-                  headless: bool = False):
+                  budget: float | None = None, headless: bool = False):
+    if budget is not None and not webhook:
+        notify = True  # --budget alone needs a sink: desktop (board decision)
     if not (notify or webhook or headless):
         return None
     from agentwatch.alerts import Alerter, print_line
 
     return Alerter(notify=notify, notify_min=notify_min, webhook=webhook,
-                   log=print_line if headless else None, notify_existing=notify_existing)
+                   log=print_line if headless else None, notify_existing=notify_existing,
+                   budget=budget)
 
 
 @cli.command()
@@ -640,6 +660,7 @@ def watch(
     notify_min: str,
     notify_existing: bool,
     webhook: str | None,
+    budget: float | None,
 ):
     """Watch agent logs in real-time with a TUI dashboard."""
     # Import here to avoid slow startup for non-watch commands
@@ -663,7 +684,7 @@ def watch(
         siem_log=siem_log,
         llm=llm,
         llm_model=llm_model,
-        alerter=_make_alerter(notify, notify_min, notify_existing, webhook),
+        alerter=_make_alerter(notify, notify_min, notify_existing, webhook, budget),
     )
     app.run()
 
@@ -1228,13 +1249,14 @@ def watch_all(
     notify_min: str,
     notify_existing: bool,
     webhook: str | None,
+    budget: float | None,
 ):
     """Watch agent logs in real-time with a multi-agent dashboard.
 
     By default, auto-discovers active agent processes and monitors only their
     log files. Use --all-logs to scan all known log directories instead.
     """
-    alerter = _make_alerter(notify, notify_min, notify_existing, webhook, headless)
+    alerter = _make_alerter(notify, notify_min, notify_existing, webhook, budget, headless)
     from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
     from agentwatch.ui.multi_app import MultiAgentWatchApp
 

@@ -608,9 +608,10 @@ class MultiAgentWatchApp(App):
         if self.alerter is None:
             return
         item = agent_data["item"]
+        stats = agent_data["buffer"].stats
         self.alerter.observe(
             str(item.log_path), item.agent_type, item.project_name or item.log_path.name,
-            warnings, report, actions=agent_data["buffer"].stats.action_count,
+            warnings, report, actions=stats.action_count, cost=stats.estimated_cost,
         )
 
     def _export_and_assess(self, agent_data: dict, warnings: list["Warning"]) -> None:

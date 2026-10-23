@@ -422,6 +422,27 @@ A hidden window has no Ctrl+C; stop it with `Stop-Process -Name agentwatch`.
 `--headless` runs the same engine as the `watch-all` dashboard (process
 discovery every 5 s, per-agent scoring); it only skips drawing it.
 
+#### Budget alert
+
+```bash
+# One alert per session when its estimated cost reaches $5
+agentwatch watch-all --budget 5
+agentwatch watch-all --headless --budget 5 --webhook https://hooks.slack.com/services/...
+```
+
+The alert reads `agentwatch: Claude Code · myproj — budget $5.00 hit` with
+`session cost $5.12` as its body (headless also prints one `BUDGET` line).
+Each session alerts once, the first time its cost reaches or passes the
+limit; it does not repeat as the cost keeps rising. A session already over
+budget when AgentWatch first sees it alerts at startup (the budget alert is
+not part of the silent baseline). `--budget` alone turns on `--notify`, so
+the regular Critical/finding desktop alerts are on too; add `--webhook`
+instead to get only the webhook (add `--notify` for both). The amount must
+be a positive number of USD.
+
+Agents whose cost AgentWatch cannot price (Codex, Gemini, Copilot VS Code)
+can never trigger it, and `agentwatch statusline` does not show the budget.
+
 ### Process Discovery
 
 ```bash

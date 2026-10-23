@@ -4723,11 +4723,11 @@ webhook, after alerts #150), any cloud or team sync.
       POSIX, UNC, mixed separators, trailing separator. history's
       `_base`/`_SEP` already split on both separators.
 
-### Next: Feature 6 budget alert (after #150 merges)
+### Next: Feature 6 budget alert (after #150 merges) -- DONE (feature/budget-alert)
 Board decisions (2026-10-23):
-- `--budget USD` on `watch` and `watch-all`.
-- One alert per session when `SessionStats.estimated_cost` reaches the
+- [x] `--budget USD` on `watch` and `watch-all`.
+- [x] One alert per session when `SessionStats.estimated_cost` reaches the
   limit; an unknown cost (no price) never alerts.
-- A session already over budget at startup DOES alert: exempt from the
+- [x] A session already over budget at startup DOES alert: exempt from the
   silent startup baseline.
-- `--budget` alone turns on desktop notifications (no `--notify` needed).
+- [x] `--budget` alone turns on desktop notifications (no `--notify` needed).
