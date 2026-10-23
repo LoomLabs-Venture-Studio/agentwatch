@@ -663,6 +663,19 @@ def test_headless_starts_with_no_agents_and_reads_env_webhook(monkeypatch):
     assert seen["alerter"].notify_existing is True
 
 
+def test_webhook_flag_overrides_env(monkeypatch):
+    seen = {}
+    monkeypatch.setattr("agentwatch.cli.find_running_agents", lambda *a: [])
+    monkeypatch.setattr("agentwatch.ui.multi_app.MultiAgentWatchApp.run",
+                        lambda self, **kw: seen.update(alerter=self.alerter))
+    monkeypatch.setenv("AGENTWATCH_WEBHOOK", "https://env.example.com/ENVSECRET")
+    res = CliRunner().invoke(cli, ["watch-all", "--headless", "--webhook",
+                                   "https://flag.example.com/FLAGSECRET"])
+    assert res.exit_code == 0, res.output
+    assert seen["alerter"].webhook == "https://flag.example.com/FLAGSECRET"
+    assert "ENVSECRET" not in res.output and "FLAGSECRET" not in res.output
+
+
 def test_watch_all_without_headless_still_needs_agents(monkeypatch):
     monkeypatch.setattr("agentwatch.cli.find_running_agents", lambda *a: [])
     res = CliRunner().invoke(cli, ["watch-all", "--notify"])
