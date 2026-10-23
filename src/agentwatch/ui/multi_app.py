@@ -10,6 +10,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Footer, Header, Label, ListItem, ListView
 
+from agentwatch.alerts import tui_warn
 from agentwatch.detectors import create_registry
 from agentwatch.discovery import (
     AgentProcess,
@@ -40,6 +41,7 @@ from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
 from agentwatch.ui.rot_widget import ContextHealthWidget
 
 if TYPE_CHECKING:
+    from agentwatch.alerts import Alerter
     from agentwatch.detectors.base import Warning
     from agentwatch.health.score import HealthReport
 
@@ -242,9 +244,11 @@ class MultiAgentWatchApp(App):
         siem_log: Path | None = None,
         llm: bool = False,
         llm_model: str = DEFAULT_OLLAMA_MODEL,
+        alerter: Alerter | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self.alerter = alerter
         self.watch_paths = watch_paths or []
         self.security_mode = security_mode
         self.siem_log = siem_log
@@ -346,6 +350,8 @@ class MultiAgentWatchApp(App):
         self.title = "AgentWatch - Multi-Agent Dashboard"
         if self.security_mode:
             self.title += " [SECURITY]"
+        if self.alerter is not None and not self.is_headless:
+            self.alerter.warn = tui_warn(self)
 
         # Pre-populate team headers if we have initial processes
         if self._initial_processes:
@@ -486,6 +492,7 @@ class MultiAgentWatchApp(App):
             efficiency_score=eff.score,
             rot_score=rot_value,
         )
+        self._alert(agent_data, warnings, report)
 
         # Update sidebar item status
         agent_data["item"].update_status(report.overall_score, report.status)
@@ -568,6 +575,7 @@ class MultiAgentWatchApp(App):
                 )
                 if self.security_mode:
                     self._fire_secret_alerts(other_warnings, self._agent_label(data))
+                self._alert(data, other_warnings, other_report)
                 data["_last_count"] = current_count
                 data["_last_report"] = other_report
 
@@ -594,6 +602,16 @@ class MultiAgentWatchApp(App):
                     team_name=header.team.name,
                 )
                 header.update_status(team_report.overall_score, team_report.status)
+
+    def _alert(self, agent_data: dict, warnings: list["Warning"], report: "HealthReport") -> None:
+        """Feed one agent's scoring pass to `--notify`/`--webhook`/`--headless`."""
+        if self.alerter is None:
+            return
+        item = agent_data["item"]
+        self.alerter.observe(
+            str(item.log_path), item.agent_type, item.project_name or item.log_path.name,
+            warnings, report, actions=agent_data["buffer"].stats.action_count,
+        )
 
     def _export_and_assess(self, agent_data: dict, warnings: list["Warning"]) -> None:
         """Per-agent SIEM export (new warnings only) + throttled Tier-2 LLM

@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 35 (develop-overdrive) Feature 3, `agentwatch statusline` (2026-10-18), at the end of this file; before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
+> **Latest: Sprint 35 (develop-overdrive) Feature 5, session history + `agentwatch report` (2026-10-18), at the end of this file, followed only by the Feature 6 budget alert plan; before it Feature 4, alerts (2026-10-18); before it Feature 3, `agentwatch statusline` (2026-10-18); before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -4491,6 +4491,139 @@ Code's status line when the session is unhealthy, from the coach's state.
   (cursor_discovery -> parser -> cursor_discovery), fixed by making
   parser's discovery re-exports lazy too.
 
+### Sprint 35 (develop-overdrive) — Feature 4: alerts (2026-10-18)
+**Type:** feature. Branch `feature/alerts` from `develop-overdrive` @
+`8dd8365` (after #146); draft PR into `develop-overdrive`. Tell the user when
+an unattended session goes bad with no TUI on screen.
+
+### Acceptance Criteria
+- [x] 1. `watch-all --headless`: the same `MultiAgentWatchApp` engine on
+      Textual's headless driver (no fork, nothing extracted: the driver does
+      no screen I/O). One stdout line per new warning (any severity, per
+      (session, `warning_dedup_key`)), flushed. Ctrl+C exits 0 through the
+      app's normal shutdown. With no agents running it waits for them
+      instead of exiting.
+- [x] 2. `--notify` on `watch` and `watch-all` (headless or not): Critical
+      overall status or a new finding at `--notify-min high|critical`
+      (default critical). Windows: `powershell -NoProfile -NonInteractive
+      -EncodedCommand` fixed ToastNotificationManager script, PowerShell's
+      own AppId, on a daemon thread; on failure a `winsound.MessageBeep`
+      and one warning. macOS `osascript`, Linux `notify-send`; none: warn
+      once and continue. No new deps.
+- [x] 3. `--webhook URL` / `AGENTWATCH_WEBHOOK` (read only): urllib POST
+      `{"text": ...}`, 5 s timeout, daemon thread; failure warns once with
+      the URL masked (`scheme://host/***`); http(s) only, an invalid value
+      is rejected without echoing it.
+- [x] 4. One alert per (session, `warning_dedup_key`); overall Critical once
+      per episode and at most once per session per 10 min; cleared ->
+      forgotten -> recurrence alerts.
+- [x] 5. Text only as argv/stdin, no shell: PowerShell gets ASCII JSON on
+      stdin into XML text nodes (script constant), AppleScript gets
+      run-handler argv, notify-send `--`. Tested with quotes, backticks,
+      `$()`, `$env:`, `<b>`, newlines; real PowerShell round-trip test.
+- [x] 6. `tests/test_alerts.py` (35): rate limiting, text/redaction, webhook
+      payload + 500 + refused (local http.server), backend selection,
+      escaping, CLI, headless engine smoke on a fixture transcript.
+- [x] 7. Live (Windows 10 19045): `watch --log <fixture> --security --notify
+      --webhook http://127.0.0.1:8765/...` in a new console -> toast in
+      `ToastNotificationManager.History` ("agentwatch: Claude Code · myproj
+      — privilege_escalation") and the local server got the JSON. Direct
+      fire with quotes/backticks/`$()`/newline/`<b>&amp;` text: rc 0, shown
+      verbatim. `watch-all --headless --security --notify` against the live
+      Claude Code session printed its warning; a real console Ctrl+C
+      (GenerateConsoleCtrlEvent) exited 0, no traceback. README's hidden
+      `Start-Process` background example run as written.
+- [x] 8. README "Alerts", CLAUDE.md module map + env var, this section,
+      CHANGELOG.
+- [x] 9. Full suite + ruff green.
+
+### Decisions
+- Headless is Textual's headless driver, not an extracted engine: the engine
+  already runs headless (`app.run(headless=True)`; print reaches the real
+  stdout, SIGINT is handled), so there is no second loop to keep in sync.
+- A finding alert in the same pass stands in for the overall-Critical alert
+  (they nearly always coincide), so one bad turn gives one notification.
+- `--notify-min` also gates `--webhook`; the headless log is unfiltered.
+- Labels and cost reuse statusline's `_LABELS` / `_cost` (no third
+  formatter); unmapped signals (security) show the signal name.
+- Single `watch` waits for its process lookup before alerting so the text
+  names the project (falls back to the log's folder).
+- Windows toast uses PowerShell's registered AppId: an unregistered one
+  makes Show() succeed with no toast on Windows 10.
+- In the TUIs a sink failure shows as a Textual toast (stderr is hidden).
+
+### Limits
+- macOS and Linux backends are unit-tested (argv) only, not live-run.
+- A detector whose warning flickers on and off between passes re-alerts on
+  each return (same rule as the coach).
+- Background runs with no console (`pythonw`) have no stdout for headless
+  lines; redirect stdout as in the README.
+
+### CTO review fix (PR #150)
+- [x] Startup baseline: what a session already shows when first seen (at
+      startup, or discovered later with history) is recorded as alerted
+      without sending; only later findings and later transitions into
+      Critical alert. `--notify-existing` opts back in. The headless log is
+      not baselined.
+- The baseline is a window (`BASELINE_S` = 5 s from the session's first pass
+      with actions), not a single pass: a pass can run before the watcher
+      has read the log (empty buffer), and a large log loads in one blocking
+      step, so "first pass" alone would alert on the history. A pass with no
+      actions does not start the clock.
+- Critical at baseline counts as the current episode; if it clears and
+      recurs, it alerts at once (no cooldown consumed).
+- Tests: pre-existing HIGH/CRITICAL + Critical at startup -> 0 alerts, a
+      new finding afterwards -> 1; later-discovered session; history load
+      blocking past the window; `--notify-existing`; headless smoke now
+      appends `sudo` to the fixture log after the baseline and gets exactly
+      one alert.
+- `AGENTWATCH_WEBHOOK` kept: board approved option B (2026-10-23), env var
+      as fallback for `--webhook`, the flag wins.
+
+### QA round 1 fixes (PR #150)
+- [x] 1 (MEDIUM) Control chars: `secret_scanner.one_line(text, limit)` (next
+      to redact_truncate, which both callers already used) maps every
+      non-printable char to a space (QA's `[\x00-\x1f\x7f-\x9f]` plus bidi
+      overrides and zero-width chars), collapses, redacts, bounds. Used for
+      alert agent/project (60 chars each), signal, message, headless line,
+      and coach._clean (the note kept ESC before). net._printable (DNS
+      names, "?" replacement) left as is.
+- [x] 2 Webhook text Slack-escaped (`& < >`) in `_post`; the toast keeps
+      the raw (cleaned) text.
+- [x] 3 Opener built with a no-redirect HTTPRedirectHandler subclass: any
+      3xx is an HTTPError (302 to another host and to ftp:// both refused,
+      not followed); post_webhook also refuses non-http(s).
+- [x] 4 `--webhook "http://[::1/x"`: BadParameter, value not echoed;
+      mask_url returns `<invalid url>` instead of raising.
+- [x] 5 One delivery worker per Alerter (lock + list, exits when idle):
+      one notifier process at a time; more than COALESCE_AT (3) queued ->
+      one "agentwatch: N new alerts" summary with the first 3 heads. Burst
+      check, `watch-all --headless --all-logs --notify-existing --notify-min
+      high` over this machine's logs: 43 alerts -> 2 deliveries (1 + "42 new
+      alerts"), peak 1 PowerShell child, 6 threads.
+- [x] 6 `_ALERT_LABELS`: statusline labels + every security signal (kept
+      out of statusline._LABELS, whose keys pick what the status line
+      shows). Plain http:// webhook warns once on stderr at startup.
+- Tests: control chars in message/project/agent (printable, one line,
+      bounded), coach uses the helper, Slack escaping, redirect refused
+      (other host, ftp), non-http refused, malformed URL, plain-http
+      warning, queue bound + coalescing (real threads), labels.
+
+### QA round 2 fix (PR #150, QA passed on 1d101fa)
+- [x] `Alerter._run`: each sink call is wrapped (`_safely`): any exception
+      warns once per sink with the exception type only (a webhook error's
+      text can hold the URL) and delivery continues. An unexpected exit
+      outside a sink resets `_busy`, so the next alert starts a new worker
+      (that batch is lost). `_busy` is still cleared under the same lock as
+      the empty-queue check, so no wakeup is lost.
+- Tests: `_desktop` raising RuntimeError and the webhook raising, then a
+      second alert is still delivered and each sink warned once; worker
+      crash outside a sink resets `_busy`. The redirect test server now
+      reads the request body before replying (one unreproduced flake: an
+      unread body is a TCP reset on Windows).
+- `AGENTWATCH_WEBHOOK`: board approved option B (2026-10-23): read-only
+      fallback for `--webhook`, the flag wins when both are set (test
+      `test_webhook_flag_overrides_env`).
 
 ### Sprint 35 (develop-overdrive) — Feature 5: session history + `agentwatch report` (2026-10-18)
 **Type:** feature. Branch `feature/history-report` from `develop-overdrive` @
@@ -4589,3 +4722,12 @@ webhook, after alerts #150), any cloud or team sync.
       `/home/<name>` and `/Users/<name>` are `~` on any OS. Tests: Windows,
       POSIX, UNC, mixed separators, trailing separator. history's
       `_base`/`_SEP` already split on both separators.
+
+### Next: Feature 6 budget alert (after #150 merges)
+Board decisions (2026-10-23):
+- `--budget USD` on `watch` and `watch-all`.
+- One alert per session when `SessionStats.estimated_cost` reaches the
+  limit; an unknown cost (no price) never alerts.
+- A session already over budget at startup DOES alert: exempt from the
+  silent startup baseline.
+- `--budget` alone turns on desktop notifications (no `--notify` needed).
