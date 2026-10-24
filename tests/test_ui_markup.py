@@ -18,7 +18,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import ListView
 
 from agentwatch.detectors.base import normalize_error
-from agentwatch.parser.logs import parse_claude_code_entry
+from agentwatch.parser.logs import error_text, parse_claude_code_entry, parse_moltbot_entry
 from agentwatch.ui.app import AgentWatchApp, WarningsList
 from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
@@ -63,6 +63,22 @@ def _write_log(path: Path) -> None:
     path.write_text("".join(json.dumps(e) + "\n" for e in lines), encoding="utf-8")
 
 
+def _write_markup_only_log(path: Path) -> None:
+    """Commands/errors carrying markup, no dict errors: on the old code this
+    fails with MarkupError, not the api_error dict crash."""
+    lines = [
+        {
+            "sessionId": "s1",
+            "timestamp": f"2026-01-01T12:01:{i:02d}Z",
+            "tool": "Bash",
+            "command": COMMAND,
+            "error": ERROR,
+        }
+        for i in range(12)  # loop detector needs a full 10-action window
+    ]
+    path.write_text("".join(json.dumps(e) + "\n" for e in lines), encoding="utf-8")
+
+
 def _assert_plain(widget, *literals: str) -> None:
     content = widget.render()
     text = str(content)
@@ -80,6 +96,20 @@ def test_api_error_dict_becomes_string():
 def test_error_without_message_is_compact_json():
     entry = {**API_ERROR, "timestamp": "2026-01-01T12:00:00Z", "error": {"code": 5}}
     assert parse_claude_code_entry(entry).error_message == '{"code":5}'
+
+
+@pytest.mark.parametrize("value", [None, "", False, 0, {}, []])
+def test_error_text_falsy_is_no_error(value):
+    assert error_text(value) is None
+
+
+@pytest.mark.parametrize("value", [False, {}])
+def test_moltbot_falsy_error_stays_success(value):
+    entry = {"type": "tool_call", "tool_call": {"name": "Read", "input": {}}, "error": value,
+             "timestamp": "2026-01-01T12:00:00Z"}
+    action = parse_moltbot_entry(entry)
+    assert action.success is True
+    assert action.error_message is None
 
 
 @pytest.mark.parametrize("value", [{"message": "x"}, None, 42, ["a"]])
@@ -113,6 +143,20 @@ async def test_watch_all_renders_log_text_literally(tmp_path):
         widget = await _wait_for_warnings(app, pilot)
         assert app.is_running
         _assert_plain(widget, ERROR, COMMAND, "[loop")
+
+
+@pytest.mark.parametrize(
+    "make",
+    [lambda d: AgentWatchApp(log_path=d / "session.jsonl"),
+     lambda d: MultiAgentWatchApp(watch_paths=[d])],
+)
+async def test_markup_only_log_renders_literally(tmp_path, make):
+    _write_markup_only_log(tmp_path / "session.jsonl")
+    app = make(tmp_path)
+    async with app.run_test() as pilot:
+        widget = await _wait_for_warnings(app, pilot)
+        assert app.is_running
+        _assert_plain(widget, ERROR, COMMAND)
 
 
 @pytest.mark.parametrize(

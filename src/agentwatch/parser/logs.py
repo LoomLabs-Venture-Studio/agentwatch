@@ -276,8 +276,9 @@ def _redact_truncate(text: str, limit: int) -> str:
 
 def error_text(value: Any) -> str | None:
     """A log's ``error`` field as text. Claude Code's ``system/api_error``
-    logs a dict there; detectors expect a string."""
-    if value is None or value == "":
+    logs a dict there; detectors expect a string. Falsy values (``False``,
+    ``0``, ``{}``, ``[]``) mean no error."""
+    if not value:
         return None
     if isinstance(value, str):
         return value
