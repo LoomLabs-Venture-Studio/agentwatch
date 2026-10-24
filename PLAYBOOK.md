@@ -4786,3 +4786,18 @@ Board decisions (2026-10-24):
   show.
 - [x] Tests: `tests/test_ui_markup.py` (synthetic api_error fixture; pilot
   runs of `watch` and `watch-all`).
+
+### PR 2: sessions table (feature/watch-ui-2-table) -- DONE
+- [x] `watch-all` main screen is a full-width `DataTable` (one row per
+  session, row key = log path) plus a Selected strip; the old panels are not
+  mounted (classes kept for PR 4's detail view). Enter stays unbound.
+- [x] Attention sort (Critical, HIGH, other warnings, active by recency,
+  idle 5+ min/stopped last); `o` cycles attention/cost/recent; the cursor is
+  put back on the selected session after a reorder. Subagents under their
+  parent; team header row kept.
+- [x] Per tick: only changed cells get `update_cell`; rows are added/removed
+  only when sessions appear/disappear; a changed row is bold for ~2s.
+  Unselected sessions keep the cached report (selected-only rescoring is
+  PR 4). `c` (clear cache) removed.
+- [x] Cells are `rich.text.Text` (log text never parsed as markup).
+- [x] Tests: `tests/test_multi_app_table.py`.

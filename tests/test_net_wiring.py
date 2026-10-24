@@ -88,6 +88,8 @@ async def _until(pilot, cond):
 
 
 def _stats_line(app) -> str:
+    if isinstance(app, MultiAgentWatchApp):  # the numbers line of the Selected strip
+        return str(app.query_one("#selected").render()).splitlines()[1]
     return app.query_one("#stats-display", StatsPanel)._build_content()
 
 
