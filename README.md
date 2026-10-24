@@ -352,7 +352,10 @@ or a HIGH or worse warning), the estimated cost of the sessions on screen
 (not your history: `agentwatch report` has that), alerts this run (sent to
 `--notify`/`--webhook`; without those, new HIGH or worse findings), loop
 breaker blocks this run (`blocks N`, including sessions already blocked at
-startup), the `--budget` limit when set, and the time. The Events panel at the bottom lists, newest first: sessions started
+startup), the per-session `--budget` limit when set (`budget $5.00/session`),
+and the time. Under 100 columns the cost reads `spent $X`.
+
+The Events panel at the bottom lists, newest first: sessions started
 and stopped, each new warning (one line per finding) and when it clears,
 alerts sent, a loop breaker block (`⛔ proj loop breaker blocked a repeated
 call (~$1.40)`), `s` (`security on: N findings` / `security off`, one line,
@@ -361,13 +364,18 @@ Warnings and blocks a session already has when it is first seen are not
 listed (one "N sessions loaded; M loop blocks so far" line at startup
 instead). Loop breaker state is the coach's per-session state file, read
 only: its modification time is checked every 2 seconds and the file is read
-only when it changed.
+only when it changed. watch-all finds that file through the plugin's data dir
+(`~/.claude/plugins/data/agentwatch-*/coach`) or the pointer the hook leaves
+in the per-user cache (`$XDG_CACHE_HOME/agentwatch/coach`); if the hook and
+watch-all run with different `XDG_CACHE_HOME` values and the plugin data is
+outside `~/.claude/plugins/data`, it can't.
 
 Enter opens the selected session full screen, in four tabs: Health (overall
 health and its status, efficiency, context health, actions/errors/duration
 and every warning with its suggestion and cost; plus a `Loop breaker:` line:
 `armed (Nx)`, `blocked once`, `not armed`, or
-`off (AGENTWATCH_LOOP_BREAKER=off)`), Security (findings, or how
+`off in this shell (AGENTWATCH_LOOP_BREAKER=off)`: the variable is read
+from watch-all's environment, not the hook's), Security (findings, or how
 to turn security mode on, plus raw counts of credential file accesses,
 privilege commands, network actions and injection-like messages), Network
 (the remote endpoints seen during its actions) and Process (pid, type,

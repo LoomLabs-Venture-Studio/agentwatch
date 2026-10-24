@@ -40,6 +40,7 @@ import re
 from datetime import datetime, timedelta
 
 import pytest
+from rich.cells import cell_len
 
 from agentwatch.cli import print_health_report, print_security_alert
 from agentwatch.detectors import create_registry
@@ -238,6 +239,22 @@ class TestWarningsListSuggestionMarker:
         rendered = widget._build_content()
         assert_no_emoji(rendered)
         assert "[TIP]" in rendered
+
+    @pytest.mark.parametrize(("theme", "indent"), [("ascii", 11), ("agent", 8)])
+    def test_tip_continuation_indent_is_the_prefix_width(self, monkeypatch, theme, indent):
+        """QA #161: `     [TIP] ` is 11 cells, `     💡 ` 8 (the emoji is 2 wide)."""
+        from agentwatch.ui import app as ui_app
+
+        calls = []
+        monkeypatch.setattr(ui_app, "hang", lambda line, width, ind: calls.append((line, ind))
+                            or line)
+        set_theme(theme)
+        widget = WarningsList()
+        widget.update_warnings([Warning(category=Category.PROGRESS, severity=Severity.MEDIUM,
+                                        signal="loop", message="m", suggestion="try")])
+        widget._build_content()
+        tip = next((line, ind) for line, ind in calls if line.endswith(" try"))
+        assert tip[1] == indent and cell_len(tip[0][:-len("try")]) == indent
 
 
 class TestMultiAppAsciiCells:

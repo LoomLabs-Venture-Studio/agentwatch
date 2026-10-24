@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
@@ -352,10 +353,8 @@ class MultiAgentWatchApp(App):
         self._update_subtitle()
         for key, label, width in COLUMNS:
             if key == "cost" and self._budget is not None:
-                # ponytail: chosen at startup; a later resize keeps it.
-                self._budget_width = BUDGET_WIDTH if self.size.width >= 100 else BUDGET_NARROW
-                narrow = self._budget_width == BUDGET_NARROW
-                label, width = "COST/BUDGT" if narrow else "COST / BUDGET", self._budget_width
+                self._budget_width = self._budget_form(self.size.width)
+                label, width = self._budget_label(), self._budget_width
             table.add_column(label, key=key, width=width)
         yield table
         self._selected = Static(
@@ -665,7 +664,7 @@ class MultiAgentWatchApp(App):
 
     def _loop_breaker_text(self, data: dict) -> str:
         if _loop_breaker_off():
-            state = "off (AGENTWATCH_LOOP_BREAKER=off)"
+            state = "off in this shell (AGENTWATCH_LOOP_BREAKER=off)"
         elif data.get("_coach_key") is None:
             state = "n/a (Claude Code sessions only)"
         elif data.get("_coach_file") is None:
@@ -1016,6 +1015,29 @@ class MultiAgentWatchApp(App):
         if reordered and selected in shown_keys:
             table.move_cursor(row=table.get_row_index(selected), animate=False)
 
+    @staticmethod
+    def _budget_form(width: int) -> int:
+        """COST / BUDGET column width: narrow under 100 columns."""
+        return BUDGET_WIDTH if width >= 100 else BUDGET_NARROW
+
+    def _budget_label(self) -> str:
+        return "COST/BUDGT" if self._budget_width == BUDGET_NARROW else "COST / BUDGET"
+
+    def on_resize(self, event: events.Resize) -> None:
+        """--budget: switch the COST / BUDGET column between its wide and
+        narrow form when the terminal crosses 100 columns. (Runs before
+        App._on_resize: self.size is still the old size.)"""
+        form = self._budget_form(event.size.width)
+        if self._budget_width is None or form == self._budget_width:
+            return
+        self._budget_width = form
+        column = self._table.columns["cost"]
+        column.label, column.width = Text(self._budget_label()), self._budget_width
+        for cells in self._cells.values():  # each row's cost is redrawn next refresh
+            cells["cost"] = ("", "\0")
+        self._table._require_update_dimensions = True  # no public API for a column's width
+        self.refresh_ui()
+
     def _width(self, column: str) -> int | None:
         return self._budget_width if column == "cost" else None
 
@@ -1039,7 +1061,7 @@ class MultiAgentWatchApp(App):
             f"on screen {spent}",
             f"alerts {self._alerts}",
             f"blocks {self._blocks}",
-            *([f"budget {_usd(self._budget)}"] if self._budget is not None else []),
+            *([f"budget {_usd(self._budget)}/session"] if self._budget is not None else []),
             f"{datetime.now():%H:%M:%S}",
         ]
         body = "   ".join(parts)
@@ -1048,7 +1070,7 @@ class MultiAgentWatchApp(App):
         if len(title) + 2 + len(body) > room:
             title = ""  # narrow: the counts and the clock matter more
             if len(body) > room:  # tighter, then without the clock
-                parts[1] = spent
+                parts[1] = f"spent {spent}"
                 body = "  ".join(parts)
                 if len(body) > room:
                     body = "  ".join(parts[:-1])

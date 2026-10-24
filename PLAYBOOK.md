@@ -4912,3 +4912,11 @@ Board decisions (2026-10-24):
   4.7-5.8%, 3.1-3.7ms vs PR 5 4.9-6.1%, 2.7-3.4ms (grouping costs
   ~0.4ms per tick at 124 sessions). Synthetic 10: 0.91ms (PR 5 0.86ms).
 - [x] Tests: `tests/test_multi_app_many.py`.
+- [x] PR 5 QA follow-ups: the COST / BUDGET column switches form on a
+  resize across 100 columns (`on_resize`, from the event's size: it runs
+  before `App._on_resize`); 80-column header `spent $X`, `budget
+  $X/session`; `Loop breaker: off in this shell (...)`; the `[TIP]`
+  hanging indent is the prefix's cell width; README run-on line and how
+  watch-all finds coach state; tests no longer write the real coach pointer
+  (autouse `XDG_CACHE_HOME`/`LOCALAPPDATA` in `tests/conftest.py`); QA's
+  odd state-file cases in `tests/test_multi_app_blocks.py`.

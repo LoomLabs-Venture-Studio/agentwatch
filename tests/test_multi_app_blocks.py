@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -135,6 +136,45 @@ async def test_missing_and_corrupt_state_files_are_ignored(state):
         assert "blocks 0" in _header(app)
 
 
+@pytest.mark.parametrize(("body", "signal"), [
+    (b'{"armed": {"blocked": "true", "loop_id": "x"}}', "ok"),  # not a bool: not blocked
+    (b'{"armed": {"blocked": true, "loop_id": ["a"], "count": "9", "cost_usd": 1e308}}',
+     "\u26d4 loop blocked"),
+    (b'{"armed": {"blocked": true, "loop_id": {"a": 1}, "count": true, "cost_usd": NaN}}',
+     "\u26d4 loop blocked"),
+    (b'{"armed": null}', "ok"), (b'""', "ok"), (b"null", "ok"), (b"\x00\xff", "ok"), (b"", "ok"),
+])
+async def test_odd_state_files_never_crash(state, body, signal):
+    """QA #161: odd values show no count or cost, never raise."""
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        _seed(app, "w", ago=1)
+        _end_baselines(app)
+        (state / "w.json").write_bytes(body)
+        app.refresh_ui()
+        await pilot.pause()
+        assert app.is_running and _signal(app, "w") == signal
+        assert f"blocks {int(signal != 'ok')}" in _header(app)
+
+
+async def test_markup_project_reblock_and_deleted_state(state):
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        path = _seed(app, "m", ago=1)
+        app.agents[path]["item"].project_name = "[b]x[/b][@click=app.quit]"
+        _end_baselines(app)
+        now = time.time()
+        for blocked, mtime in ((True, now - 10), (False, now - 5), (True, now)):
+            _write(state, "m", blocked=blocked, loop_id="L1", mtime=mtime)
+            app.refresh_ui()
+            await pilot.pause()
+        assert _feed(app)[0].startswith("\u26d4 [b]x[/b][@click=app.quit] loop breaker blocked")
+        os.unlink(state / "m.json")
+        app.refresh_ui()
+        await pilot.pause()
+        assert app.is_running and _signal(app, "m") == "ok"
+
+
 async def test_other_agents_are_not_read(state):
     app = MultiAgentWatchApp()
     async with app.run_test(size=(120, 40)):
@@ -155,7 +195,7 @@ def test_subagent_log_uses_the_coach_key():
 
 @pytest.mark.parametrize("env, expected", [
     (None, "Loop breaker: blocked once"),
-    ("off", "Loop breaker: off (AGENTWATCH_LOOP_BREAKER=off)"),
+    ("off", "Loop breaker: off in this shell (AGENTWATCH_LOOP_BREAKER=off)"),
 ])
 async def test_detail_health_tab_loop_breaker_line(state, monkeypatch, env, expected):
     if env:
@@ -205,8 +245,27 @@ async def test_budget_column_and_header(size):
         assert cells["over"].plain == f"$7.00{limit} ▮▮▮▮" and "red" in str(cells["over"].style)
         screen = _screen(app)
         label = "COST / BUDGET" if size[0] == 120 else "COST/BUDGT"
-        assert label in screen and "budget $5.00" in _header(app)
+        assert label in screen and "budget $5.00/session" in _header(app)
+        if size[0] == 80:
+            assert "spent $13.75" in _header(app)
         print(f"\n--- {size[0]}x{size[1]} budget ---\n{screen}")
+
+
+async def test_budget_column_follows_a_resize_across_100_columns():
+    """QA #161: the COST / BUDGET column form is not fixed at startup."""
+    app = MultiAgentWatchApp(alerter=Alerter(budget=5.0))
+    async with app.run_test(size=(120, 40)) as pilot:
+        stats = app.agents[_seed(app, "a", ago=1)]["buffer"].stats
+        stats.total_cost = 2.5
+        app.refresh_ui()
+        table = app.query_one("#sessions")
+        for width, label, cell in ((80, "COST/BUDGT", "$2.50 ▮▮▯▯"),
+                                   (100, "COST / BUDGET", "$2.50 / $5.00 ▮▮▯▯"),
+                                   (99, "COST/BUDGT", "$2.50 ▮▮▯▯")):
+            await pilot.resize_terminal(width, 30)
+            await pilot.pause()
+            assert table.get_cell("a.jsonl", "cost").plain == cell
+            assert label in _screen(app) and "TOP SIGNAL" in _screen(app), width
 
 
 async def test_no_budget_keeps_the_plain_cost_column():

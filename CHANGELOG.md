@@ -79,6 +79,9 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- `watch-all --budget`: the cost column switches between its wide and
+  narrow form when the terminal is resized across 100 columns; the narrow
+  header says `spent $X` and the limit reads `budget $X/session`.
 - `watch-all` team rows: teams that form after startup get their header,
   members sit under it in tree order, and the header goes when the team's
   sessions are gone.

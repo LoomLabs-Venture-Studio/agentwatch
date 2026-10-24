@@ -7,6 +7,7 @@ import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.cells import cell_len
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.reactive import reactive
@@ -216,7 +217,7 @@ class WarningsList(Static):
             # Show suggestion
             if w.suggestion:  # wrapped (hanging indent), not cut
                 tip = ascii_safe("💡", "[TIP]")
-                lines.append(hang(f"     {tip} {w.suggestion}", width, 6 + len(tip) + 1))
+                lines.append(hang(f"     {tip} {w.suggestion}", width, 5 + cell_len(tip) + 1))
 
             # Show Tier-2 LLM triage, if --llm assessed this warning
             # (LiveLlmAssessor.stamp() attaches it before we get here)

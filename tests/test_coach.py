@@ -240,6 +240,8 @@ def test_state_dir_prefers_plugin_data(monkeypatch, tmp_path):
 
 def test_state_dir_is_per_user_not_shared_tmp(monkeypatch):
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)  # the default dir (nothing written)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
     assert REAL_STATE_DIR() == coach.user_state_dir()
     d = REAL_USER_STATE_DIR()
     assert d.parts[-2:] == ("agentwatch", "coach")
@@ -352,8 +354,8 @@ def test_no_pointer_when_state_is_in_the_user_dir(tmp_path, monkeypatch):
 
 
 def test_user_state_dir_ignores_plugin_data(monkeypatch, tmp_path):
-    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
-    assert tmp_path not in REAL_USER_STATE_DIR().parents
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "plugin"))
+    assert tmp_path / "plugin" not in REAL_USER_STATE_DIR().parents
 
 
 def test_imports_without_a_home_dir():
