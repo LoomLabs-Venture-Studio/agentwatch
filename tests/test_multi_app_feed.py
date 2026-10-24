@@ -36,10 +36,12 @@ async def test_header_counts():
             _seed(app, "medium", ago=1, warnings=[_warning(Severity.MEDIUM)])
             _seed(app, "idle", ago=900)
             _seed(app, "stopped", ago=1, stopped=True)
+            _seed(app, "stopped-crit", ago=1, stopped=True,  # stopped: doesn't need you
+                  warnings=[_warning(Severity.CRITICAL)])
             app.refresh_ui()
             await pilot.pause()
             header = _header(app)
-            assert "5 sessions · 3 active · 2 need you" in header, header
+            assert "6 sessions · 3 active · 2 need you" in header, header
             assert "on screen $1.75" in header and "alerts 0" in header
             assert header.rstrip()[-8:].count(":") == 2  # HH:MM:SS
             assert header.startswith("agentwatch") == (size[0] == 120), header
@@ -111,6 +113,50 @@ async def test_alerts_and_budget_reach_the_feed():
             "→ alert (desktop): Claude Code · proj — budget $1.00 hit",
         ]
         assert "alerts 2" in _header(app)
+
+
+async def test_budget_at_startup_is_one_summary_line():
+    """Sessions already over --budget when loaded: one feed line, not one
+    budget line plus one alert line each. Alert delivery is unchanged."""
+    sent = []
+    alerter = Alerter(notify=True, budget=1.0)
+    alerter._desktop = lambda title, body: sent.append(title)
+    app = MultiAgentWatchApp(alerter=alerter)
+    async with app.run_test(size=(120, 40)):
+        for i in range(30):
+            path = _seed(app, f"s{i}", ago=1)
+            app.agents[path]["buffer"].stats.total_cost = 0.9 if i >= 25 else 2.0
+        app.refresh_ui()
+        assert _feed(app) == [] and len(sent) == 25  # every alert still delivered
+        app._loaded_until = 0.0
+        app.refresh_ui()
+        assert _feed(app) == [
+            "$ 25 sessions over budget $1.00; 25 alerts sent (desktop)",
+            "30 sessions loaded",
+        ]
+        assert "alerts 25" in _header(app)
+        for data in app.agents.values():  # session windows end; new actions
+            data["_feed_until"] = 0.0
+            data["buffer"].add(_action(0, 1))
+        app.refresh_ui()
+        assert len(_feed(app)) == 2  # held 80% lines are not shown later
+
+
+async def test_session_started_over_budget_after_startup_is_one_line():
+    sent = []
+    alerter = Alerter(notify=True, budget=1.0)
+    alerter._desktop = lambda title, body: sent.append(title)
+    app = MultiAgentWatchApp(alerter=alerter)
+    async with app.run_test(size=(120, 40)):
+        app._loaded_until = None  # startup over
+        path = _seed(app, "late", ago=1)
+        app.agents[path]["buffer"].stats.total_cost = 2.0
+        app.refresh_ui()
+        assert _feed(app) == [
+            "$ late: over budget $1.00 ($2.00)",
+            "→ alert (desktop): Claude Code · late — budget $1.00 hit",
+        ]
+        assert len(sent) == 1
 
 
 async def test_feed_and_header_are_literal():

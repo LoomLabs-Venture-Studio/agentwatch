@@ -104,7 +104,10 @@ numbers refer to the GitHub repository.
   (Critical or a HIGH+ warning), on-screen cost, alerts this run and the
   time. An Events panel lists sessions started/stopped, new and cleared
   warnings, alerts sent and `--budget` 80%/100% crossings, newest first;
-  `e` focuses it to scroll, Esc returns to the table.
+  `e` focuses it to scroll, Esc returns to the table. Stopped sessions are
+  not counted as needing you. Sessions already over `--budget` when loaded
+  give one "N sessions over budget; N alerts sent" line instead of two lines
+  each (the alerts themselves are still sent).
 - `watch-all`: Enter opens a session full screen with Health, Security,
   Network and Process tabs (Tab/Shift+Tab or 1-4; Esc, Backspace or `q`
   back to the same row). The health panels are shorter in `watch` too: one

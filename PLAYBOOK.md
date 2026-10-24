@@ -4840,3 +4840,8 @@ Board decisions (2026-10-24):
   the shown session's cached warnings each tick; LLM dispatch now happens on
   scoring passes only (as for unselected sessions before).
 - [x] Tests: `tests/test_multi_app_detail.py`.
+- [x] PR 3 QA follow-ups: budget feed lines held in a session's window
+  (`_in_window`, like findings) and alert-sent lines held during startup,
+  then one `_flush_held` line ("$ N sessions over budget $X; N alerts sent");
+  Alerter delivery unchanged. "need you" skips stopped sessions.
+  `Alerter._send` survives a raising `on_send` (warned once).

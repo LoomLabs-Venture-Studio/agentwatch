@@ -251,6 +251,17 @@ def test_budget_already_over_alerts_during_baseline(clock):
     assert len(r.sent) == 1
 
 
+def test_failing_on_send_never_drops_the_delivery():
+    r = _Recorder()
+    warned = []
+    r.alerter.warn = warned.append
+    r.alerter.on_send = lambda title, body: 1 / 0
+    r.observe([_w()])
+    r.observe([_w(), _w("thrash")])
+    assert len(r.sent) == 2  # both delivered
+    assert warned == ["alert feed update failed: ZeroDivisionError"]  # warned once
+
+
 def test_budget_once_per_session():
     r, see = _budget()
     see(6.0, session="a")

@@ -254,6 +254,11 @@ class MultiAgentWatchApp(App):
         self._loaded_until: float | None = float("inf")
         self._alerts = 0  # alerts sent this run (or new HIGH+ findings, no alert sinks)
         self._summary: tuple[int, int, int, float | None] = (0, 0, 0, None)
+        # Budget crossings and alerts sent in a session's startup window: one
+        # summary feed line (_flush_held) instead of one line each.
+        self._held_budget: list[tuple[str, float]] = []  # (project, cost)
+        self._held_alerts = 0
+        self._holding = False  # at startup, an Alerter pass for a session in its window
         self._header_text = ""
 
         if agent_processes is not None:
@@ -465,6 +470,7 @@ class MultiAgentWatchApp(App):
                 self._loaded_until = None
                 n = len(self.agents)
                 self._event(f"{n} session{'s' * (n != 1)} loaded")
+            self._flush_held()
             self._update_header()
         finally:
             self._refreshing = False
@@ -493,7 +499,11 @@ class MultiAgentWatchApp(App):
         )
         if self.security_mode:
             self._fire_secret_alerts(warnings, self._agent_label(data))
-        self._alert(data, warnings, report)
+        self._holding = self._loaded_until is not None and self._in_window(data)
+        try:
+            self._alert(data, warnings, report)
+        finally:
+            self._holding = False
         self._feed_findings(data, warnings)
         data["_last_count"] = count
         data["_last_report"] = report
@@ -665,8 +675,9 @@ class MultiAgentWatchApp(App):
             rows[str(path)] = cells = self._row_cells(data, report, age, now)
             sort_keys[path] = self._sort_key(data, report, age)
             active += cells["dot"][0] == ascii_safe("●", "*")
-            need_you += report.status == critical or any(
-                _SEVERITY_RANK[w.severity] <= 1 for w in report.warnings
+            need_you += data["item"].process_status != "stopped" and (
+                report.status == critical
+                or any(_SEVERITY_RANK[w.severity] <= 1 for w in report.warnings)
             )
             cost = data["buffer"].stats.estimated_cost
             if cost is not None:
@@ -754,6 +765,9 @@ class MultiAgentWatchApp(App):
         sinks = self._alert_sinks()
         if sinks:
             self._alerts += 1
+            if self._holding:
+                self._held_alerts += 1
+                return
             self._event(f"{ascii_safe('→', '->')} alert ({', '.join(sinks)}): "
                         f"{title.removeprefix('agentwatch: ')}", "magenta")
 
@@ -765,11 +779,9 @@ class MultiAgentWatchApp(App):
         item: AgentItem = data["item"]
         stats = data["buffer"].stats
         project = item.project_name or item.log_path.name
-        now = time.monotonic()
-        if stats.action_count and "_feed_until" not in data:
-            data["_feed_until"] = now + BASELINE_S
+        quiet = self._in_window(data)
         found = {warning_dedup_key(w): w for w in warnings}
-        if now >= data.get("_feed_until", float("inf")):
+        if not quiet:
             shown: dict[str, str] = data.get("_feed_keys", {})
             count_alerts = not self._alert_sinks()
             for key, w in found.items():
@@ -791,11 +803,42 @@ class MultiAgentWatchApp(App):
             return
         if cost >= budget:
             data["_budget_hit"] = data["_budget_warned"] = True
-            self._event(f"$ {project}: budget {_usd(budget)} hit ({_usd(cost)})", "bold red")
+            if quiet:
+                self._held_budget.append((project, cost))
+            else:
+                self._event(f"$ {project}: budget {_usd(budget)} hit ({_usd(cost)})", "bold red")
         elif cost >= BUDGET_WARN * budget and not data.get("_budget_warned"):
             data["_budget_warned"] = True
-            self._event(f"$ {project}: {BUDGET_WARN:.0%} of budget {_usd(budget)} "
+            if not quiet:
+                self._event(f"$ {project}: {BUDGET_WARN:.0%} of budget {_usd(budget)} "
                         f"({_usd(cost)})", "yellow")
+
+    @staticmethod
+    def _in_window(data: dict) -> bool:
+        """True in a session's first BASELINE_S with actions (its log history
+        loading) or before it has any; starts that clock."""
+        now = time.monotonic()
+        if data["buffer"].stats.action_count and "_feed_until" not in data:
+            data["_feed_until"] = now + BASELINE_S
+        return now < data.get("_feed_until", float("inf"))
+
+    def _flush_held(self) -> None:
+        """One feed line for the budget crossings and alerts held back in
+        startup windows; at startup, after the "N sessions loaded" line."""
+        if self._loaded_until is not None or not (self._held_budget or self._held_alerts):
+            return
+        held, self._held_budget = self._held_budget, []
+        alerts, self._held_alerts = self._held_alerts, 0
+        budget = self.alerter.budget if self.alerter is not None else None
+        line = ""
+        if len(held) == 1:
+            line = f"$ {held[0][0]}: over budget {_usd(budget)} ({_usd(held[0][1])})"
+        elif held:
+            line = f"$ {len(held)} sessions over budget {_usd(budget)}"
+        if alerts:
+            sent = f"{alerts} alert{'s' * (alerts != 1)} sent ({', '.join(self._alert_sinks())})"
+            line = f"{line}; {sent}" if line else f"{ascii_safe('→', '->')} {sent}"
+        self._event(line, "bold red" if held else "magenta")
 
     def action_toggle_feed(self) -> None:
         """`e`: focus the event feed (to scroll it); again: back to the table."""
