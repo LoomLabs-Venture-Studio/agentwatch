@@ -20,6 +20,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -77,11 +78,15 @@ def user_dir(tmp_path):
     )
     # "empty-window" real case: no workspace.json at all.
 
+    # lastUpdatedAt is epoch milliseconds (same unit as createdAt).
+    now_ms = int(time.time() * 1000)
     db_path = root / "globalStorage" / "state.vscdb"
     conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(SCHEMA_SQL)
-        _insert_header(conn, "c-real", "ws-1", 2000, {})
+        _insert_header(conn, "c-real", "ws-1", now_ms - 60_000, {})
+        # Messaged long ago, well outside the 30 min activity window.
+        _insert_header(conn, "c-stale", "ws-1", now_ms - 2 * 3600 * 1000, {})
         _insert_header(conn, "c-chat", "ws-1", 2500, {"unifiedMode": "chat"})
         _insert_header(conn, "c-archived", "ws-1", 3000, {}, archived=1)
         _insert_header(conn, "c-never-messaged", "ws-1", None, {})
@@ -238,10 +243,22 @@ class TestFindCursorAgents:
         agents = find_cursor_agents(user_dir=user_dir, require_running=False)
         assert len(agents) == 1
 
+    def test_excludes_composer_idle_past_activity_window(self, user_dir, monkeypatch):
+        """c-stale is a real agent-mode composer that was messaged 2h ago --
+        outside the 30 min window, so it must not be reported as running."""
+        monkeypatch.setattr(cursor_discovery, "is_cursor_running", lambda: True)
+        ids = [a.session_id for a in find_cursor_agents(user_dir=user_dir)]
+        assert "c-stale" not in ids
+        assert "c-real" in ids
+
+    def test_activity_window_is_30_minutes(self):
+        assert cursor_discovery.ACTIVITY_WINDOW_SECONDS == 1800
+
     def test_only_surfaces_qualifying_agent_mode_composer(self, user_dir, monkeypatch):
         """c-chat (chat mode), c-archived (archived), c-never-messaged (no
-        lastUpdatedAt), empty-state-draft (isDraft), and c-no-workspace (no
-        resolvable workspace) must all be excluded -- only c-real survives."""
+        lastUpdatedAt), c-stale (idle past the activity window),
+        empty-state-draft (isDraft), and c-no-workspace (no resolvable
+        workspace) must all be excluded -- only c-real survives."""
         monkeypatch.setattr(cursor_discovery, "is_cursor_running", lambda: True)
         agents = find_cursor_agents(user_dir=user_dir)
 
