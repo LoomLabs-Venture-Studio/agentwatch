@@ -126,7 +126,10 @@ async def test_attention_sort_and_o_cycles():
         _seed(app, "stopped", ago=1, stopped=True)
         _seed(app, "fresh", ago=1)
         app.refresh_ui()
-        assert _order(app) == ["critical", "high", "medium", "fresh", "quiet", "stopped", "idle"]
+        assert _order(app) == ["critical", "high", "medium", "fresh", "quiet", "(a to show)"]
+        await pilot.press("a")  # idle 15+ min and stopped sessions: folded until `a`
+        assert _order(app) == ["critical", "high", "medium", "fresh", "quiet", "stopped", "idle",
+                               "(a to fold)"]
         table = app.query_one("#sessions")
         assert table.get_cell("high.jsonl", "signal").plain == "⚠ loop: Bash (7x)"
         assert table.get_cell("fresh.jsonl", "signal").plain == "ok"
@@ -137,7 +140,7 @@ async def test_attention_sort_and_o_cycles():
         assert app.sort_mode == "cost" and table.border_subtitle == "sort: cost"
         await pilot.press("o")
         assert app.sort_mode == "recent"
-        assert _order(app)[-3:] == ["quiet", "critical", "idle"]
+        assert _order(app)[-4:-1] == ["quiet", "critical", "idle"]
         await pilot.press("o")
         assert app.sort_mode == "attention"
         assert _order(app)[0] == "critical"
@@ -168,7 +171,7 @@ async def test_tick_updates_changed_cells_only():
     app = MultiAgentWatchApp()
     async with app.run_test(size=(120, 40)) as pilot:
         a = _seed(app, "a", ago=1)
-        _seed(app, "b", ago=3600)
+        _seed(app, "b", ago=600)
         app.refresh_ui()
         table = app.query_one("#sessions")
         calls = {"clear": 0, "add_row": 0, "updated": []}
@@ -236,6 +239,7 @@ async def test_stopped_rows_are_grey_and_idle_rows_are_not():
     async with app.run_test(size=(120, 40)):
         _seed(app, "stopped", ago=1, stopped=True)
         _seed(app, "idle", ago=900)
+        app._show_idle = True
         app.refresh_ui()
         table = app.query_one("#sessions")
         assert str(table.get_cell("stopped.jsonl", "project").style) == STOPPED_STYLE
@@ -297,7 +301,7 @@ async def test_keys_q_s_o_and_no_clear_cache():
     app = MultiAgentWatchApp()
     async with app.run_test(size=(120, 40)) as pilot:
         keys = {b[0] if isinstance(b, tuple) else b.key for b in app.BINDINGS}
-        assert keys == {"q", "s", "o", "e", "escape", "enter"}
+        assert keys == {"q", "s", "o", "e", "a", "slash", "escape", "enter"}
         assert not hasattr(app, "action_clear_cache")
         await pilot.pause()
         screen = _screen(app)

@@ -149,6 +149,7 @@ async def _wait_for_selected(app, pilot):
 async def test_watch_all_renders_log_text_literally(tmp_path):
     _write_log(tmp_path / "session.jsonl")
     app = MultiAgentWatchApp(watch_paths=[tmp_path])
+    app._show_idle = True  # the log's actions are old
     async with app.run_test() as pilot:
         await _wait_for_selected(app, pilot)
         assert app.is_running
