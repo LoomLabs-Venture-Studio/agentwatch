@@ -160,12 +160,29 @@ class DiscoveryCache:
 
     cwd_by_pid: dict[int, Path] = field(default_factory=dict)
     log_by_pid: dict[int, tuple[Path | None, str | None]] = field(default_factory=dict)
+    # Claude Code: the session id in the process's live-session record when its
+    # log was resolved (None: no record). A different id on a later scan means
+    # the session changed inside the process (/clear, /resume): re-resolve.
+    claude_session_by_pid: dict[int, str | None] = field(default_factory=dict)
+    # Process start time per pid: a pid the OS hands to a new process must not
+    # inherit the old process's cached cwd and log.
+    started_by_pid: dict[int, float] = field(default_factory=dict)
+
+    def forget(self, pid: int) -> None:
+        """Drop every cache entry for *pid*."""
+        for entries in (
+            self.cwd_by_pid, self.log_by_pid, self.claude_session_by_pid, self.started_by_pid
+        ):
+            entries.pop(pid, None)
 
     def prune(self, live_pids: set[int]) -> None:
         """Drop cache entries for PIDs that are no longer running."""
-        for pid in self.cwd_by_pid.keys() - live_pids:
-            self.cwd_by_pid.pop(pid, None)
-            self.log_by_pid.pop(pid, None)
+        known = (
+            self.cwd_by_pid.keys() | self.log_by_pid.keys()
+            | self.claude_session_by_pid.keys() | self.started_by_pid.keys()
+        )
+        for pid in known - live_pids:
+            self.forget(pid)
 
 
 def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProcess]:
@@ -238,6 +255,10 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
             # DiscoveryCache is provided — avoids re-resolving cwd for
             # every already-known PID on each poll tick).
             if cache is not None:
+                if create_time:
+                    if cache.started_by_pid.get(pid, create_time) != create_time:
+                        cache.forget(pid)  # pid reused by a new process
+                    cache.started_by_pid[pid] = create_time
                 cwd = cache.cwd_by_pid.get(pid) or _get_process_cwd(pid)
                 if pid not in cache.cwd_by_pid and cwd is not None:
                     cache.cwd_by_pid[pid] = cwd
@@ -252,17 +273,27 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
             log_file = None
             session_id = None
             cache_hit = False
-            # Claude Code: whether the process has a live-session record
-            # decides how far _assign_claude_logs may fall back.
+            # A Claude Code session can change inside a running process
+            # (/clear, /resume). The live-session record is a small JSON file,
+            # so it is read on every scan to check the cached log still holds.
+            claude_record = None
             if agent_type == "claude-code":
+                claude_record = _read_claude_session_record(pid, create_time)
                 claude_started[pid] = create_time
-                if _read_claude_session_record(pid, create_time) is not None:
+                if claude_record is not None:
                     claude_registered.add(pid)
             # An app-server's open threads change between scans: always re-resolve (#105).
             app_server = agent_type == "codex" and "app-server" in cmdline[1:]
             if cache is not None and pid in cache.log_by_pid and not app_server:
                 cached_log, cached_session = cache.log_by_pid[pid]
-                if cached_log is not None and cached_log.exists():
+                if (
+                    cached_log is not None
+                    and cached_log.exists()
+                    and (
+                        agent_type != "claude-code"
+                        or _claude_cache_current(cache, pid, claude_record)
+                    )
+                ):
                     log_file, session_id = cached_log, cached_session
                     cache_hit = True
 
@@ -282,6 +313,10 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                 if cache is not None:
                     cache.log_by_pid[pid] = (log_file, session_id)
                     cache.cwd_by_pid[pid] = cwd
+                    if agent_type == "claude-code":
+                        cache.claude_session_by_pid[pid] = (
+                            claude_record.session_id if claude_record else None
+                        )
 
             # Without a rollout cwd, the app-server's cwd is its own bin\<hash>
             # dir: no project (#94). The cache keeps that cwd for resolve_log.
@@ -626,6 +661,16 @@ def _read_claude_session_record(
         session_id=session_id,
         cwd=Path(cwd) if isinstance(cwd, str) and cwd not in ("", "?") else None,
     )
+
+
+def _claude_cache_current(
+    cache: DiscoveryCache, pid: int, record: _ClaudeSessionRecord | None
+) -> bool:
+    """Whether a Claude Code pid's cached log was resolved for its current session."""
+    if record is not None and record.session_id is None:
+        return True  # unreadable this scan: keep what we had
+    current = record.session_id if record is not None else None
+    return cache.claude_session_by_pid.get(pid) == current
 
 
 def _process_create_time(pid: int) -> float | None:

@@ -279,6 +279,66 @@ class TestUnmatchedProcessGetsNoLog:
         assert agent.log_file is None
 
 
+class TestCacheRevalidation:
+    def test_cache_follows_a_session_switch_in_the_same_process(self, machine):
+        cwd = machine.project("app")
+        log_a = machine.transcript(cwd, SID_A, mtime=T0 + 100)
+        machine.spawn(1000, cwd, started=T0)
+        machine.register(1000, SID_A)
+        cache = DiscoveryCache()
+
+        assert machine.by_pid(cache)[1000].log_file == log_a
+
+        # /clear: Claude Code starts a new transcript and rewrites sessionId.
+        log_b = machine.transcript(cwd, SID_B, mtime=T0 + 300)
+        machine.register(1000, SID_B)
+        agent = machine.by_pid(cache)[1000]
+
+        assert agent.log_file == log_b
+        assert agent.session_id == SID_B
+
+    def test_unchanged_session_is_revalidated_without_re_resolving(self, machine, monkeypatch):
+        cwd = machine.project("app")
+        log_a = machine.transcript(cwd, SID_A, mtime=T0 + 100)
+        machine.spawn(1001, cwd, started=T0)
+        machine.register(1001, SID_A)
+        cache = DiscoveryCache()
+        calls = []
+        real = discovery._resolve_claude_code_log
+
+        def counting(cwd, pid=None):
+            calls.append(pid)
+            return real(cwd, pid=pid)
+
+        monkeypatch.setattr(discovery, "_resolve_claude_code_log", counting)
+
+        machine.by_pid(cache)
+        # Status updates rewrite the record; the session id stays the same.
+        machine.register(1001, SID_A, status="busy")
+        second = machine.by_pid(cache)[1001]
+
+        assert calls == [1001]
+        assert second.log_file == log_a
+
+    def test_reused_pid_does_not_inherit_the_cached_mapping(self, machine):
+        cwd = machine.project("app")
+        other = machine.project("other")
+        log_a = machine.transcript(cwd, SID_A, mtime=T0 + 100)
+        log_c = machine.transcript(other, SID_C, mtime=T0 + 5000)
+        machine.spawn(1002, cwd, started=T0)
+        machine.register(1002, SID_A)
+        cache = DiscoveryCache()
+        assert machine.by_pid(cache)[1002].log_file == log_a
+
+        # The process exits between scans and a new one gets the same pid.
+        machine.spawn(1002, other, started=T0 + 4000)
+        machine.register(1002, SID_C)
+        agent = machine.by_pid(cache)[1002]
+
+        assert agent.working_directory == other
+        assert agent.log_file == log_c
+
+
 class TestSingleSessionUnchanged:
     def test_registered_single_session(self, machine):
         cwd = machine.project("app")
