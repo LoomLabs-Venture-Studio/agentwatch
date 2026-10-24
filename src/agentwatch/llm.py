@@ -88,11 +88,14 @@ class LlmUnavailableError(RuntimeError):
     daemon isn't reachable, or the requested model isn't pulled."""
 
 
-def _is_loopback_host(value: str) -> bool:
-    """True if an OLLAMA_HOST-style value names this machine only.
+def _is_local_host(value: str) -> bool:
+    """True if an OLLAMA_HOST-style value reaches this machine only.
 
-    Accepts ``host``, ``host:port``, or a full URL. Anything unparseable,
-    including ``0.0.0.0``, counts as non-loopback.
+    Accepts ``host``, ``host:port``, or a full URL. Local means loopback
+    (``localhost``, 127.0.0.0/8, ``::1``) or unspecified (``0.0.0.0``, ``::``).
+    Many users set ``OLLAMA_HOST=0.0.0.0`` so the server binds every
+    interface; a client connecting there reaches this machine. Anything
+    unparseable or any other address counts as remote.
     """
     text = value.strip()
     if "://" not in text:
@@ -111,7 +114,7 @@ def _is_loopback_host(value: str) -> bool:
         return False
     if ip.version == 6 and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
-    return ip.is_loopback
+    return ip.is_loopback or ip.is_unspecified
 
 
 def _import_ollama_client():
@@ -191,10 +194,10 @@ class OllamaAnalyzer:
         client_cls = _import_ollama_client()
         # An explicitly passed host is the caller's choice. The ollama client
         # also silently reads OLLAMA_HOST when host is None, so refuse a
-        # non-loopback value there: prompts carry log content and must stay
+        # non-local value there: prompts carry log content and must stay
         # on this machine.
         env_host = os.environ.get("OLLAMA_HOST", "").strip()
-        if host is None and env_host and not _is_loopback_host(env_host):
+        if host is None and env_host and not _is_local_host(env_host):
             raise LlmUnavailableError(
                 "OLLAMA_HOST points at a non-local host, so Tier-2 LLM analysis is "
                 "disabled (it is local-only). Unset OLLAMA_HOST or point it at localhost."

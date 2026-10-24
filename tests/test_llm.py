@@ -220,7 +220,8 @@ class TestOllamaHostIsLocalOnly:
             "http://ollama.example.com:11434",
             "10.0.0.5:11434",
             "https://gpu-box.internal",
-            "http://0.0.0.0:11434",
+            "http://192.168.1.10:11434",
+            "http://8.8.8.8:11434",
             "http://[2001:db8::1]:11434",
         ],
     )
@@ -239,9 +240,15 @@ class TestOllamaHostIsLocalOnly:
             "localhost:11434",
             "https://LOCALHOST:11434",
             "http://[::1]:11434",
+            "0.0.0.0",
+            "0.0.0.0:11434",
+            "http://0.0.0.0:11434",
+            "[::]:11434",
+            "http://[::]:11434",
         ],
     )
-    def test_loopback_env_host_is_accepted(self, env_host, fake_client, monkeypatch):
+    def test_local_env_host_is_accepted(self, env_host, fake_client, monkeypatch):
+        """Loopback and unspecified (bind-all) addresses reach this machine."""
         monkeypatch.setenv("OLLAMA_HOST", env_host)
         OllamaAnalyzer()
         assert fake_client.host is None  # client reads OLLAMA_HOST itself
