@@ -155,6 +155,7 @@ async def test_cursor_stays_on_session_when_rows_reorder():
         assert app.selected_path == b and _order(app) == ["a", "b"]
 
         app.agents[b]["registry"].check_all = lambda buffer: [_warning(Severity.HIGH)]
+        app.agents[b]["buffer"].add(_action(2, 1))  # rescored only on new actions
         app.refresh_ui()
         await pilot.pause()
         table = app.query_one("#sessions")
@@ -296,8 +297,17 @@ async def test_keys_q_s_o_and_no_clear_cache():
     app = MultiAgentWatchApp()
     async with app.run_test(size=(120, 40)) as pilot:
         keys = {b[0] if isinstance(b, tuple) else b.key for b in app.BINDINGS}
-        assert keys == {"q", "s", "o", "e", "escape"}
+        assert keys == {"q", "s", "o", "e", "escape", "enter"}
         assert not hasattr(app, "action_clear_cache")
         await pilot.pause()
         screen = _screen(app)
         assert "Toggle Security" in screen and "Sort" in screen and "Clear Cache" not in screen
+
+
+async def test_refresh_after_screens_are_gone_is_a_no_op():
+    """A RowHighlighted or tick queued during shutdown must not raise."""
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)):
+        _seed(app, "a", ago=1)
+    assert not app.screen_stack
+    app.refresh_ui()

@@ -30,6 +30,18 @@ if TYPE_CHECKING:
     from agentwatch.parser.models import Action
 
 
+def show(widget: Static, content: str) -> None:
+    """`Static.update` only when the text changed (an update re-lays out)."""
+    if content != widget.content:
+        widget.update(content)
+
+
+def _hm(minutes: float) -> str:
+    """A duration as "2h 05m" / "45m"."""
+    h, m = divmod(int(minutes), 60)
+    return f"{h}h {m:02d}m" if h else f"{m}m"
+
+
 class HealthBar(Static):
     """Widget showing overall health as a progress bar."""
 
@@ -49,14 +61,12 @@ class HealthBar(Static):
         theme = get_theme()
         emoji = theme.emoji_for(self.status)
 
-        return f"""
-  {emoji} Overall Health: [{bar}] {self.score}%
-  Status: {self.status.upper()}
-"""
+        return f"  {emoji} Health [{bar}] {self.score}%  {self.status.upper()}"
 
 
 class SecurityStatus(Static):
-    """Widget showing security status."""
+    """Widget showing security status (no health words: those are for
+    HealthBar)."""
 
     score = reactive(100)
     alert_count = reactive(0)
@@ -73,21 +83,17 @@ class SecurityStatus(Static):
         status = security_status_from_score(self.score)
         emoji = theme.emoji_for(status)
 
-        return f"""
-  Security Score: {self.score}%
-  Status: {emoji} {status.upper()}
-  Active Alerts: {self.alert_count}
-"""
+        n = self.alert_count
+        found = f"{n} finding{'s' * (n != 1)}" if n else "clean"
+        return f"  {emoji} Security: {found}  (score {self.score}%)"
 
 
 class EfficiencyBar(Static):
     """Widget showing session efficiency as a progress bar with category breakdown."""
 
     def __init__(self, **kwargs):
-        theme = get_theme()
         super().__init__(
-            f"  Efficiency: [████████████████████] 100%  Status: {theme.level_0.upper()}\n"
-            f"  Session is {theme.level_0}",
+            "  Efficiency: waiting for data" + ascii_safe("…", "..."),
             markup=False,
             **kwargs,
         )
@@ -95,7 +101,7 @@ class EfficiencyBar(Static):
 
     def update_efficiency(self, report: "EfficiencyReport") -> None:
         self._report = report
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def _build_content(self) -> str:
         r = self._report
@@ -105,14 +111,8 @@ class EfficiencyBar(Static):
         filled = int(r.score / 5)  # 20 chars total
         bar = "█" * filled + "░" * (20 - filled)
 
-        theme = get_theme()
-        emoji = theme.emoji_for(r.status)
-        lines: list[str] = []
-        lines.append(
-            f"  {emoji} Efficiency: [{bar}] {r.score}%  "
-            f"Status: {r.status.upper()}"
-        )
-        lines.append("")
+        # No status word or recommendation: HealthBar has the one status.
+        lines = [f"  {get_theme().emoji_for(r.status)} Efficiency [{bar}] {r.score}%"]
 
         # Per-category mini bars with detail
         # Rates over a near-zero duration are meaningless (#45).
@@ -129,20 +129,17 @@ class EfficiencyBar(Static):
             (
                 "Pacing",
                 r.penalty_pacing,
-                f"{r.duration_minutes:.0f}min, {r.actions_per_turn:.1f} act/turn",
+                f"{_hm(r.duration_minutes)}, {r.actions_per_turn:.1f} act/turn",
             ),
         ]
         for label, penalty, detail in categories:
             mini = _mini_bar(penalty)
-            lines.append(f"    {label:12s} [{mini}] {penalty:.2f}   {detail}")
-
-        lines.append("")
+            lines.append(f"    {label:12s} [{mini}]  {detail}")
         # Cost is informational — not scored (no log-reported cost data yet)
         if r.cost_total is None:
             lines.append("  Est. cost: n/a (no price for this model)")
         else:
             lines.append(f"  Est. cost: ${r.cost_total:.2f} ({cost_rate}/min)")
-        lines.append(f"  {r.recommendation}")
 
         return "\n".join(lines)
 
@@ -150,17 +147,19 @@ class EfficiencyBar(Static):
 class WarningsList(Static):
     """Widget showing list of active warnings."""
 
+    limit: int | None = 8  # warnings shown; None: all (the scrollable detail view)
+
     def __init__(self, **kwargs):
         super().__init__("  No active warnings", markup=False, **kwargs)
         self._warnings: list[Warning] = []
         self._goal_alignment: dict | None = None
 
     def on_mount(self) -> None:
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def update_warnings(self, warnings: list["Warning"]) -> None:
         self._warnings = warnings
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def update_goal_alignment(self, assessment: dict | None) -> None:
         """Update the Tier-2 goal-alignment advisory block (`llm.py`'s
@@ -180,7 +179,7 @@ class WarningsList(Static):
         even by accident.
         """
         self._goal_alignment = assessment
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def _build_content(self) -> str:
         lines: list[str] = list(self._build_goal_alignment_block())
@@ -191,7 +190,7 @@ class WarningsList(Static):
 
         lines.append("  Active Warnings:")
         lines.append("")
-        for w in self._warnings[:8]:
+        for w in self._warnings[: self.limit]:
             cost = f"  {w.cost_label}" if w.cost_label else ""
             lines.append(f"  {w.emoji} [{w.signal:20}] {w.message}{cost}")
 
@@ -201,12 +200,8 @@ class WarningsList(Static):
                 lines.append(f"     {ascii_safe('→', '->')} {detail_line}")
 
             # Show suggestion
-            if w.suggestion:
-                # Wrap long suggestions
-                suggestion = w.suggestion
-                if len(suggestion) > 90:
-                    suggestion = suggestion[:87] + "..."
-                lines.append(f"     {ascii_safe('💡', '[TIP]')} {suggestion}")
+            if w.suggestion:  # wrapped by the widget, not cut
+                lines.append(f"     {ascii_safe('💡', '[TIP]')} {w.suggestion}")
 
             # Show Tier-2 LLM triage, if --llm assessed this warning
             # (LiveLlmAssessor.stamp() attaches it before we get here)
@@ -226,8 +221,8 @@ class WarningsList(Static):
 
             lines.append("")  # Blank line between warnings
 
-        if len(self._warnings) > 8:
-            lines.append(f"  ... and {len(self._warnings) - 8} more")
+        if self.limit is not None and len(self._warnings) > self.limit:
+            lines.append(f"  ... and {len(self._warnings) - self.limit} more")
 
         return "\n".join(lines)
 
@@ -331,7 +326,7 @@ class StatsPanel(Static):
         self._network = ""
 
     def on_mount(self) -> None:
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def update_stats(
         self, action_count: int, error_count: int, duration: float, network: str = ""
@@ -340,12 +335,12 @@ class StatsPanel(Static):
         self._error_count = error_count
         self._duration = duration
         self._network = network
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def _build_content(self) -> str:
         line = (
             f"  Actions: {self._action_count}  Errors: {self._error_count}  "
-            f"Duration: {int(self._duration)}m"
+            f"Duration: {_hm(self._duration)}"
         )
         return f"{line}  {self._network}" if self._network else line
 

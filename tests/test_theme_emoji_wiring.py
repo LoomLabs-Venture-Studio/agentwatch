@@ -129,7 +129,8 @@ class TestSecurityStatusThemeWiring:
         widget.score = 100
         rendered = widget.render()
         assert theme.emoji_0 in rendered
-        assert theme.level_0.upper() in rendered
+        assert "Security: clean" in rendered
+        assert theme.level_0.upper() not in rendered  # health words are HealthBar's
         assert "\U0001F6E1" not in rendered  # old hardcoded shield emoji gone
 
     def test_default_theme_at_risk_and_compromised_map_to_level_1_and_level_3(self):

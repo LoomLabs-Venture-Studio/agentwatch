@@ -333,9 +333,21 @@ alerts sent, and with `--budget` a session reaching 80% and 100% of it.
 Warnings a session already has when it is first seen are not listed (one
 "N sessions loaded" line at startup instead).
 
-Keys: arrows select a session, `o` cycles the sort (attention, cost,
-recent), `e` focuses the Events panel to scroll it (`e` or Esc goes back),
-`s` toggles security detectors, `q` quits.
+Enter opens the selected session full screen, in four tabs: Health (overall
+health and its status, efficiency, context health, actions/errors/duration
+and every warning with its suggestion and cost), Security (findings, or how
+to turn security mode on, plus raw counts of credential file accesses,
+privilege commands, network actions and injection-like messages), Network
+(the remote endpoints seen during its actions) and Process (pid, type,
+uptime, working directory, CPU, memory, team, session id; `n/a` with
+`--all-logs`). It updates every second. A session is rescored only when it
+has new actions (or after `s`), the same for every session.
+
+Keys: arrows select a session, Enter opens it, `o` cycles the sort
+(attention, cost, recent), `e` focuses the Events panel to scroll it (`e` or
+Esc goes back), `s` toggles security detectors, `q` quits. In the detail
+view: Tab/Shift+Tab or `1`-`4` switch tabs, arrows and PgUp/PgDn scroll, Esc,
+Backspace or `q` go back to the table.
 
 While `watch` / `watch-all` run, AgentWatch polls each agent process's
 sockets (and its child processes') about once a second, unprivileged, and

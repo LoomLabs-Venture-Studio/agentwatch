@@ -332,7 +332,10 @@ class Alerter:
         """Queue one alert for the single delivery worker."""
         item = (f"agentwatch: {name} {ascii_safe('—', '-')} {label}", _clean(message))
         if self.on_send is not None:
-            self.on_send(*item)
+            try:  # a failing UI callback must never drop the delivery
+                self.on_send(*item)
+            except Exception as exc:
+                self._warn_once("on_send", f"alert feed update failed: {type(exc).__name__}")
         with self._lock:
             self._pending.append(item)
             if self._busy:
