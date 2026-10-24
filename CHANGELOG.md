@@ -66,6 +66,10 @@ numbers refer to the GitHub repository.
 - `--log`, `--analytics-log`, `--siem-log` and `--audit-log` given a
   directory (`check`, `security-scan`, `watch`, `watch-all`, `agentguard`) is
   a one-line usage error instead of an `IsADirectoryError` traceback.
+- `watch-all`: after `s`, every session is rescored on the next tick (idle
+  sessions kept their old report). The selected session is no longer
+  rescored every second without new actions, which moved its context health
+  and state on its own; every session is now rescored only on new actions.
 - `watch-all` and `watch` no longer exit when a Claude Code session logs an
   API error (`system/api_error`, whose `error` is an object): the parser keeps
   the error's `message`, and error matching accepts any value.
@@ -101,6 +105,13 @@ numbers refer to the GitHub repository.
   time. An Events panel lists sessions started/stopped, new and cleared
   warnings, alerts sent and `--budget` 80%/100% crossings, newest first;
   `e` focuses it to scroll, Esc returns to the table.
+- `watch-all`: Enter opens a session full screen with Health, Security,
+  Network and Process tabs (Tab/Shift+Tab or 1-4; Esc, Backspace or `q`
+  back to the same row). The health panels are shorter in `watch` too: one
+  status word (on the overall health bar), no raw 0.00-1.00 numbers next to
+  bars, context modules at 0 left out, durations in hours and minutes, all
+  warnings and full suggestions in the detail view. The security panel reads
+  "Security: clean" or "N findings" instead of reusing health words.
 - `stats` and `audit` name a Claude Code project after the `cwd` its
   transcripts record, so `agentwatch-main` is no longer shown as `main`
   (the old name decoded the project dir, which can't tell `-` from `/`).
