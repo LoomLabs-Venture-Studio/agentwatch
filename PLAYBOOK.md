@@ -4388,15 +4388,15 @@ Source: CTO + 3-way QA review of `develop` (2026-10-22) and PR #157's crash find
 6. OPEN: how 0.2.0 ships, given the 2026-09-30 "never merge into main" rule (see CLAUDE.md Git Rules). Phase 1 does not depend on it.
 
 ### Acceptance Criteria
-- [ ] F1 `watch` / `watch-all` no longer exit on dict `error` fields or on `[...]` text in logs; log text never renders as markup, links or actions (port of #157)
-- [ ] F2 two Claude Code sessions in one project dir map to their own logs; a cached mapping is re-checked; a stopped agent's watcher task is cancelled (no double emission)
-- [ ] F3 redact never loses appended lines; a second redact keeps a real backup or refuses; symlinks are refused or resolved; a placeholder word inside a secret does not skip redaction; password-like values show no tail
-- [ ] F4 Cursor lists only recently active composers; state.vscdb reads set a timeout; a nested agent's endpoints are not also charged to its parent; the HTML-comment injection pattern is linear; non-loopback `OLLAMA_HOST` is refused or warned
-- [ ] F5 `test_aider_watcher` passes on macOS 3.12 or the macOS gap is root-caused and documented
-- [ ] F6 release prep: no personal paths in tracked files, repo-root clutter removed, CHANGELOG dated, `publish.yml` runs tests and checks tag == version
-- [ ] All existing tests pass on 3.11/3.12 (CI) and `ruff check .` is clean
-- [ ] Integrated QA on `develop` after all merges, incl. live `ps` / `watch-all` / `audit --all` / `net --once` on macOS
-- [ ] No new security issues
+- [x] F1 `watch` / `watch-all` no longer exit on dict `error` fields or on `[...]` text in logs; log text never renders as markup, links or actions (port of #157)
+- [x] F2 two Claude Code sessions in one project dir map to their own logs; a cached mapping is re-checked; a stopped agent's watcher task is cancelled (no double emission)
+- [x] F3 redact never loses appended lines; a second redact keeps a real backup or refuses; symlinks are refused or resolved; a placeholder word inside a secret does not skip redaction; password-like values show no tail
+- [x] F4 Cursor lists only recently active composers; state.vscdb reads set a timeout; a nested agent's endpoints are not also charged to its parent; the HTML-comment injection pattern is linear; non-loopback `OLLAMA_HOST` is refused or warned
+- [x] F5 `test_aider_watcher` passes on macOS 3.12 or the macOS gap is root-caused and documented
+- [x] F6 release prep: no personal paths in tracked files, repo-root clutter removed, CHANGELOG dated, `publish.yml` runs tests and checks tag == version
+- [x] All existing tests pass on 3.11/3.12 (CI) and `ruff check .` is clean
+- [ ] Integrated QA on `develop` after all merges (pre-merge integration run done 2026-10-24: all 7 branches merge cleanly, 2007 passed on 3.12 and 3.14, ruff clean; post-merge live macOS check still to do), incl. live `ps` / `watch-all` / `audit --all` / `net --once` on macOS
+- [x] No new security issues
 
 ### Implementation Plan
 | Task | Branch | Model | QA model |
@@ -4410,6 +4410,29 @@ Source: CTO + 3-way QA review of `develop` (2026-10-22) and PR #157's crash find
 
 Rules for every task: branch from `origin/develop`, draft PR to `develop`, never touch `CHANGELOG.md` except in F6, push with `--no-verify` (board-approved 2026-09-30).
 
+### Result (pre-merge, 2026-10-24)
+Every PR went through engineer, then CTO diff review, then QA, then fixes. QA findings were fixed rather than deferred (board: everything on develop is QA'd and fixed).
+- F1 #166: ported #157. Also added a per-line `except` in LogWatcher (one bad line can no longer kill `watch`) and five codex `error_text` sites. QA PASS.
+- F5 #165: Aider and the JSONL LogWatcher only read `Change.modified`. macOS FSEvents reports appends as `Change.added`, so on macOS `watch` never live-tailed any agent. Fixed with a read on any event, resolved paths, a 1 s tick gated by a stat signature, and a prefix fingerprint for truncate and rewrite. Also fixed QA-found shrink-then-append drops. QA PASS x2, CTO verified the final commit.
+- F2 #169: Claude Code never holds its transcript open. The authoritative pid-to-session map is `~/.claude/sessions/<pid>.json` (sessionId, cwd, procStart), rewritten on /clear and /resume and deleted on exit. The mapping is now one-to-one, the cache is re-validated each scan, and reaped watcher tasks are cancelled. Live: 6/6 sessions resolved (develop: 5/6). QA PASS.
+- F4 #167: the injection HTML-comment check is now a linear `str.find` scan with whole-word keywords. The old regex never finished on a 50k flood. False positives on 20k local docs went from ~450 to 53 files. Also: Cursor 30-min window, db timeout, nested net attribution, local-only OLLAMA_HOST (0.0.0.0 counts as local). QA PASS, CTO verified.
+- F3 #168: redact data safety, plus `audit` now really scans user prompts and tool results (it never did). Real-machine audit: 2.2 GB in 19.8 s, 69 of 86 findings in the new channels. QA PASS (20x race runs, no loss), CTO verified the follow-ups.
+- F6 #171: personal paths removed, root ADRs moved to docs/adr/, `graphify-out/` gitignored, publish.yml gated on tests plus tag==version, CHANGELOG entries.
+
+### Open (documented, not fixed)
+- Session record `~/.claude/sessions/<pid>.json` is a Claude Code internal. If it changes, discovery falls back to leaving the process unresolved.
+- `CLAUDE_CONFIG_DIR` not honoured (pre-existing).
+- Redact: a writer that holds an append fd across the replace still loses its later writes (documented in the `--force` warning).
+- CI runs Linux only. The macOS-only watcher bug went unseen for months. Recommend a macos-latest job (board decision: CI minutes cost).
+- `ruff format --check` fails on ~48 files repo-wide (pre-existing, not enforced by CI).
+
 ### PR Log
 | Date | PR | Branch | Type | Status | Rejection Reason |
 |---|---|---|---|---|---|
+| 2026-10-24 | #164 | docs/sprint-37-release-hardening | docs | ready for board approval | -- |
+| 2026-10-24 | #166 | fix/watch-crashes | fix | ready (CTO review, QA PASS, CI green) | -- |
+| 2026-10-24 | #165 | fix/aider-watcher-macos | fix | ready (CTO review, QA PASS x2, CTO verified final commit, CI green) | -- |
+| 2026-10-24 | #169 | fix/claude-session-mapping | fix | ready (CTO review, QA PASS, CI green) | -- |
+| 2026-10-24 | #167 | fix/release-small-fixes | fix | ready (CTO review x3, QA PASS, CTO verified final commit, CI green) | -- |
+| 2026-10-24 | #168 | fix/redact-data-safety | fix | ready (CTO review, QA PASS, CTO verified follow-ups, CI green) | -- |
+| 2026-10-24 | #171 | chore/release-0.2.0-prep | chore | ready (CTO review x2) | -- |
