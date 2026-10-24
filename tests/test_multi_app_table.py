@@ -296,7 +296,7 @@ async def test_keys_q_s_o_and_no_clear_cache():
     app = MultiAgentWatchApp()
     async with app.run_test(size=(120, 40)) as pilot:
         keys = {b[0] if isinstance(b, tuple) else b.key for b in app.BINDINGS}
-        assert keys == {"q", "s", "o"}
+        assert keys == {"q", "s", "o", "e", "escape"}
         assert not hasattr(app, "action_clear_cache")
         await pilot.pause()
         screen = _screen(app)

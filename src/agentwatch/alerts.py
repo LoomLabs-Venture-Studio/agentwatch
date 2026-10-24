@@ -250,6 +250,9 @@ class Alerter:
         self.webhook = webhook
         self.log = log
         self.warn: Callable[[str], None] = _warn_stderr
+        # Told (title, body) of each alert as it is queued, on the caller's
+        # thread (the watch-all event feed). Changes nothing about delivery.
+        self.on_send: Callable[[str, str], None] | None = None
         self._warned: set[str] = set()
         self._sessions: dict[str, _Session] = {}
         self._pending: list[tuple[str, str]] = []
@@ -328,6 +331,8 @@ class Alerter:
     def _send(self, label: str, name: str, message: str) -> None:
         """Queue one alert for the single delivery worker."""
         item = (f"agentwatch: {name} {ascii_safe('—', '-')} {label}", _clean(message))
+        if self.on_send is not None:
+            self.on_send(*item)
         with self._lock:
             self._pending.append(item)
             if self._busy:
