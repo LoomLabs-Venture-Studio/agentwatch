@@ -274,6 +274,21 @@ def _redact_truncate(text: str, limit: int) -> str:
     return redact_truncate(text, limit)
 
 
+def error_text(value: Any) -> str | None:
+    """A log's ``error`` field as text. Claude Code's ``system/api_error``
+    logs a dict there; detectors expect a string."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and isinstance(value.get("message"), str):
+        return value["message"]
+    try:
+        return json.dumps(value, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def url_hostname(url: Any) -> str | None:
     """The hostname of *url*, for ``Action.network_host``.
 
@@ -366,7 +381,9 @@ def _parse_claude_code_flat(entry: dict) -> Action | None:
         if "error" in entry or "err" in entry:
             success = False
 
-        error_message = entry.get("error") or entry.get("err") or entry.get("error_message")
+        error_message = error_text(
+            entry.get("error") or entry.get("err") or entry.get("error_message")
+        )
 
         tokens_in = entry.get("tokens_in") or entry.get("input_tokens") or 0
         tokens_out = entry.get("tokens_out") or entry.get("output_tokens") or 0
@@ -451,7 +468,7 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
 
         # Success/error
         success = entry.get("success", True)
-        error_message = entry.get("error")
+        error_message = error_text(entry.get("error"))
         if error_message:
             success = False
 

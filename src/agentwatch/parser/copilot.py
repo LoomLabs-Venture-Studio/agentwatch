@@ -20,7 +20,7 @@ arrives. Token usage is only written as session totals in
 
 from __future__ import annotations
 
-from .logs import _parse_timestamp, classify_tool, url_hostname
+from .logs import _parse_timestamp, classify_tool, error_text, url_hostname
 from .models import Action, ToolType
 
 
@@ -84,7 +84,7 @@ class CopilotParser:
             action.success = data.get("success") is not False
             error = data.get("error")
             if isinstance(error, dict):
-                action.error_message = error.get("message")
+                action.error_message = error_text(error)
             result = data.get("result")
             if isinstance(result, dict) and isinstance(result.get("content"), str):
                 # Tool output goes where Claude Code's tool_result keeps it
