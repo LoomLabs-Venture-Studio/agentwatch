@@ -269,6 +269,11 @@ class AiderLogWatcher:
         new_actions: list[Action] = []
         for session in sessions:
             already = self._emitted_count.get(session.session_id, 0)
+            if len(session.actions) < already:
+                # Session shrank (file rewritten/truncated, or the session id
+                # vanished and returned smaller): re-anchor the cursor without
+                # re-emitting kept actions, so later growth is still seen.
+                self._emitted_count[session.session_id] = already = len(session.actions)
             tail = session.actions[already:]
             if not tail:
                 continue

@@ -240,3 +240,30 @@ class TestAiderLogWatcherAsync:
         md_path.unlink()
         assert watcher._read_new_actions(only_if_changed=True) == []
         assert watcher._last_sig is None
+
+
+class TestAiderCursorShrink:
+    def test_shrink_then_append_still_emits(self, md_path):
+        md_path.write_text(SESSION_1 + TURN_2 + TURN_2.replace("add a test", "t3"), encoding="utf-8")
+        watcher = AiderLogWatcher(md_path)
+        assert len(watcher._read_new_actions()) == 4
+        # Rewrite to a single turn: nothing re-emitted.
+        md_path.write_text(SESSION_1, encoding="utf-8")
+        assert watcher._read_new_actions() == []
+        # A new append after the shrink must be emitted.
+        with open(md_path, "a", encoding="utf-8") as f:
+            f.write(TURN_2)
+        new = watcher._read_new_actions()
+        assert [a.incoming_message for a in new if a.tool_name == "aider_prompt"] == ["add a test"]
+
+    def test_session_disappears_and_returns_smaller(self, md_path):
+        md_path.write_text(SESSION_1 + TURN_2, encoding="utf-8")
+        watcher = AiderLogWatcher(md_path)
+        assert len(watcher._read_new_actions()) == 3
+        md_path.write_text("", encoding="utf-8")
+        assert watcher._read_new_actions() == []
+        md_path.write_text(SESSION_1, encoding="utf-8")
+        assert watcher._read_new_actions() == []
+        with open(md_path, "a", encoding="utf-8") as f:
+            f.write(TURN_2)
+        assert len(watcher._read_new_actions()) == 1
