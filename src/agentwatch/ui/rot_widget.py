@@ -57,7 +57,7 @@ class ContextHealthWidget(Static):
         emoji = theme.emoji_for(state_label)
         score_pct = int(round((1.0 - r.smoothed_score) * 100))
 
-        # No state word: HealthBar has the one status. Modules at 0 are left out.
+        # No state word: HealthBar has the one status. Empty module bars are left out.
         mini_bar = _mini_bar(1.0 - r.smoothed_score, 20)
         lines = [f"  {emoji} Context Health [{mini_bar}] {score_pct}%"]
         if self._peak_context_tokens:
@@ -73,8 +73,9 @@ class ContextHealthWidget(Static):
         }
         for key, label in module_labels.items():
             m = r.modules.get(key)
-            if m is not None and m.value > 0:
-                lines.append(f"    {label:12s} [{_mini_bar(m.value)}]")
+            bar = _mini_bar(m.value) if m is not None else ""
+            if "█" in bar:  # an empty bar (rounds to 0) is left out
+                lines.append(f"    {label:12s} [{bar}]")
 
         # Top 3 reasons
         if r.top_reasons:

@@ -1109,7 +1109,8 @@ class MultiAgentWatchApp(App):
 
         screen.text("d-loop", self._loop_breaker_text(data))
         screen.text("d-net", self._net_text(data))
-        screen.text("d-process", self._process_text(data))
+        # The screen's width: a hidden tab's widgets have none.
+        screen.text("d-process", self._process_text(data, screen.size.width - 2))
 
     def _net_text(self, data: dict) -> str:
         if not data.get("net_sampled"):
@@ -1121,7 +1122,9 @@ class MultiAgentWatchApp(App):
         lines += [f"    {ip}:{port}" for ip, port in seen]
         return "\n".join(lines)
 
-    def _process_text(self, data: dict) -> str:
+    def _process_text(self, data: dict, width: int = 0) -> str:
+        """Rows of `  Key      value`; a value longer than *width* (a log
+        path) continues on indented lines."""
         item: AgentItem = data["item"]
         actions = data["buffer"].actions
         proc = self.watcher.get_process_meta(item.log_path) if self._process_mode else None
@@ -1150,7 +1153,9 @@ class MultiAgentWatchApp(App):
             ("Active", _hm(data["buffer"].stats.duration_minutes)),
             ("Log", str(item.log_path)),
         ]
-        return "\n".join(f"  {k:8s} {v}" for k, v in rows)
+        room = max(20, width - 11)
+        return "\n".join(f"  {k:8s} " + f"\n{' ' * 11}".join(
+            v[i:i + room] for i in range(0, len(v), room)) for k, v in rows)
 
     def _alert(self, agent_data: dict, warnings: list["Warning"], report: "HealthReport") -> None:
         """Feed one agent's scoring pass to `--notify`/`--webhook`/`--headless`."""

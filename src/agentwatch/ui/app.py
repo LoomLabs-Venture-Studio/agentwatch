@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,15 @@ if TYPE_CHECKING:
     from agentwatch.detectors.base import Warning
     from agentwatch.health.score import EfficiencyReport
     from agentwatch.parser.models import Action
+
+
+def hang(line: str, width: int, indent: int) -> str:
+    """*line* wrapped to *width* with continuation lines indented *indent*
+    (a widget's own wrap starts them at column 0). One cell of slack: an
+    emoji is two cells but one character."""
+    if width <= indent + 10 or len(line) < width:
+        return line
+    return textwrap.fill(line, width - 1, subsequent_indent=" " * indent)
 
 
 def show(widget: Static, content: str) -> None:
@@ -161,6 +171,9 @@ class WarningsList(Static):
         self._warnings = warnings
         show(self, self._build_content())
 
+    def on_resize(self) -> None:
+        show(self, self._build_content())
+
     def update_goal_alignment(self, assessment: dict | None) -> None:
         """Update the Tier-2 goal-alignment advisory block (`llm.py`'s
         `assess_goal_alignment()`, Sprint 15; wired live here via
@@ -192,16 +205,18 @@ class WarningsList(Static):
         lines.append("")
         for w in self._warnings[: self.limit]:
             cost = f"  {w.cost_label}" if w.cost_label else ""
-            lines.append(f"  {w.emoji} [{w.signal:20}] {w.message}{cost}")
+            width = self.size.width
+            lines.append(hang(f"  {w.emoji} [{w.signal:20}] {w.message}{cost}", width, 5))
 
             # Show key details inline
             detail_line = self._format_details(w)
             if detail_line:
-                lines.append(f"     {ascii_safe('→', '->')} {detail_line}")
+                lines.append(hang(f"     {ascii_safe('→', '->')} {detail_line}", width, 8))
 
             # Show suggestion
-            if w.suggestion:  # wrapped by the widget, not cut
-                lines.append(f"     {ascii_safe('💡', '[TIP]')} {w.suggestion}")
+            if w.suggestion:  # wrapped (hanging indent), not cut
+                tip = ascii_safe("💡", "[TIP]")
+                lines.append(hang(f"     {tip} {w.suggestion}", width, 6 + len(tip) + 1))
 
             # Show Tier-2 LLM triage, if --llm assessed this warning
             # (LiveLlmAssessor.stamp() attaches it before we get here)
