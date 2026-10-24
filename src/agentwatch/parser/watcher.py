@@ -39,13 +39,25 @@ from .models import Action
 logger = logging.getLogger(__name__)
 
 
+def _resolve(path: Path) -> Path:
+    """Resolve symlinks (macOS reports /private/var for /var) for comparison."""
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
 class LogWatcher:
     """Watches a log file for new entries in real-time."""
+
+    _POLL_TICK_MS = 1000  # fallback tick; see watch()
 
     def __init__(self, path: Path, session_id: str | None = None):
         self.path = path
         self.session_id = session_id
         self._position = 0
+        self._inode: int | None = None
+        self._last_sig: tuple[int, int, int] | None = None
         self._log_format: str | None = None
         self._sniffer = FormatSniffer()
         self._codex_parser: CodexParser | CopilotParser | AgyParser | GeminiParser | None = None
@@ -110,9 +122,25 @@ class LogWatcher:
             return [result]
         return []
 
+    def _stat_sig(self) -> tuple[int, int, int] | None:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_size, st.st_mtime_ns, st.st_ino)
+
     def _read_new_lines(self) -> list[Action]:
         """Read any new lines since last check."""
         actions = []
+
+        sig = self._stat_sig()
+        if sig is not None:
+            # File replaced (new inode) or truncated below our offset: the
+            # old offset is meaningless, so re-anchor at the start.
+            if (self._inode is not None and sig[2] != self._inode) or sig[0] < self._position:
+                self._position = 0
+            self._inode = sig[2]
+        self._last_sig = sig
 
         try:
             with open(self.path, "r", encoding="utf-8", errors="ignore") as f:
@@ -176,12 +204,24 @@ class LogWatcher:
         for action in self._read_new_lines():
             yield action
 
-        # Then watch for changes
-        async for changes in awatch(self.path.parent):
-            for change_type, changed_path in changes:
-                if Path(changed_path) == self.path and change_type == Change.modified:
-                    for action in self._read_new_lines():
-                        yield action
+        # Then watch for changes. Any event for the file triggers a read, not
+        # just Change.modified: macOS FSEvents coalesces flags, so an append to
+        # a recently created file arrives as Change.added, and the directory
+        # may be reported via a symlink (/var vs /private/var). The 1s timeout
+        # tick covers appends landing before the OS watch is armed. Reads are
+        # gated on (size, mtime, inode) so an idle file costs one stat.
+        target = _resolve(self.path)
+        async for changes in awatch(
+            self.path.parent,
+            rust_timeout=self._POLL_TICK_MS,
+            yield_on_timeout=True,
+        ):
+            if changes and not any(_resolve(Path(p)) == target for _, p in changes):
+                continue
+            if self._stat_sig() == self._last_sig:
+                continue
+            for action in self._read_new_lines():
+                yield action
 
     async def watch_with_callbacks(self) -> None:
         """Watch and dispatch to registered callbacks."""
@@ -380,11 +420,12 @@ class CopilotVscodeWatcher:
         for action in self._read_new_actions():
             yield action
 
+        target = _resolve(self.path)
         async for changes in awatch(
             self.path.parent, yield_on_timeout=True, rust_timeout=self._TICK_MS
         ):
             changed = any(
-                Path(p) == self.path and t in (Change.added, Change.modified)
+                _resolve(Path(p)) == target and t in (Change.added, Change.modified)
                 for t, p in changes
             )
             if changed or self._held:
