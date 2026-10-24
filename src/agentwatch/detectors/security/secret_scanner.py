@@ -298,19 +298,58 @@ _NO_TAIL_LABELS = frozenset({
 # Placeholder / false-positive filters
 # ---------------------------------------------------------------------------
 
-_PLACEHOLDER_RE = re.compile(
-    r"your[_-]?(?:key|token|secret|api|password)|"
-    r"example|xxx{3,}|<[\w-]+>|TODO|CHANGEME|"
-    r"insert[_-]?(?:key|token|here)|"
-    r"placeholder|dummy|test[_-]?(?:key|token|secret)",
-    re.IGNORECASE,
+# A value IS a placeholder only when it is made of nothing else. A value that
+# merely contains a placeholder word ("MyExample#Pass1", "sk_live_TODO<key>")
+# is a real secret that happens to hold the word, and must be redacted.
+#
+# 1. It starts with "your_key" / "insert_token" ...: nobody's real secret does,
+#    and what follows ("_here_abcdef12") is filler.
+_PLACEHOLDER_PREFIX_RE = re.compile(
+    r"(?:your|insert)[_-]?(?:key|token|secret|api|password|here)", re.IGNORECASE
 )
+# 2. It is a bracketed name: <password>.
+_PLACEHOLDER_BRACKET_RE = re.compile(r"<[\w -]+>")
+# 3. Every word of it (split on non-alphanumerics) is a placeholder word, a
+#    filler word, digits or a run of x's, with at least one placeholder word:
+#    "example", "TODO_replace_me", "xxxxxxxx", "placeholder_value_123".
+_PLACEHOLDER_WORDS = frozenset({
+    "example", "todo", "changeme", "placeholder", "dummy", "your", "insert", "test",
+})
+_FILLER_WORDS = frozenset({
+    "key", "token", "secret", "password", "passwd", "api", "value", "here", "my", "the",
+    "a", "an", "me", "replace", "goes", "with", "com",
+})
+_X_RUN_RE = re.compile(r"x{3,}", re.IGNORECASE)
+
+
+def _is_placeholder_value(value: str) -> bool:
+    """True if *value* (a bare value, quotes stripped) is only a placeholder."""
+    if _PLACEHOLDER_PREFIX_RE.match(value) or _PLACEHOLDER_BRACKET_RE.fullmatch(value):
+        return True
+    words = [w.lower() for w in re.split(r"[^A-Za-z0-9]+", value) if w]
+    strong = False
+    for w in words:
+        if w in _PLACEHOLDER_WORDS or _X_RUN_RE.fullmatch(w):
+            strong = True
+        elif not (w in _FILLER_WORDS or w.isdigit()):
+            return False
+    return strong
+
 
 # Stock/default credentials: a value that is exactly one of these is a
-# placeholder or a well-known default, not a leaked secret.
-_DEFAULT_CREDENTIALS = frozenset({
-    "admin", "pass", "passwd", "password", "postgres", "root", "secret", "mysql",
-})
+# placeholder or a well-known default, not a leaked secret, but in a URL only
+# where it cannot reach a real system: see _LOCAL_HOSTS.
+_DEFAULT_CREDENTIALS = frozenset({"admin", "postgres", "root", "mysql"})
+# Placeholder passwords: the word for the thing itself, written where a real
+# password would go. Exempt on any host.
+_PLACEHOLDER_PASSWORDS = frozenset({"pass", "passwd", "password", "secret"})
+
+# In a URL the stock-credential exemption holds only for loopback hosts: a
+# dev database on this machine. postgres:postgres@prod.internal (or a
+# docker-compose service name, which may well be a shared server) is a real
+# credential for a real host, and a missed secret costs far more than a
+# redaction that the per-run backup can undo.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 _TEST_PATH_RE = re.compile(r"(?:^|/)(?:test_|tests/|fixture|mock|conftest)", re.IGNORECASE)
 
@@ -326,10 +365,16 @@ def _shannon_entropy(s: str) -> float:
     return -sum((c / length) * math.log2(c / length) for c in freq.values())
 
 
-def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
-    """Return True if the match is likely a placeholder or test fixture."""
-    if _PLACEHOLDER_RE.search(match_text):
-        return True
+def _is_false_positive(
+    match_text: str, file_path: str | None = None, *, stock_ok: bool = True
+) -> bool:
+    """Return True if the match is a placeholder or test fixture.
+
+    Judged on the value (the text after ``=``/``:``), which must BE a
+    placeholder, not just contain a placeholder word. *stock_ok* False turns
+    off the stock-credential exemption (``root``, ``postgres`` ...), for a
+    URL whose host is not loopback.
+    """
     if file_path and _TEST_PATH_RE.search(file_path):
         return True
     # Low Shannon entropy suggests a pattern like "aaaaaaa..." rather than a real key
@@ -342,7 +387,23 @@ def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
             if len(value) >= 16 and _shannon_entropy(value) < 3.0:
                 return True
             break
-    return value.lower() in _DEFAULT_CREDENTIALS
+    if _is_placeholder_value(value) or value.lower() in _PLACEHOLDER_PASSWORDS:
+        return True
+    return stock_ok and value.lower() in _DEFAULT_CREDENTIALS
+
+
+_HOST_RE = re.compile(r"[^/?#\\\s;]*")
+
+
+def _url_host(rest: str) -> str:
+    """Lower-case host of the URL whose userinfo ends just before *rest*
+    (``@db.host:5432/app...``), without port or brackets."""
+    authority = _HOST_RE.match(rest.lstrip("@")).group(0)
+    host = authority.rsplit("@", 1)[-1].lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    head, _, port = host.rpartition(":")
+    return head if head and port.isdigit() else host
 
 
 # ---------------------------------------------------------------------------
@@ -850,12 +911,15 @@ def _iter_matches(pattern: re.Pattern, label: str, text: str) -> Iterator[re.Mat
 def _is_placeholder(m: re.Match, label: str, file_path: str | None = None) -> bool:
     """``_is_false_positive`` for a match, judged on the right text.
 
-    For a DB URL that is only its password: a host like ``db.example.com``
-    or a ``?application_name=test_key`` tail says nothing about it.
+    For a URL that is only its password: a host like ``db.example.com``
+    or a ``?application_name=test_key`` tail says nothing about it. The host
+    only decides whether a stock password (``postgres``) is a real one.
     """
-    if label in _URL_LABELS:
+    if label in _URL_LABELS or label == "url_credentials":
         start, end = _value_span(m, label)
-        return _is_false_positive(m.string[start:end], file_path)
+        rest = m.string[end : m.end() if label in _URL_LABELS else end + 512]
+        local = _url_host(rest) in _LOCAL_HOSTS
+        return _is_false_positive(m.string[start:end], file_path, stock_ok=local)
     validator = _PII_VALIDATORS.get(label)
     if validator is not None and not validator(_match_value(m)):
         return True
