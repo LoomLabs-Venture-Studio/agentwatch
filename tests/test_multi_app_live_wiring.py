@@ -192,6 +192,7 @@ class TestPerAgentLlmThrottle:
             assert call_count["n"] == 1  # still within the throttle window
 
             clock["t"] += LLM_ASSESSMENT_INTERVAL_SECONDS
+            app.agents[path]["buffer"].add(_make_action(1))  # rescored only on new actions
             app.refresh_ui()
             await pilot.pause()
             assert call_count["n"] == 2

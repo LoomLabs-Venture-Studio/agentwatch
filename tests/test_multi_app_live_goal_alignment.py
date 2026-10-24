@@ -102,11 +102,17 @@ class TestPerAgentGoalAlignmentThrottle:
             assert call_count["n"] == 1
 
             clock["t"] += 5
+            app.agents[path]["buffer"].add(_make_action(1))
             app.refresh_ui()
             await pilot.pause()
             assert call_count["n"] == 1  # still within the throttle window
 
             clock["t"] += LLM_ASSESSMENT_INTERVAL_SECONDS
+            app.refresh_ui()
+            await pilot.pause()
+            assert call_count["n"] == 1  # no new actions: not rescored (PR 4)
+
+            app.agents[path]["buffer"].add(_make_action(2))
             app.refresh_ui()
             await pilot.pause()
             assert call_count["n"] == 2

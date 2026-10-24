@@ -155,6 +155,7 @@ async def test_cursor_stays_on_session_when_rows_reorder():
         assert app.selected_path == b and _order(app) == ["a", "b"]
 
         app.agents[b]["registry"].check_all = lambda buffer: [_warning(Severity.HIGH)]
+        app.agents[b]["buffer"].add(_action(2, 1))  # rescored only on new actions
         app.refresh_ui()
         await pilot.pause()
         table = app.query_one("#sessions")

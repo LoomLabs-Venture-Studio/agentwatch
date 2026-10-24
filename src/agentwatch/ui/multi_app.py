@@ -443,26 +443,27 @@ class MultiAgentWatchApp(App):
         finally:
             self._refreshing = False
 
-    def _score(self, data: dict, selected: bool) -> "HealthReport":
-        """One agent's report. Unselected agents with no new actions reuse
-        the cached one (action_count only grows, so an unchanged count means
-        nothing new to score; skipping rot_scorer.update() also avoids EMA
-        drift from re-scoring identical data). The selected agent is always
-        rescored."""
+    def _score(self, data: dict) -> "HealthReport":
+        """One agent's report, rescored only when it has new actions
+        (action_count only grows) or its cache was dropped (`s`). Selected or
+        not, so every session scores the same way. RotScorer is fed only new
+        actions: each update() advances its EMA and state machine."""
         buffer = data["buffer"]
         count = buffer.stats.action_count
-        if not selected and count == data["_last_count"] and data["_last_report"] is not None:
+        if count == data["_last_count"] and data["_last_report"] is not None:
             return data["_last_report"]
         warnings = data["registry"].check_all(buffer)
         self._export_and_assess(data, warnings)
         eff = calculate_efficiency(warnings, buffer)
         rot_scorer = data.get("rot_scorer")
-        rot_value = rot_scorer.update(buffer).smoothed_score if rot_scorer else None
+        if rot_scorer and count != data.get("_rot_count"):
+            data["_rot"], data["_rot_count"] = rot_scorer.update(buffer), count
+        rot = data.get("_rot")
         report = calculate_health(
             warnings,
             include_security=self.security_mode,
             efficiency_score=eff.score,
-            rot_score=rot_value,
+            rot_score=rot.smoothed_score if rot else None,
         )
         if self.security_mode:
             self._fire_secret_alerts(warnings, self._agent_label(data))
@@ -471,14 +472,12 @@ class MultiAgentWatchApp(App):
         data["_last_count"] = count
         data["_last_report"] = report
         data["_last_eff"] = eff.score
+        data["_last_eff_report"] = eff
         return report
 
     def _do_refresh_ui(self) -> None:
         """Inner refresh logic, guarded by _refreshing flag."""
-        reports = {
-            path: self._score(data, path == self.selected_path)
-            for path, data in self.agents.items()
-        }
+        reports = {path: self._score(data) for path, data in self.agents.items()}
         self._update_teams(reports)
         self._sync_table(reports)
         if self.selected_path in self.agents:
@@ -1007,10 +1006,12 @@ class MultiAgentWatchApp(App):
         if self.security_mode:
             self.title += " [SECURITY]"
 
-        # Recreate registries for all agents
+        # New registries, and drop every cached report so each session is
+        # rescored on this refresh (RotScorer is not re-fed: no new actions).
         for data in self.agents.values():
             mode = "all" if self.security_mode else "health"
             data["registry"] = create_registry(mode=mode)
+            data["_last_count"] = -1
 
         self.refresh_ui()
 
