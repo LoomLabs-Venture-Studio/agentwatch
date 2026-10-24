@@ -244,7 +244,8 @@ class TestAiderLogWatcherAsync:
 
 class TestAiderCursorShrink:
     def test_shrink_then_append_still_emits(self, md_path):
-        md_path.write_text(SESSION_1 + TURN_2 + TURN_2.replace("add a test", "t3"), encoding="utf-8")
+        turn_3 = TURN_2.replace("add a test", "t3")
+        md_path.write_text(SESSION_1 + TURN_2 + turn_3, encoding="utf-8")
         watcher = AiderLogWatcher(md_path)
         assert len(watcher._read_new_actions()) == 4
         # Rewrite to a single turn: nothing re-emitted.
