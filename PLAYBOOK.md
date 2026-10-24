@@ -4371,3 +4371,45 @@ Plan: `docs/superpowers/plans/2026-10-15-agentwatch-scrub-skill.md`.
 | Date | PR | Branch | Type | Status | Rejection Reason |
 |---|---|---|---|---|---|
 | 2026-10-16 | #133 | feature/agentwatch-skill | feature | approved: develop merged in (`346b85b`, PLAYBOOK conflict only), QA-found `audit --pii` text report dropping LOW findings fixed (`6ee59b1`), CI green 3.11/3.12, CTO review + QA PASS (1690 passed / 1 skipped; `audit` without `--pii` byte-identical to develop); squash-merged to `develop` under board standing policy | -- |
+
+---
+
+### Sprint 37 -- 0.2.0 release hardening (2026-10-24)
+**Type:** bug fix. Run by the CTO agent as an engineer -> CTO review -> QA -> fix loop (board directive 2026-10-24).
+**Goal:** make `develop` safe to release as `agentwatch-monitor` 0.2.0 for a social relaunch.
+Source: CTO + 3-way QA review of `develop` (2026-10-22) and PR #157's crash findings.
+
+### Board decisions (2026-10-24)
+1. Scope A: release 0.2.0 from `develop`; `develop-overdrive` features ship later as 0.3.0.
+2. Fix `scrub` / `audit --redact` data safety (no "experimental" label).
+3. The board approves every PR.
+4. Package name stays `agentwatch-monitor` (PyPI `agentwatch` upload was rejected with 400; `agent-watch` exists).
+5. Pick the model by task complexity to keep cost down.
+6. OPEN: how 0.2.0 ships, given the 2026-09-30 "never merge into main" rule (see CLAUDE.md Git Rules). Phase 1 does not depend on it.
+
+### Acceptance Criteria
+- [ ] F1 `watch` / `watch-all` no longer exit on dict `error` fields or on `[...]` text in logs; log text never renders as markup, links or actions (port of #157)
+- [ ] F2 two Claude Code sessions in one project dir map to their own logs; a cached mapping is re-checked; a stopped agent's watcher task is cancelled (no double emission)
+- [ ] F3 redact never loses appended lines; a second redact keeps a real backup or refuses; symlinks are refused or resolved; a placeholder word inside a secret does not skip redaction; password-like values show no tail
+- [ ] F4 Cursor lists only recently active composers; state.vscdb reads set a timeout; a nested agent's endpoints are not also charged to its parent; the HTML-comment injection pattern is linear; non-loopback `OLLAMA_HOST` is refused or warned
+- [ ] F5 `test_aider_watcher` passes on macOS 3.12 or the macOS gap is root-caused and documented
+- [ ] F6 release prep: no personal paths in tracked files, repo-root clutter removed, CHANGELOG dated, `publish.yml` runs tests and checks tag == version
+- [ ] All existing tests pass on 3.11/3.12 (CI) and `ruff check .` is clean
+- [ ] Integrated QA on `develop` after all merges, incl. live `ps` / `watch-all` / `audit --all` / `net --once` on macOS
+- [ ] No new security issues
+
+### Implementation Plan
+| Task | Branch | Model | QA model |
+|---|---|---|---|
+| F1 crash + markup fixes (port #157) | `fix/watch-crashes` | sonnet | sonnet |
+| F2 Claude session mapping, cache, watcher leak | `fix/claude-session-mapping` | opus | sonnet |
+| F3 redact / scrub data safety | `fix/redact-data-safety` | sonnet | sonnet |
+| F4 small fixes batch | `fix/release-small-fixes` | haiku | haiku |
+| F5 macOS Aider watcher | `fix/aider-watcher-macos` | sonnet | haiku |
+| F6 release prep (after F1-F5 merge) | `chore/release-0.2.0-prep` | haiku | haiku |
+
+Rules for every task: branch from `origin/develop`, draft PR to `develop`, never touch `CHANGELOG.md` except in F6, push with `--no-verify` (board-approved 2026-09-30).
+
+### PR Log
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
