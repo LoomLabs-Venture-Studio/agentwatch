@@ -42,10 +42,13 @@ framing above.
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import os
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from .detectors.security.secret_scanner import redact_secrets, redact_truncate
 
@@ -83,6 +86,32 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 class LlmUnavailableError(RuntimeError):
     """Raised when Tier-2 analysis is requested but the local Ollama
     daemon isn't reachable, or the requested model isn't pulled."""
+
+
+def _is_loopback_host(value: str) -> bool:
+    """True if an OLLAMA_HOST-style value names this machine only.
+
+    Accepts ``host``, ``host:port``, or a full URL. Anything unparseable,
+    including ``0.0.0.0``, counts as non-loopback.
+    """
+    text = value.strip()
+    if "://" not in text:
+        text = f"http://{text}"
+    try:
+        hostname = urlsplit(text).hostname
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
 
 
 def _import_ollama_client():
@@ -160,6 +189,16 @@ class OllamaAnalyzer:
 
     def __init__(self, model: str = DEFAULT_OLLAMA_MODEL, host: str | None = None) -> None:
         client_cls = _import_ollama_client()
+        # An explicitly passed host is the caller's choice. The ollama client
+        # also silently reads OLLAMA_HOST when host is None, so refuse a
+        # non-loopback value there: prompts carry log content and must stay
+        # on this machine.
+        env_host = os.environ.get("OLLAMA_HOST", "").strip()
+        if host is None and env_host and not _is_loopback_host(env_host):
+            raise LlmUnavailableError(
+                "OLLAMA_HOST points at a non-local host, so Tier-2 LLM analysis is "
+                "disabled (it is local-only). Unset OLLAMA_HOST or point it at localhost."
+            )
         self.model = model
         self._client = client_cls(host=host)
 
