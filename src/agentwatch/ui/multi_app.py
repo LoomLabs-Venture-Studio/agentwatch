@@ -544,10 +544,9 @@ class MultiAgentWatchApp(App):
         table = self._table
         if self.selected_path not in self.agents or isinstance(self.screen, DetailScreen):
             return
-        if table.row_count:
-            row = table.coordinate_to_cell_key((table.cursor_row, 0)).row_key
-            if row.value != str(self.selected_path):
-                return
+        if not table.row_count or table.coordinate_to_cell_key(
+                (table.cursor_row, 0)).row_key.value != str(self.selected_path):
+            return  # a team or fold row, or a filter that matches nothing
         self.push_screen(DetailScreen(self.selected_path))
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
@@ -958,8 +957,9 @@ class MultiAgentWatchApp(App):
                 spend = (spend or 0.0) + cost
         self._summary = (len(self.agents), active, need_you, spend)
 
-        # Shown: filter matches; sessions idle IDLE_FOLD_S+ (or stopped) are
-        # one "N idle" row unless `a`, except the parents of shown subagents.
+        # Shown: filter matches and their parents; sessions idle IDLE_FOLD_S+
+        # (or stopped) are one "N idle" row unless `a`, except the parents of
+        # shown subagents.
         groups = self._groups(sort_keys)
         awake = set()
         for path in sort_keys.keys() - folding:
@@ -969,11 +969,17 @@ class MultiAgentWatchApp(App):
         order: list[str] = []
         idle = 0
         for team_id, members in groups:
-            members = [p for p in members if self._matches(rows[str(p)])]
-            asleep = sum(p not in awake for p in members)
+            hits = [p for p in members if self._matches(rows[str(p)])]
+            asleep = sum(p not in awake for p in hits)
             idle += asleep
             if asleep and not self._show_idle:
-                members = [p for p in members if p in awake]
+                hits = [p for p in hits if p in awake]
+            keep: set[Path] = set()  # the hits and their parents (a subagent never alone)
+            for path in hits:
+                while path is not None and path not in keep:
+                    keep.add(path)
+                    path = self._parent_of.get(path)
+            members = [p for p in members if p in keep]
             if not members:
                 continue
             if team_id is not None:

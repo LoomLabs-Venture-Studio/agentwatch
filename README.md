@@ -330,7 +330,7 @@ no action for 15+ minutes, and stopped ones, fold into one `○ … N idle (a to
 show)` row at the bottom (a parent stays shown while one of its subagents is);
 `a` shows them, `a` again folds them. `/` opens a filter line at the bottom:
 rows whose project, agent or top warning contain the text (any case) are
-shown as you type; Enter keeps the filter (`filter: xyz` next to the sort),
+shown as you type (a matching subagent with its parent); Enter keeps the filter (`filter: xyz` next to the sort),
 Esc clears it. Below the table, the
 selected session's health, efficiency, context, cost per minute, security
 findings, network endpoints and top 3 warnings.

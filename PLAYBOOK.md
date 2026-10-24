@@ -4949,6 +4949,9 @@ Board decisions (2026-10-24):
 - [x] Tests: `tests/test_multi_app_narrow.py` (120x40, 100x30, 99x30, 80x24,
   80x18, 60x20; resizes both ways; help; footer; header; detail wrap). Tests
   that read the Selected strip run at 120x40.
+- [x] PR 6 QA follow-ups: Enter with a filter that matches nothing (or on
+  a team/fold row) opens nothing; a subagent that matches the filter is
+  shown under its parent (the parent kept, like idle folding does).
 - [ ] Not done: the design's `▶` cursor marker and `↑↓` footer hint (the
   table's row highlight is the cursor; Textual's footer shows bindings only),
   and Sessions/Events in one box.
