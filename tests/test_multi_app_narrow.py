@@ -13,6 +13,7 @@ from textual.widgets import Footer
 from agentwatch.alerts import Alerter
 from agentwatch.detectors.base import Severity
 from agentwatch.discovery import AgentProcess, AgentTeam
+from agentwatch.themes import ascii_safe
 from agentwatch.ui.detail import DetailScreen
 from agentwatch.ui.help import HelpScreen
 from agentwatch.ui.multi_app import MultiAgentWatchApp
@@ -236,3 +237,49 @@ async def test_detail_loop_breaker_line_wraps_at_80_columns():
         assert all(len(line) <= 78 for line in lines)
         screen = _screen(app)
         assert "Health  Security  Network  Process" in screen
+
+
+async def test_help_footer_says_close_not_quit():
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.press("question_mark")
+        await _wait(pilot, lambda: isinstance(app.screen, HelpScreen))
+        await pilot.pause()
+        footer = _screen(app).splitlines()[-1]
+        assert "esc Close" in footer and "Quit" not in footer, footer
+        await pilot.press("q")  # closes the help, not the app
+        await _wait(pilot, lambda: not isinstance(app.screen, HelpScreen))
+        assert app.is_running
+
+
+@pytest.mark.parametrize("width", [60, 72])
+async def test_help_wraps_with_hanging_indents_in_a_narrow_terminal(width):
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(width, 60)) as pilot:
+        await pilot.press("question_mark")
+        await _wait(pilot, lambda: isinstance(app.screen, HelpScreen))
+        await pilot.pause()
+        box = app.screen.query_one("#help")
+        assert box.outer_size.width <= width
+        text = str(app.screen.query_one("#help Static").render())
+        lines = text.splitlines()
+        assert max(len(line) for line in lines) <= width - 4
+        words = " ".join(text.split())
+        assert "Main flags" in words and "HIGH+ or loop-blocked; not stopped ones" in words
+        # a wrapped description continues under its description column
+        i = next(i for i, line in enumerate(lines) if line.startswith("  week $Y"))
+        assert lines[i + 1].startswith(" " * 15) and lines[i + 1][15] != " ", lines[i:i + 2]
+        # nothing wraps to the box's first column: only section titles start there
+        assert all(not line or line.startswith("  ") or line[0].isupper() for line in lines)
+
+
+@pytest.mark.parametrize(("width", "clock", "budget"), [(120, True, True), (60, False, False)])
+async def test_header_with_budget_shows_the_clock_or_drops_the_budget(width, clock, budget):
+    app = MultiAgentWatchApp(alerter=Alerter(budget=5.0))
+    async with app.run_test(size=(width, 24)) as pilot:
+        _many(app, 3)
+        await pilot.pause()
+        header = str(app.query_one("#header").render()).rstrip()
+        assert (header[-8:].count(":") == 2) == clock, header
+        assert ("budget $5.00/session" in header) == budget, header
+        assert ascii_safe("…", "...") not in header and len(header) <= width - 2, header

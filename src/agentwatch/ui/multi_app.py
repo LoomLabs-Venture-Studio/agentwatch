@@ -589,7 +589,7 @@ class MultiAgentWatchApp(App):
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Main-screen keys are off (and out of the footer) in the detail view."""
         if isinstance(self.screen, HelpScreen):
-            return action == "quit"
+            return False  # q closes it (its own footer: "esc Close")
         if isinstance(self.screen, DetailScreen):
             return action not in ("cycle_sort", "toggle_feed", "open_detail",
                                   "toggle_idle", "filter")
@@ -1153,36 +1153,34 @@ class MultiAgentWatchApp(App):
 
     def _update_header(self) -> None:
         """One line; redrawn only when its text changes (the clock: each second).
-        When it does not fit, in turn: "spent" for "on screen" and no clock,
-        no title, (100+ columns: "N sess · M need you"), no today/week,
-        "N sess · M need you"; then it is cut."""
+        When it does not fit, in turn: wide gaps, the clock, the title,
+        (100+ columns: "N sess · M need you"), today/week, "N sess · M need
+        you", the budget (its column shows it); then it is cut."""
         if not self._layout_now:
             return
         n, active, need_you, spend = self._summary
         dot = ascii_safe(" · ", " | ")
         money = "n/a" if spend is None else _usd(spend) if spend else "$0.00"
         title = "agentwatch" + (" [SECURITY]" if self.security_mode else "")
-        rest = [
-            f"alerts {self._alerts}",
-            f"blocks {self._blocks}",
-            *([f"budget {_usd(self._budget)}/session"] if self._budget is not None else []),
-        ]
         counts = f"{n} session{'s' * (n != 1)}{dot}{active} active{dot}{need_you} need you"
         short = f"{n} sess{dot}{need_you} need you"
         week = [machine.week_label(*self._history)] if self._history else []
         n_ai = len(self._unmonitored or ())
-        ai = [f"+{n_ai} unmonitored AI"] if n_ai else []
-        spent = f"spent {money}"
+        mid = [f"spent {money}", *([f"+{n_ai} unmonitored AI"] if n_ai else []),
+               f"alerts {self._alerts}", f"blocks {self._blocks}"]
+        budget = [f"budget {_usd(self._budget)}/session"] if self._budget is not None else []
+        full = [counts, *mid[:1], *week, *mid[1:], *budget]
+        clock = f"{datetime.now():%H:%M:%S}"
         forms = [
-            (title, "   ".join([counts, f"on screen {money}", *week, *ai, *rest,
-                                f"{datetime.now():%H:%M:%S}"])),
-            (title, "  ".join([counts, spent, *week, *ai, *rest])),
-            ("", "  ".join([counts, spent, *week, *ai, *rest])),
+            (title, "   ".join([*full, clock])),
+            (title, "  ".join([*full, clock])),
+            (title, "  ".join(full)),
+            ("", "  ".join(full)),
             # under NARROW_BELOW columns today/week go before the counts are cut
-            *([("", "  ".join([short, spent, *week, *ai, *rest]))] if week and not self._narrow
-              else []),
-            ("", "  ".join([counts, spent, *ai, *rest])),
-            ("", "  ".join([short, spent, *ai, *rest])),
+            *([("", "  ".join([short, *full[1:]]))] if week and not self._narrow else []),
+            ("", "  ".join([counts, *mid, *budget])),
+            ("", "  ".join([short, *mid, *budget])),
+            ("", "  ".join([short, *mid])),
         ]
         room = self._term_width - 2
         title, body = next((f for f in forms if len(f[0]) + 2 * bool(f[0]) + len(f[1]) <= room),

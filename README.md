@@ -348,13 +348,16 @@ as `agentwatch history` names them. Claude Code subagent logs sit under their
 session. The log file is on the detail view's Process tab.
 
 The header line counts sessions, active ones and those that need you (Critical,
-or a HIGH or worse warning), the estimated cost of the sessions on screen
-(not your history: `agentwatch report` has that), alerts this run (sent to
+a HIGH or worse warning, or a loop breaker block; stopped sessions never
+count), the estimated cost of every session loaded in this run (`spent $X`,
+folded and filtered ones too; not your history: `agentwatch report` has
+that), alerts this run (sent to
 `--notify`/`--webhook`; without those, new HIGH or worse findings), loop
 breaker blocks this run (`blocks N`, including sessions already blocked at
 startup), the per-session `--budget` limit when set (`budget $5.00/session`),
-and the time. When the line does not fit, the clock goes first (and the cost
-reads `spent $X`), then the `agentwatch` title, then `N active`.
+and the time. When the line does not fit, the clock goes first, then the
+`agentwatch` title, then `N active`, then the budget (the cost column shows
+it), and only then is the line cut.
 
 It also shows `today $9.80 · week $61.00 ▲12%`: your spend today and in the
 last 7 days, and the change against the 7 days before, from the history

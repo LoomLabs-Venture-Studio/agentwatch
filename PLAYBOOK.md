@@ -4999,3 +4999,11 @@ Board decisions (2026-10-24):
   mocked detect, tmp history DB with synthetic sessions, a real sync
   subprocess under a tmp HOME/XDG, failures, slow workers vs a responsive
   UI, 120x40 / 80x24).
+- [x] PR 7 QA follow-ups: the `?`/`d`/`w` modal has its own footer
+  (`esc Close`; the table's `q Quit` was shown though `q` closes it); the
+  header's `--budget` item goes before the line is cut (the column shows it)
+  and the clock shows at 120 columns when it fits (a 2-space form with the
+  clock); "on screen" -> "spent" everywhere (it sums every loaded session,
+  folded and filtered ones too); help: "need you" = Critical, HIGH+ or
+  loop-blocked, not stopped; "Main flags"; the box fits the terminal (max
+  76) and wraps with hanging indents (`help.hang`).

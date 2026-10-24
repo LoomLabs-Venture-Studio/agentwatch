@@ -22,6 +22,11 @@ numbers refer to the GitHub repository.
   `AI-PROVIDER` flags and listening sockets (`EXPOSED` when reachable from
   other machines); `n/a (no process)` with `--all-logs`. None of this runs
   with `--headless`.
+- `watch-all` header: the cost is always `spent $X` (it adds up every
+  loaded session, also folded or filtered ones; it said "on screen" on wide
+  terminals); with `--budget` the clock shows when it fits and the budget
+  goes before the line is cut. The help screen fits narrow terminals (wrapped
+  descriptions stay under their column) and its footer says `esc Close`.
 - `watch-all` fits small terminals: under 100 columns the AGENT and CTX
   columns and the Selected strip are hidden and TOP SIGNAL takes the rest of
   the width (no sideways scrolling); under 30 rows the Events panel is 3

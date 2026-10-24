@@ -42,8 +42,8 @@ async def test_header_counts():
             await pilot.pause()
             header = _header(app)
             assert "6 sessions · 3 active · 2 need you" in header, header
-            wide = size[0] == 120  # 80 columns: "spent $1.75", not "on screen"
-            assert ("on screen $1.75" if wide else "  spent $1.75  ") in header
+            wide = size[0] == 120
+            assert "  spent $1.75  " in header  # every loaded session, folded ones too
             assert "alerts 0" in header and "blocks 0" in header
             # 80 columns: the clock goes first, then the title
             assert (header.rstrip()[-8:].count(":") == 2) == wide  # HH:MM:SS
