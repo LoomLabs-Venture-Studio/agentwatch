@@ -108,7 +108,7 @@ class TestWatchAll:
             ],
             procs={good: _proc(100, good), cursor: _proc(200, cursor, "cursor")},
         )
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(120, 40)) as pilot:
             await _until(pilot, lambda: cursor in app.agents and len(app.agents[cursor]["buffer"]))
             assert sampler.started
             assert sampler.tracked == {100}  # cursor is editor-hosted: not tracked

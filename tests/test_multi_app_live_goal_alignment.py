@@ -176,7 +176,7 @@ class TestPerAgentGoalAlignmentNonBlocking:
 
         app = MultiAgentWatchApp(watch_paths=[], security_mode=False, llm=True)
 
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(120, 40)) as pilot:
             path = Path("agent.jsonl")
             await _seed_agent(app, pilot, path, pid=100)
             app.agents[path]["buffer"].add(_make_action(0, incoming_message="Fix the bug"))

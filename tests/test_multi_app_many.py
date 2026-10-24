@@ -159,7 +159,8 @@ async def test_idle_sessions_fold_and_a_shows_them(size):
         app.refresh_ui()
         await pilot.pause()
         assert _order(app) == ["busy", "recent", "(a to show)"]
-        assert app.query_one("#sessions").get_cell("fold", "agent").plain == "… 3 idle"
+        idle = "agent" if size[0] == 120 else "project"  # no AGENT column under 100
+        assert app.query_one("#sessions").get_cell("fold", idle).plain == "… 3 idle"
         assert "… 3 idle" in _screen(app) and "(a to show)" in _screen(app)
         assert "5 sessions" in _screen(app)  # the header still counts them
 
@@ -288,6 +289,40 @@ async def test_slash_filters_live_enter_keeps_esc_clears(size):
         assert _order(app) == ["alpha"]
         await pilot.press("escape")  # on the table, Esc clears a kept filter too
         assert _order(app) == ["beta[b]", "alpha", "gamma"]
+
+
+async def test_enter_with_a_filter_matching_nothing_opens_nothing():
+    """QA #162: the selected session is filtered out, Enter must not open it."""
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        _seed(app, "alpha", ago=1)
+        app.refresh_ui()
+        await pilot.pause()
+        await pilot.press("slash", "z", "z", "enter")
+        await pilot.pause()
+        assert _rows(app) == []
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not isinstance(app.screen, DetailScreen)
+
+
+@pytest.mark.parametrize("size", SIZES)
+async def test_filter_keeps_a_matching_subagents_parent(size):
+    """QA #162: a subagent that matches is shown under its parent, not alone."""
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=size) as pilot:
+        _seed(app, "lead", ago=1, pid=10)
+        for name, ago in (("helper", 2), ("other", 3)):
+            sub = _seed(app, name, ago=ago, depth=1, pid=10 + ago)
+            app.agents[sub]["item"].parent_agent_pid = 10
+        _seed(app, "solo", ago=4)
+        app.refresh_ui()
+        await pilot.pause()
+        await pilot.press("slash", "h", "e", "l", "p")
+        tree = "└ helper" if size[0] < 100 else "helper"
+        assert _order(app) == ["lead", tree]
+        await pilot.press("backspace", "backspace", "backspace", "backspace", "s", "o")
+        assert _order(app) == ["solo"]
 
 
 # -- project names --------------------------------------------------------

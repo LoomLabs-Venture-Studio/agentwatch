@@ -45,8 +45,9 @@ async def test_header_counts():
             wide = size[0] == 120  # 80 columns: "spent $1.75", not "on screen"
             assert ("on screen $1.75" if wide else "  spent $1.75  ") in header
             assert "alerts 0" in header and "blocks 0" in header
-            assert header.rstrip()[-8:].count(":") == 2  # HH:MM:SS
-            assert header.startswith("agentwatch") == (size[0] == 120), header
+            # 80 columns: the clock goes first, then the title
+            assert (header.rstrip()[-8:].count(":") == 2) == wide  # HH:MM:SS
+            assert header.startswith("agentwatch") == wide, header
             assert "AgentWatch - Multi-Agent Dashboard" not in _screen(app)
 
 
