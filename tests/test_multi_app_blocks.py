@@ -281,4 +281,5 @@ async def test_real_hook_block_shows_in_watch_all(tmp_path, monkeypatch):
         app.refresh_ui()
         await pilot.pause()
         assert _feed(app)[0] == "1 session loaded; 1 loop block so far"
+        await pilot.press("a")  # the transcript's actions are old: folded as idle
         assert "⛔ loop blocked: Bash (6x)" in _screen(app)

@@ -16,7 +16,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
-from textual.widgets import DataTable, Footer, Static
+from textual.widgets import DataTable, Footer, Input, Static
 
 from agentwatch.agents import adapter_for, display_name
 from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
@@ -70,6 +70,8 @@ COLUMNS = (
 )
 SORTS = ("attention", "cost", "recent")
 IDLE_AFTER_S = 300  # no action for this long: shown as idle (○), sorted last
+IDLE_FOLD_S = 900  # no action for this long (or stopped): folded into one row (`a` shows)
+FOLD_KEY = "fold"  # row key of the "N idle sessions" row
 FLASH_S = 2.0  # a row whose data changed is shown bold this long
 TREND_POINTS = 5  # HEALTH gets ▲/▼ when it moved this much ...
 TREND_WINDOW_S = 60.0  # ... against its score this long ago
@@ -106,6 +108,8 @@ class AgentItem:
     def update_process_info(self, proc: AgentProcess) -> None:
         self.uptime = proc.uptime
         self.process_status = "stopped" if proc.command == "(stopped)" else "active"
+        self.depth, self.parent_agent_pid = proc.depth, proc.parent_agent_pid
+        self.team_id = proc.team_id
 
 
 def _ago(seconds: float | None) -> str:
@@ -176,6 +180,27 @@ def _budget_cell(cost: float | None, budget: float, narrow: bool = False) -> tup
     return f"{_usd(cost)}{limit} {bar}", style
 
 
+def window_label(seconds: float) -> str:
+    """'24h', '2d': a --since window."""
+    days, rest = divmod(int(seconds), 86400)
+    return f"{days}d" if days >= 2 and not rest else f"{int(seconds) // 3600}h"
+
+
+def _project_of(adapter, log_path: Path) -> str | None:
+    """--all-logs: the project a log belongs to, as `agentwatch history` names
+    it (a Claude Code transcript's recorded cwd, worktrees as their project,
+    "~" for home; else its projects dir); None when unknown."""
+    try:
+        name = adapter.history_meta(log_path)[1]
+        if name is None and adapter.name == "claude-code":
+            from agentwatch.cc_stats import project_name, recorded_cwd
+
+            name = project_name(recorded_cwd(log_path))
+        return name
+    except Exception:  # an adapter's reader must not stop the dashboard
+        return None
+
+
 def _loop_breaker_off() -> bool:
     return os.environ.get("AGENTWATCH_LOOP_BREAKER", "").strip().lower() == "off"
 
@@ -211,6 +236,17 @@ class MultiAgentWatchApp(App):
         text-overflow: ellipsis;
     }
 
+    #filter {
+        height: 1;
+        border: none;
+        padding: 0 1;
+        display: none;
+    }
+
+    #filter:focus {
+        border: none;
+    }
+
     #sessions {
         height: 1fr;
         border: round $accent;
@@ -233,6 +269,8 @@ class MultiAgentWatchApp(App):
         ("s", "toggle_security", "Toggle Security"),
         ("o", "cycle_sort", "Sort"),
         ("e", "toggle_feed", "Events"),
+        ("a", "toggle_idle", "Idle"),
+        ("slash", "filter", "Filter"),
         Binding("enter", "open_detail", "Detail", priority=True),
         Binding("escape", "focus_table", "Table", show=False),
     ]
@@ -246,6 +284,7 @@ class MultiAgentWatchApp(App):
         llm: bool = False,
         llm_model: str = DEFAULT_OLLAMA_MODEL,
         alerter: Alerter | None = None,
+        since: float | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -272,6 +311,7 @@ class MultiAgentWatchApp(App):
         self._data_sig: dict[str, tuple] = {}  # row key -> data shown (for the flash)
         self._flash_until: dict[str, float] = {}
         self._order: list[str] = []
+        self._parent_of: dict[Path, Path] = {}  # session -> its parent's (as of the last tick)
         self._events: deque[Text] = deque(maxlen=FEED_MAX)  # newest first
         # Sessions seen before this (startup) are "loaded", later ones "started".
         self._loaded_until: float | None = float("inf")
@@ -288,13 +328,16 @@ class MultiAgentWatchApp(App):
         self._coach_next = 0.0  # monotonic time of the next coach state pass
         self._muted = False  # `s` rescoring: no per-finding feed lines
         self._budget_width: int | None = None  # COST / BUDGET column width (--budget)
+        self.since = since  # --all-logs window in seconds (None: every log)
+        self._show_idle = False  # `a`: idle sessions shown instead of folded
+        self._filter = ""  # `/`: rows whose project/agent/signal contain this
 
         if agent_processes is not None:
             self._initial_processes = agent_processes
             self.watcher = MultiLogWatcher.from_processes(agent_processes)
         else:
             self._initial_processes = []
-            self.watcher = MultiLogWatcher(self.watch_paths)
+            self.watcher = MultiLogWatcher(self.watch_paths, since=since)
 
     @property
     def _budget(self) -> float | None:
@@ -304,8 +347,9 @@ class MultiAgentWatchApp(App):
         self._header = Static(id="header", markup=False)
         yield self._header
         self._table = table = DataTable(id="sessions", cursor_type="row")
-        table.border_title = "Sessions"
-        table.border_subtitle = f"sort: {self.sort_mode}"
+        table.border_title = "Sessions" + (
+            f" (last {window_label(self.since)})" if self.since is not None else "")
+        self._update_subtitle()
         for key, label, width in COLUMNS:
             if key == "cost" and self._budget is not None:
                 # ponytail: chosen at startup; a later resize keeps it.
@@ -322,6 +366,8 @@ class MultiAgentWatchApp(App):
         self._feed = VerticalScroll(self._feed_lines, id="feed")
         self._feed.border_title = "Events"
         yield self._feed
+        self._filter_input = Input(id="filter", placeholder="filter: project, agent or signal")
+        yield self._filter_input
         yield Footer()
 
     def _new_agent_state(
@@ -386,6 +432,10 @@ class MultiAgentWatchApp(App):
         if not proc:  # --all-logs: name the agent for the table only (alerts keep None)
             adapter = adapter_for(log_path)
             state["agent_name"] = adapter.name if adapter else None
+            item.project_name = _project_of(adapter, log_path) if adapter else None
+            if state["agent_name"] == "claude-code" and log_path.parent.name == "subagents":
+                item.depth = 1  # <session>/subagents/agent-<id>.jsonl, under <session>.jsonl
+                state["parent_log"] = log_path.parent.parent.with_suffix(".jsonl")
         self.agents[log_path] = state
         self._track_net(state, proc)
         if item.pid is not None and item.team_id is not None:
@@ -463,8 +513,11 @@ class MultiAgentWatchApp(App):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         """Cursor moved (arrows/click): select that session. A highlight
         already superseded by a later cursor move (rows added, then the
-        cursor put back on the selected session) is ignored."""
-        if event.cursor_row != self._table.cursor_row:
+        cursor put back on the selected session, or rows folded) is ignored."""
+        table = self._table
+        if event.cursor_row != table.cursor_row or not table.row_count or (
+            table.coordinate_to_cell_key((table.cursor_row, 0)).row_key != event.row_key
+        ):
             return
         path = Path(event.row_key.value)
         if path in self.agents and path != self.selected_path:
@@ -491,8 +544,11 @@ class MultiAgentWatchApp(App):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Main-screen keys are off (and out of the footer) in the detail view."""
-        detail = isinstance(self.screen, DetailScreen)
-        return not (detail and action in ("cycle_sort", "toggle_feed", "open_detail"))
+        if isinstance(self.screen, DetailScreen):
+            return action not in ("cycle_sort", "toggle_feed", "open_detail",
+                                  "toggle_idle", "filter")
+        # Typing a filter: Enter submits it (no detail view).
+        return not (action == "open_detail" and self.focused is self._filter_input)
 
     def refresh_ui(self) -> None:
         """Rescore what changed, then update the table, the Selected strip
@@ -510,6 +566,8 @@ class MultiAgentWatchApp(App):
                 self._loaded_until = None
                 n, blocks = len(self.agents), self._held_blocks
                 line = f"{n} session{'s' * (n != 1)} loaded"
+                if self.since is not None:
+                    line += f" (last {window_label(self.since)} of {self.watcher.total_logs} logs)"
                 if blocks:
                     line += f"; {blocks} loop block{'s' * (blocks != 1)} so far"
                 self._event(line)
@@ -784,28 +842,73 @@ class MultiAgentWatchApp(App):
             bucket = 3
         return (bucket, recency)
 
-    def _ordered_keys(self, keys: dict[Path, tuple]) -> list[str]:
-        """Row keys in display order: groups (a team, or one session) by
-        their most urgent member; in a group the team header, then members
-        by depth so subagents sit under their parent."""
+    def _groups(self, keys: dict[Path, tuple]) -> list[tuple[int | None, list[Path]]]:
+        """[(team id or None, member paths)] in display order. A group is a
+        team, or a session with its subagents; groups sort by their most
+        urgent member. In a group each session's subagents sit under it,
+        siblings in sort order."""
+        agents = self.agents
+        by_pid = None
+        parent_of: dict[Path, Path] = {}
+        for path in keys:
+            data = agents[path]
+            parent = data.get("parent_log")
+            if parent is None and data["item"].parent_agent_pid is not None:
+                if by_pid is None:
+                    by_pid = {d["pid"]: p for p, d in agents.items() if d["pid"] is not None}
+                parent = by_pid.get(data["item"].parent_agent_pid)
+            if parent is not None and parent != path and parent in keys:
+                parent_of[path] = parent
+        self._parent_of = parent_of
+
+        def top(path: Path) -> Path:
+            for _ in range(len(keys)):  # ponytail: bounded walk, a parent cycle can't hang
+                if path not in parent_of:
+                    break
+                path = parent_of[path]
+            return path
+
         groups: dict[object, list[Path]] = {}
         for path in keys:
-            team_id = self.agents[path]["item"].team_id
-            groups.setdefault(team_id if team_id is not None else path, []).append(path)
-        for team_id in self.teams:
-            groups.setdefault(team_id, [])
+            team_id = agents[path]["item"].team_id
+            gid = team_id if team_id is not None else top(path) if path in parent_of else path
+            groups.setdefault(gid, []).append(path)
+        children: dict[Path, list[Path]] = {}
+        for path in sorted(parent_of, key=keys.__getitem__):
+            children.setdefault(parent_of[path], []).append(path)
 
-        def group_key(item):
-            _, members = item
-            return min((keys[p] for p in members), default=(9,))
+        result = []
+        for gid, members in sorted(groups.items(),
+                                   key=lambda g: min(keys[p] for p in g[1])):
+            if len(members) > 1:
+                inside = set(members)
+                ordered: dict[Path, None] = {}  # insertion-ordered set
 
-        order: list[str] = []
-        for gid, members in sorted(groups.items(), key=group_key):
-            if gid in self.teams:
-                order.append(f"team:{gid}")
-            members.sort(key=lambda p: (self.agents[p]["item"].depth, str(p)))
-            order.extend(str(p) for p in members)
-        return order
+                def walk(path: Path) -> None:
+                    ordered[path] = None
+                    for child in children.get(path, ()):
+                        if child in inside and child not in ordered:
+                            walk(child)
+
+                for path in sorted(members, key=lambda p: (agents[p]["item"].depth, keys[p])):
+                    if parent_of.get(path) not in inside:
+                        walk(path)
+                ordered.update(dict.fromkeys(members))  # a parent cycle: not reached above
+                members = list(ordered)
+            result.append((gid if gid in self.teams else None, members))
+        return result
+
+    def _matches(self, cells: dict[str, tuple[str, str]]) -> bool:
+        needle = self._filter.lower()
+        return not needle or any(needle in cells[col][0].lower()
+                                 for col in ("agent", "project", "signal"))
+
+    def _fold_cells(self, n: int) -> dict[str, tuple[str, str]]:
+        cells = dict.fromkeys(_WIDTHS, ("", ""))
+        cells["dot"] = (ascii_safe("○", "o"), "dim")
+        cells["agent"] = (f"{ascii_safe('…', '...')} {n} idle", "dim")
+        cells["project"] = (f"(a to {'fold' if self._show_idle else 'show'})", "dim")
+        return cells
 
     def _sync_table(self, reports: dict[Path, "HealthReport"]) -> None:
         """Update only the cells that changed; add rows for new sessions;
@@ -815,6 +918,7 @@ class MultiAgentWatchApp(App):
         now = time.monotonic()
         rows: dict[str, dict[str, tuple[str, str]]] = {}
         sort_keys: dict[Path, tuple] = {}
+        folding: set[Path] = set()  # no action for IDLE_FOLD_S+ (not: none yet), or stopped
         active = need_you = 0
         spend: float | None = None
         critical = get_theme().level_3
@@ -823,6 +927,8 @@ class MultiAgentWatchApp(App):
             report = reports[path]
             rows[str(path)] = cells = self._row_cells(data, report, age, now)
             sort_keys[path] = self._sort_key(data, report, age)
+            if data["item"].process_status == "stopped" or (age or 0) >= IDLE_FOLD_S:
+                folding.add(path)
             active += cells["dot"][0] == ascii_safe("●", "*")
             need_you += data["item"].process_status != "stopped" and (
                 report.status == critical
@@ -833,8 +939,41 @@ class MultiAgentWatchApp(App):
             if cost is not None:
                 spend = (spend or 0.0) + cost
         self._summary = (len(self.agents), active, need_you, spend)
-        for team_id, team in self.teams.items():
-            rows[f"team:{team_id}"] = self._team_cells(team)
+
+        # Shown: filter matches; sessions idle IDLE_FOLD_S+ (or stopped) are
+        # one "N idle" row unless `a`, except the parents of shown subagents.
+        groups = self._groups(sort_keys)
+        awake = set()
+        for path in sort_keys.keys() - folding:
+            while path is not None and path not in awake:
+                awake.add(path)
+                path = self._parent_of.get(path)
+        order: list[str] = []
+        idle = 0
+        for team_id, members in groups:
+            members = [p for p in members if self._matches(rows[str(p)])]
+            asleep = sum(p not in awake for p in members)
+            idle += asleep
+            if asleep and not self._show_idle:
+                members = [p for p in members if p in awake]
+            if not members:
+                continue
+            if team_id is not None:
+                key = f"team:{team_id}"
+                rows[key] = self._team_cells(self.teams[team_id])
+                order.append(key)
+            order.extend(str(p) for p in members)
+        if idle:
+            rows[FOLD_KEY] = self._fold_cells(idle)
+            order.append(FOLD_KEY)
+
+        shown_keys = set(order)
+        for key in [k for k in self._cells if k not in shown_keys]:
+            table.remove_row(key)
+            del self._cells[key], self._dots[key]
+        for key in self._data_sig.keys() - rows.keys():  # gone teams / fold row
+            self._data_sig.pop(key)
+            self._flash_until.pop(key, None)
 
         for key, cells in rows.items():
             data_sig = tuple(v for col, v in cells.items() if col != "last")
@@ -842,6 +981,8 @@ class MultiAgentWatchApp(App):
             self._data_sig[key] = data_sig
             if old_sig is not None and old_sig != data_sig:
                 self._flash_until[key] = now + FLASH_S
+            if key not in shown_keys:
+                continue
             if self._flash_until.get(key, 0) > now:
                 cells = {col: (v, f"bold {style}") for col, (v, style) in cells.items()}
             shown = self._cells.get(key)
@@ -858,15 +999,22 @@ class MultiAgentWatchApp(App):
                             self._dots[key] = text
             self._cells[key] = cells
 
-        order = self._ordered_keys(sort_keys)
-        if order != self._order:
+        reordered = order != self._order
+        if reordered:
             self._order = order
             rank = {id(self._dots[key]): i for i, key in enumerate(order)}
             table.sort("dot", key=lambda dot: rank[id(dot)])
-            if self.selected_path is not None:
-                selected = str(self.selected_path)
-                if selected in self._cells:
-                    table.move_cursor(row=table.get_row_index(selected), animate=False)
+        selected = str(self.selected_path) if self.selected_path is not None else None
+        if selected is not None and selected not in shown_keys:
+            # Folded or filtered out: the nearest shown session in the full order.
+            pos = {str(p): i for i, p in enumerate(p for _, ms in groups for p in ms)}
+            at = pos.get(selected, 0)
+            near = min((k for k in pos if k in shown_keys),
+                       key=lambda k: (abs(pos[k] - at), pos[k] > at), default=None)
+            if near is not None:
+                self.selected_path, selected, reordered = Path(near), near, True
+        if reordered and selected in shown_keys:
+            table.move_cursor(row=table.get_row_index(selected), animate=False)
 
     def _width(self, column: str) -> int | None:
         return self._budget_width if column == "cost" else None
@@ -1008,6 +1156,12 @@ class MultiAgentWatchApp(App):
         (self._table if self.focused is self._feed else self._feed).focus()
 
     def action_focus_table(self) -> None:
+        """Esc: back to the table; in the filter line (or on the table with
+        a filter kept) it clears the filter."""
+        if self.focused is self._filter_input or (self.focused is self._table and self._filter):
+            self._filter_input.value = ""
+            self._filter_input.display = False
+            self.on_input_changed(Input.Changed(self._filter_input, ""))
         self._table.focus()
 
     # -- Selected strip ---------------------------------------------------
@@ -1303,6 +1457,7 @@ class MultiAgentWatchApp(App):
             self._scanning = False
 
         new_agents = self.watcher.refresh_processes(processes)
+        scanned = {t.team_id: t for t in build_teams(processes) if t.member_count > 1}
 
         for proc in new_agents:
             if proc.log_file and proc.log_file not in self.agents:
@@ -1335,6 +1490,12 @@ class MultiAgentWatchApp(App):
             if self.selected_path == log_path:
                 self.selected_path = next(iter(self.agents), None)
 
+        # Teams as of this scan (new ones too); a team whose sessions are all
+        # gone is dropped (its header row goes on the next tick).
+        tracked = {d["item"].team_id for d in self.agents.values()}
+        self.teams = {tid: team for tid, team in {**self.teams, **scanned}.items()
+                      if tid in tracked}
+
     def action_toggle_security(self) -> None:
         """Toggle security mode across all agents."""
         self.security_mode = not self.security_mode
@@ -1365,5 +1526,32 @@ class MultiAgentWatchApp(App):
     def action_cycle_sort(self) -> None:
         """`o`: attention -> cost -> recent."""
         self.sort_mode = SORTS[(SORTS.index(self.sort_mode) + 1) % len(SORTS)]
-        self._table.border_subtitle = f"sort: {self.sort_mode}"
+        self._update_subtitle()
         self.refresh_ui()
+
+    def _update_subtitle(self) -> None:
+        dot = ascii_safe(" · ", " | ")
+        text = f"sort: {self.sort_mode}" + (f"{dot}filter: {self._filter}" if self._filter else "")
+        self._table.border_subtitle = Text(text)  # Text: the filter is literal
+
+    def action_toggle_idle(self) -> None:
+        """`a`: show the folded idle sessions; again: fold them."""
+        self._show_idle = not self._show_idle
+        self.refresh_ui()
+
+    def action_filter(self) -> None:
+        """`/`: type a filter in the line at the bottom."""
+        self._filter_input.display = True
+        self._filter_input.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Rows filter as you type."""
+        if event.value != self._filter:
+            self._filter = event.value
+            self._update_subtitle()
+            self.refresh_ui()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Enter: keep the filter, back to the table."""
+        self._filter_input.display = False
+        self._table.focus()
