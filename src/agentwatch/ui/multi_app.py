@@ -497,9 +497,9 @@ class MultiAgentWatchApp(App):
     def refresh_ui(self) -> None:
         """Rescore what changed, then update the table, the Selected strip
         and the header."""
-        # No screens: shutting down (a queued RowHighlighted or timer tick
-        # can still arrive after the screens are popped).
-        if self._refreshing or not self.screen_stack:
+        # Shutting down: a queued RowHighlighted or timer tick can still
+        # arrive while the screens' widgets are removed or after they are popped.
+        if self._refreshing or not self.is_running or not self.screen_stack:
             return
         self._refreshing = True
         try:
