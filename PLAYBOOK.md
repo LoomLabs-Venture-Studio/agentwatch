@@ -4845,3 +4845,33 @@ Board decisions (2026-10-24):
   then one `_flush_held` line ("$ N sessions over budget $X; N alerts sent");
   Alerter delivery unchanged. "need you" skips stopped sessions.
   `Alerter._send` survives a raising `on_send` (warned once).
+- [x] CI fix: `refresh_ui` is a no-op once the screen stack is empty (a
+  RowHighlighted queued during shutdown raised ScreenStackError).
+
+### PR 5: loop-breaker blocks + budget (feature/watch-ui-5-blocks) -- DONE
+- [x] Coach state, read only: every `COACH_EVERY_S` (2s) one `listdir` per
+  `statusline.state_dirs()` dir, a `stat` per Claude Code session's state
+  file (`coach.state_path` name; subagent logs `<session>.<agent_id>`), and
+  a JSON read only when the newest file or its mtime changed. Missing or
+  corrupt files are no state.
+- [x] `armed.blocked` on a new loop_id: TOP SIGNAL `⛔ loop blocked: <tool>
+  (Nx) $X` (tool/count from the matching loop warning, else the state
+  count; never a command), attention bucket 0, counts as "need you", one
+  feed line; at startup counted into "N sessions loaded; M loop blocks so
+  far". Header `blocks N`. Detail Health tab `Loop breaker:` line (the env
+  var is only read for display).
+- [x] `--budget`: `COST / BUDGET` column `$4.12 / $5.00 ▮▮▮▯` (10-wide
+  `$4.12 ▮▮▮▯` when started under 100 columns), amber >= 80%, red when hit,
+  `n/a` unpriced; header `budget $X`. The 80-column header drops "on screen",
+  then the clock, when it does not fit.
+- [x] `s`: the rescoring's finding lines are muted; one `security on: N
+  findings` / `security off` line.
+- [x] Perf (perf.py, 15s): synthetic 10 sessions idle CPU 3.0% / refresh_ui
+  1.06ms (PR 4: 3.0% / 0.86ms); --all-logs 122 sessions 11.3% / 3.73ms
+  (PR 4: 11.0% / 3.83ms). Coach pass over 122 sessions: 0.19ms.
+- [x] Tests: `tests/test_multi_app_blocks.py` (incl. an end-to-end run of the
+  real `agentwatch hook` PostToolUse + PreToolUse into watch-all).
+- [x] PR 4 follow-ups: `refresh_ui` also skips while the app is shutting
+  down (flaky NoMatches in a detail test); module bars that round to empty
+  are left out; warning/tip lines wrap with a hanging indent
+  (`ui.app.hang`), long Process values continue indented.

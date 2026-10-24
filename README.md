@@ -317,7 +317,12 @@ agentwatch watch-all
 minutes; stopped rows are grey), agent, project, health (`▲`/`▼` while it is
 5+ points off its value a minute ago), estimated cost (`n/a` when the model has no known
 price), context window fill, time since the last action, and the top
-warning (`ok` when none). Rows sort by attention: Critical first, then HIGH
+warning (`ok` when none). With `--budget`, the cost column is `COST / BUDGET`:
+`$4.12 / $5.00 ▮▮▮▯` (a 4-cell bar; amber from 80%, red once hit; `n/a` with
+no known price; under 100 columns `$4.12 ▮▮▮▯`). When the Claude Code
+plugin's loop breaker has blocked a call in a session, its top warning reads
+`⛔ loop blocked: Bash (7x) $1.40` (the command itself is never shown).
+Rows sort by attention: Critical and loop-blocked sessions first, then HIGH
 warnings, other warnings, active sessions by recency, idle and stopped last.
 Subagents are listed under their parent (`└ sub`). Below the table, the
 selected session's health, efficiency, context, cost per minute, security
@@ -326,16 +331,24 @@ findings, network endpoints and top 3 warnings.
 The header line counts sessions, active ones and those that need you (Critical,
 or a HIGH or worse warning), the estimated cost of the sessions on screen
 (not your history: `agentwatch report` has that), alerts this run (sent to
-`--notify`/`--webhook`; without those, new HIGH or worse findings) and the
-time. The Events panel at the bottom lists, newest first: sessions started
+`--notify`/`--webhook`; without those, new HIGH or worse findings), loop
+breaker blocks this run (`blocks N`, including sessions already blocked at
+startup), the `--budget` limit when set, and the time. The Events panel at the bottom lists, newest first: sessions started
 and stopped, each new warning (one line per finding) and when it clears,
-alerts sent, and with `--budget` a session reaching 80% and 100% of it.
-Warnings a session already has when it is first seen are not listed (one
-"N sessions loaded" line at startup instead).
+alerts sent, a loop breaker block (`⛔ proj loop breaker blocked a repeated
+call (~$1.40)`), `s` (`security on: N findings` / `security off`, one line,
+not one per finding), and with `--budget` a session reaching 80% and 100% of it.
+Warnings and blocks a session already has when it is first seen are not
+listed (one "N sessions loaded; M loop blocks so far" line at startup
+instead). Loop breaker state is the coach's per-session state file, read
+only: its modification time is checked every 2 seconds and the file is read
+only when it changed.
 
 Enter opens the selected session full screen, in four tabs: Health (overall
 health and its status, efficiency, context health, actions/errors/duration
-and every warning with its suggestion and cost), Security (findings, or how
+and every warning with its suggestion and cost; plus a `Loop breaker:` line:
+`armed (Nx)`, `blocked once`, `not armed`, or
+`off (AGENTWATCH_LOOP_BREAKER=off)`), Security (findings, or how
 to turn security mode on, plus raw counts of credential file accesses,
 privilege commands, network actions and injection-like messages), Network
 (the remote endpoints seen during its actions) and Process (pid, type,
