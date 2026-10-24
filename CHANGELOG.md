@@ -213,6 +213,44 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
 - Security: `c2_beacon` patterns match whole words only (#41, PR #55).
 - Net: `watch-all` re-tracks a session's sockets when a new process takes
   over its log, and `net --once` exits 1 when every `--pid` is missing.
+- Watchers: live tailing works on macOS. Appends reported as `added` by
+  FSEvents are read, a 1 s fallback tick catches missed events, and a
+  rewritten or truncated log is re-read from the start. Covers Aider and the
+  JSONL watcher behind `watch` (PR #165).
+- `watch` / `watch-all` no longer exit when Claude Code logs an `error` that
+  is an object, or when log text contains Textual markup such as `[/]`.
+  Log text is shown literally (PR #166).
+- A log line that fails to parse is skipped and the watch continues. Codex
+  tool output that is not a string no longer raises (PR #166).
+- Several Claude Code sessions in one project directory are tracked as
+  separate agents. Each process is mapped through its own session record,
+  the mapping is re-checked on every scan, and watchers are no longer leaked,
+  so a log that comes back is not emitted twice (PR #169).
+- Behaviour change: Cursor lists only composers active in the last 30 minutes
+  as running agents. Older composers in `state.vscdb` are no longer reported
+  (PR #167).
+- Cursor: reading `state.vscdb` waits at most 1 s for a database lock (PR #167).
+- `net`: traffic of a tracked child agent is attributed to the child only, not
+  counted again under its tracked parent (PR #167).
+- Security: the hidden-instruction HTML comment check runs in linear time.
+  Padding no longer hides an instruction, and an unterminated `<!--` no
+  longer stalls a scan (PR #167).
+- Behaviour change: a non-local `OLLAMA_HOST` disables Tier-2 LLM analysis
+  with a one-line reason. Loopback and bind-all addresses are accepted, and an
+  explicit `host=` still works (PR #167).
+- Behaviour change: `audit --redact` refuses a log that was written in the
+  last 5 s, unless `--force` is given (which prints a warning). Appends made
+  while a log is being redacted are no longer lost (PR #168).
+- Behaviour change: each `audit --redact` run writes its own
+  `<log>.bak.<UTC timestamp>` backup and lists the exact paths. Earlier `.bak`
+  files are left alone (PR #168).
+- Behaviour change: `scrub --in-place` and `audit --redact` refuse symlinks
+  instead of replacing them, which left the target's secrets in place (PR #168).
+- Behaviour change: `audit` scans user prompts and tool results. The scrub
+  skill documentation says so (PR #168).
+- Security: real secrets that contain a placeholder word (for example
+  `sk_live_TODO...`) are redacted. Password previews no longer show the last
+  4 characters (PR #168).
 
 ### Documentation
 
