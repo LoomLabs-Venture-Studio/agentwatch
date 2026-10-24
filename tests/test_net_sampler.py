@@ -81,6 +81,35 @@ def test_root_and_descendant_sockets_recorded_listen_and_unconnected_skipped():
     assert s.endpoints(1, 1000, 1000) == [("1.2.3.4", 443), ("5.6.7.8", 80)]
 
 
+def test_nested_tracked_child_traffic_attributed_only_to_child():
+    """Parent and child are both tracked. The child's socket must not also be
+    charged to the parent's tree (double-counted); each keeps its own."""
+    child = FakeProc(2, [conn(2, "1.1.1.1", 443)])
+    root = FakeProc(1, [conn(1, "5.6.7.8", 80)], [child])
+    s, _ = make([root, child])
+    s.track(1)
+    s.track(2)
+    s.sample()
+    assert s.endpoints(1, 1000, 1000) == [("5.6.7.8", 80)]
+    assert s.endpoints(2, 1000, 1000) == [("1.1.1.1", 443)]
+
+
+def test_nested_tracked_chain_each_root_owns_its_own_subtree():
+    """Grandparent -> parent -> child, all tracked: each endpoint lands on
+    the deepest tracked root that owns it, never on an ancestor."""
+    grandchild = FakeProc(3, [conn(3, "3.3.3.3", 22)])
+    child = FakeProc(2, [conn(2, "2.2.2.2", 443)], [grandchild])
+    root = FakeProc(1, [conn(1, "1.1.1.1", 80)], [child, grandchild])
+    s, _ = make([root, child, grandchild])
+    s.track(1)
+    s.track(2)
+    s.track(3)
+    s.sample()
+    assert s.endpoints(1, 1000, 1000) == [("1.1.1.1", 80)]
+    assert s.endpoints(2, 1000, 1000) == [("2.2.2.2", 443)]
+    assert s.endpoints(3, 1000, 1000) == [("3.3.3.3", 22)]
+
+
 def test_global_table_denied_falls_back_and_is_not_retried():
     root = FakeProc(1, [conn(1, "5.6.7.8", 443)])
     s, calls = make([root], global_ok=False)
