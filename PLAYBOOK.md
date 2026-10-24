@@ -4801,3 +4801,20 @@ Board decisions (2026-10-24):
   PR 4). `c` (clear cache) removed.
 - [x] Cells are `rich.text.Text` (log text never parsed as markup).
 - [x] Tests: `tests/test_multi_app_table.py`.
+
+### PR 3: header + event feed (feature/watch-ui-3-feed) -- DONE
+- [x] PR 2 follow-ups: HEALTH ▲/▼ vs the score 60s ago (nothing before a
+  minute of history; evaluated every tick); AGENT display names
+  (`agents.DISPLAY_NAMES`, also in alert text); stopped rows grey; a team
+  score of 0 is Critical.
+- [x] Header line replaces Textual's Header: sessions, active, need you
+  (Critical or HIGH+; no "needs input" detection exists), "on screen $X"
+  (sum of the on-screen sessions' estimated cost: history totals would need
+  a sync, left to PR 8), alerts (Alerter sends to desktop/webhook, else new
+  HIGH+ findings), clock. Blocks omitted until PR 5 wires coach state.
+- [x] Events panel (newest first, 200 lines): started/stopped, new warning
+  per `warning_dedup_key`, cleared, alert sent (`Alerter.on_send`, delivery
+  unchanged), budget 80%/hit. A session's first `BASELINE_S` with actions
+  is silent, like the Alerter; one "N sessions loaded" line at startup.
+- [x] `e` focuses the feed, `e`/Esc back to the table.
+- [x] Tests: `tests/test_multi_app_feed.py`.
