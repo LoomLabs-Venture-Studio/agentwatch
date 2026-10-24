@@ -85,6 +85,7 @@ class DetailScreen(Screen):
                 yield EfficiencyBar(id="d-efficiency")
                 yield ContextHealthWidget(id="d-context")
                 yield StatsPanel(id="d-stats")
+                yield Static(id="d-loop", markup=False)
                 warnings = WarningsList(id="d-warnings")
                 warnings.limit = None
                 yield warnings

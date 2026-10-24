@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -18,6 +20,7 @@ from textual.widgets import DataTable, Footer, Static
 
 from agentwatch.agents import adapter_for, display_name
 from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
+from agentwatch.coach import state_path
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Severity, format_usd, warning_dedup_key
 from agentwatch.discovery import (
@@ -43,6 +46,7 @@ from agentwatch.net_sampler import (
     endpoint_summary,
 )
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
+from agentwatch.statusline import _cost, state_dirs
 from agentwatch.themes import ascii_safe, get_theme
 from agentwatch.ui.app import WarningsList, _hm, plain_notify
 from agentwatch.ui.detail import DetailScreen
@@ -74,6 +78,9 @@ SIGNAL_WIDTH = 40
 STOPPED_STYLE = "grey50"
 FEED_MAX = 200  # event feed lines kept
 BUDGET_WARN = 0.8  # feed line when a session reaches this share of --budget
+BUDGET_WIDTH = 18  # COST / BUDGET column: "$4.12 / $5.00 ▮▮▮▯" ...
+BUDGET_NARROW = 10  # ... or "$4.12 ▮▮▮▯" when started under 100 columns
+COACH_EVERY_S = 2.0  # coach state files are stat'ed this often, read only when changed
 _WIDTHS = {key: width for key, _, width in COLUMNS}
 _SEVERITY_RANK = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
 _SEVERITY_STYLE = {
@@ -150,11 +157,27 @@ def _signal(warnings: list["Warning"]) -> tuple[str, str]:
     return f"{ascii_safe('⚠', '!')} {label}", _SEVERITY_STYLE[w.severity]
 
 
-def _text(column: str, value: str, style: str) -> Text:
+def _text(column: str, value: str, style: str, width: int | None = None) -> Text:
     """A table cell: literal text (never markup), cut to its column."""
     text = Text(value, style=style, no_wrap=True)
-    text.truncate(_WIDTHS[column] or SIGNAL_WIDTH, overflow="ellipsis")
+    text.truncate(width or _WIDTHS[column] or SIGNAL_WIDTH, overflow="ellipsis")
     return text
+
+
+def _budget_cell(cost: float | None, budget: float, narrow: bool = False) -> tuple[str, str]:
+    """'$4.12 / $5.00 ▮▮▮▯' ('$4.12 ▮▮▮▯' narrow): amber from BUDGET_WARN, red when hit."""
+    if cost is None:
+        return "n/a", ""
+    share = cost / budget
+    full = min(4, int(share * 4))
+    bar = ascii_safe("▮", "#") * full + ascii_safe("▯", "-") * (4 - full)
+    style = "bold red" if share >= 1 else "yellow" if share >= BUDGET_WARN else ""
+    limit = "" if narrow else f" / {_usd(budget)}"
+    return f"{_usd(cost)}{limit} {bar}", style
+
+
+def _loop_breaker_off() -> bool:
+    return os.environ.get("AGENTWATCH_LOOP_BREAKER", "").strip().lower() == "off"
 
 
 class MultiAgentWatchApp(App):
@@ -260,6 +283,11 @@ class MultiAgentWatchApp(App):
         self._held_alerts = 0
         self._holding = False  # at startup, an Alerter pass for a session in its window
         self._header_text = ""
+        self._blocks = 0  # loop-breaker blocks seen this run (incl. already at startup)
+        self._held_blocks = 0  # ... of those, seen in the startup window
+        self._coach_next = 0.0  # monotonic time of the next coach state pass
+        self._muted = False  # `s` rescoring: no per-finding feed lines
+        self._budget_width: int | None = None  # COST / BUDGET column width (--budget)
 
         if agent_processes is not None:
             self._initial_processes = agent_processes
@@ -268,6 +296,10 @@ class MultiAgentWatchApp(App):
             self._initial_processes = []
             self.watcher = MultiLogWatcher(self.watch_paths)
 
+    @property
+    def _budget(self) -> float | None:
+        return self.alerter.budget if self.alerter is not None else None
+
     def compose(self) -> ComposeResult:
         self._header = Static(id="header", markup=False)
         yield self._header
@@ -275,6 +307,11 @@ class MultiAgentWatchApp(App):
         table.border_title = "Sessions"
         table.border_subtitle = f"sort: {self.sort_mode}"
         for key, label, width in COLUMNS:
+            if key == "cost" and self._budget is not None:
+                # ponytail: chosen at startup; a later resize keeps it.
+                self._budget_width = BUDGET_WIDTH if self.size.width >= 100 else BUDGET_NARROW
+                narrow = self._budget_width == BUDGET_NARROW
+                label, width = "COST/BUDGT" if narrow else "COST / BUDGET", self._budget_width
             table.add_column(label, key=key, width=width)
         yield table
         self._selected = Static(
@@ -466,16 +503,123 @@ class MultiAgentWatchApp(App):
             return
         self._refreshing = True
         try:
+            self._read_coach()
             if self.agents or self.teams:
                 self._do_refresh_ui()
             if self._loaded_until is not None and time.monotonic() >= self._loaded_until:
                 self._loaded_until = None
-                n = len(self.agents)
-                self._event(f"{n} session{'s' * (n != 1)} loaded")
+                n, blocks = len(self.agents), self._held_blocks
+                line = f"{n} session{'s' * (n != 1)} loaded"
+                if blocks:
+                    line += f"; {blocks} loop block{'s' * (blocks != 1)} so far"
+                self._event(line)
             self._flush_held()
             self._update_header()
         finally:
             self._refreshing = False
+
+    # -- loop breaker (coach state) ----------------------------------------
+
+    def _coach_key(self, data: dict) -> str | None:
+        """The coach's state key for a Claude Code session: its session id, or
+        `<session>.<agent_id>` for a subagent log; None for other agents."""
+        item: AgentItem = data["item"]
+        if (item.agent_type or data.get("agent_name")) != "claude-code":
+            return None
+        path = item.log_path
+        if path.parent.name == "subagents" and path.stem.startswith("agent-"):
+            return f"{path.parent.parent.name}.{path.stem.removeprefix('agent-')}"
+        proc = self.watcher.get_process_meta(path) if self._process_mode else None
+        actions = data["buffer"].actions
+        return (proc and proc.session_id) or (actions and actions[0].session_id) or path.stem
+
+    def _read_coach(self) -> None:
+        """Every COACH_EVERY_S: stat each Claude Code session's coach state
+        file and re-read only the ones whose mtime changed (read-only; a
+        missing or corrupt file is no state). A block (armed.blocked on a
+        new loop_id) is one feed line, or held for the startup line."""
+        now = time.monotonic()
+        if now < self._coach_next:
+            return
+        self._coach_next = now + COACH_EVERY_S
+        listed = []  # one listdir per dir: only existing state files are stat'ed
+        for directory in state_dirs():
+            try:
+                listed.append((directory, set(os.listdir(directory))))
+            except OSError:
+                pass
+        for data in self.agents.values():
+            if "_coach_name" not in data:
+                key = data["_coach_key"] = self._coach_key(data)
+                data["_coach_name"] = key and state_path(Path(), key).name
+            name = data["_coach_name"]
+            if name is None:
+                continue
+            newest = None
+            for directory, names in listed:
+                if name not in names:
+                    continue
+                path = directory / name
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                if newest is None or mtime > newest[1]:
+                    newest = (path, mtime)
+            if newest == data.get("_coach_file"):
+                continue
+            data["_coach_file"] = newest
+            armed = {}
+            try:
+                if newest is not None:
+                    armed = json.loads(newest[0].read_text(encoding="utf-8")).get("armed")
+            except (OSError, ValueError, AttributeError):
+                pass
+            data["_armed"] = armed = armed if isinstance(armed, dict) else {}
+            blocked = armed.get("loop_id") if armed.get("blocked") is True else None
+            if blocked and blocked != data.get("_blocked_id"):
+                self._blocks += 1
+                if self._loaded_until is not None:
+                    self._held_blocks += 1
+                else:
+                    project = data["item"].project_name or data["item"].log_path.name
+                    cost = _cost(armed.get("cost_usd")).strip()
+                    self._event(f"{ascii_safe('⛔', 'X')} {project} loop breaker blocked a "
+                                f"repeated call{f' ({cost})' if cost else ''}", "bold red")
+            data["_blocked_id"] = blocked
+
+    @staticmethod
+    def _blocked_signal(data: dict, warnings: list["Warning"]) -> tuple[str, str] | None:
+        """TOP SIGNAL for a blocked session: tool and count from its loop
+        warning when there is one (state holds only a hash, never the command)."""
+        if not data.get("_blocked_id"):
+            return None
+        armed = data["_armed"]
+        loop = next((w for w in warnings if w.signal == "loop"
+                     and w.details.get("loop_id") == armed["loop_id"]), None)
+        tool = loop.details.get("tool") if loop else None
+        count = (loop.details.get("count") if loop else None) or armed.get("count")
+        label = f"{ascii_safe('⛔', 'X')} loop blocked" + (f": {tool}" if tool else "")
+        if isinstance(count, int) and not isinstance(count, bool):
+            label += f" ({count}x)"
+        cost = _cost(armed.get("cost_usd")).replace("~", "")
+        return label + cost, "bold red"
+
+    def _loop_breaker_text(self, data: dict) -> str:
+        if _loop_breaker_off():
+            state = "off (AGENTWATCH_LOOP_BREAKER=off)"
+        elif data.get("_coach_key") is None:
+            state = "n/a (Claude Code sessions only)"
+        elif data.get("_coach_file") is None:
+            state = "no coach state for this session (is the agentwatch plugin installed?)"
+        elif data.get("_blocked_id"):
+            state = "blocked once"
+        elif data["_armed"].get("loop_id"):
+            count = data["_armed"].get("count")
+            state = "armed" + (f" ({count}x)" if isinstance(count, int) else "")
+        else:
+            state = "not armed"
+        return f"  Loop breaker: {state}"
 
     def _score(self, data: dict) -> "HealthReport":
         """One agent's report, rescored only when it has new actions
@@ -593,10 +737,12 @@ class MultiAgentWatchApp(App):
             "agent": (agent, ""),
             "project": (item.project_name or item.log_path.name, ""),
             "health": (f"{score}% {trend}".rstrip(), color),
-            "cost": ("n/a" if cost is None else format_usd(cost).lstrip("~"), ""),
+            "cost": ("n/a" if cost is None else format_usd(cost).lstrip("~"), "")
+            if self._budget is None
+            else _budget_cell(cost, self._budget, self._budget_width == BUDGET_NARROW),
             "ctx": ("-" if ctx is None else f"{ctx}%", ""),
             "last": (_ago(age), ""),
-            "signal": _signal(report.warnings),
+            "signal": self._blocked_signal(data, report.warnings) or _signal(report.warnings),
         }
         if item.process_status == "stopped":  # grey, so stopped differs from idle
             cells = {col: (v, STOPPED_STYLE) for col, (v, _) in cells.items()}
@@ -627,7 +773,8 @@ class MultiAgentWatchApp(App):
         severities = {w.severity for w in report.warnings}
         if idle:
             bucket = 4
-        elif Severity.CRITICAL in severities or report.overall_score < 40:
+        elif (Severity.CRITICAL in severities or report.overall_score < 40
+              or data.get("_blocked_id")):
             bucket = 0
         elif Severity.HIGH in severities:
             bucket = 1
@@ -679,6 +826,7 @@ class MultiAgentWatchApp(App):
             active += cells["dot"][0] == ascii_safe("●", "*")
             need_you += data["item"].process_status != "stopped" and (
                 report.status == critical
+                or bool(data.get("_blocked_id"))
                 or any(_SEVERITY_RANK[w.severity] <= 1 for w in report.warnings)
             )
             cost = data["buffer"].stats.estimated_cost
@@ -698,13 +846,13 @@ class MultiAgentWatchApp(App):
                 cells = {col: (v, f"bold {style}") for col, (v, style) in cells.items()}
             shown = self._cells.get(key)
             if shown is None:
-                texts = [_text(col, *v) for col, v in cells.items()]
+                texts = [_text(col, *v, self._width(col)) for col, v in cells.items()]
                 table.add_row(*texts, key=key)
                 self._dots[key] = texts[0]
             else:
                 for col, v in cells.items():
                     if v != shown[col]:
-                        text = _text(col, *v)
+                        text = _text(col, *v, self._width(col))
                         table.update_cell(key, col, text, update_width=col == "signal")
                         if col == "dot":
                             self._dots[key] = text
@@ -720,6 +868,9 @@ class MultiAgentWatchApp(App):
                 if selected in self._cells:
                     table.move_cursor(row=table.get_row_index(selected), animate=False)
 
+    def _width(self, column: str) -> int | None:
+        return self._budget_width if column == "cost" else None
+
     def _drop_row(self, path: Path) -> None:
         key = str(path)
         if key in self._cells:
@@ -734,15 +885,25 @@ class MultiAgentWatchApp(App):
         """One line; redrawn only when its text changes (the clock: each second)."""
         n, active, need_you, spend = self._summary
         dot = ascii_safe(" · ", " | ")
-        body = "   ".join((
+        spent = "n/a" if spend is None else _usd(spend) if spend else "$0.00"
+        parts = [
             f"{n} session{'s' * (n != 1)}{dot}{active} active{dot}{need_you} need you",
-            f"on screen {'n/a' if spend is None else _usd(spend) if spend else '$0.00'}",
+            f"on screen {spent}",
             f"alerts {self._alerts}",
+            f"blocks {self._blocks}",
+            *([f"budget {_usd(self._budget)}"] if self._budget is not None else []),
             f"{datetime.now():%H:%M:%S}",
-        ))
+        ]
+        body = "   ".join(parts)
         title = "agentwatch" + (" [SECURITY]" if self.security_mode else "")
-        if len(title) + 2 + len(body) > self.size.width - 2:
+        room = self.size.width - 2
+        if len(title) + 2 + len(body) > room:
             title = ""  # narrow: the counts and the clock matter more
+            if len(body) > room:  # tighter, then without the clock
+                parts[1] = spent
+                body = "  ".join(parts)
+                if len(body) > room:
+                    body = "  ".join(parts[:-1])
         text = f"{title}  {body}" if title else body
         if text != self._header_text:
             self._header_text = text
@@ -783,7 +944,7 @@ class MultiAgentWatchApp(App):
         project = item.project_name or item.log_path.name
         quiet = self._in_window(data)
         found = {warning_dedup_key(w): w for w in warnings}
-        if not quiet:
+        if not (quiet or self._muted):
             shown: dict[str, str] = data.get("_feed_keys", {})
             count_alerts = not self._alert_sinks()
             for key, w in found.items():
@@ -799,7 +960,7 @@ class MultiAgentWatchApp(App):
                     self._event(f"{ascii_safe('✓', 'ok')} {project}: {label} cleared", "green")
         data["_feed_keys"] = {key: _label(w.signal) for key, w in found.items()}
 
-        budget = self.alerter.budget if self.alerter is not None else None
+        budget = self._budget
         cost = stats.estimated_cost
         if budget is None or cost is None or data.get("_budget_hit"):
             return
@@ -946,6 +1107,7 @@ class MultiAgentWatchApp(App):
         findings.display = self.security_mode
         findings.update_warnings(report.security_warnings)
 
+        screen.text("d-loop", self._loop_breaker_text(data))
         screen.text("d-net", self._net_text(data))
         screen.text("d-process", self._process_text(data))
 
@@ -1182,7 +1344,18 @@ class MultiAgentWatchApp(App):
             data["registry"] = create_registry(mode=mode)
             data["_last_count"] = -1
 
-        self.refresh_ui()
+        # The rescoring's new/cleared findings are one summary line, not a burst.
+        self._muted = True
+        try:
+            self.refresh_ui()
+        finally:
+            self._muted = False
+        if self.security_mode:
+            n = sum(len(d["_last_report"].security_warnings) for d in self.agents.values()
+                    if d["_last_report"] is not None)
+            self._event(f"security on: {n} finding{'s' * (n != 1)}")
+        else:
+            self._event("security off")
 
     def action_cycle_sort(self) -> None:
         """`o`: attention -> cost -> recent."""
