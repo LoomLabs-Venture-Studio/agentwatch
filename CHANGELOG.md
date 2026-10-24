@@ -84,6 +84,16 @@ numbers refer to the GitHub repository.
 
 ### Changed
 
+- `watch-all` shows a sessions table instead of the agent sidebar: one row
+  per session with status dot, agent, project, health (with ▲/▼ after a move
+  of 5 points or more), cost, context %, time since the last action and the
+  top warning. Rows sort by attention (Critical, then HIGH, then other
+  warnings, then active by recency, idle or stopped last); `o` switches to
+  cost or recent order and the cursor stays on its session. Subagents sit
+  under their parent. A strip under the table shows the selected session's
+  numbers and top 3 warnings; the full panels return in a detail view. Each
+  tick updates only the cells that changed. The `c` (clear Python cache) key
+  is gone.
 - `stats` and `audit` name a Claude Code project after the `cwd` its
   transcripts record, so `agentwatch-main` is no longer shown as `main`
   (the old name decoded the project dir, which can't tell `-` from `/`).
