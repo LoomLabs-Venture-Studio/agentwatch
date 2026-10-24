@@ -155,6 +155,14 @@ class LogWatcher:
                         # If it's a full line but invalid JSON, skip it to avoid getting stuck
                         self._position = f.tell()
                         continue
+                    except Exception as exc:
+                        # A log line must never kill the watch. Advance past it so it is
+                        # not re-read every poll; log only the type (lines can hold secrets).
+                        self._position = f.tell()
+                        logger.debug(
+                            "Skipping unparseable line in %s (%s)", self.path, type(exc).__name__
+                        )
+                        continue
         except FileNotFoundError:
             pass
 
