@@ -4752,3 +4752,37 @@ Board-approved spec. Claude Code plugin only.
 - [x] Subagents keyed `session.agent_id` like the coach; separate state.
 - [x] End-to-end test on the real Claude Code 2.1.30x fixture.
 - [x] No interaction with `--budget`.
+
+## Watch UI overhaul (Sprint 36)
+Board decisions (2026-10-24):
+- Replace the old `watch-all` screen. `watch` gets the same redesign.
+- Crash fixes ship first.
+- `--all-logs` defaults to the last 24h.
+- Network, detect and the weekly report are in scope now.
+- 9 PRs as a stack, each on the previous one:
+  1. Crash fixes.
+  2. Sessions table.
+  3. Header + event feed.
+  4. Detail view (+ fix stale-after-`s` and selected-only rescoring).
+  5. Loop-breaker + budget columns.
+  6. Many sessions: idle fold, filter, project names, 24h default, team
+     grouping fix.
+  7. Narrow layout + `?` help.
+  8. Net/detect/weekly report.
+  9. `watch` uses the same app.
+
+### PR 1: crash fixes (fix/watch-markup-crashes) -- DONE
+- [x] Claude Code `system/api_error` logs `error` as a dict: the parser
+  (`parser.logs.error_text`) keeps its `message`, else compact JSON. Also
+  used by the flat Claude Code, Moltbot, Antigravity and Copilot CLI
+  parsers. `detectors.base.normalize_error` stringifies any non-str.
+- [x] Log text is plain text in every widget: `markup=False` on the
+  `Static`/`Label` widgets in `ui/app.py`, `ui/multi_app.py` and
+  `ui/rot_widget.py` (none use intentional markup), and both apps' `notify`
+  defaults to `markup=False` (toasts carry agent labels and LLM/SIEM
+  errors). `[/]` no longer crashes, log `[link=...]`/`[@click=...]` are
+  inert, and our `[claude-code]`, `[root]`/`[sub]`, `[loop ...]`,
+  `[Tier-2]`, `[ALIGNED]`/`[POSSIBLE DRIFT]`/`[UNCLEAR]` and `[TIP]` labels
+  show.
+- [x] Tests: `tests/test_ui_markup.py` (synthetic api_error fixture; pilot
+  runs of `watch` and `watch-all`).

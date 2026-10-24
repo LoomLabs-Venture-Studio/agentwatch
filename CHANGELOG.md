@@ -66,6 +66,14 @@ numbers refer to the GitHub repository.
 - `--log`, `--analytics-log`, `--siem-log` and `--audit-log` given a
   directory (`check`, `security-scan`, `watch`, `watch-all`, `agentguard`) is
   a one-line usage error instead of an `IsADirectoryError` traceback.
+- `watch-all` and `watch` no longer exit when a Claude Code session logs an
+  API error (`system/api_error`, whose `error` is an object): the parser keeps
+  the error's `message`, and error matching accepts any value.
+- `watch` and `watch-all` show text from logs as written. A command or error
+  containing `[/]` no longer exits the app, `[link=...]` or `[@click=...]` in
+  a log no longer becomes a live link or action, and text like `[a-z]+`,
+  `[claude-code]`, `[loop`, `[root]`, `[Tier-2]` and `[ALIGNED]` is no
+  longer dropped. Toasts show their text the same way.
 
 ### Security
 

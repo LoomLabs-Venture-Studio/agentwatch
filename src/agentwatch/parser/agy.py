@@ -30,7 +30,7 @@ import json
 import re
 from typing import Any
 
-from .logs import _parse_timestamp, classify_tool, url_hostname
+from .logs import _parse_timestamp, classify_tool, error_text, url_hostname
 from .models import Action, ToolType
 
 _PATH_ARGS = ("AbsolutePath", "TargetFile", "DirectoryPath", "SearchPath")
@@ -128,7 +128,7 @@ class AgyParser:
             action.raw["content"] = content
         if entry.get("status") == "ERROR":
             action.success = False
-            action.error_message = entry.get("error") or content
+            action.error_message = error_text(entry.get("error") or content)
         elif (
             action.tool_name == "run_command"
             and (m := _EXIT_CODE.match(content or ""))
