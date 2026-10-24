@@ -43,6 +43,7 @@ from time import monotonic as _monotonic
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+from agentwatch.agents import display_name
 from agentwatch.detectors.base import Severity, findings_spend, warning_dedup_key
 from agentwatch.detectors.security.secret_scanner import one_line
 from agentwatch.statusline import _LABELS, _cost
@@ -216,7 +217,7 @@ def _usd(v: float) -> str:
 def who(agent: str | None, project: str | None) -> str:
     """'Claude Code · myproj'. Both come from logs and process data, so they
     are cleaned like a message."""
-    name = one_line(agent.replace("-", " ").title(), _NAME_MAX) if agent else ""
+    name = one_line(display_name(agent), _NAME_MAX) if agent else ""
     project = one_line(project, _NAME_MAX) if project else ""
     return f" {ascii_safe('·', '|')} ".join(p for p in (name, project) if p) or "agent"
 

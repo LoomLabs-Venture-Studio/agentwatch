@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Header, Static
 
-from agentwatch.agents import adapter_for
+from agentwatch.agents import adapter_for, display_name
 from agentwatch.alerts import tui_warn
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Severity, format_usd
@@ -62,8 +63,11 @@ COLUMNS = (
 SORTS = ("attention", "cost", "recent")
 IDLE_AFTER_S = 300  # no action for this long: shown as idle (○), sorted last
 FLASH_S = 2.0  # a row whose data changed is shown bold this long
-TREND_POINTS = 5  # HEALTH gets ▲/▼ when it moved this much since last shown
+TREND_POINTS = 5  # HEALTH gets ▲/▼ when it moved this much ...
+TREND_WINDOW_S = 60.0  # ... against its score this long ago
+TREND_SETTLE_S = 5.0  # a session's first seconds (log history loading) set the reference
 SIGNAL_WIDTH = 40
+STOPPED_STYLE = "grey50"
 _WIDTHS = {key: width for key, _, width in COLUMNS}
 _SEVERITY_RANK = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
 _SEVERITY_STYLE = {
@@ -442,8 +446,41 @@ class MultiAgentWatchApp(App):
 
     # -- sessions table ---------------------------------------------------
 
+    @staticmethod
+    def _trend(data: dict, score: int, now: float) -> str:
+        """▲/▼ when *score* is TREND_POINTS off its value TREND_WINDOW_S ago.
+        Scores are kept as (time, score) at each change; the reference is the
+        newest one at least the window old; nothing is shown until the session
+        has a window of history. Its first TREND_SETTLE_S with actions only
+        set the reference (its log history is loading). Evaluated every tick,
+        so an arrow clears on time for rows that are not rescored."""
+        if not data["buffer"].stats.action_count:
+            return ""
+        scores: deque = data.setdefault("_scores", deque())
+        if not scores or (len(scores) == 1 and now - scores[0][0] < TREND_SETTLE_S):
+            start = scores[0][0] if scores else now
+            scores.clear()
+            scores.append((start, score))
+        elif score != scores[-1][1]:
+            scores.append((now, score))
+        while len(scores) > 1 and scores[1][0] <= now - TREND_WINDOW_S:
+            scores.popleft()
+        if scores[0][0] > now - TREND_WINDOW_S:
+            return ""
+        diff = score - scores[0][1]
+        if diff >= TREND_POINTS:
+            return ascii_safe("▲", "^")
+        if -diff >= TREND_POINTS:
+            return ascii_safe("▼", "v")
+        return ""
+
+    @staticmethod
+    def _agent_name(data: dict) -> str:
+        agent = data["item"].agent_type or data.get("agent_name")
+        return display_name(agent) if agent else "?"
+
     def _row_cells(
-        self, data: dict, report: "HealthReport", age: float | None
+        self, data: dict, report: "HealthReport", age: float | None, now: float | None = None
     ) -> dict[str, tuple[str, str]]:
         """{column: (text, style)}; text is cut to the column when shown."""
         item: AgentItem = data["item"]
@@ -453,34 +490,30 @@ class MultiAgentWatchApp(App):
         active = item.process_status != "stopped" and age is not None and age < IDLE_AFTER_S
 
         score = report.overall_score
-        shown = data.get("_shown_score")
-        if shown is not None and score != shown:
-            data["_trend"] = (
-                ascii_safe("▲", "^") if score - shown >= TREND_POINTS
-                else ascii_safe("▼", "v") if shown - score >= TREND_POINTS
-                else ""
-            )
-        data["_shown_score"] = score
-
-        agent = item.agent_type or data.get("agent_name") or "?"
+        trend = self._trend(data, score, time.monotonic() if now is None else now)
+        agent = self._agent_name(data)
         if item.depth > 0:
             agent = "  " * (item.depth - 1) + f"{ascii_safe('└', '`-')} sub {agent}"
         cost = buffer.stats.estimated_cost
         ctx = _context_pct(buffer)
-        return {
+        cells = {
             "dot": (ascii_safe("●", "*") if active else ascii_safe("○", "o"), color),
             "agent": (agent, ""),
             "project": (item.project_name or item.log_path.name, ""),
-            "health": (f"{score}% {data.get('_trend', '')}".rstrip(), color),
+            "health": (f"{score}% {trend}".rstrip(), color),
             "cost": ("n/a" if cost is None else format_usd(cost).lstrip("~"), ""),
             "ctx": ("-" if ctx is None else f"{ctx}%", ""),
             "last": (_ago(age), ""),
             "signal": _signal(report.warnings),
         }
+        if item.process_status == "stopped":  # grey, so stopped differs from idle
+            cells = {col: (v, STOPPED_STYLE) for col, (v, _) in cells.items()}
+        return cells
 
     def _team_cells(self, team: AgentTeam) -> dict[str, tuple[str, str]]:
         score = self._team_scores.get(team.team_id)
-        color = get_theme().color_for(get_theme().status_from_score(score or 100))
+        theme = get_theme()
+        color = theme.color_for(theme.status_from_score(100 if score is None else score))
         members = f"{team.member_count} agents"
         if team.subagent_count:
             members += f", {team.subagent_count} sub"
@@ -545,7 +578,7 @@ class MultiAgentWatchApp(App):
         sort_keys: dict[Path, tuple] = {}
         for path, data in self.agents.items():
             age = _age(data["buffer"])
-            rows[str(path)] = self._row_cells(data, reports[path], age)
+            rows[str(path)] = self._row_cells(data, reports[path], age, now)
             sort_keys[path] = self._sort_key(data, reports[path], age)
         for team_id, team in self.teams.items():
             rows[f"team:{team_id}"] = self._team_cells(team)
@@ -599,7 +632,7 @@ class MultiAgentWatchApp(App):
         dot = ascii_safe(" · ", " | ")
         title = [
             item.project_name or item.log_path.name,
-            item.agent_type or data.get("agent_name") or "?",
+            self._agent_name(data),
         ]
         if item.pid:
             title.append(f"pid {item.pid}")
