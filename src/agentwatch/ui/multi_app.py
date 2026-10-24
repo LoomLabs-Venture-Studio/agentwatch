@@ -30,6 +30,7 @@ from agentwatch.discovery import (
 from agentwatch.health import (
     calculate_efficiency,
     calculate_health,
+    calculate_security_score,
     calculate_team_health,
 )
 from agentwatch.health.rot import RotScorer
@@ -43,7 +44,8 @@ from agentwatch.net_sampler import (
 )
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.themes import ascii_safe, get_theme
-from agentwatch.ui.app import WarningsList, plain_notify
+from agentwatch.ui.app import WarningsList, _hm, plain_notify
+from agentwatch.ui.detail import DetailScreen
 from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
 
 if TYPE_CHECKING:
@@ -208,6 +210,7 @@ class MultiAgentWatchApp(App):
         ("s", "toggle_security", "Toggle Security"),
         ("o", "cycle_sort", "Sort"),
         ("e", "toggle_feed", "Events"),
+        Binding("enter", "open_detail", "Detail", priority=True),
         Binding("escape", "focus_table", "Table", show=False),
     ]
 
@@ -426,6 +429,29 @@ class MultiAgentWatchApp(App):
             self.selected_path = path
             self.refresh_ui()
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Enter (or a click on the highlighted row): open that session."""
+        path = Path(event.row_key.value)
+        if path in self.agents:  # not a team header row
+            self.selected_path = path
+            self.action_open_detail()
+
+    def action_open_detail(self) -> None:
+        """Enter: the selected session full screen (not on a team header row)."""
+        table = self._table
+        if self.selected_path not in self.agents or isinstance(self.screen, DetailScreen):
+            return
+        if table.row_count:
+            row = table.coordinate_to_cell_key((table.cursor_row, 0)).row_key
+            if row.value != str(self.selected_path):
+                return
+        self.push_screen(DetailScreen(self.selected_path))
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        """Main-screen keys are off (and out of the footer) in the detail view."""
+        detail = isinstance(self.screen, DetailScreen)
+        return not (detail and action in ("cycle_sort", "toggle_feed", "open_detail"))
+
     def refresh_ui(self) -> None:
         """Rescore what changed, then update the table, the Selected strip
         and the header."""
@@ -482,6 +508,7 @@ class MultiAgentWatchApp(App):
         self._sync_table(reports)
         if self.selected_path in self.agents:
             self._update_selected(self.agents[self.selected_path], reports[self.selected_path])
+        self._update_detail()
 
     def _update_teams(self, reports: dict[Path, "HealthReport"]) -> None:
         """Team health from member reports, grouped in one O(N) pass via the
@@ -779,19 +806,20 @@ class MultiAgentWatchApp(App):
 
     # -- Selected strip ---------------------------------------------------
 
-    def _update_selected(self, data: dict, report: "HealthReport") -> None:
+    def _title(self, data: dict) -> str:
         item: AgentItem = data["item"]
-        buffer: ActionBuffer = data["buffer"]
-        stats = buffer.stats
-        dot = ascii_safe(" · ", " | ")
-        title = [
-            item.project_name or item.log_path.name,
-            self._agent_name(data),
-        ]
+        title = [item.project_name or item.log_path.name, self._agent_name(data)]
         if item.pid:
             title.append(f"pid {item.pid}")
         if item.uptime:
             title.append(item.uptime)
+        if item.process_status == "stopped":
+            title.append("stopped")
+        return ascii_safe(" · ", " | ").join(title)
+
+    def _update_selected(self, data: dict, report: "HealthReport") -> None:
+        buffer: ActionBuffer = data["buffer"]
+        stats = buffer.stats
         ctx = _context_pct(buffer)
         cost = stats.estimated_cost
         cost_text = "n/a" if cost is None else format_usd(cost)
@@ -800,7 +828,7 @@ class MultiAgentWatchApp(App):
         security = str(len(report.security_warnings)) if self.security_mode else "off"
         net = endpoint_summary(buffer.actions) if data.get("net_sampled") else NOT_ATTRIBUTABLE
         lines = [
-            "Selected: " + dot.join(title),
+            "Selected: " + self._title(data),
             f"Health {report.overall_score}%  Efficiency {data.get('_last_eff', 100)}%  "
             f"Context {'n/a' if ctx is None else f'{ctx}%'}  Cost {cost_text}  "
             f"Security {security}  {net}",
@@ -820,6 +848,102 @@ class MultiAgentWatchApp(App):
         if not report.warnings:
             lines.append("No active warnings")
         self._selected.update("\n".join(lines))
+
+    # -- detail view -----------------------------------------------------
+
+    def _update_detail(self) -> None:
+        """Fill the open detail view from its session's cached scoring (no
+        rescoring here). Each widget is updated only if its text changed."""
+        screen = self.screen
+        if not (isinstance(screen, DetailScreen) and screen.ready and screen.path in self.agents):
+            return
+        data = self.agents[screen.path]
+        report: HealthReport | None = data["_last_report"]
+        if report is None:
+            return
+        buffer: ActionBuffer = data["buffer"]
+        stats = buffer.stats
+        assessor: LiveLlmAssessor | None = data.get("llm_assessor")
+        if assessor is not None:  # Tier-2 verdicts that arrived since the last scoring
+            assessor.stamp(report.warnings)
+
+        screen.text("detail-title", self._title(data) + f"  (health {report.overall_score}%)")
+        health = screen.query_one("#d-health")
+        health.score, health.status = report.overall_score, report.status
+        if data.get("_last_eff_report") is not None:
+            screen.query_one("#d-efficiency").update_efficiency(data["_last_eff_report"])
+        if data.get("_rot") is not None:
+            screen.query_one("#d-context").update_report(
+                data["_rot"], peak_context_tokens=stats.peak_context_tokens
+            )
+        screen.query_one("#d-stats").update_stats(
+            stats.activity_count, stats.error_count, stats.duration_minutes
+        )
+        warnings = screen.query_one("#d-warnings")
+        warnings.update_goal_alignment(assessor.stamp_goal_alignment() if assessor else None)
+        warnings.update_warnings(report.warnings)
+
+        security = screen.query_one("#d-security")
+        security.display = self.security_mode
+        security.score = calculate_security_score(report.warnings)
+        security.alert_count = len(report.security_warnings)
+        counters = (
+            f"  Raw counters (all actions, either mode):\n"
+            f"    Credential file accesses  {stats.credential_accesses}\n"
+            f"    Privilege commands        {stats.privilege_commands}\n"
+            f"    Network actions           {stats.network_connections}\n"
+            f"    Injection-like messages   {stats.injection_attempts}"
+        )
+        if not self.security_mode:
+            counters = "  Security mode is off: press s to turn it on.\n\n" + counters
+        screen.text("d-counters", counters)
+        findings = screen.query_one("#d-findings")
+        findings.display = self.security_mode
+        findings.update_warnings(report.security_warnings)
+
+        screen.text("d-net", self._net_text(data))
+        screen.text("d-process", self._process_text(data))
+
+    def _net_text(self, data: dict) -> str:
+        if not data.get("net_sampled"):
+            why = "" if self._process_mode else " (--all-logs: no process to sample)"
+            return f"  {NOT_ATTRIBUTABLE}{why}"
+        actions = data["buffer"].actions
+        seen = sorted({ep for a in actions for ep in a.observed_endpoints or ()})
+        lines = [f"  {endpoint_summary(actions)} (remote ip:port seen during its actions)"]
+        lines += [f"    {ip}:{port}" for ip, port in seen]
+        return "\n".join(lines)
+
+    def _process_text(self, data: dict) -> str:
+        item: AgentItem = data["item"]
+        actions = data["buffer"].actions
+        proc = self.watcher.get_process_meta(item.log_path) if self._process_mode else None
+        session = (proc and proc.session_id) or (actions[0].session_id if actions else None)
+        rows = [("Type", self._agent_name(data))]
+        if proc is None:
+            rows += [(k, "n/a") for k in ("PID", "Uptime", "CWD", "CPU", "Memory", "Team")]
+        else:
+            if proc.depth:
+                team = f"subagent (depth {proc.depth}) of pid {proc.parent_agent_pid}"
+            else:
+                team = "root"
+            if proc.team_id is not None and proc.team_id != proc.pid:
+                team += f", team {proc.team_id}"
+            rows += [
+                ("PID", str(proc.pid)),
+                ("Uptime", proc.uptime or "n/a"),
+                ("CWD", str(proc.working_directory or "n/a")),
+                ("CPU", f"{proc.cpu_percent:.1f}%"),
+                ("Memory", f"{proc.memory_mb:.0f} MB"),
+                ("Team", team),
+                ("Status", item.process_status),
+            ]
+        rows += [
+            ("Session", session or "n/a"),
+            ("Active", _hm(data["buffer"].stats.duration_minutes)),
+            ("Log", str(item.log_path)),
+        ]
+        return "\n".join(f"  {k:8s} {v}" for k, v in rows)
 
     def _alert(self, agent_data: dict, warnings: list["Warning"], report: "HealthReport") -> None:
         """Feed one agent's scoring pass to `--notify`/`--webhook`/`--headless`."""
