@@ -4920,3 +4920,35 @@ Board decisions (2026-10-24):
   watch-all finds coach state; tests no longer write the real coach pointer
   (autouse `XDG_CACHE_HOME`/`LOCALAPPDATA` in `tests/conftest.py`); QA's
   odd state-file cases in `tests/test_multi_app_blocks.py`.
+
+### PR 7: narrow layout + `?` help (feature/watch-ui-7-narrow) -- DONE
+- [x] One place decides the layout, `_layout(width, height)`: (narrow,
+  Events height, columns). `on_resize` (PR 6's budget-column hook, extended)
+  applies it only when it changed; the table's columns are rebuilt then (rows
+  re-added by the same refresh, the cursor put back on the selected session,
+  no flash). Nothing extra per tick; the Selected strip is not even filled
+  while hidden.
+- [x] Under 100 columns: no AGENT/CTX columns, PROJECT 12 wide (the subagent
+  `└` and `TEAM name` go there; the team's member count and the fold row's
+  `(a to show)` go to TOP SIGNAL), no Selected strip. The filter still
+  matches the agent. TOP SIGNAL is fixed to the remaining width at every
+  size, so no horizontal scroll (also 100-139 columns, which scrolled before).
+- [x] Under 30 rows Events is 3 lines; under 20 it is hidden and `e` shows
+  it in place of the table (`e`/Esc back). 80x24: 13 table rows; 80x18: 13.
+- [x] `?`: `ui/help.py` `HelpScreen` (modal, scrolls): keys, detail view
+  keys, columns and icons, sort modes, header, flags. Esc/`?`/`q` close;
+  Enter and the other main keys are off under it; works from the detail view.
+  Footer: Detail, Filter, Idle, Help, Quit, Sort, Events, Security; the
+  `^p palette` entry is hidden (^p still works).
+- [x] Header: counts and need-you first; when tight, in turn: clock and
+  "on screen" -> "spent", title, "N sess · M need you" (no active), then cut.
+  "budget $X/session" kept.
+- [x] Detail: `Loop breaker:` line wraps with a hanging indent at 80 columns.
+- [x] Perf (synthetic 120 sessions, refresh_ui best of 3x300): PR 6 2.35ms /
+  2.33ms (120x40 / 80x24), PR 7 2.38ms / 2.33ms.
+- [x] Tests: `tests/test_multi_app_narrow.py` (120x40, 100x30, 99x30, 80x24,
+  80x18, 60x20; resizes both ways; help; footer; header; detail wrap). Tests
+  that read the Selected strip run at 120x40.
+- [ ] Not done: the design's `▶` cursor marker and `↑↓` footer hint (the
+  table's row highlight is the cursor; Textual's footer shows bindings only),
+  and Sessions/Events in one box.

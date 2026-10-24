@@ -353,7 +353,15 @@ or a HIGH or worse warning), the estimated cost of the sessions on screen
 `--notify`/`--webhook`; without those, new HIGH or worse findings), loop
 breaker blocks this run (`blocks N`, including sessions already blocked at
 startup), the per-session `--budget` limit when set (`budget $5.00/session`),
-and the time. Under 100 columns the cost reads `spent $X`.
+and the time. When the line does not fit, the clock goes first (and the cost
+reads `spent $X`), then the `agentwatch` title, then `N active`.
+
+The layout follows the terminal size (recomputed only on a resize). Under 100
+columns the AGENT and CTX columns and the Selected strip are hidden (Enter
+shows them; the filter still matches the agent), PROJECT is shorter and TOP
+SIGNAL takes the rest of the width. Under 30 rows the Events panel shows 3
+lines; under 20 rows it is hidden and `e` shows it in place of the table (`e`
+or Esc goes back). An 80x24 terminal shows 13 session rows.
 
 The Events panel at the bottom lists, newest first: sessions started
 and stopped, each new warning (one line per finding) and when it clears,
@@ -386,7 +394,9 @@ has new actions (or after `s`), the same for every session.
 Keys: arrows select a session, Enter opens it, `o` cycles the sort
 (attention, cost, recent), `a` shows/folds idle sessions, `/` filters,
 `e` focuses the Events panel to scroll it (`e` or
-Esc goes back), `s` toggles security detectors, `q` quits. In the detail
+Esc goes back), `s` toggles security detectors, `?` shows a help screen (the
+keys, what the columns and icons mean, and the main flags; Esc, `?` or `q`
+closes it), `q` quits. The footer lists the most used keys first. In the detail
 view: Tab/Shift+Tab or `1`-`4` switch tabs, arrows and PgUp/PgDn scroll, Esc,
 Backspace or `q` go back to the table.
 

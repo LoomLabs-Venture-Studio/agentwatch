@@ -8,6 +8,16 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- `watch-all` fits small terminals: under 100 columns the AGENT and CTX
+  columns and the Selected strip are hidden and TOP SIGNAL takes the rest of
+  the width (no sideways scrolling); under 30 rows the Events panel is 3
+  lines, under 20 it is hidden (`e` shows it). The layout changes on a
+  resize, keeping the selected session and the filter. The header drops the
+  clock first when it does not fit. The detail view's `Loop breaker:` line
+  wraps instead of being cut.
+- `watch-all`: `?` opens a help screen with every key, what the columns and
+  icons mean, and the main flags. The footer lists the most used keys first
+  (`s` is now labelled "Security").
 - `watch-all --all-logs` loads only logs modified in the last 24 hours by
   default (older logs are not read; one appears once it is written to
   again). `--since Nh|Nd|all` changes the window. Sessions show their project
