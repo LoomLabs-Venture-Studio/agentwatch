@@ -4875,3 +4875,40 @@ Board decisions (2026-10-24):
   down (flaky NoMatches in a detail test); module bars that round to empty
   are left out; warning/tip lines wrap with a hanging indent
   (`ui.app.hang`), long Process values continue indented.
+
+### PR 6: many sessions (feature/watch-ui-6-many) -- DONE
+- [x] `--all-logs` loads logs modified in the last 24h (board decision);
+  `--since Nh|Nd|all` (no env var; an error without `--all-logs`). The
+  filter is in `MultiLogWatcher._find_all_logs` (one `stat` per not-yet-
+  watched log per scan), so old logs are never parsed; one written to again
+  is picked up by the next scan. Table title `Sessions (last 24h)`, feed
+  `N sessions loaded (last 24h of M logs)`.
+- [x] Idle fold: no action for `IDLE_FOLD_S` (15 min) or stopped (not: no
+  actions yet) -> one `○ … N idle (a to show)` row at the bottom; a parent
+  stays while a subagent is shown; team header while any member is. `a`
+  toggles. Folded rows are removed (rows added/removed only on a change);
+  the cursor stays on the selected session, or moves to the nearest shown
+  session in the full order. RowHighlighted now also checks the row key.
+- [x] `/` filter: one-line `Input` above the footer, live substring match on
+  the AGENT/PROJECT/TOP SIGNAL cells (any case); Enter keeps it (input
+  hidden, `filter: xyz` in the table subtitle as `Text`, literal), Esc clears
+  it (also Esc on the table while a filter is kept). Enter's priority
+  binding is off while typing.
+- [x] Project names with `--all-logs`: the adapter's `history_meta` (Claude
+  Code: `project_dir_to_name`, i.e. the transcript's recorded cwd via
+  `cc_stats.project_name`, worktrees and `~`; else the projects dir name),
+  then the transcript's cwd for Claude Code logs outside the projects dir,
+  else the log name. Strip, detail title, feed and alerts use it; the
+  Process tab keeps the log path. Claude Code `subagents/agent-*.jsonl` sit
+  under their session (`parent_log`).
+- [x] Teams: `self.teams` follows each process scan (new teams; a team with
+  no tracked session is dropped, its header row goes); `update_process_info`
+  copies depth/parent/team. Groups (team, or session + subagents) sort by
+  their most urgent member; inside, a tree (parent, then its subagents,
+  siblings in sort order).
+- [x] Perf (perf6.py: startup to first data, idle CPU and refresh_ui, 15s,
+  real logs, 124 total / 47 in 24h): 24h first data 1.3s (PR 5 all logs
+  3.4-3.6s), idle CPU 2.9-4.2%, refresh_ui 1.5-1.9ms; `--since all` 3.4s,
+  4.7-5.8%, 3.1-3.7ms vs PR 5 4.9-6.1%, 2.7-3.4ms (grouping costs
+  ~0.4ms per tick at 124 sessions). Synthetic 10: 0.91ms (PR 5 0.86ms).
+- [x] Tests: `tests/test_multi_app_many.py`.

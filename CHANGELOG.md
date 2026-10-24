@@ -8,6 +8,15 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- `watch-all --all-logs` loads only logs modified in the last 24 hours by
+  default (older logs are not read; one appears once it is written to
+  again). `--since Nh|Nd|all` changes the window. Sessions show their project
+  name (from the cwd a Claude Code transcript records, worktrees as their
+  project, `~` for home) instead of the log file name; Claude Code subagent
+  logs sit under their session.
+- `watch-all`: sessions with no action for 15+ minutes, and stopped ones,
+  fold into one `… N idle` row (`a` shows them). `/` filters rows by
+  project, agent or top warning as you type (Enter keeps, Esc clears).
 - `watch-all` shows the Claude Code loop breaker: a blocked session's top
   warning is `⛔ loop blocked: <tool> (Nx) $X` and it sorts with Critical
   sessions; one Events line per block; `blocks N` in the header; a
@@ -70,6 +79,9 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- `watch-all` team rows: teams that form after startup get their header,
+  members sit under it in tree order, and the header goes when the team's
+  sessions are gone.
 - `stats` now counts subagent transcripts (`<session>/subagents/*.jsonl`),
   also under `--session <id>`; usage was about 2.5x too low. A message id
   seen in both files counts once.

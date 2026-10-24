@@ -324,9 +324,28 @@ plugin's loop breaker has blocked a call in a session, its top warning reads
 `⛔ loop blocked: Bash (7x) $1.40` (the command itself is never shown).
 Rows sort by attention: Critical and loop-blocked sessions first, then HIGH
 warnings, other warnings, active sessions by recency, idle and stopped last.
-Subagents are listed under their parent (`└ sub`). Below the table, the
+Subagents are listed under their parent (`└ sub`), and a team's sessions
+under its `TEAM` row (the team sorts by its most urgent member). Sessions with
+no action for 15+ minutes, and stopped ones, fold into one `○ … N idle (a to
+show)` row at the bottom (a parent stays shown while one of its subagents is);
+`a` shows them, `a` again folds them. `/` opens a filter line at the bottom:
+rows whose project, agent or top warning contain the text (any case) are
+shown as you type; Enter keeps the filter (`filter: xyz` next to the sort),
+Esc clears it. Below the table, the
 selected session's health, efficiency, context, cost per minute, security
 findings, network endpoints and top 3 warnings.
+
+`watch-all --all-logs` reads every log under the known log directories
+instead of discovering running processes. By default only logs modified in
+the last 24 hours are loaded (older ones are not read at all, and one shows up
+once it is written to again); `--since 6h`, `--since 2d` or `--since all`
+changes that. The Events panel says how many were loaded
+(`23 sessions loaded (last 24h of 118 logs)`). Each session is shown by its
+project name: for Claude Code the last part of the working directory its
+transcript records (a `.claude/worktrees/...` worktree counts as its project,
+the home directory is `~`), else its `~/.claude/projects` folder; other agents
+as `agentwatch history` names them. Claude Code subagent logs sit under their
+session. The log file is on the detail view's Process tab.
 
 The header line counts sessions, active ones and those that need you (Critical,
 or a HIGH or worse warning), the estimated cost of the sessions on screen
@@ -357,7 +376,8 @@ uptime, working directory, CPU, memory, team, session id; `n/a` with
 has new actions (or after `s`), the same for every session.
 
 Keys: arrows select a session, Enter opens it, `o` cycles the sort
-(attention, cost, recent), `e` focuses the Events panel to scroll it (`e` or
+(attention, cost, recent), `a` shows/folds idle sessions, `/` filters,
+`e` focuses the Events panel to scroll it (`e` or
 Esc goes back), `s` toggles security detectors, `q` quits. In the detail
 view: Tab/Shift+Tab or `1`-`4` switch tabs, arrows and PgUp/PgDn scroll, Esc,
 Backspace or `q` go back to the table.
