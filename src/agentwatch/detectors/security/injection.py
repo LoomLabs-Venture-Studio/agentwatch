@@ -102,10 +102,10 @@ class HiddenInstructionDetector(SecurityDetector):
 
         # HTML/XML comments with instructions, single- or multi-line, closed
         # by the first "-->" (HTML semantics), with a whole-word keyword before
-        # that close (not inside hyphenated tokens like prettier-ignore). Each segment is tempered and length-capped so matching stays
-        # linear on long or unterminated comments; the old `<!--.*kw.*-->`
-        # backtracked cubically (50k chars of unterminated "<!--ignore " took
-        # minutes).
+        # that close (not inside hyphenated tokens like prettier-ignore).
+        # Each segment is tempered and length-capped so matching stays linear
+        # on long or unterminated comments; the old `<!--.*kw.*-->` backtracked
+        # cubically (50k chars of unterminated "<!--ignore " took minutes).
         r"<!--(?=(?:(?!-->)[\s\S]){0,1000}?(?<![\w-])(?:ignore|execute|run|instructions?)(?![\w-]))"
         r"(?:(?!-->)[\s\S]){0,1000}-->",
 
