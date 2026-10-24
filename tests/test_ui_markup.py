@@ -14,11 +14,11 @@ import json
 from pathlib import Path
 
 import pytest
-from textual.app import App, ComposeResult
-from textual.widgets import ListView
 
+from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import normalize_error
 from agentwatch.parser.logs import parse_claude_code_entry
+from agentwatch.parser.models import ActionBuffer
 from agentwatch.ui.app import AgentWatchApp, WarningsList
 from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
@@ -110,9 +110,14 @@ async def test_watch_all_renders_log_text_literally(tmp_path):
     _write_log(tmp_path / "session.jsonl")
     app = MultiAgentWatchApp(watch_paths=[tmp_path])
     async with app.run_test() as pilot:
-        widget = await _wait_for_warnings(app, pilot)
+        for _ in range(80):
+            await pilot.pause(0.05)
+            if "loop" in str(app.query_one("#selected").render()):
+                break
         assert app.is_running
-        _assert_plain(widget, ERROR, COMMAND, "[loop")
+        _assert_plain(app.query_one("#selected"), ERROR, "Repeated action: Bash")
+        signal = app.query_one("#sessions").get_cell(str(tmp_path / "session.jsonl"), "signal")
+        assert "loop: Bash" in signal.plain
 
 
 @pytest.mark.parametrize(
@@ -127,15 +132,18 @@ async def test_notify_defaults_to_plain_text(tmp_path, make):
         assert [n.markup for n in app._notifications] == [False]
 
 
-async def test_agent_labels_render_literally():
-    item = AgentItem(Path("a.jsonl"), agent_type="claude-code", project_name="p[/]", pid=1)
-
-    class Host(App):
-        def compose(self) -> ComposeResult:
-            yield ListView(item)
-
-    async with Host().run_test() as pilot:
-        item.update_status(90, "healthy")
+async def test_table_cells_render_literally():
+    """Table cells are rich Text: a project or tool named like markup shows as is."""
+    path = Path("a.jsonl")
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        item = AgentItem(path, agent_type="[b]x[/b]", project_name="p[/]", pid=1)
+        app.agents[path] = app._new_agent_state(
+            buffer=ActionBuffer(), registry=create_registry(mode="health"), item=item,
+            pid=1, team_id=None, log_path=path, agent_type=item.agent_type,
+        )
+        app.selected_path = path
+        app.refresh_ui()
         await pilot.pause()
-        _assert_plain(item.query_one("#agent-name-label"), "[claude-code] p[/]")
-        _assert_plain(item.query_one("#health-label"), "[root]")
+        screen = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
+        assert "p[/]" in screen and "[b]x[/b]" in screen

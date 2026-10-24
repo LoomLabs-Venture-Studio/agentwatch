@@ -55,7 +55,7 @@ from agentwatch.themes import (
     set_theme,
 )
 from agentwatch.ui.app import AgentWatchApp, SecurityStatus, WarningsList
-from agentwatch.ui.multi_app import AgentItem
+from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
 EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF☀-➿⬀-⯿]")
 
@@ -239,20 +239,20 @@ class TestWarningsListSuggestionMarker:
         assert "[TIP]" in rendered
 
 
-class TestMultiAppFileMarker:
-    def test_agent_item_fallback_label_ascii_safe_under_ascii_theme(self, tmp_path):
+class TestMultiAppAsciiCells:
+    def test_status_dot_and_tree_ascii_safe_under_ascii_theme(self, tmp_path):
         set_theme("ascii")
-        item = AgentItem(tmp_path / "session.jsonl")
-        # compose() is a generator of widgets; render the Label's content
-        # directly rather than mounting, mirroring how the other widget
-        # tests in this file exercise render logic without a full App.
-        # NOTE: Label interprets `[...]` as Rich markup and silently strips
-        # unrecognized tags, which is why the ASCII fallback is "(file)"
-        # rather than "[FILE]" -- see the comment in multi_app.py.
-        labels = list(item.compose())
-        name_label = labels[0]
-        rendered = name_label.render().plain
-        assert "(file)" in rendered
+        from agentwatch.health import calculate_health
+
+        app = MultiAgentWatchApp()
+        data = {
+            "item": AgentItem(tmp_path / "s.jsonl", agent_type="claude-code", depth=1),
+            "buffer": ActionBuffer(),
+        }
+        cells = app._row_cells(data, calculate_health([]), None)
+        rendered = " ".join(text for text, _ in cells.values())
+        assert cells["dot"][0] == "o"
+        assert cells["agent"][0].startswith("`- sub")
         assert_no_emoji(rendered)
 
 
