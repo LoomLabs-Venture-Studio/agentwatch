@@ -800,11 +800,8 @@ def audit_log_file(
     findings: list[AuditFinding] = []
     seen: set[str] = set()  # dedup: (secret_type, channel, file_path) per session
 
-    for action in parse_file(log_path):
-        ts = getattr(action, "timestamp", None)
-        ts_str = ts.isoformat() if ts else None
-
-        for text, channel, file_path in extract_scannable_content(action):
+    def _scan(items: list[tuple[str, str, str | None]], ts_str: str | None) -> None:
+        for text, channel, file_path in items:
             for pattern, secret_type in patterns:
                 m = _first_live_match(pattern, secret_type, text, file_path)
                 if m is None:
@@ -851,9 +848,62 @@ _ASSIGNMENT_LABELS = frozenset({
     "password_assignment",
     "bearer_token",
     "generic_api_key",
+    for action in parse_file(log_path):
+        ts = getattr(action, "timestamp", None)
+        _scan(extract_scannable_content(action), ts.isoformat() if ts else None)
+
+    # The parser turns assistant output and tool calls into actions, but not
+    # the user entries of a Claude Code log (prompts and tool_result blocks:
+    # `cat .env` output). Scan those from the raw lines, on their decoded
+    # strings. Findings share `seen`, so nothing is counted twice.
+    for ts_str, items in _claude_user_entries(log_path):
+        _scan(items, ts_str)
+
     "high_entropy_secret",
 })
 _ASSIGNMENT_PREFIX_RE = re.compile(r"[^:=]*[:=]\s*['\"]?")
+def _claude_user_entries(
+    log_path: Path,
+) -> Iterator[tuple[str | None, list[tuple[str, str, str | None]]]]:
+    """(timestamp, [(text, channel, None)]) for each Claude Code user entry of
+    a JSONL log: prompt text is ``user_message``, a ``tool_result`` is
+    ``tool_output``. Unparseable lines and other shapes are skipped."""
+    with log_path.open("rb") as fh:
+        for raw_line in fh:
+            # Cheap pre-filter: most lines are assistant entries.
+            if b'"user"' not in raw_line:
+                continue
+            try:
+                entry = json.loads(raw_line)
+            except ValueError:
+                continue
+            message = entry.get("message") if isinstance(entry, dict) else None
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            items: list[tuple[str, str, str | None]] = []
+            _user_content_items(message.get("content"), "user_message", items)
+            if items:
+                ts = entry.get("timestamp")
+                yield (ts if isinstance(ts, str) else None), items
+
+
+def _user_content_items(
+    content: Any, channel: str, items: list[tuple[str, str, str | None]]
+) -> None:
+    if isinstance(content, str):
+        if content:
+            items.append((content, channel, None))
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                _user_content_items(block, channel, items)
+            elif isinstance(block, dict):
+                if block.get("type") == "tool_result":
+                    _user_content_items(block.get("content"), "tool_output", items)
+                elif isinstance(block.get("text"), str):
+                    _user_content_items(block["text"], channel, items)
+
+
 
 # Connection-string patterns: only the password between ``user:`` and ``@``.
 _URL_LABELS = frozenset({"neondb_connection_string", "database_connection_string"})

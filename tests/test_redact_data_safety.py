@@ -405,3 +405,97 @@ def test_cli_recent_file_needs_force_and_force_warns(tmp_path, monkeypatch, quie
     forced = runner.invoke(cli, ["audit", "--all", "--redact", "--force"])
     assert SK not in log.read_text()
     assert "WARNING" in forced.output
+
+
+# --------------------------------------------------------------------------
+# audit finds secrets in user prompts and tool results
+# --------------------------------------------------------------------------
+
+GH = "ghp_aB3dEf6hIj9kLm2nOp5qRs8tUv1wXy4zQwEr"
+HF = "hf_aB3dEf6hIj9kLm2nOp5qRs8tUv1wXy4zQw"
+OAI = "sk-proj-abc123def456ghi789jklmno"
+
+
+def _user(content) -> dict:
+    return {"type": "user", "timestamp": "2026-03-01T12:00:00Z",
+            "message": {"role": "user", "content": content}}
+
+
+def _tool_result(content) -> dict:
+    return _user([{"type": "tool_result", "tool_use_id": "x", "content": content}])
+
+
+def _write_log(tmp_path: Path, entries: list[dict]) -> Path:
+    p = tmp_path / "sess.jsonl"
+    p.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+    return p
+
+
+def test_audit_finds_secret_in_user_prompt(tmp_path):
+    p = _write_log(tmp_path, [_user(f"my token is {GH}")])
+    found = sc.audit_log_file(p, project_name="x")
+    assert [(f.secret_type, f.channel) for f in found] == [("github_pat", "user_message")]
+    assert GH not in found[0].matched_prefix
+
+
+def test_audit_finds_secret_in_user_prompt_text_block(tmp_path):
+    p = _write_log(tmp_path, [_user([{"type": "text", "text": f"token {GH}"}])])
+    assert [f.channel for f in sc.audit_log_file(p)] == ["user_message"]
+
+
+def test_audit_finds_secret_in_tool_result_string(tmp_path):
+    p = _write_log(tmp_path, [_tool_result(f"output: {OAI}\n")])
+    found = sc.audit_log_file(p)
+    assert [(f.secret_type, f.channel) for f in found] == [("openai_project_key", "tool_output")]
+
+
+def test_audit_finds_secret_in_tool_result_block_list(tmp_path):
+    p = _write_log(tmp_path, [_tool_result([{"type": "text", "text": f"output {HF}"}])])
+    found = sc.audit_log_file(p)
+    assert [(f.secret_type, f.channel) for f in found] == [("huggingface_token", "tool_output")]
+
+
+def test_audit_reports_each_user_channel_secret_exactly_once(tmp_path):
+    p = _write_log(tmp_path, [
+        _user(f"token {GH}"),
+        _user(f"again {GH}"),  # same type and channel: deduplicated
+        _tool_result(f"out {OAI}"),
+        _tool_result([{"type": "text", "text": f"output {HF}"}]),
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": f"I saw {GH}"}]}},
+    ])
+    got = sorted((f.secret_type, f.channel) for f in sc.audit_log_file(p))
+    assert got == sorted([
+        ("github_pat", "user_message"),
+        ("github_pat", "model_output"),
+        ("openai_project_key", "tool_output"),
+        ("huggingface_token", "tool_output"),
+    ])
+
+
+def test_audit_ignores_placeholders_and_garbage_in_user_entries(tmp_path):
+    p = tmp_path / "sess.jsonl"
+    p.write_text(
+        "not json user\n"
+        + json.dumps(_user("API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx")) + "\n"
+        + json.dumps({"type": "user", "message": "str"}) + "\n"
+        + json.dumps(_user(None)) + "\n"
+    )
+    assert sc.audit_log_file(p) == []
+
+
+def test_audit_cli_reports_user_channels_and_redact_removes_them(tmp_path, monkeypatch):
+    log = _cc_project(tmp_path, monkeypatch, command="ls")
+    with log.open("a") as fh:
+        fh.write(json.dumps(_user(f"token {GH}")) + "\n")
+        fh.write(json.dumps(_tool_result(f"out {OAI}")) + "\n")
+    runner = CliRunner()
+    res = runner.invoke(cli, ["audit", "--all", "--json"])
+    channels = sorted(f["channel"] for f in json.loads(res.stdout)["findings"])
+    assert channels == ["tool_output", "user_message"]
+
+    runner.invoke(cli, ["audit", "--all", "--redact", "--json"])
+    text = log.read_text()
+    assert GH not in text and OAI not in text
+    after = json.loads(runner.invoke(cli, ["audit", "--all", "--json"]).stdout)
+    assert after["total_findings"] == 0
