@@ -1759,7 +1759,8 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
 @click.option(
     "--force",
     is_flag=True,
-    help="Allow redacting active session logs (default: skip them)",
+    help="Redact active or just-written logs too (default: skip/refuse them). "
+    "Risky: lines a running agent writes during the rewrite can be lost.",
 )
 @click.option(
     "--pii",
@@ -1869,6 +1870,19 @@ def audit(
                 fp = pdir / f.log_file
                 if fp.is_file():
                     affected_files[str(fp)] = fp
+        if force and affected_files:
+            click.echo(
+                click.style(
+                    "  WARNING: --force rewrites logs that a running agent may still be "
+                    "writing. Lines appended during the rewrite are detected and the run "
+                    "aborts if the file keeps changing, but an agent that holds the log "
+                    "open can keep writing to the replaced copy and lose those lines. "
+                    "Close the session first when you can.",
+                    fg="red",
+                    bold=True,
+                ),
+                err=True,
+            )
         for fp_str, fp in affected_files.items():
             # Skip active session logs unless --force
             if not force and fp.name in active_log_files:
@@ -1876,12 +1890,9 @@ def audit(
                 continue
             # One bad file must not abort the run and skip the remaining files.
             try:
-                redact_count += redact_log_file(fp, backups=backups, **pat)
+                redact_count += redact_log_file(fp, backups=backups, force=force, **pat)
             except (OSError, UnicodeError, ValueError) as exc:
                 redact_errors.append({"log_file": str(fp), "error": str(exc)})
-                bak = fp.with_name(fp.name + ".bak")
-                if bak.exists() and bak not in backups:
-                    backups.append(bak)
 
     if json_output:
         finding_dicts = []

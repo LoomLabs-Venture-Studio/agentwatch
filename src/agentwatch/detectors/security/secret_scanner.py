@@ -10,7 +10,7 @@ import re
 import stat
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -1102,8 +1102,21 @@ def _redact_line(
     return new_line, count
 
 
-def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:
-    """Write *data* to *path* via a same-directory temp file + os.replace()."""
+def _atomic_write_bytes(
+    path: Path,
+    data: bytes,
+    mode: int,
+    *,
+    before_replace: Callable[[], None] | None = None,
+    exclusive: bool = False,
+) -> None:
+    """Write *data* to *path* via a same-directory temp file + os.replace().
+
+    *before_replace* runs last, once the temp file is complete and durable;
+    if it raises, nothing is replaced and the temp file is removed. With
+    *exclusive* the temp file is hard-linked into place instead, which fails
+    with ``FileExistsError`` rather than overwrite *path*.
+    """
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as fh:
@@ -1111,11 +1124,114 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.chmod(tmp, mode)
-        os.replace(tmp, path)
+        if before_replace is not None:
+            before_replace()
+        if exclusive:
+            os.link(tmp, path)
+            os.unlink(tmp)
+        else:
+            os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+class LogBusyError(OSError):
+    """The log was written to a moment ago, so a running agent may own it."""
+
+
+class LogChangedError(OSError):
+    """The log kept changing while it was being redacted; nothing was written."""
+
+
+# A log last written to less than this many seconds ago is assumed to belong
+# to a running agent: refused unless the caller forces it.
+_RECENT_WRITE_SECONDS = 5.0
+# Redaction passes before giving up on a log that keeps growing under us.
+_MAX_REDACT_ATTEMPTS = 3
+
+
+def _file_signature(st: os.stat_result) -> tuple[int, int, int, int]:
+    """What changes when someone writes to, truncates or replaces a file."""
+    return (st.st_size, st.st_mtime_ns, st.st_ino, st.st_dev)
+
+
+def _refuse_symlink(path: Path) -> None:
+    if path.is_symlink():
+        raise ValueError(
+            f"{path} is a symlink; refusing to rewrite it (the link would be replaced "
+            f"by a regular file and the real file {path.resolve()} would keep every "
+            "secret). Run the command on the real file."
+        )
+
+
+def _backup_path(log_path: Path) -> Path:
+    """A not-yet-used ``<name>.bak.<UTC timestamp>`` beside *log_path*."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    base = log_path.with_name(f"{log_path.name}.bak.{stamp}")
+    candidate, n = base, 0
+    while candidate.exists():
+        n += 1
+        candidate = base.with_name(f"{base.name}-{n}")
+    return candidate
+
+
+def _redact_log_once(
+    log_path: Path,
+    patterns: list[tuple[re.Pattern, str]],
+    force: bool,
+) -> tuple[int, Path | None]:
+    """One read-redact-replace pass. Raises ``LogChangedError`` if the file
+    changed after it was read (nothing written, any backup removed)."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(log_path, flags)
+    with os.fdopen(fd, "rb") as fh:
+        before = os.fstat(fh.fileno())
+        original = fh.read()
+    signature = _file_signature(before)
+
+    total = 0
+    new_lines: list[str] = []
+    for line in original.decode("utf-8", errors="surrogateescape").split("\n"):
+        new_line, count = _redact_line(line, patterns)
+        new_lines.append(new_line)
+        total += count
+    if total == 0:
+        return 0, None
+
+    age = time.time() - before.st_mtime
+    if not force and age < _RECENT_WRITE_SECONDS:
+        raise LogBusyError(
+            f"{log_path} was modified {max(age, 0.0):.1f}s ago and may still be in use; "
+            "not redacted. Wait for the agent to finish, or use --force."
+        )
+
+    def _unchanged() -> None:
+        if _file_signature(os.stat(log_path)) != signature:
+            raise LogChangedError(
+                f"{log_path} changed while it was being redacted; nothing was written"
+            )
+
+    _unchanged()
+    backup = _backup_path(log_path)
+    while True:
+        try:
+            _atomic_write_bytes(backup, original, 0o600, exclusive=True)
+            break
+        except FileExistsError:
+            backup = _backup_path(log_path)
+    try:
+        data = "\n".join(new_lines).encode("utf-8", errors="surrogateescape")
+        _atomic_write_bytes(
+            log_path, data, stat.S_IMODE(before.st_mode), before_replace=_unchanged
+        )
+    except BaseException:
+        # No redacted file was written, so no backup of this run is wanted.
+        with contextlib.suppress(OSError):
+            backup.unlink()
+        raise
+    return total, backup
 
 
 def redact_log_file(
@@ -1123,42 +1239,43 @@ def redact_log_file(
     backups: list[Path] | None = None,
     *,
     patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
+    force: bool = False,
 ) -> int:
     """Replace the values of detected secrets in a JSONL log file with [REDACTED].
 
     Works line-by-line on the raw bytes (decoded with ``surrogateescape`` so
     invalid UTF-8 round-trips exactly). Only the secret value is replaced; key
     names, quotes and every other byte are kept, and valid JSON lines stay
-    valid JSON. When anything is redacted, a one-time ``<name>.bak`` copy of the
-    original bytes is kept (owner-only permissions, it still holds the secrets)
-    and the file is replaced atomically with its original permission mode.
+    valid JSON. When anything is redacted, a fresh ``<name>.bak.<UTC time>``
+    copy of the original bytes is kept for this run (owner-only permissions,
+    it still holds the secrets) and the file is replaced atomically with its
+    original permission mode. Earlier backups are never touched or reused, so
+    a backup always holds exactly the file this run started from.
 
-    If *backups* is given and anything was redacted, the ``.bak`` path (new or
-    pre-existing) is appended to it so callers can tell the user where the
-    unredacted copy lives.
+    The file is read, redacted and replaced; a line appended in between would
+    be lost, so the file's size, mtime and inode are compared before the
+    replace and the pass is redone (up to ``_MAX_REDACT_ATTEMPTS`` times) if
+    they moved. A file that keeps changing raises ``LogChangedError`` with the
+    log untouched. A file written to within ``_RECENT_WRITE_SECONDS`` raises
+    ``LogBusyError`` unless *force*. A symlink raises ``ValueError``.
+
+    If *backups* is given and anything was redacted, the new backup path is
+    appended to it so callers can tell the user where the unredacted copy lives.
 
     Returns the number of real (non-false-positive) redactions.
     """
-    original = log_path.read_bytes()
-    total_replacements = 0
-    new_lines: list[str] = []
-
-    for line in original.decode("utf-8", errors="surrogateescape").split("\n"):
-        new_line, count = _redact_line(line, patterns)
-        new_lines.append(new_line)
-        total_replacements += count
-
-    if total_replacements > 0:
-        mode = stat.S_IMODE(log_path.stat().st_mode)
-        backup = log_path.with_name(log_path.name + ".bak")
-        if not backup.exists():
-            _atomic_write_bytes(backup, original, 0o600)
-        data = "\n".join(new_lines).encode("utf-8", errors="surrogateescape")
-        _atomic_write_bytes(log_path, data, mode)
-        if backups is not None:
+    _refuse_symlink(log_path)
+    for attempt in range(_MAX_REDACT_ATTEMPTS):
+        try:
+            total, backup = _redact_log_once(log_path, patterns, force)
+        except LogChangedError:
+            if attempt == _MAX_REDACT_ATTEMPTS - 1:
+                raise
+            continue
+        if backup is not None and backups is not None:
             backups.append(backup)
-
-    return total_replacements
+        return total
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 @dataclass
@@ -1211,6 +1328,8 @@ def scrub_file(
     for a binary file or an existing ``.bak`` (it would be stale), ``OSError``
     on I/O failure. *dry_run* does all the work but writes nothing.
     """
+    if in_place:
+        _refuse_symlink(path)
     original = path.read_bytes()
     if b"\0" in original[:8192]:
         raise ValueError(f"{path} looks like a binary file (NUL byte); not scrubbed")
