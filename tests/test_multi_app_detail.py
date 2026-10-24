@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 import pytest
-from test_multi_app_table import _now, _screen, _seed, _warning
+from test_multi_app_table import _now, _screen, _seed, _wait, _warning
 from textual.containers import VerticalScroll
 from textual.widgets import TabbedContent, TabPane
 
@@ -25,6 +25,16 @@ def _cursor_key(app) -> str:
     return table.coordinate_to_cell_key((table.cursor_row, 0)).row_key.value
 
 
+async def _shows(pilot, app, *texts: str) -> str:
+    """The screen text once it shows every one of *texts* (a repaint can lag
+    a pause under load)."""
+    try:
+        await _wait(pilot, lambda: all(t in _screen(app) for t in texts))
+    except AssertionError:
+        raise AssertionError(f"{texts} not on screen:\n{_screen(app)}") from None
+    return _screen(app)
+
+
 async def _open(app, pilot, *names, select: int = 0):
     paths = [_seed(app, n, ago=i + 1) for i, n in enumerate(names)]
     app.refresh_ui()
@@ -33,7 +43,7 @@ async def _open(app, pilot, *names, select: int = 0):
         await pilot.press("down")
     await pilot.pause()
     await pilot.press("enter")
-    await pilot.pause()
+    await _wait(pilot, lambda: isinstance(app.screen, DetailScreen) and app.screen.ready)
     return paths
 
 
@@ -46,11 +56,8 @@ async def test_enter_opens_detail_tabs_switch_and_back_keeps_selection(size):
             screen = app.screen
             assert isinstance(screen, DetailScreen) and screen.path == paths[1]
             assert [p.id for p in screen.query(TabPane)] == list(TABS)
-            text = _screen(app)
-            assert "b · Claude Code" in text
-            for label in ("Health", "Security", "Network", "Process", "Back"):
-                assert label in text, (size, label)
-            assert "Health [" in text  # Health tab first
+            await _shows(pilot, app, "b · Claude Code", "Health", "Security", "Network",
+                         "Process", "Back", "Health [")  # Health tab first
 
             tabs = screen.query_one(TabbedContent)
             keys = (("2", "security"), ("tab", "network"), ("shift+tab", "security"),
@@ -61,8 +68,7 @@ async def test_enter_opens_detail_tabs_switch_and_back_keeps_selection(size):
                 assert tabs.active == want, (key, want)
 
             await pilot.press(back)
-            await pilot.pause()
-            assert not isinstance(app.screen, DetailScreen)
+            await _wait(pilot, lambda: not isinstance(app.screen, DetailScreen))
             assert app.selected_path == paths[1] and _cursor_key(app) == str(paths[1])
             assert app.is_running  # q goes back in the detail view, not quit
 
@@ -97,7 +103,7 @@ async def test_long_warning_list_scrolls_nothing_clipped(size):
         app.refresh_ui()
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
+        await _shows(pilot, app, "sig0 warning")
         pane = app.screen.query_one("#health .pane", VerticalScroll)
         assert pane.max_scroll_y > 0
         assert "sig39 warning" not in _screen(app)
@@ -107,8 +113,8 @@ async def test_long_warning_list_scrolls_nothing_clipped(size):
         while pane.scroll_y < pane.max_scroll_y:
             await pilot.press("pagedown")
             await pilot.pause()
-        text = _screen(app)
-        assert "sig39 warning" in text and "more" not in text  # all 40, no "... and N more"
+        text = await _shows(pilot, app, "sig39 warning")
+        assert "more" not in text  # all 40, no "... and N more"
         assert "before editing again." in text  # suggestions are wrapped, not cut
 
 
@@ -116,7 +122,7 @@ async def test_health_tab_is_compact():
     app = MultiAgentWatchApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await _open(app, pilot, "a")
-        text = _screen(app)
+        text = await _shows(pilot, app, "Health [", "Duration:")
         status = app.agents[Path("a.jsonl")]["_last_report"].status.upper()
         assert text.count(status) == 1  # one status word: the overall one
         assert "Status:" not in text and "State:" not in text
@@ -130,14 +136,11 @@ async def test_security_tab_wording(size):
     async with app.run_test(size=size) as pilot:
         await _open(app, pilot, "a")
         await pilot.press("2")
-        await pilot.pause()
-        text = _screen(app)
-        assert "Security mode is off: press s to turn it on." in text
-        assert "Credential file accesses" in text and "Injection-like messages" in text
+        await _shows(pilot, app, "Security mode is off: press s to turn it on.",
+                     "Credential file accesses", "Injection-like messages")
         await pilot.press("s")
-        await pilot.pause()
-        text = _screen(app)
-        assert "Security: clean" in text and "Security mode is off" not in text
+        text = await _shows(pilot, app, "Security: clean")
+        assert "Security mode is off" not in text
         for word in ("PRODUCTIVE", "STRUGGLING", "SPINNING", "STUCK"):
             assert word not in text.split("Health  Security")[-1]
 
@@ -151,9 +154,7 @@ async def test_detail_is_literal_text():
         app.refresh_ui()
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
-        text = _screen(app)
-        assert "p[/] · Claude Code" in text and "loop on [/] [link=x]y[/link]" in text
+        await _shows(pilot, app, "p[/] · Claude Code", "loop on [/] [link=x]y[/link]")
 
 
 async def test_detail_updates_live_only_when_changed():
@@ -172,5 +173,5 @@ async def test_detail_updates_live_only_when_changed():
         data["buffer"].add(Action(timestamp=_now(), tool_name="Read", tool_type=ToolType.READ,
                                   success=True, file_path="x.py"))
         app.refresh_ui()
-        await pilot.pause()
-        assert calls == [1] and "fresh_signal warning" in _screen(app)
+        assert calls == [1]
+        await _shows(pilot, app, "fresh_signal warning")
