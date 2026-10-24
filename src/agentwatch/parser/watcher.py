@@ -241,14 +241,28 @@ class AiderLogWatcher:
         self.path = path
         self.session_id = session_id
         self._emitted_count: dict[str, int] = {}
+        self._last_sig: tuple[int, int, int] | None = None
         self._callbacks: list[Callable[[Action], None]] = []
 
     def on_action(self, callback: Callable[[Action], None]) -> None:
         """Register a callback for new actions."""
         self._callbacks.append(callback)
 
-    def _read_new_actions(self) -> list[Action]:
-        if not self.path.exists():
+    def _stat_sig(self) -> tuple[int, int, int] | None:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_size, st.st_mtime_ns, st.st_ino)
+
+    def _read_new_actions(self, *, only_if_changed: bool = False) -> list[Action]:
+        # Stat BEFORE parsing so a write landing mid-parse changes the
+        # signature and is picked up by the next tick.
+        sig = self._stat_sig()
+        if only_if_changed and sig == self._last_sig:
+            return []
+        self._last_sig = sig
+        if sig is None:
             return []
 
         sessions = parse_aider_sessions(self.path)
@@ -281,12 +295,18 @@ class AiderLogWatcher:
             rust_timeout=self._POLL_TICK_MS,
             yield_on_timeout=True,
         ):
-            relevant = not changes or any(
-                self._resolved(Path(changed_path)) == target for _, changed_path in changes
-            )
-            if relevant:
-                for action in self._read_new_actions():
-                    yield action
+            if not changes:
+                # Timeout tick: parse only if size/mtime/inode moved, so an
+                # idle multi-MB history file costs one stat per second. Real
+                # events are gated the same way (FSEvents replays stale
+                # creation events at arm time; those carry no new bytes).
+                new = self._read_new_actions(only_if_changed=True)
+            elif any(self._resolved(Path(c)) == target for _, c in changes):
+                new = self._read_new_actions(only_if_changed=True)
+            else:
+                continue
+            for action in new:
+                yield action
 
     @staticmethod
     def _resolved(path: Path) -> Path:
