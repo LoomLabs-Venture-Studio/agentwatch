@@ -49,8 +49,9 @@ from agentwatch.net_sampler import (
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.statusline import _cost, state_dirs
 from agentwatch.themes import ascii_safe, get_theme
-from agentwatch.ui.app import WarningsList, _hm, plain_notify
+from agentwatch.ui.app import WarningsList, _hm, hang, plain_notify
 from agentwatch.ui.detail import DetailScreen
+from agentwatch.ui.help import HelpScreen
 from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
 
 if TYPE_CHECKING:
@@ -77,12 +78,15 @@ FLASH_S = 2.0  # a row whose data changed is shown bold this long
 TREND_POINTS = 5  # HEALTH gets ▲/▼ when it moved this much ...
 TREND_WINDOW_S = 60.0  # ... against its score this long ago
 TREND_SETTLE_S = 5.0  # a session's first seconds (log history loading) set the reference
-SIGNAL_WIDTH = 40
+NARROW_BELOW = 100  # columns: no AGENT/CTX columns, no Selected strip
+SHORT_BELOW = 30  # rows: the Events panel shows 3 lines ...
+TINY_BELOW = 20  # ... or is hidden (`e` shows it in the table's place)
+PROJECT_NARROW = 12
 STOPPED_STYLE = "grey50"
 FEED_MAX = 200  # event feed lines kept
 BUDGET_WARN = 0.8  # feed line when a session reaches this share of --budget
 BUDGET_WIDTH = 18  # COST / BUDGET column: "$4.12 / $5.00 ▮▮▮▯" ...
-BUDGET_NARROW = 10  # ... or "$4.12 ▮▮▮▯" when started under 100 columns
+BUDGET_NARROW = 10  # ... or "$4.12 ▮▮▮▯" under NARROW_BELOW columns
 COACH_EVERY_S = 2.0  # coach state files are stat'ed this often, read only when changed
 _WIDTHS = {key: width for key, _, width in COLUMNS}
 _SEVERITY_RANK = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
@@ -162,10 +166,10 @@ def _signal(warnings: list["Warning"]) -> tuple[str, str]:
     return f"{ascii_safe('⚠', '!')} {label}", _SEVERITY_STYLE[w.severity]
 
 
-def _text(column: str, value: str, style: str, width: int | None = None) -> Text:
+def _text(value: str, style: str, width: int) -> Text:
     """A table cell: literal text (never markup), cut to its column."""
     text = Text(value, style=style, no_wrap=True)
-    text.truncate(width or _WIDTHS[column] or SIGNAL_WIDTH, overflow="ellipsis")
+    text.truncate(width, overflow="ellipsis")
     return text
 
 
@@ -265,14 +269,15 @@ class MultiAgentWatchApp(App):
     }
     """
 
-    BINDINGS = [
+    BINDINGS = [  # footer order: most important first (80 columns cut the rest)
+        Binding("enter", "open_detail", "Detail", priority=True),
+        ("slash", "filter", "Filter"),
+        ("a", "toggle_idle", "Idle"),
+        ("question_mark", "help", "Help"),
         ("q", "quit", "Quit"),
-        ("s", "toggle_security", "Toggle Security"),
         ("o", "cycle_sort", "Sort"),
         ("e", "toggle_feed", "Events"),
-        ("a", "toggle_idle", "Idle"),
-        ("slash", "filter", "Filter"),
-        Binding("enter", "open_detail", "Detail", priority=True),
+        ("s", "toggle_security", "Security"),
         Binding("escape", "focus_table", "Table", show=False),
     ]
 
@@ -328,7 +333,11 @@ class MultiAgentWatchApp(App):
         self._held_blocks = 0  # ... of those, seen in the startup window
         self._coach_next = 0.0  # monotonic time of the next coach state pass
         self._muted = False  # `s` rescoring: no per-finding feed lines
-        self._budget_width: int | None = None  # COST / BUDGET column width (--budget)
+        # (narrow, Events height or 0, table columns): _layout, set on resize
+        self._layout_now: tuple = ()
+        self._widths: dict[str, int] = {}  # shown column -> width
+        self._term_width = 0
+        self._feed_open = False  # Events hidden (short terminal) and `e` shows it
         self.since = since  # --all-logs window in seconds (None: every log)
         self._show_idle = False  # `a`: idle sessions shown instead of folded
         self._filter = ""  # `/`: rows whose project/agent/signal contain this
@@ -344,6 +353,10 @@ class MultiAgentWatchApp(App):
     def _budget(self) -> float | None:
         return self.alerter.budget if self.alerter is not None else None
 
+    @property
+    def _narrow(self) -> bool:
+        return bool(self._layout_now and self._layout_now[0])
+
     def compose(self) -> ComposeResult:
         self._header = Static(id="header", markup=False)
         yield self._header
@@ -351,11 +364,6 @@ class MultiAgentWatchApp(App):
         table.border_title = "Sessions" + (
             f" (last {window_label(self.since)})" if self.since is not None else "")
         self._update_subtitle()
-        for key, label, width in COLUMNS:
-            if key == "cost" and self._budget is not None:
-                self._budget_width = self._budget_form(self.size.width)
-                label, width = self._budget_label(), self._budget_width
-            table.add_column(label, key=key, width=width)
         yield table
         self._selected = Static(
             "Waiting for sessions" + ascii_safe("…", "..."), id="selected", markup=False
@@ -367,7 +375,8 @@ class MultiAgentWatchApp(App):
         yield self._feed
         self._filter_input = Input(id="filter", placeholder="filter: project, agent or signal")
         yield self._filter_input
-        yield Footer()
+        yield Footer(show_command_palette=False)  # ^p still opens it
+        self._apply_layout(self.size)
 
     def _new_agent_state(
         self,
@@ -543,6 +552,8 @@ class MultiAgentWatchApp(App):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Main-screen keys are off (and out of the footer) in the detail view."""
+        if isinstance(self.screen, HelpScreen):
+            return action == "quit"
         if isinstance(self.screen, DetailScreen):
             return action not in ("cycle_sort", "toggle_feed", "open_detail",
                                   "toggle_idle", "filter")
@@ -719,7 +730,7 @@ class MultiAgentWatchApp(App):
         reports = {path: self._score(data) for path, data in self.agents.items()}
         self._update_teams(reports)
         self._sync_table(reports)
-        if self.selected_path in self.agents:
+        if self.selected_path in self.agents and self._selected.display:
             self._update_selected(self.agents[self.selected_path], reports[self.selected_path])
         self._update_detail()
 
@@ -785,18 +796,22 @@ class MultiAgentWatchApp(App):
         score = report.overall_score
         trend = self._trend(data, score, time.monotonic() if now is None else now)
         agent = self._agent_name(data)
+        project = item.project_name or item.log_path.name
         if item.depth > 0:
-            agent = "  " * (item.depth - 1) + f"{ascii_safe('└', '`-')} sub {agent}"
+            indent = "  " * (item.depth - 1) + ascii_safe("└", "`-")
+            agent = f"{indent} sub {agent}"
+            if self._narrow:  # no AGENT column: the tree is in PROJECT
+                project = f"{indent} {project}"
         cost = buffer.stats.estimated_cost
         ctx = _context_pct(buffer)
         cells = {
             "dot": (ascii_safe("●", "*") if active else ascii_safe("○", "o"), color),
             "agent": (agent, ""),
-            "project": (item.project_name or item.log_path.name, ""),
+            "project": (project, ""),
             "health": (f"{score}% {trend}".rstrip(), color),
             "cost": ("n/a" if cost is None else format_usd(cost).lstrip("~"), "")
             if self._budget is None
-            else _budget_cell(cost, self._budget, self._budget_width == BUDGET_NARROW),
+            else _budget_cell(cost, self._budget, self._narrow),
             "ctx": ("-" if ctx is None else f"{ctx}%", ""),
             "last": (_ago(age), ""),
             "signal": self._blocked_signal(data, report.warnings) or _signal(report.warnings),
@@ -816,6 +831,8 @@ class MultiAgentWatchApp(App):
         cells["agent"] = (f"TEAM {team.name}", "bold " + color)
         cells["project"] = (members, "")
         cells["health"] = ("" if score is None else f"{score}%", "bold " + color)
+        if self._narrow:
+            cells["project"], cells["signal"] = cells["agent"], cells["project"]
         return cells
 
     def _sort_key(self, data: dict, report: "HealthReport", age: float | None) -> tuple:
@@ -907,6 +924,8 @@ class MultiAgentWatchApp(App):
         cells["dot"] = (ascii_safe("○", "o"), "dim")
         cells["agent"] = (f"{ascii_safe('…', '...')} {n} idle", "dim")
         cells["project"] = (f"(a to {'fold' if self._show_idle else 'show'})", "dim")
+        if self._narrow:
+            cells["project"], cells["signal"] = cells["agent"], cells["project"]
         return cells
 
     def _sync_table(self, reports: dict[Path, "HealthReport"]) -> None:
@@ -986,14 +1005,14 @@ class MultiAgentWatchApp(App):
                 cells = {col: (v, f"bold {style}") for col, (v, style) in cells.items()}
             shown = self._cells.get(key)
             if shown is None:
-                texts = [_text(col, *v, self._width(col)) for col, v in cells.items()]
+                texts = [_text(*cells[col], width) for col, width in self._widths.items()]
                 table.add_row(*texts, key=key)
                 self._dots[key] = texts[0]
             else:
-                for col, v in cells.items():
-                    if v != shown[col]:
-                        text = _text(col, *v, self._width(col))
-                        table.update_cell(key, col, text, update_width=col == "signal")
+                for col, width in self._widths.items():
+                    if cells[col] != shown[col]:
+                        text = _text(*cells[col], width)
+                        table.update_cell(key, col, text)
                         if col == "dot":
                             self._dots[key] = text
             self._cells[key] = cells
@@ -1015,31 +1034,69 @@ class MultiAgentWatchApp(App):
         if reordered and selected in shown_keys:
             table.move_cursor(row=table.get_row_index(selected), animate=False)
 
-    @staticmethod
-    def _budget_form(width: int) -> int:
-        """COST / BUDGET column width: narrow under 100 columns."""
-        return BUDGET_WIDTH if width >= 100 else BUDGET_NARROW
+    # -- layout ---------------------------------------------------------
 
-    def _budget_label(self) -> str:
-        return "COST/BUDGT" if self._budget_width == BUDGET_NARROW else "COST / BUDGET"
+    def _layout(self, width: int, height: int) -> tuple:
+        """The one place that decides the layout from the terminal size:
+        (narrow, Events panel height or 0 for hidden, table columns as
+        (key, label, width)). Under NARROW_BELOW columns AGENT and CTX go
+        (Enter shows them) and PROJECT is shorter; TOP SIGNAL gets the rest."""
+        narrow = width < NARROW_BELOW
+        columns = []
+        for key, label, size in COLUMNS:
+            if narrow and key in ("agent", "ctx"):
+                continue
+            if key == "project" and narrow:
+                size = PROJECT_NARROW
+            if key == "cost" and self._budget is not None:
+                label, size = ("COST/BUDGT", BUDGET_NARROW) if narrow else (
+                    "COST / BUDGET", BUDGET_WIDTH)
+            columns.append((key, label, size))
+        # cell padding 1+1 per column, the border 2, the scrollbar 2
+        rest = width - sum(size or 0 for _, _, size in columns) - 2 * len(columns) - 4
+        columns[-1] = (*columns[-1][:2], max(10, rest))
+        feed = 7 if height >= SHORT_BELOW else 5 if height >= TINY_BELOW else 0
+        return narrow, feed, tuple(columns)
 
     def on_resize(self, event: events.Resize) -> None:
-        """--budget: switch the COST / BUDGET column between its wide and
-        narrow form when the terminal crosses 100 columns. (Runs before
+        """Re-lay out when the size changes the layout. (Runs before
         App._on_resize: self.size is still the old size.)"""
-        form = self._budget_form(event.size.width)
-        if self._budget_width is None or form == self._budget_width:
+        self._apply_layout(event.size)
+
+    def _apply_layout(self, size) -> None:
+        """Show/hide the Selected strip and Events panel; rebuild the table's
+        columns when they changed (rows are re-added by refresh_ui, the
+        cursor put back on the selected session)."""
+        self._term_width = size.width
+        layout = self._layout(size.width, size.height)
+        if layout == self._layout_now:
+            self._update_header()
             return
-        self._budget_width = form
-        column = self._table.columns["cost"]
-        column.label, column.width = Text(self._budget_label()), self._budget_width
-        for cells in self._cells.values():  # each row's cost is redrawn next refresh
-            cells["cost"] = ("", "\0")
-        self._table._require_update_dimensions = True  # no public API for a column's width
+        old, self._layout_now = self._layout_now, layout
+        narrow, feed, columns = layout
+        self._selected.display = not narrow
+        self._show_feed()
+        if old and old[2] == columns:
+            self._update_header()
+            return
+        self._widths = {key: size for key, _, size in columns}
+        table = self._table
+        table.clear(columns=True)
+        for key, label, width in columns:
+            table.add_column(label, key=key, width=width)
+        for cache in (self._cells, self._dots, self._data_sig, self._flash_until):
+            cache.clear()  # mode-dependent cells: no flash for a re-layout
+        self._order = []
         self.refresh_ui()
 
-    def _width(self, column: str) -> int | None:
-        return self._budget_width if column == "cost" else None
+    def _show_feed(self) -> None:
+        """Events panel at the layout's height; hidden in a short terminal,
+        where `e` shows it in place of the table."""
+        feed = self._layout_now[1]
+        opened = self._feed_open and not feed
+        self._table.display = not opened
+        self._feed.display = bool(feed) or opened
+        self._feed.styles.height = feed or "1fr"
 
     def _drop_row(self, path: Path) -> None:
         key = str(path)
@@ -1052,28 +1109,32 @@ class MultiAgentWatchApp(App):
     # -- header and event feed --------------------------------------------
 
     def _update_header(self) -> None:
-        """One line; redrawn only when its text changes (the clock: each second)."""
+        """One line; redrawn only when its text changes (the clock: each second).
+        When it does not fit, in turn: "spent" for "on screen" and no clock,
+        no title, "N sess · M need you"; then it is cut."""
+        if not self._layout_now:
+            return
         n, active, need_you, spend = self._summary
         dot = ascii_safe(" · ", " | ")
         spent = "n/a" if spend is None else _usd(spend) if spend else "$0.00"
-        parts = [
-            f"{n} session{'s' * (n != 1)}{dot}{active} active{dot}{need_you} need you",
-            f"on screen {spent}",
+        title = "agentwatch" + (" [SECURITY]" if self.security_mode else "")
+        rest = [
             f"alerts {self._alerts}",
             f"blocks {self._blocks}",
             *([f"budget {_usd(self._budget)}/session"] if self._budget is not None else []),
-            f"{datetime.now():%H:%M:%S}",
         ]
-        body = "   ".join(parts)
-        title = "agentwatch" + (" [SECURITY]" if self.security_mode else "")
-        room = self.size.width - 2
-        if len(title) + 2 + len(body) > room:
-            title = ""  # narrow: the counts and the clock matter more
-            if len(body) > room:  # tighter, then without the clock
-                parts[1] = f"spent {spent}"
-                body = "  ".join(parts)
-                if len(body) > room:
-                    body = "  ".join(parts[:-1])
+        counts = f"{n} session{'s' * (n != 1)}{dot}{active} active{dot}{need_you} need you"
+        tight = [counts, f"spent {spent}", *rest]
+        forms = [
+            (title, "   ".join([counts, f"on screen {spent}", *rest,
+                                f"{datetime.now():%H:%M:%S}"])),
+            (title, "  ".join(tight)),
+            ("", "  ".join(tight)),
+            ("", "  ".join([f"{n} sess{dot}{need_you} need you", *tight[1:]])),
+        ]
+        room = self._term_width - 2
+        title, body = next((f for f in forms if len(f[0]) + 2 * bool(f[0]) + len(f[1]) <= room),
+                           forms[-1])
         text = f"{title}  {body}" if title else body
         if text != self._header_text:
             self._header_text = text
@@ -1174,8 +1235,14 @@ class MultiAgentWatchApp(App):
         self._event(line, "bold red" if held else "magenta")
 
     def action_toggle_feed(self) -> None:
-        """`e`: focus the event feed (to scroll it); again: back to the table."""
-        (self._table if self.focused is self._feed else self._feed).focus()
+        """`e`: focus the event feed (to scroll it; shown in place of the
+        table when the terminal is too short for it); again: back."""
+        if self.focused is self._feed:
+            self.action_focus_table()
+            return
+        self._feed_open = True
+        self._show_feed()
+        self._feed.focus()
 
     def action_focus_table(self) -> None:
         """Esc: back to the table; in the filter line (or on the table with
@@ -1184,7 +1251,14 @@ class MultiAgentWatchApp(App):
             self._filter_input.value = ""
             self._filter_input.display = False
             self.on_input_changed(Input.Changed(self._filter_input, ""))
+        if self._feed_open:
+            self._feed_open = False
+            self._show_feed()
         self._table.focus()
+
+    def action_help(self) -> None:
+        """`?`: the keys, columns, icons and flags."""
+        self.push_screen(HelpScreen())
 
     # -- Selected strip ---------------------------------------------------
 
@@ -1283,10 +1357,11 @@ class MultiAgentWatchApp(App):
         findings.display = self.security_mode
         findings.update_warnings(report.security_warnings)
 
-        screen.text("d-loop", self._loop_breaker_text(data))
-        screen.text("d-net", self._net_text(data))
         # The screen's width: a hidden tab's widgets have none.
-        screen.text("d-process", self._process_text(data, screen.size.width - 2))
+        width = screen.size.width - 2
+        screen.text("d-loop", hang(self._loop_breaker_text(data), width, 16))
+        screen.text("d-net", self._net_text(data))
+        screen.text("d-process", self._process_text(data, width))
 
     def _net_text(self, data: dict) -> str:
         if not data.get("net_sampled"):

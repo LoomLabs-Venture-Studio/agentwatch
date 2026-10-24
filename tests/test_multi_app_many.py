@@ -159,7 +159,8 @@ async def test_idle_sessions_fold_and_a_shows_them(size):
         app.refresh_ui()
         await pilot.pause()
         assert _order(app) == ["busy", "recent", "(a to show)"]
-        assert app.query_one("#sessions").get_cell("fold", "agent").plain == "… 3 idle"
+        idle = "agent" if size[0] == 120 else "project"  # no AGENT column under 100
+        assert app.query_one("#sessions").get_cell("fold", idle).plain == "… 3 idle"
         assert "… 3 idle" in _screen(app) and "(a to show)" in _screen(app)
         assert "5 sessions" in _screen(app)  # the header still counts them
 
