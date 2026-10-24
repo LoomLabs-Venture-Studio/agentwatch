@@ -531,3 +531,71 @@ def test_vendor_prefixed_placeholders_are_ignored(text):
 )
 def test_vendor_prefixed_real_keys_with_placeholder_words_are_redacted(text):
     assert _redact_text(text)[1] >= 1
+
+
+# --------------------------------------------------------------------------
+# no hard links: the backup falls back to an exclusive create
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("exc", [OSError(1, "Operation not permitted"), NotImplementedError()])
+def test_backup_falls_back_when_hard_links_fail(tmp_path, monkeypatch, exc):
+    def no_link(*a, **kw):
+        raise exc
+
+    monkeypatch.setattr(os, "link", no_link)
+    p = _log(tmp_path)
+    original = p.read_bytes()
+    backups: list[Path] = []
+
+    assert redact_log_file(p, backups=backups) == 1
+
+    assert backups[0].read_bytes() == original
+    assert b"Hunter2Pass!x" not in p.read_bytes()
+    if os.name == "posix":
+        assert (backups[0].stat().st_mode & 0o777) == 0o600
+    assert sorted(x.name for x in tmp_path.iterdir()) == sorted([p.name, backups[0].name])
+
+
+def test_fallback_still_never_overwrites_an_existing_backup(tmp_path, monkeypatch):
+    def no_link(*a, **kw):
+        raise NotImplementedError
+
+    monkeypatch.setattr(os, "link", no_link)
+    p = _log(tmp_path)
+    redact_log_file(p)
+    with p.open("a") as fh:
+        fh.write(json.dumps({"password": "Again9Secret!y"}) + "\n")
+    redact_log_file(p)
+    assert len(_baks(p)) == 2
+
+
+def test_cli_reports_not_implemented_as_error(tmp_path, monkeypatch):
+    _cc_project(tmp_path, monkeypatch)
+
+    def boom(*a, **kw):
+        raise NotImplementedError("no links")
+
+    monkeypatch.setattr(sc, "redact_log_file", boom)
+    out = json.loads(CliRunner().invoke(cli, ["audit", "--all", "--redact", "--json"]).stdout)
+    assert out["redacted"] == 0
+    assert "no links" in out["redact_errors"][0]["error"]
+
+
+# --------------------------------------------------------------------------
+# a recently written log is reported like a skipped active session
+# --------------------------------------------------------------------------
+
+
+def test_recent_log_is_skipped_not_an_error(tmp_path, monkeypatch, quiet_window):
+    log = _cc_project(tmp_path, monkeypatch)
+    runner = CliRunner()
+
+    out = json.loads(runner.invoke(cli, ["audit", "--all", "--redact", "--json"]).stdout)
+    assert out["skipped_active"] == [log.name]
+    assert out["redact_errors"] == [] and out["backups"] == []
+
+    text = runner.invoke(cli, ["audit", "--all", "--redact"]).output
+    assert f"Skipped {log.name}" in text and "--force" in text
+    assert "Failed to redact" not in text
+    assert SK in log.read_text()

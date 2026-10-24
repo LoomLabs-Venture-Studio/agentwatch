@@ -848,18 +848,6 @@ def audit_log_file(
                     )
                 )
 
-    return findings
-
-
-_REDACTED = "[REDACTED]"
-
-# Patterns whose match includes a key name + separator (``password": "...``).
-# Only the value after the separator is redacted.
-_ASSIGNMENT_LABELS = frozenset({
-    "aws_secret_key",
-    "password_assignment",
-    "bearer_token",
-    "generic_api_key",
     for action in parse_file(log_path):
         ts = getattr(action, "timestamp", None)
         _scan(extract_scannable_content(action), ts.isoformat() if ts else None)
@@ -871,9 +859,9 @@ _ASSIGNMENT_LABELS = frozenset({
     for ts_str, items in _claude_user_entries(log_path):
         _scan(items, ts_str)
 
-    "high_entropy_secret",
-})
-_ASSIGNMENT_PREFIX_RE = re.compile(r"[^:=]*[:=]\s*['\"]?")
+    return findings
+
+
 def _claude_user_entries(
     log_path: Path,
 ) -> Iterator[tuple[str | None, list[tuple[str, str, str | None]]]]:
@@ -916,6 +904,18 @@ def _user_content_items(
                     _user_content_items(block["text"], channel, items)
 
 
+_REDACTED = "[REDACTED]"
+
+# Patterns whose match includes a key name + separator (``password": "...``).
+# Only the value after the separator is redacted.
+_ASSIGNMENT_LABELS = frozenset({
+    "aws_secret_key",
+    "password_assignment",
+    "bearer_token",
+    "generic_api_key",
+    "high_entropy_secret",
+})
+_ASSIGNMENT_PREFIX_RE = re.compile(r"[^:=]*[:=]\s*['\"]?")
 
 # Connection-string patterns: only the password between ``user:`` and ``@``.
 _URL_LABELS = frozenset({"neondb_connection_string", "database_connection_string"})
@@ -1164,6 +1164,21 @@ def _redact_line(
     return new_line, count
 
 
+def _create_exclusive(path: Path, data: bytes, mode: int) -> None:
+    """Create *path* (``FileExistsError`` if it exists), write *data*, fsync."""
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(path, mode)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise
+
+
 def _atomic_write_bytes(
     path: Path,
     data: bytes,
@@ -1189,7 +1204,15 @@ def _atomic_write_bytes(
         if before_replace is not None:
             before_replace()
         if exclusive:
-            os.link(tmp, path)
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                raise
+            except (OSError, NotImplementedError):
+                # No hard links here (exFAT, some SMB mounts): create the
+                # file exclusively and write it in place. A crash can leave
+                # it partial, so a failed write removes it.
+                _create_exclusive(path, data, mode)
             os.unlink(tmp)
         else:
             os.replace(tmp, path)

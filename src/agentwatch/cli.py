@@ -1795,6 +1795,7 @@ def audit(
     from agentwatch.detectors.security.secret_scanner import (
         _SECRET_PATTERNS,
         AuditFinding,
+        LogBusyError,
         assess_impact,
         audit_log_file,
         redact_log_file,
@@ -1891,7 +1892,10 @@ def audit(
             # One bad file must not abort the run and skip the remaining files.
             try:
                 redact_count += redact_log_file(fp, backups=backups, force=force, **pat)
-            except (OSError, UnicodeError, ValueError) as exc:
+            except LogBusyError:
+                # Written to a moment ago: same outcome as an active session.
+                skipped_active.append(fp.name)
+            except (OSError, UnicodeError, ValueError, NotImplementedError) as exc:
                 redact_errors.append({"log_file": str(fp), "error": str(exc)})
 
     if json_output:
@@ -1974,7 +1978,8 @@ def audit(
             for log_name in sorted(set(skipped_active)):
                 click.echo(
                     click.style(
-                        f"  Skipped {log_name} (active session). Use --force to redact.",
+                        f"  Skipped {log_name} (active session or modified in the last "
+                        "few seconds). Use --force to redact.",
                         fg="yellow",
                     )
                 )
