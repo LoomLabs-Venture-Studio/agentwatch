@@ -36,7 +36,14 @@ from agentwatch.net_sampler import (
 )
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.themes import ascii_safe, get_theme
-from agentwatch.ui.app import EfficiencyBar, HealthBar, SecurityStatus, StatsPanel, WarningsList
+from agentwatch.ui.app import (
+    EfficiencyBar,
+    HealthBar,
+    SecurityStatus,
+    StatsPanel,
+    WarningsList,
+    plain_notify,
+)
 from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
 from agentwatch.ui.rot_widget import ContextHealthWidget
 
@@ -63,8 +70,8 @@ class TeamHeaderItem(ListItem):
             label_text = f"TEAM {self.team.name} ({count} agents, {sub} sub)"
         else:
             label_text = f"TEAM {self.team.name}"
-        yield Label(label_text, id="team-name-label")
-        yield Label(f"Team Health: {self.health_score}%", id="team-health-label")
+        yield Label(label_text, id="team-name-label", markup=False)
+        yield Label(f"Team Health: {self.health_score}%", id="team-health-label", markup=False)
 
     def update_status(self, score: int, status: str):
         self.health_score = score
@@ -112,23 +119,21 @@ class AgentItem(ListItem):
             else:
                 prefix = ""
             yield Label(
-                f"{prefix}[{self.agent_type}] {self.project_name}", id="agent-name-label"
+                f"{prefix}[{self.agent_type}] {self.project_name}",
+                id="agent-name-label",
+                markup=False,
             )
             indent = "  " * self.depth
             pid_text = f"{indent}PID {self.pid}" if self.pid else ""
-            yield Label(pid_text, id="pid-label")
+            yield Label(pid_text, id="pid-label", markup=False)
         else:
-            # NOTE: intentionally "(file)" and not "[FILE]" -- Textual's
-            # Label interprets square brackets as Rich console markup and
-            # silently strips unrecognized tags (a pre-existing quirk that
-            # already affects this same widget's `[{agent_type}]` branch
-            # above; out of scope for Task #9 to fix, but worth not
-            # colliding with here).
             yield Label(
-                f"{ascii_safe('📄', '(file)')} {self.log_path.name}", id="agent-name-label"
+                f"{ascii_safe('📄', '(file)')} {self.log_path.name}",
+                id="agent-name-label",
+                markup=False,
             )
             yield Label("", id="pid-label")
-        yield Label(f"Health: {self.health_score}%", id="health-label")
+        yield Label(f"Health: {self.health_score}%", id="health-label", markup=False)
 
     def update_status(self, score: int, status: str):
         self.health_score = score
@@ -169,6 +174,8 @@ class AgentItem(ListItem):
 
 class MultiAgentWatchApp(App):
     """Unified dashboard for monitoring all active agents."""
+
+    notify = plain_notify
 
     CSS = """
     Screen {
