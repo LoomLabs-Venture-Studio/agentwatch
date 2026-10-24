@@ -16,14 +16,14 @@ from agentwatch.path_encoding import encode_path_for_claude
 class TestEncodePathForClaude:
     def test_posix_path(self):
         assert (
-            encode_path_for_claude(Path("/Users/zaid/Projects/agentwatch"))
-            == "-Users-zaid-Projects-agentwatch"
+            encode_path_for_claude(Path("/Users/alice/Projects/agentwatch"))
+            == "-Users-alice-Projects-agentwatch"
         )
 
     def test_posix_path_with_spaces(self):
         assert (
-            encode_path_for_claude(Path("/Users/zaid/my project"))
-            == "-Users-zaid-my-project"
+            encode_path_for_claude(Path("/Users/alice/my project"))
+            == "-Users-alice-my-project"
         )
 
     def test_windows_path_empirical_case(self):
@@ -36,10 +36,10 @@ class TestEncodePathForClaude:
         assert encode_path_for_claude(Path(windows_path)) == expected
 
     def test_windows_path_no_spaces(self):
-        windows_path = r"C:\Users\zaid\Projects\agentwatch"
+        windows_path = r"C:\Users\alice\Projects\agentwatch"
         assert (
             encode_path_for_claude(Path(windows_path))
-            == "C--Users-zaid-Projects-agentwatch"
+            == "C--Users-alice-Projects-agentwatch"
         )
 
     def test_adjacent_distinct_separators_each_replaced(self):

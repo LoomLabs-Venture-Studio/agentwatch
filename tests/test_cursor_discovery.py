@@ -73,7 +73,7 @@ def user_dir(tmp_path):
     (root / "workspaceStorage" / "empty-window").mkdir(parents=True)
 
     (root / "workspaceStorage" / "ws-1" / "workspace.json").write_text(
-        json.dumps({"folder": "file:///c%3A/Users/zaid/myproject"}), encoding="utf-8"
+        json.dumps({"folder": "file:///c%3A/Users/alice/myproject"}), encoding="utf-8"
     )
     # "empty-window" real case: no workspace.json at all.
 
@@ -129,9 +129,9 @@ class TestFileUriToPath:
 class TestDefaultCursorUserDir:
     def test_windows_uses_appdata_env_var(self, monkeypatch):
         monkeypatch.setattr(vscode_paths.sys, "platform", "win32")
-        monkeypatch.setenv("APPDATA", r"C:\Users\zaid\AppData\Roaming")
+        monkeypatch.setenv("APPDATA", r"C:\Users\alice\AppData\Roaming")
         result = default_cursor_user_dir()
-        assert result == Path(r"C:\Users\zaid\AppData\Roaming") / "Cursor" / "User"
+        assert result == Path(r"C:\Users\alice\AppData\Roaming") / "Cursor" / "User"
 
     def test_windows_falls_back_when_appdata_unset(self, monkeypatch):
         monkeypatch.setattr(vscode_paths.sys, "platform", "win32")
@@ -162,8 +162,8 @@ class TestDefaultCursorUserDir:
         assert result == Path.home() / ".config" / "Cursor" / "User"
 
     def test_posix_style_uri_keeps_leading_slash(self):
-        result = _file_uri_to_path("file:///home/zaid/project")
-        assert str(result) in ("/home/zaid/project", "\\home\\zaid\\project")
+        result = _file_uri_to_path("file:///home/alice/project")
+        assert str(result) in ("/home/alice/project", "\\home\\alice\\project")
 
 
 # ---------------------------------------------------------------------------
