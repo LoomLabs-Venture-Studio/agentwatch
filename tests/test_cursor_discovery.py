@@ -282,3 +282,41 @@ class TestFindCursorAgents:
         (root / "globalStorage").mkdir(parents=True)
         (root / "globalStorage" / "state.vscdb").write_text("not a sqlite file")
         assert find_cursor_agents(user_dir=root) == []
+
+
+class TestActivityWindowBoundary:
+    """Exact-edge check for ACTIVITY_WINDOW_SECONDS, with a pinned clock."""
+
+    NOW_S = 1_700_000_000.0
+
+    @pytest.fixture
+    def boundary_dir(self, tmp_path):
+        root = tmp_path / "Cursor" / "User"
+        (root / "globalStorage").mkdir(parents=True)
+        (root / "workspaceStorage" / "ws-1").mkdir(parents=True)
+        (root / "workspaceStorage" / "ws-1" / "workspace.json").write_text(
+            json.dumps({"folder": "file:///c%3A/Users/zaid/myproject"}), encoding="utf-8"
+        )
+        now_ms = int(self.NOW_S * 1000)
+        conn = sqlite3.connect(str(root / "globalStorage" / "state.vscdb"))
+        try:
+            conn.executescript(SCHEMA_SQL)
+            _insert_header(conn, "c-at-edge", "ws-1", now_ms - 1_800_000, {})
+            _insert_header(conn, "c-just-past", "ws-1", now_ms - 1_800_001, {})
+            _insert_header(conn, "c-just-inside", "ws-1", now_ms - 1_799_999, {})
+            conn.commit()
+        finally:
+            conn.close()
+        return root
+
+    def test_exactly_at_window_is_included_and_one_ms_past_is_excluded(
+        self, boundary_dir, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(cursor_discovery, "is_cursor_running", lambda: True)
+        monkeypatch.setattr(cursor_discovery, "time", SimpleNamespace(time=lambda: self.NOW_S))
+        ids = {a.session_id for a in find_cursor_agents(user_dir=boundary_dir)}
+        assert "c-at-edge" in ids
+        assert "c-just-inside" in ids
+        assert "c-just-past" not in ids
