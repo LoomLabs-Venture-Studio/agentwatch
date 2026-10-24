@@ -214,9 +214,10 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
 - Net: `watch-all` re-tracks a session's sockets when a new process takes
   over its log, and `net --once` exits 1 when every `--pid` is missing.
 - Watchers: live tailing works on macOS. Appends reported as `added` by
-  FSEvents are read, a 1 s fallback tick catches missed events, and a
-  rewritten or truncated log is re-read from the start. Covers Aider and the
-  JSONL watcher behind `watch` (PR #165).
+  FSEvents are read, and a 1 s fallback tick catches missed events. A
+  truncated log, or one rewritten with different content, is re-read from the
+  start; an atomic rewrite with the same content keeps its place. Covers Aider
+  and the JSONL watcher behind `watch` (PR #165).
 - `watch` / `watch-all` no longer exit when Claude Code logs an `error` that
   is an object, or when log text contains Textual markup such as `[/]`.
   Log text is shown literally (PR #166).
