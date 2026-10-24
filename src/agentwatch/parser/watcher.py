@@ -56,7 +56,7 @@ class LogWatcher:
         self.path = path
         self.session_id = session_id
         self._position = 0
-        self._inode: int | None = None
+        self._prefix = b""  # first min(_position, 4096) bytes consumed so far
         self._last_sig: tuple[int, int, int] | None = None
         self._log_format: str | None = None
         self._sniffer = FormatSniffer()
@@ -129,17 +129,28 @@ class LogWatcher:
             return None
         return (st.st_size, st.st_mtime_ns, st.st_ino)
 
+    _PREFIX_BYTES = 4096
+
+    def _read_prefix(self) -> bytes | None:
+        try:
+            with open(self.path, "rb") as f:
+                return f.read(min(self._position, self._PREFIX_BYTES))
+        except OSError:
+            return None
+
     def _read_new_lines(self) -> list[Action]:
         """Read any new lines since last check."""
         actions = []
 
         sig = self._stat_sig()
-        if sig is not None:
-            # File replaced (new inode) or truncated below our offset: the
-            # old offset is meaningless, so re-anchor at the start.
-            if (self._inode is not None and sig[2] != self._inode) or sig[0] < self._position:
+        if sig is not None and sig != self._last_sig and self._position > 0:
+            # The file changed. Keep the offset only if the bytes before it
+            # are still the ones we consumed (prefix fingerprint): an atomic
+            # rewrite with identical leading content keeps its offset (no
+            # duplicates), while a truncate-then-regrow or a replacement with
+            # different content is re-read from the start.
+            if sig[0] < self._position or self._read_prefix() != self._prefix:
                 self._position = 0
-            self._inode = sig[2]
         self._last_sig = sig
 
         try:
@@ -185,6 +196,11 @@ class LogWatcher:
                         continue
         except FileNotFoundError:
             pass
+
+        if self._position == 0:
+            self._prefix = b""
+        elif len(self._prefix) < min(self._position, self._PREFIX_BYTES):
+            self._prefix = self._read_prefix() or b""
 
         if self._log_format is None:
             # Same end-of-input rule as parse_file (#39): Claude Code metadata

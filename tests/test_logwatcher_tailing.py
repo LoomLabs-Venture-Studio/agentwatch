@@ -121,6 +121,33 @@ class TestLogWatcherSync:
         os.replace(new, log_path)
         assert len(watcher._read_new_lines()) == 3
 
+    def test_truncate_then_regrow_rereads_from_start(self, log_path):
+        log_path.write_text(_line(1) + _line(2), encoding="utf-8")
+        watcher = LogWatcher(log_path)
+        assert len(watcher._read_new_lines()) == 2
+        # Rewritten (same inode) and grown past the old offset before the next read.
+        log_path.write_text(_line(3) + _line(4) + _line(5) + _line(6), encoding="utf-8")
+        assert len(watcher._read_new_lines()) == 4
+
+    def test_replace_with_identical_prefix_emits_only_new(self, log_path):
+        base = _line(1) + _line(2) + _line(3)
+        log_path.write_text(base, encoding="utf-8")
+        watcher = LogWatcher(log_path)
+        assert len(watcher._read_new_lines()) == 3
+        new = log_path.with_name("new.jsonl")
+        new.write_text(base + _line(4), encoding="utf-8")
+        os.replace(new, log_path)
+        assert len(watcher._read_new_lines()) == 1
+
+    def test_replace_with_different_prefix_rereads_from_zero(self, log_path):
+        log_path.write_text(_line(1) + _line(2), encoding="utf-8")
+        watcher = LogWatcher(log_path)
+        assert len(watcher._read_new_lines()) == 2
+        new = log_path.with_name("new.jsonl")
+        new.write_text(_line(7) + _line(8) + _line(9), encoding="utf-8")
+        os.replace(new, log_path)
+        assert len(watcher._read_new_lines()) == 3
+
 
 def test_resolve_helper_follows_symlinks(tmp_path):
     real = tmp_path / "real"
