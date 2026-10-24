@@ -279,8 +279,19 @@ _p(
     "key_value_secret",
 )
 # Labels whose masked value never reveals its last chars, however long: a
-# password-like value has no "which key to rotate" hint worth leaking.
-_NO_TAIL_LABELS = frozenset({"key_value_secret"})
+# password-like value has no "which key to rotate" hint worth leaking. Every
+# label whose value is a human-chosen password belongs here, including the
+# password of a connection-string URL.
+_NO_TAIL_LABELS = frozenset({
+    "key_value_secret",
+    "password_assignment",
+    "db_password_env",
+    "cli_password_flag",
+    "curl_basic_auth",
+    "url_credentials",
+    "database_connection_string",
+    "neondb_connection_string",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +496,7 @@ _MASK_TAIL_MIN_LEN = 20
 _MASK_TAIL_CHARS = 4
 
 
-def mask_secret(match_text: str) -> str:
+def mask_secret(match_text: str, label: str | None = None) -> str:
     """Return a display-safe form of a matched secret.
 
     Reveals at most the last 4 chars of the secret value, and only when the
@@ -493,7 +504,8 @@ def mask_secret(match_text: str) -> str:
     The value is the text after ``=``/``:`` (quotes stripped) when present,
     otherwise the whole match -- never the scheme prefix (``ghp_``, ``AKIA``
     ...), which ``secret_type`` already identifies. For a connection-string
-    URL the value is its password, never the host tail.
+    URL the value is its password, never the host tail. With a password-like
+    *label* (``_NO_TAIL_LABELS``) not even the last 4 chars are shown.
     """
     value = match_text
     url = _URL_PASSWORD_RE.match(match_text)
@@ -503,7 +515,7 @@ def mask_secret(match_text: str) -> str:
         sep = re.search(r"[=:]", match_text)  # the first separator, = or : (#64)
         if sep:
             value = match_text[sep.end() :].strip().strip("'\"").strip()
-    return _mask_value(value)
+    return _mask_value(value, label)
 
 
 def _mask_value(value: str, label: str | None = None) -> str:
@@ -523,7 +535,7 @@ def _mask_match_value(m: re.Match, label: str | None = None) -> str:
     it is not split again on ``=``/``:`` (#64)."""
     if "secret" in m.re.groupindex:
         return _mask_value(m.group("secret"), label)
-    return mask_secret(m.group(0))
+    return mask_secret(m.group(0), label)
 
 
 def _mask_match(m: re.Match, label: str) -> str:
@@ -534,7 +546,7 @@ def _mask_match(m: re.Match, label: str) -> str:
     ``MYSQL_[hidden, N chars]``.
     """
     if "secret" not in m.re.groupindex and label not in _ASSIGNMENT_LABELS:
-        return mask_secret(m.group(0))
+        return mask_secret(m.group(0), label)
     start, end = _value_span(m, label)
     return m.string[m.start() : start] + _mask_match_value(m, label) + m.string[end : m.end()]
 
