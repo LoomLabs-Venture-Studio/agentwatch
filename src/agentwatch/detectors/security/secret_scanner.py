@@ -320,12 +320,24 @@ _FILLER_WORDS = frozenset({
     "a", "an", "me", "replace", "goes", "with", "com",
 })
 _X_RUN_RE = re.compile(r"x{3,}", re.IGNORECASE)
+# The vendor prefix of a token (as in the patterns above). A placeholder keeps
+# it ("sk-xxxxxxxx", "ghp_xxxx...", "sk-your-key-here"), so it is stripped
+# before judging what is left. Longest first: sk-ant-api03- before sk-ant-.
+_TOKEN_PREFIX_RE = re.compile(
+    r"(?:sk-ant-api03-|sk-or-v1-|sk-ant-|sk-proj-|sk_live_|sk_test_|pk_live_|pk_test_|sk-"
+    r"|ghp_|gho_|ghs_|github_pat_|glpat-|xox[bpors]-|AKIA|AIza|SG\.|hf_|r8_|pc-|fc-|npm_"
+    r"|pypi-|lin_api_|nfp_|sbp_|railway_|vercel_|neondb_|dp\.st\.|key-)",
+    re.IGNORECASE,
+)
 
 
 def _is_placeholder_value(value: str) -> bool:
     """True if *value* (a bare value, quotes stripped) is only a placeholder."""
     if _PLACEHOLDER_PREFIX_RE.match(value) or _PLACEHOLDER_BRACKET_RE.fullmatch(value):
         return True
+    prefix = _TOKEN_PREFIX_RE.match(value)
+    if prefix and prefix.end() < len(value):
+        return _is_placeholder_value(value[prefix.end() :])
     words = [w.lower() for w in re.split(r"[^A-Za-z0-9]+", value) if w]
     strong = False
     for w in words:

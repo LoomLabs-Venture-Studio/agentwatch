@@ -499,3 +499,35 @@ def test_audit_cli_reports_user_channels_and_redact_removes_them(tmp_path, monke
     assert GH not in text and OAI not in text
     after = json.loads(runner.invoke(cli, ["audit", "--all", "--json"]).stdout)
     assert after["total_findings"] == 0
+
+
+# --------------------------------------------------------------------------
+# vendor-prefixed placeholders stay ignored; real keys with the words do not
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx",
+        "sk-your-key-here-1234567890abcdef",
+        "ghp_" + "x" * 36,
+        "token=sk_test_" + "x" * 24,
+        "OPENAI_API_KEY=sk-proj-your_key_here_1234567890",
+    ],
+)
+def test_vendor_prefixed_placeholders_are_ignored(text):
+    assert _redact_text(text) == (text, 0)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "sk_live_TODO" + "aB3xZ9qW2kL5mN8pR1tU4vY7",
+        "api_key=sk-proj-Test_key" + "aB3xZ9qW2kL5mN8pR1tU4vY7",
+        "ghp_" + "Example" + "aB3xZ9qW2kL5mN8pR1tU4vY7zQwEr",
+        "psql postgres://postgres:postgres@db:5432/app",
+    ],
+)
+def test_vendor_prefixed_real_keys_with_placeholder_words_are_redacted(text):
+    assert _redact_text(text)[1] >= 1
