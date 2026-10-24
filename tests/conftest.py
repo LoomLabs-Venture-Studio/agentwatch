@@ -16,6 +16,16 @@ def _private_coach_dirs(monkeypatch, tmp_path):
     (coach.user_state_dir()); no test may write the developer's real one."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))  # the history DB
+
+
+@pytest.fixture(autouse=True)
+def _no_machine_checks(monkeypatch):
+    """watch-all's detect() and history sync workers (DNS, psutil, a
+    subprocess) are off; tests/test_multi_app_machine.py turns them on."""
+    from agentwatch.ui.multi_app import MultiAgentWatchApp
+
+    monkeypatch.setattr(MultiAgentWatchApp, "MACHINE_CHECKS", False)
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
 
 

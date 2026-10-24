@@ -356,6 +356,25 @@ startup), the per-session `--budget` limit when set (`budget $5.00/session`),
 and the time. When the line does not fit, the clock goes first (and the cost
 reads `spent $X`), then the `agentwatch` title, then `N active`.
 
+It also shows `today $9.80 · week $61.00 ▲12%`: your spend today and in the
+last 7 days, and the change against the 7 days before, from the history
+store (`agentwatch report`). watch-all runs `history sync` (in a separate
+process) at startup and every 5 minutes, so the figures lag: logs written in
+the last minute (sessions still running) wait for a later sync. `w` shows
+the report: spend, waste, the 3 costliest findings, per agent and per
+project, security findings and the trend. If the history DB can't be synced
+or read, the figures are hidden and the Events panel says
+`history unavailable` once. "spent" stays next to them: it is live and adds
+up the sessions loaded in this run, which the history does not have yet.
+
+`+2 unmonitored AI` counts programs using AI right now that agentwatch has no
+adapter for (what `agentwatch detect` lists as not monitored); the check runs
+on a background thread every 30 seconds. `d` lists every program using AI
+(pid, providers, connections, local runtime, monitored or not), and the
+Events panel says `new unmonitored AI program: <name>` the first time one
+appears after startup. Under 100 columns the today/week figures are the
+first thing the header drops; at 100+ columns `N active` goes before them.
+
 The layout follows the terminal size (recomputed only on a resize). Under 100
 columns the AGENT and CTX columns and the Selected strip are hidden (Enter
 shows them; the filter still matches the agent), PROJECT is shorter and TOP
@@ -386,7 +405,13 @@ and every warning with its suggestion and cost; plus a `Loop breaker:` line:
 from watch-all's environment, not the hook's), Security (findings, or how
 to turn security mode on, plus raw counts of credential file accesses,
 privilege commands, network actions and injection-like messages), Network
-(the remote endpoints seen during its actions) and Process (pid, type,
+(what `agentwatch net` shows for the session's process: each remote endpoint
+the socket sampler saw in the last 30 minutes with its first and last time,
+its host name (DNS cache, a known AI or agent host, or reverse DNS, looked up
+on a background thread; the bare IP until then), `AI-PROVIDER <name>` when it
+belongs to a cloud AI provider, and the process tree's listening sockets,
+`EXPOSED` when reachable from other machines; `Network: n/a (no process)` with
+`--all-logs`) and Process (pid, type,
 uptime, working directory, CPU, memory, team, session id; `n/a` with
 `--all-logs`). It updates every second. A session is rescored only when it
 has new actions (or after `s`), the same for every session.
@@ -394,7 +419,8 @@ has new actions (or after `s`), the same for every session.
 Keys: arrows select a session, Enter opens it, `o` cycles the sort
 (attention, cost, recent), `a` shows/folds idle sessions, `/` filters,
 `e` focuses the Events panel to scroll it (`e` or
-Esc goes back), `s` toggles security detectors, `?` shows a help screen (the
+Esc goes back), `s` toggles security detectors, `d` lists other AI on this
+machine, `w` shows the weekly report, `?` shows a help screen (the
 keys, what the columns and icons mean, and the main flags; Esc, `?` or `q`
 closes it), `q` quits. The footer lists the most used keys first. In the detail
 view: Tab/Shift+Tab or `1`-`4` switch tabs, arrows and PgUp/PgDn scroll, Esc,

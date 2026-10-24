@@ -4955,3 +4955,47 @@ Board decisions (2026-10-24):
 - [ ] Not done: the design's `▶` cursor marker and `↑↓` footer hint (the
   table's row highlight is the cursor; Textual's footer shows bindings only),
   and Sessions/Events in one box.
+
+### PR 8: network, other AI, weekly report (feature/watch-ui-8-net) -- DONE
+- [x] Board decision: in now, reusing net/ai_detect/history/report read-only
+  (no new detection logic). Formatting in `ui/machine.py`; blocking calls on
+  worker threads / a subprocess, never the UI thread. Off with `--headless`
+  and in tests (`MACHINE_CHECKS`, conftest; also `XDG_DATA_HOME` -> tmp).
+- [x] Network tab (process mode): the existing NetSampler's spans
+  (`NetSampler.spans(pid)`, a locked copy; no second sampler), merged per
+  ip:port with first/last seen; names and `AI-PROVIDER` via `net.Namer`
+  (`name_many(wait=0)` + `providers()`, like `Tracker._rename`) and the
+  tree's TCP listeners (`net.tree_sockets` + `listener_scope`, `EXPOSED`
+  unless loopback) on a worker every `NAME_EVERY_S` (5s) while the tab is
+  shown. `--all-logs`: `Network: n/a (no process)`. Long rows continue
+  indented at 80 columns.
+- [x] Other AI: `ai_detect.detect()` on a thread at start and every 30s;
+  unmonitored = no adapter (what `detect` calls "not monitored"). Header
+  `+N unmonitored AI`; `d` overlay (the `?` modal with other text, width
+  100, scrolls) lists every program; feed `new unmonitored AI program:
+  <name>` once per name after the startup baseline. A failure hides the
+  count; the overlay says so.
+- [x] Weekly report: `history.sync(connect(), days=14)` in a subprocess
+  (its parse pool must not fork the threaded app; parsing stays off the UI
+  process), then `report.build` for today (local midnight window) and 7 days
+  on a thread; at start and every 5 min. Header `today $X · week $Y ▲Z%`
+  (vs the previous 7 days; no arrow without one). `w` overlay:
+  `report.render` + when synced. Failure: figures hidden, one
+  `history unavailable` line. "spent" kept: live, loaded sessions; history
+  lags (active logs wait 60s+ for a sync).
+- [x] Header order when tight: clock/"on screen", title, (100+ columns:
+  `N sess · M need you`), today/week, then the short counts. Under 100
+  columns today/week go before the counts are shortened.
+- [x] Perf (perf8.py, 30s idle, PR 7 -> PR 8): synthetic 10 sessions
+  3.3-3.7% / 1.40-1.53ms -> 3.2-3.4% / 1.18-1.19ms; `--all-logs` 24h (18
+  sessions) 4.1% / 1.55ms -> 3.6% / 1.37ms; process mode (2 agents) 10.3% /
+  0.82ms -> 11.4% / 0.82ms, with the Network tab open 11.0-11.2% ->
+  12.7-13.5%. Most of process mode's idle CPU is the existing NetSampler:
+  ~61ms per 1s poll here (2 tracked agents). detect(): 44ms CPU per call
+  (every 30s); listeners: ~41ms per read (every 5s, tab open). `history
+  sync` on real logs (14 days, empty DB): 17.7s cold, 0.2-1.6s warm, 5.7s
+  with changed logs; its own process.
+- [x] Tests: `tests/test_multi_app_machine.py` (fake NetSampler/Namer,
+  mocked detect, tmp history DB with synthetic sessions, a real sync
+  subprocess under a tmp HOME/XDG, failures, slow workers vs a responsive
+  UI, 120x40 / 80x24).

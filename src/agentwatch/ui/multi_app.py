@@ -17,7 +17,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
-from textual.widgets import DataTable, Footer, Input, Static
+from textual.widgets import DataTable, Footer, Input, Static, TabbedContent
 
 from agentwatch.agents import adapter_for, display_name
 from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
@@ -49,6 +49,7 @@ from agentwatch.net_sampler import (
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.statusline import _cost, state_dirs
 from agentwatch.themes import ascii_safe, get_theme
+from agentwatch.ui import machine
 from agentwatch.ui.app import WarningsList, _hm, hang, plain_notify
 from agentwatch.ui.detail import DetailScreen
 from agentwatch.ui.help import HelpScreen
@@ -88,6 +89,7 @@ BUDGET_WARN = 0.8  # feed line when a session reaches this share of --budget
 BUDGET_WIDTH = 18  # COST / BUDGET column: "$4.12 / $5.00 ▮▮▮▯" ...
 BUDGET_NARROW = 10  # ... or "$4.12 ▮▮▮▯" under NARROW_BELOW columns
 COACH_EVERY_S = 2.0  # coach state files are stat'ed this often, read only when changed
+NAME_EVERY_S = 5.0  # Network tab: host names and listeners (~40ms psutil) refreshed this often
 _WIDTHS = {key: width for key, _, width in COLUMNS}
 _SEVERITY_RANK = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
 _SEVERITY_STYLE = {
@@ -278,8 +280,17 @@ class MultiAgentWatchApp(App):
         ("o", "cycle_sort", "Sort"),
         ("e", "toggle_feed", "Events"),
         ("s", "toggle_security", "Security"),
+        ("d", "other_ai", "Other AI"),
+        ("w", "report", "Report"),
         Binding("escape", "focus_table", "Table", show=False),
     ]
+
+    # Other AI (ai_detect.detect) and the history sync + report: worker
+    # threads / a subprocess on these intervals. Off: tests (conftest) and
+    # --headless (nothing shows them).
+    MACHINE_CHECKS = True
+    DETECT_EVERY_S = 30.0
+    HISTORY_EVERY_S = 300.0
 
     def __init__(
         self,
@@ -291,9 +302,11 @@ class MultiAgentWatchApp(App):
         llm_model: str = DEFAULT_OLLAMA_MODEL,
         alerter: Alerter | None = None,
         since: float | None = None,
+        machine_checks: bool = True,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self._machine_checks = machine_checks and self.MACHINE_CHECKS
         self.alerter = alerter
         self.watch_paths = watch_paths or []
         self.security_mode = security_mode
@@ -341,6 +354,24 @@ class MultiAgentWatchApp(App):
         self.since = since  # --all-logs window in seconds (None: every log)
         self._show_idle = False  # `a`: idle sessions shown instead of folded
         self._filter = ""  # `/`: rows whose project/agent/signal contain this
+        # Network tab (worker): host names by IP, net.Namer made on first use
+        self._namer = None
+        self._names: dict[str, tuple[str, str, str | None]] = {}
+        self._naming = False
+        self._name_next = 0.0
+        # `d`: the last ai_detect result (None: failed), when, unmonitored names seen
+        self._detected = None
+        self._detected_at: float | None = None
+        self._detecting = False
+        self._unmonitored: set[str] | None = None  # running now (None: check failed)
+        self._ai_seen: set[str] | None = None  # every one seen this run (None: no baseline)
+        # `w` and the header: (today's spend, 7-day report) from history
+        self._history: tuple[dict, dict] | None = None
+        self._history_at: float | None = None
+        self._history_failed = False
+        self._syncing = False
+        self._sync_proc: asyncio.subprocess.Process | None = None
+        self.sync_seconds: float | None = None  # the last sync's duration
 
         if agent_processes is not None:
             self._initial_processes = agent_processes
@@ -498,6 +529,12 @@ class MultiAgentWatchApp(App):
         if self._process_mode:
             self._net_sampler.start()  # --all-logs has no pids: no sampling
             self.set_interval(5.0, self._refresh_processes)
+
+        if self._machine_checks:
+            self.run_worker(self._detect_ai())
+            self.set_interval(self.DETECT_EVERY_S, self._detect_ai)
+            self.run_worker(self._sync_history())
+            self.set_interval(self.HISTORY_EVERY_S, self._sync_history)
 
     async def _watch_loop(self) -> None:
         """Background loop to process events from the multi-watcher."""
@@ -1117,12 +1154,13 @@ class MultiAgentWatchApp(App):
     def _update_header(self) -> None:
         """One line; redrawn only when its text changes (the clock: each second).
         When it does not fit, in turn: "spent" for "on screen" and no clock,
-        no title, "N sess · M need you"; then it is cut."""
+        no title, (100+ columns: "N sess · M need you"), no today/week,
+        "N sess · M need you"; then it is cut."""
         if not self._layout_now:
             return
         n, active, need_you, spend = self._summary
         dot = ascii_safe(" · ", " | ")
-        spent = "n/a" if spend is None else _usd(spend) if spend else "$0.00"
+        money = "n/a" if spend is None else _usd(spend) if spend else "$0.00"
         title = "agentwatch" + (" [SECURITY]" if self.security_mode else "")
         rest = [
             f"alerts {self._alerts}",
@@ -1130,13 +1168,21 @@ class MultiAgentWatchApp(App):
             *([f"budget {_usd(self._budget)}/session"] if self._budget is not None else []),
         ]
         counts = f"{n} session{'s' * (n != 1)}{dot}{active} active{dot}{need_you} need you"
-        tight = [counts, f"spent {spent}", *rest]
+        short = f"{n} sess{dot}{need_you} need you"
+        week = [machine.week_label(*self._history)] if self._history else []
+        n_ai = len(self._unmonitored or ())
+        ai = [f"+{n_ai} unmonitored AI"] if n_ai else []
+        spent = f"spent {money}"
         forms = [
-            (title, "   ".join([counts, f"on screen {spent}", *rest,
+            (title, "   ".join([counts, f"on screen {money}", *week, *ai, *rest,
                                 f"{datetime.now():%H:%M:%S}"])),
-            (title, "  ".join(tight)),
-            ("", "  ".join(tight)),
-            ("", "  ".join([f"{n} sess{dot}{need_you} need you", *tight[1:]])),
+            (title, "  ".join([counts, spent, *week, *ai, *rest])),
+            ("", "  ".join([counts, spent, *week, *ai, *rest])),
+            # under NARROW_BELOW columns today/week go before the counts are cut
+            *([("", "  ".join([short, spent, *week, *ai, *rest]))] if week and not self._narrow
+              else []),
+            ("", "  ".join([counts, spent, *ai, *rest])),
+            ("", "  ".join([short, spent, *ai, *rest])),
         ]
         room = self._term_width - 2
         title, body = next((f for f in forms if len(f[0]) + 2 * bool(f[0]) + len(f[1]) <= room),
@@ -1266,6 +1312,71 @@ class MultiAgentWatchApp(App):
         """`?`: the keys, columns, icons and flags."""
         self.push_screen(HelpScreen())
 
+    def action_other_ai(self) -> None:
+        """`d`: programs using AI on this machine (the last detect() result)."""
+        text = machine.detect_text(self._detected, self._detected_at, self.DETECT_EVERY_S)
+        self.push_screen(HelpScreen(text, "Other AI on this machine", 100))
+
+    def action_report(self) -> None:
+        """`w`: the last 7 days from the history DB (the last sync's report)."""
+        week = self._history[1] if self._history else None
+        text = machine.report_text(week, self._history_at, self._history_failed,
+                                   self.HISTORY_EVERY_S)
+        self.push_screen(HelpScreen(text, "Weekly report", 100))
+
+    # -- machine checks (worker threads; results applied on the event loop) --
+
+    async def _detect_ai(self) -> None:
+        """ai_detect.detect() on a thread; one feed line per unmonitored AI
+        program not seen before (the first result is the baseline)."""
+        if self._detecting:
+            return
+        self._detecting = True
+        try:
+            from agentwatch import ai_detect  # call-time lookup: tests monkeypatch detect
+
+            result = await asyncio.to_thread(ai_detect.detect)
+            names = machine.unmonitored(result)
+        except Exception:  # a failed check hides the count; the next one retries
+            result = names = None
+        finally:
+            self._detecting = False
+        self._detected, self._detected_at = result, time.time()
+        if names is not None:
+            if self._ai_seen is not None:
+                for name in sorted(names - self._ai_seen):
+                    self._event(f"new unmonitored AI program: {name}", "yellow")
+            self._ai_seen = (self._ai_seen or set()) | names
+        self._unmonitored = names  # the header counts the ones running now
+        self._update_header()
+
+    async def _sync_history(self) -> None:
+        """`history.sync` in a subprocess, then today's spend and the 7-day
+        report on a thread. A failure hides the figures (one feed line)."""
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            start = time.monotonic()
+            self._sync_proc = proc = await asyncio.create_subprocess_exec(
+                *machine.SYNC_ARGS, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            if await proc.wait():
+                raise OSError(f"history sync exited {proc.returncode}")
+            self.sync_seconds = time.monotonic() - start
+            figures = await asyncio.to_thread(machine.history_figures)
+        except Exception:
+            figures = None
+        finally:
+            self._syncing, self._sync_proc = False, None
+        if figures is None:
+            if not self._history_failed:
+                self._event("history unavailable", "dim")
+            self._history, self._history_failed = None, True
+        else:
+            self._history, self._history_at, self._history_failed = figures, time.time(), False
+        self._update_header()
+
     # -- Selected strip ---------------------------------------------------
 
     def _title(self, data: dict) -> str:
@@ -1366,18 +1477,47 @@ class MultiAgentWatchApp(App):
         # The screen's width: a hidden tab's widgets have none.
         width = screen.size.width - 2
         screen.text("d-loop", hang(self._loop_breaker_text(data), width, 16))
-        screen.text("d-net", self._net_text(data))
+        screen.text("d-net", self._net_text(data, screen.query_one(TabbedContent).active, width))
         screen.text("d-process", self._process_text(data, width))
 
-    def _net_text(self, data: dict) -> str:
+    def _net_text(self, data: dict, tab: str, width: int = 0) -> str:
+        """The Network tab: the NetSampler's endpoints for the session's pid
+        (no second sampler), named and its listeners read on a worker while
+        the tab is shown (every NAME_EVERY_S)."""
+        if not self._process_mode:
+            return "  Network: n/a (no process)"
         if not data.get("net_sampled"):
-            why = "" if self._process_mode else " (--all-logs: no process to sample)"
-            return f"  {NOT_ATTRIBUTABLE}{why}"
-        actions = data["buffer"].actions
-        seen = sorted({ep for a in actions for ep in a.observed_endpoints or ()})
-        lines = [f"  {endpoint_summary(actions)} (remote ip:port seen during its actions)"]
-        lines += [f"    {ip}:{port}" for ip, port in seen]
-        return "\n".join(lines)
+            return f"  {NOT_ATTRIBUTABLE}"
+        pid = data["pid"]
+        spans = self._net_sampler.spans(pid) or []
+        now = time.monotonic()
+        if tab == "network" and not self._naming and now >= self._name_next:
+            self._name_next = now + NAME_EVERY_S
+            ips = sorted({e.ip for e in spans if self._names.get(e.ip, ("", "ip"))[1] == "ip"})
+            self._naming = True
+            self.run_worker(self._name_endpoints(data, pid, ips))
+        return machine.net_text(pid, spans, self._names, data.get("_listeners"),
+                                endpoint_summary(data["buffer"].actions), width)
+
+    async def _name_endpoints(self, data: dict, pid: int, ips: list[str]) -> None:
+        """Worker: name *ips* (net.Namer, cached across calls) and read
+        *pid*'s listeners. A failure leaves bare IPs / no listener list."""
+        def work():
+            if self._namer is None:
+                from agentwatch.net import Namer
+
+                self._namer = Namer()
+            return machine.name_ips(self._namer, ips), machine.listeners_of(pid)
+
+        try:
+            names, listeners = await asyncio.to_thread(work)
+            self._names.update(names)
+            if data.get("pid") == pid:
+                data["_listeners"] = listeners
+        except Exception:
+            pass
+        finally:
+            self._naming = False
 
     def _process_text(self, data: dict, width: int = 0) -> str:
         """Rows of `  Key      value`; a value longer than *width* (a log
@@ -1505,6 +1645,8 @@ class MultiAgentWatchApp(App):
         """Flush and release every agent's SIEM log file handle on app exit,
         and stop the net sampler."""
         self._net_sampler.stop()
+        if self._sync_proc is not None and self._sync_proc.returncode is None:
+            self._sync_proc.kill()  # the next start's sync redoes its logs
         for data in self.agents.values():
             siem_exporter: LiveSiemExporter | None = data.get("siem_exporter")
             if siem_exporter is not None:
