@@ -43,6 +43,7 @@ from time import monotonic as _monotonic
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+from agentwatch.agents import display_name
 from agentwatch.detectors.base import Severity, findings_spend, warning_dedup_key
 from agentwatch.detectors.security.secret_scanner import one_line
 from agentwatch.statusline import _LABELS, _cost
@@ -216,7 +217,7 @@ def _usd(v: float) -> str:
 def who(agent: str | None, project: str | None) -> str:
     """'Claude Code · myproj'. Both come from logs and process data, so they
     are cleaned like a message."""
-    name = one_line(agent.replace("-", " ").title(), _NAME_MAX) if agent else ""
+    name = one_line(display_name(agent), _NAME_MAX) if agent else ""
     project = one_line(project, _NAME_MAX) if project else ""
     return f" {ascii_safe('·', '|')} ".join(p for p in (name, project) if p) or "agent"
 
@@ -249,6 +250,9 @@ class Alerter:
         self.webhook = webhook
         self.log = log
         self.warn: Callable[[str], None] = _warn_stderr
+        # Told (title, body) of each alert as it is queued, on the caller's
+        # thread (the watch-all event feed). Changes nothing about delivery.
+        self.on_send: Callable[[str, str], None] | None = None
         self._warned: set[str] = set()
         self._sessions: dict[str, _Session] = {}
         self._pending: list[tuple[str, str]] = []
@@ -327,6 +331,8 @@ class Alerter:
     def _send(self, label: str, name: str, message: str) -> None:
         """Queue one alert for the single delivery worker."""
         item = (f"agentwatch: {name} {ascii_safe('—', '-')} {label}", _clean(message))
+        if self.on_send is not None:
+            self.on_send(*item)
         with self._lock:
             self._pending.append(item)
             if self._busy:
