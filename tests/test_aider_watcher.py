@@ -170,3 +170,21 @@ class TestAiderLogWatcherAsync:
             assert third.incoming_message == "add a test"
         finally:
             await gen.aclose()
+
+    async def test_watch_picks_up_append_made_before_watch_is_armed(self, md_path):
+        """Regression (macOS): an append landing between the initial read and
+        the OS watch being armed, or reported as Change.added by FSEvents, must
+        still be emitted (via any-event reparse plus the fallback tick)."""
+        md_path.write_text(SESSION_1, encoding="utf-8")
+        watcher = AiderLogWatcher(md_path)
+        gen = watcher.watch()
+        try:
+            await asyncio.wait_for(gen.__anext__(), timeout=2)
+            await asyncio.wait_for(gen.__anext__(), timeout=2)
+            # Append synchronously, before the generator resumes and arms awatch.
+            with open(md_path, "a", encoding="utf-8") as f:
+                f.write(TURN_2)
+            third = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            assert third.incoming_message == "add a test"
+        finally:
+            await gen.aclose()

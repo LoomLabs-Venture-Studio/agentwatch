@@ -235,6 +235,8 @@ class AiderLogWatcher:
     without a sidecar.
     """
 
+    _POLL_TICK_MS = 1000  # fallback reparse tick; see watch()
+
     def __init__(self, path: Path, session_id: str | None = None):
         self.path = path
         self.session_id = session_id
@@ -266,11 +268,32 @@ class AiderLogWatcher:
         for action in self._read_new_actions():
             yield action
 
-        async for changes in awatch(self.path.parent):
-            for change_type, changed_path in changes:
-                if Path(changed_path) == self.path and change_type == Change.modified:
-                    for action in self._read_new_actions():
-                        yield action
+        target = self._resolved(self.path)
+        # Reparse on ANY event for the file, not just Change.modified: on
+        # macOS FSEvents coalesces flags, so an append to a recently created
+        # file arrives as Change.added (and the dir may be reported through a
+        # symlink, e.g. /var vs /private/var). The 1s timeout tick is a cheap
+        # safety net for appends that land before the OS watch is armed or
+        # that FSEvents coalesces away; the emitted-count cursor makes a
+        # redundant reparse a no-op.
+        async for changes in awatch(
+            self.path.parent,
+            rust_timeout=self._POLL_TICK_MS,
+            yield_on_timeout=True,
+        ):
+            relevant = not changes or any(
+                self._resolved(Path(changed_path)) == target for _, changed_path in changes
+            )
+            if relevant:
+                for action in self._read_new_actions():
+                    yield action
+
+    @staticmethod
+    def _resolved(path: Path) -> Path:
+        try:
+            return path.resolve()
+        except OSError:
+            return path
 
     async def watch_with_callbacks(self) -> None:
         """Watch and dispatch to registered callbacks."""
