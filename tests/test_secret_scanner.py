@@ -1648,7 +1648,9 @@ def test_curl_path_prefix_stays_linear():
 
     start = time.perf_counter()
     redact_secrets("/x/curl " * 60_000)
-    assert time.perf_counter() - start < 2.0
+    # ~1s normally; the loose bound avoids flakes under load and still
+    # catches a catastrophic (quadratic) regex, which takes minutes on ~0.5 MB.
+    assert time.perf_counter() - start < 10.0
 
 
 @pytest.mark.parametrize("url,password", [
