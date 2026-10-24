@@ -100,8 +100,13 @@ class HiddenInstructionDetector(SecurityDetector):
         r"[\u200b-\u200f\u2060-\u206f]",  # Zero-width characters
         r"[\u2800-\u28ff]{10,}",  # Braille patterns (sometimes used to hide text)
 
-        # HTML/XML comments with instructions
-        r"<!--.*(?:ignore|execute|run|instruction).*-->",
+        # HTML/XML comments with instructions. Single line, closed by the first
+        # "-->" (HTML semantics), with the keyword before that close. Each
+        # segment is tempered and length-capped so matching stays linear on
+        # long or unterminated comments; the old `<!--.*kw.*-->` backtracked
+        # cubically (50k chars of unterminated "<!--ignore " took minutes).
+        r"<!--(?=(?:(?!-->)[^\n]){0,1000}?(?:ignore|execute|run|instruction))"
+        r"(?:(?!-->)[^\n]){0,1000}-->",
 
         # Base64 that might contain instructions
         r"(?:aWdub3Jl|ZXhlY3V0ZQ|cnVuIHRoZQ)",  # base64 for ignore, execute, run the
