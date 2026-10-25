@@ -365,11 +365,28 @@ def security_status_from_score(score: float) -> str:
     this widget has always used.
     """
     theme = get_theme()
+    return (theme.level_0, theme.level_1, theme.level_3)[_security_tier(score)]
+
+
+# Security wording for the same three tiers. The theme levels above are
+# health words ("stuck", "healthy"...), so anything shown as a security
+# verdict takes its text from here and only its emoji and colour from the theme.
+SECURITY_TIER_LABELS = ("SECURE", "AT RISK", "COMPROMISED")
+
+
+def _security_tier(score: float) -> int:
+    """0 = secure (score == 100), 1 = at risk (> 50), 2 = compromised."""
     if score == 100:
-        return theme.level_0
+        return 0
     elif score > 50:
-        return theme.level_1
-    return theme.level_3
+        return 1
+    return 2
+
+
+def security_label_from_score(score: float) -> str:
+    """Security verdict text for a 0-100 security score: SECURE / AT RISK /
+    COMPROMISED, with the same thresholds as security_status_from_score()."""
+    return SECURITY_TIER_LABELS[_security_tier(score)]
 
 
 def ascii_safe(default_glyph: str, ascii_fallback: str) -> str:

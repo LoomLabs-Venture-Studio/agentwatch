@@ -37,6 +37,7 @@ from agentwatch.themes import (
     ascii_safe,
     get_theme,
     list_themes,
+    security_label_from_score,
     security_status_from_score,
     set_theme,
 )
@@ -1248,7 +1249,11 @@ def security_scan(
     llm: bool,
     llm_model: str,
 ):
-    """Run a security-focused scan on agent logs."""
+    """Run a security-focused scan on agent logs.
+
+    Exit codes: 0 = no security issues, 1 = issues found with score 50 or
+    above, 2 = score below 50 (compromised).
+    """
     note = None
     if log is None:
         log, note = _default_log()
@@ -1328,12 +1333,15 @@ def security_scan(
         # same SECURE/AT-RISK/COMPROMISED thresholds a second time (that
         # duplication is exactly how this class of bug -- fix the emoji in
         # one copy, miss the other -- was introduced).
+        # Verdict text is security wording (SECURE / AT RISK / COMPROMISED);
+        # emoji and colour still come from the theme's tier for that score.
         theme = get_theme()
-        status = security_status_from_score(security_score)
-        emoji = theme.emoji_for(status)
-        color = theme.color_for(status)
+        tier_status = security_status_from_score(security_score)
+        emoji = theme.emoji_for(tier_status)
+        color = theme.color_for(tier_status)
+        label = security_label_from_score(security_score)
         click.echo(
-            click.style(f"  {emoji} {status.upper()} ({security_score}%)", fg=color, bold=True)
+            click.style(f"  {emoji} {label} ({security_score}%)", fg=color, bold=True)
         )
 
         click.echo()
