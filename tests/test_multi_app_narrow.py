@@ -47,8 +47,11 @@ async def test_layout_follows_the_terminal_size(size, narrow, feed):
         _many(app)
         await pilot.pause()
         table = app.query_one("#sessions")
-        expected = (["dot", "project", "health", "cost", "last", "signal"] if narrow else
-                    ["dot", "agent", "project", "health", "cost", "ctx", "last", "signal"])
+        # TREND: while TOP SIGNAL keeps 25+ (with --budget: 84-99 and 120+ columns)
+        trend = ["trend"] * (84 <= size[0] < 100 or size[0] >= 120)
+        expected = (["dot", "project", "health", "cost", *trend, "last", "signal"] if narrow
+                    else ["dot", "agent", "project", "health", "cost", *trend, "ctx", "last",
+                          "signal"])
         assert [c.value for c in table.columns] == expected
         assert app.query_one("#selected").display == (not narrow)
         events = app.query_one("#feed")

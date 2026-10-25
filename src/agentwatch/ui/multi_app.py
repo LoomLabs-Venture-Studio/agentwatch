@@ -19,7 +19,7 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Input, Static, TabbedContent
 
-from agentwatch.agents import adapter_for, display_name
+from agentwatch.agents import DISPLAY_NAMES, adapter_for, display_name
 from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
 from agentwatch.coach import state_path
 from agentwatch.detectors import create_registry
@@ -48,9 +48,9 @@ from agentwatch.net_sampler import (
 )
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.statusline import _cost, state_dirs
-from agentwatch.themes import ascii_safe, get_theme
+from agentwatch.themes import ascii_safe, get_current_theme_name, get_theme
 from agentwatch.ui import machine
-from agentwatch.ui.app import WarningsList, _hm, hang, plain_notify
+from agentwatch.ui.app import WarningsList, _hm, hang, plain_notify, show
 from agentwatch.ui.detail import DetailScreen
 from agentwatch.ui.help import HelpScreen
 from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from agentwatch.detectors.base import Warning
     from agentwatch.health.score import HealthReport
 
+TREND_WIDTH = 8  # the TREND column: a sparkline of the last 8 samples
 # (key, header, width or None for auto). Cells are rich Text, never markup.
 COLUMNS = (
     ("dot", "", 1),
@@ -67,6 +68,7 @@ COLUMNS = (
     ("project", "PROJECT", 14),
     ("health", "HEALTH", 6),
     ("cost", "COST", 8),
+    ("trend", "TREND", TREND_WIDTH),  # label: _layout (health, or cost under cost sort)
     ("ctx", "CTX", 4),
     ("last", "LAST", 4),
     ("signal", "TOP SIGNAL", None),
@@ -79,6 +81,20 @@ FLASH_S = 2.0  # a row whose data changed is shown bold this long
 TREND_POINTS = 5  # HEALTH gets ▲/▼ when it moved this much ...
 TREND_WINDOW_S = 60.0  # ... against its score this long ago
 TREND_SETTLE_S = 5.0  # a session's first seconds (log history loading) set the reference
+# History (memory only): a (time, health, cost, ctx) sample when they changed,
+# at most every SAMPLE_S (a TREND_POINTS move: at once). 15s: HISTORY_MAX
+# samples cover 15+ min, enough for a session's arc and the 60s arrow, and a
+# busy session redraws its graphs at most 4x a minute.
+SAMPLE_S = 15.0
+HISTORY_MAX = 60
+SPARK = "▁▂▃▄▅▆▇█"
+SPARK_ASCII = "_.:-=+*#"
+SPARK_STRIP = 16  # Selected strip graph width; the TREND column's is its width
+GAUGE_WIDTH = 10
+# TREND goes before TOP SIGNAL gets narrower than this: at 80 columns TOP SIGNAL
+# keeps its 33 (a loop block's tool, count and cost); at 120 TREND shows, also
+# with --budget. Narrow, TREND shows from 82 columns (84 with --budget).
+SIGNAL_MIN = 25
 NARROW_BELOW = 100  # columns: no AGENT/CTX columns, no Selected strip
 SHORT_BELOW = 30  # rows: the Events panel shows 3 lines ...
 TINY_BELOW = 20  # ... or is hidden (`e` shows it in the table's place)
@@ -93,9 +109,16 @@ NAME_EVERY_S = 5.0  # Network tab: host names and listeners (~40ms psutil) refre
 _WIDTHS = {key: width for key, _, width in COLUMNS}
 _SEVERITY_RANK = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
 _SEVERITY_STYLE = {
-    Severity.CRITICAL: "bold red", Severity.HIGH: "red",
+    Severity.CRITICAL: "bold red", Severity.HIGH: "dark_orange",
     Severity.MEDIUM: "yellow", Severity.LOW: "dim",
 }
+# One colour per known agent (AGENT column, Selected title): blues and
+# purples, so none reads as a health or severity colour; readable on dark
+# and light backgrounds.
+_AGENT_PALETTE = ("dodger_blue2", "medium_purple2", "dark_cyan", "orchid", "steel_blue",
+                  "slate_blue1")
+AGENT_COLORS = {agent: _AGENT_PALETTE[i % len(_AGENT_PALETTE)]
+                for i, agent in enumerate(DISPLAY_NAMES)}
 
 
 @dataclass
@@ -168,11 +191,61 @@ def _signal(warnings: list["Warning"]) -> tuple[str, str]:
     return f"{ascii_safe('⚠', '!')} {label}", _SEVERITY_STYLE[w.severity]
 
 
-def _text(value: str, style: str, width: int) -> Text:
-    """A table cell: literal text (never markup), cut to its column."""
-    text = Text(value, style=style, no_wrap=True)
+def _color(status_color: str) -> str:
+    """A theme colour as a Rich colour: "orange" is a CSS name Rich does not
+    know (a DataTable cell drops it)."""
+    return "dark_orange" if status_color == "orange" else status_color
+
+
+def _health_color(score: float) -> str:
+    theme = get_theme()
+    return _color(theme.color_for(theme.status_from_score(score)))
+
+
+def _text(cell: tuple, width: int) -> Text:
+    """A table cell (text, style[, spans]): literal text (never markup), cut
+    to its column. Spans are (start, end, style) over the text."""
+    text = Text(cell[0], style=cell[1], no_wrap=True)
+    for start, end, style in cell[2] if len(cell) > 2 else ():
+        text.stylize(style, start, end)
     text.truncate(width, overflow="ellipsis")
     return text
+
+
+def _spark(values: list, width: int, lo: float | None = None,
+           hi: float | None = None) -> str:
+    """The last *width* values as a sparkline, newest right, padded left;
+    scaled lo..hi (default: their min..max, a flat series at the bottom).
+    None is a gap; "" when nothing is known. ASCII under --theme ascii."""
+    values = values[-width:]
+    known = [v for v in values if v is not None]
+    if not known:
+        return ""
+    lo = min(known) if lo is None else lo
+    hi = max(known) if hi is None else hi
+    chars = ascii_safe(SPARK, SPARK_ASCII)
+    top = len(chars) - 1
+
+    def level(v: float) -> int:
+        return 0 if hi <= lo else max(0, min(top, int((v - lo) / (hi - lo) * top + 0.5)))
+
+    return "".join(" " if v is None else chars[level(v)] for v in values).rjust(width)
+
+
+def _gauge(share: float, health: bool = False, pct: bool = True) -> tuple[str, str]:
+    """('▮▮▮▮▮▮▮▮▯▯ 82%', style); `[########..] 82%` under --theme ascii.
+    Green under BUDGET_WARN, amber to 100%, red from 100%; *health*: its
+    status colour (red when low). *pct*: the share after the bar."""
+    full = max(0, min(GAUGE_WIDTH, int(share * GAUGE_WIDTH)))
+    if get_current_theme_name() == "ascii":
+        bar = f"[{'#' * full}{'.' * (GAUGE_WIDTH - full)}]"
+    else:
+        bar = "▮" * full + "▯" * (GAUGE_WIDTH - full)
+    if health:
+        style = _health_color(share * 100)
+    else:
+        style = "green" if share < BUDGET_WARN else "yellow" if share < 1 else "bold red"
+    return bar + (f" {round(share * 100)}%" if pct else ""), style
 
 
 def _budget_cell(cost: float | None, budget: float, narrow: bool = False) -> tuple[str, str]:
@@ -263,7 +336,7 @@ class MultiAgentWatchApp(App):
 
     #selected {
         height: auto;
-        max-height: 7;
+        max-height: 8;
         border: round $primary;
         padding: 0 1;
         text-wrap: nowrap;
@@ -787,32 +860,84 @@ class MultiAgentWatchApp(App):
     # -- sessions table ---------------------------------------------------
 
     @staticmethod
-    def _trend(data: dict, score: int, now: float) -> str:
-        """▲/▼ when *score* is TREND_POINTS off its value TREND_WINDOW_S ago.
-        Scores are kept as (time, score) at each change; the reference is the
-        newest one at least the window old; nothing is shown until the session
-        has a window of history. Its first TREND_SETTLE_S with actions only
-        set the reference (its log history is loading). Evaluated every tick,
-        so an arrow clears on time for rows that are not rescored."""
+    def _sample(data: dict, values: tuple, now: float) -> tuple | None:
+        """Keep the session's history (data["_hist"], HISTORY_MAX samples of
+        (time, health, cost, ctx), memory only): a sample when *values*
+        changed, at most every SAMPLE_S, at once for a TREND_POINTS move in
+        health or context. Its first TREND_SETTLE_S with actions only set the
+        first sample (its log history is loading). data["_samples"] counts
+        appends (graphs are redrawn only when it moves).
+
+        Returns the reference for the arrows: the newest sample at least
+        TREND_WINDOW_S old, None until the session has that much history.
+        Evaluated every tick, so an arrow clears on time without a sample."""
         if not data["buffer"].stats.action_count:
-            return ""
-        scores: deque = data.setdefault("_scores", deque())
-        if not scores or (len(scores) == 1 and now - scores[0][0] < TREND_SETTLE_S):
-            start = scores[0][0] if scores else now
-            scores.clear()
-            scores.append((start, score))
-        elif score != scores[-1][1]:
-            scores.append((now, score))
-        while len(scores) > 1 and scores[1][0] <= now - TREND_WINDOW_S:
-            scores.popleft()
-        if scores[0][0] > now - TREND_WINDOW_S:
-            return ""
-        diff = score - scores[0][1]
-        if diff >= TREND_POINTS:
-            return ascii_safe("▲", "^")
-        if -diff >= TREND_POINTS:
-            return ascii_safe("▼", "v")
-        return ""
+            return None
+        hist = data.get("_hist")
+        if hist is None:
+            hist = data["_hist"] = deque(maxlen=HISTORY_MAX)
+        last = hist[-1] if hist else None
+        if last is None or (len(hist) == 1 and now - last[0] < TREND_SETTLE_S):
+            if last is None or last[1:] != values:
+                hist.clear()
+                hist.append((now if last is None else last[0], *values))
+                data["_samples"] = data.get("_samples", 0) + 1
+        elif last[1:] != values and (now - last[0] >= SAMPLE_S or any(
+                a is not None and b is not None and abs(a - b) >= TREND_POINTS
+                for a, b in ((values[0], last[1]), (values[2], last[3])))):
+            hist.append((now, *values))
+            data["_samples"] += 1
+        cutoff = now - TREND_WINDOW_S
+        if hist[0][0] > cutoff:
+            return None
+        return next(s for s in reversed(hist) if s[0] <= cutoff)
+
+    @staticmethod
+    def _arrows(ref: tuple | None, values: tuple) -> dict[str, tuple[str, str]]:
+        """{health|cost|ctx: (arrow, style)} vs *ref* (a minute ago): health
+        ▲ green / ▼ red on a TREND_POINTS move; cost ▲ amber when it grew a
+        cent; context ▲ amber / ▼ green on a TREND_POINTS move."""
+        arrows = dict.fromkeys(("health", "cost", "ctx"), ("", ""))
+        if ref is None:
+            return arrows
+        up, down = ascii_safe("▲", "^"), ascii_safe("▼", "v")
+        for kind, now, then, step, rise, fall in (
+            ("health", values[0], ref[1], TREND_POINTS, "green", "red"),
+            ("cost", values[1], ref[2], 0.01, "yellow", "green"),
+            ("ctx", values[2], ref[3], TREND_POINTS, "yellow", "green"),
+        ):
+            if now is None or then is None:
+                continue
+            if now - then >= step - 1e-9:
+                arrows[kind] = (up, rise)
+            elif then - now >= step - 1e-9:
+                arrows[kind] = (down, fall)
+        return arrows
+
+    @staticmethod
+    def _spark_cell(data: dict, kind: str, width: int) -> tuple:
+        """(sparkline, style, spans) of the session's *kind* history; health
+        and context scaled 0-100, health coloured by status per point; cost
+        min..max. Cached until the next sample."""
+        cache = data.setdefault("_sparks", {})
+        n = data.get("_samples", 0)
+        hit = cache.get((kind, width))
+        if hit is not None and hit[0] == n:
+            return hit[1]
+        index = {"health": 1, "cost": 2, "ctx": 3}[kind]
+        values = [s[index] for s in data.get("_hist", ())][-width:]
+        if kind == "cost":
+            cell: tuple = (_spark(values, width), "")
+        else:
+            text = _spark(values, width, 0, 100)
+            spans = ()
+            if kind == "health" and text:
+                pad = width - len(values)
+                spans = tuple((pad + i, pad + i + 1, _health_color(v))
+                              for i, v in enumerate(values) if v is not None)
+            cell = (text, "", spans)
+        cache[(kind, width)] = (n, cell)
+        return cell
 
     @staticmethod
     def _agent_name(data: dict) -> str:
@@ -825,12 +950,16 @@ class MultiAgentWatchApp(App):
         """{column: (text, style)}; text is cut to the column when shown."""
         item: AgentItem = data["item"]
         buffer: ActionBuffer = data["buffer"]
-        theme = get_theme()
-        color = theme.color_for(report.status)
+        color = _health_color(report.overall_score)
         active = item.process_status != "stopped" and age is not None and age < IDLE_AFTER_S
 
         score = report.overall_score
-        trend = self._trend(data, score, time.monotonic() if now is None else now)
+        cost = buffer.stats.estimated_cost
+        ctx = _context_pct(buffer)
+        values = (score, None if cost is None else round(cost, 2), ctx)
+        ref = self._sample(data, values, time.monotonic() if now is None else now)
+        data["_arrows"] = arrows = self._arrows(ref, values)
+        trend, trend_style = arrows["health"]
         agent = self._agent_name(data)
         project = item.project_name or item.log_path.name
         if item.depth > 0:
@@ -838,28 +967,29 @@ class MultiAgentWatchApp(App):
             agent = f"{indent} sub {agent}"
             if self._narrow:  # no AGENT column: the tree is in PROJECT
                 project = f"{indent} {project}"
-        cost = buffer.stats.estimated_cost
-        ctx = _context_pct(buffer)
+        health = f"{score}%"
         cells = {
             "dot": (ascii_safe("●", "*") if active else ascii_safe("○", "o"), color),
-            "agent": (agent, ""),
+            "agent": (agent, AGENT_COLORS.get(item.agent_type or data.get("agent_name"), "")),
             "project": (project, ""),
-            "health": (f"{score}% {trend}".rstrip(), color),
+            "health": (f"{health} {trend}", color, ((len(health) + 1, len(health) + 2,
+                                                   trend_style),)) if trend else (health, color),
             "cost": ("n/a" if cost is None else format_usd(cost).lstrip("~"), "")
             if self._budget is None
             else _budget_cell(cost, self._budget, self._narrow),
+            "trend": self._spark_cell(data, "cost" if self.sort_mode == "cost" else "health",
+                                      _WIDTHS["trend"]),
             "ctx": ("-" if ctx is None else f"{ctx}%", ""),
             "last": (_ago(age), ""),
             "signal": self._blocked_signal(data, report.warnings) or _signal(report.warnings),
         }
         if item.process_status == "stopped":  # grey, so stopped differs from idle
-            cells = {col: (v, STOPPED_STYLE) for col, (v, _) in cells.items()}
+            cells = {col: (v[0], STOPPED_STYLE) for col, v in cells.items()}
         return cells
 
     def _team_cells(self, team: AgentTeam) -> dict[str, tuple[str, str]]:
         score = self._team_scores.get(team.team_id)
-        theme = get_theme()
-        color = theme.color_for(theme.status_from_score(100 if score is None else score))
+        color = _health_color(100 if score is None else score)
         members = f"{team.member_count} agents"
         if team.subagent_count:
             members += f", {team.subagent_count} sub"
@@ -1037,7 +1167,8 @@ class MultiAgentWatchApp(App):
             self._flash_until.pop(key, None)
 
         for key, cells in rows.items():
-            data_sig = tuple(v for col, v in cells.items() if col != "last")
+            # LAST ticks; TREND is a late copy of HEALTH/COST: neither flashes
+            data_sig = tuple(v for col, v in cells.items() if col not in ("last", "trend"))
             old_sig = self._data_sig.get(key)
             self._data_sig[key] = data_sig
             if old_sig is not None and old_sig != data_sig:
@@ -1045,16 +1176,16 @@ class MultiAgentWatchApp(App):
             if key not in shown_keys:
                 continue
             if self._flash_until.get(key, 0) > now:
-                cells = {col: (v, f"bold {style}") for col, (v, style) in cells.items()}
+                cells = {col: (v[0], f"bold {v[1]}", *v[2:]) for col, v in cells.items()}
             shown = self._cells.get(key)
             if shown is None:
-                texts = [_text(*cells[col], width) for col, width in self._widths.items()]
+                texts = [_text(cells[col], width) for col, width in self._widths.items()]
                 table.add_row(*texts, key=key)
                 self._dots[key] = texts[0]
             else:
                 for col, width in self._widths.items():
                     if cells[col] != shown[col]:
-                        text = _text(*cells[col], width)
+                        text = _text(cells[col], width)
                         table.update_cell(key, col, text)
                         if col == "dot":
                             self._dots[key] = text
@@ -1083,7 +1214,9 @@ class MultiAgentWatchApp(App):
         """The one place that decides the layout from the terminal size:
         (narrow, Events panel height or 0 for hidden, table columns as
         (key, label, width)). Under NARROW_BELOW columns AGENT and CTX go
-        (Enter shows them) and PROJECT is shorter; TOP SIGNAL gets the rest."""
+        (Enter shows them) and PROJECT is shorter; TREND goes when it would
+        leave TOP SIGNAL under SIGNAL_MIN; TOP SIGNAL gets the rest. TREND's
+        label names what it shows (the sort decides)."""
         narrow = width < NARROW_BELOW
         columns = []
         for key, label, size in COLUMNS:
@@ -1094,10 +1227,16 @@ class MultiAgentWatchApp(App):
             if key == "cost" and self._budget is not None:
                 label, size = ("COST/BUDGT", BUDGET_NARROW) if narrow else (
                     "COST / BUDGET", BUDGET_WIDTH)
+            if key == "trend":
+                label = "TREND $" if self.sort_mode == "cost" else "TREND H"
             columns.append((key, label, size))
-        # cell padding 1+1 per column, the border 2, the scrollbar 2
-        rest = width - sum(size or 0 for _, _, size in columns) - 2 * len(columns) - 4
-        columns[-1] = (*columns[-1][:2], max(10, rest))
+
+        def rest() -> int:  # cell padding 1+1 per column, the border 2, the scrollbar 2
+            return width - sum(size or 0 for _, _, size in columns) - 2 * len(columns) - 4
+
+        if rest() < SIGNAL_MIN:
+            columns = [c for c in columns if c[0] != "trend"]
+        columns[-1] = (*columns[-1][:2], max(10, rest()))
         feed = 7 if height >= SHORT_BELOW else 5 if height >= TINY_BELOW else 0
         return narrow, feed, tuple(columns)
 
@@ -1388,37 +1527,80 @@ class MultiAgentWatchApp(App):
             title.append("stopped")
         return ascii_safe(" · ", " | ").join(title)
 
+    def _title_text(self, data: dict) -> Text:
+        """_title() with the agent in its colour."""
+        item: AgentItem = data["item"]
+        title = Text(self._title(data))
+        color = AGENT_COLORS.get(item.agent_type or data.get("agent_name"))
+        if color:
+            start = len(item.project_name or item.log_path.name) + len(ascii_safe(" · ", " | "))
+            title.stylize(color, start, start + len(self._agent_name(data)))
+        return title
+
+    def _graph_rows(self, data: dict, report: "HealthReport", width: int,
+                    indent: str = "") -> list[Text]:
+        """health / cost / ctx rows: value, a *width* sparkline of the
+        history, the arrow vs a minute ago, a gauge (cost: with --budget)."""
+        buffer: ActionBuffer = data["buffer"]
+        score = report.overall_score
+        cost = buffer.stats.estimated_cost
+        ctx = _context_pct(buffer)
+        arrows = data.get("_arrows") or self._arrows(None, ())
+        budget = self._budget
+        rows = []
+        for kind, label, value, gauge in (
+            ("health", "health", f"{score}%", _gauge(score / 100, health=True, pct=False)),
+            ("cost", "cost", "n/a" if cost is None else _usd(cost),
+             None if budget is None or cost is None else _gauge(cost / budget)),
+            ("ctx", "ctx", "n/a" if ctx is None else f"{ctx}%",
+             None if ctx is None else _gauge(ctx / 100, pct=False)),
+        ):
+            line = Text(indent, no_wrap=True).append(f"{label:<7}", "bold")
+            line.append(f"{value:>7} ", _health_color(score) if kind == "health" else "")
+            line.append_text(_text(self._spark_cell(data, kind, width), width))
+            arrow, style = arrows[kind]
+            line.append(f" {arrow or ' '}", style)
+            if gauge is not None:
+                line.append("  budget " if kind == "cost" else "  ")
+                line.append(*gauge)
+            rows.append(line)
+        return rows
+
     def _update_selected(self, data: dict, report: "HealthReport") -> None:
+        """Title; health / cost / ctx graphs (efficiency, security and net
+        after health, $/min after cost); the top signal, coloured by
+        severity, and the next warning (or the Tier-2 goal). Six lines."""
         buffer: ActionBuffer = data["buffer"]
         stats = buffer.stats
-        ctx = _context_pct(buffer)
         cost = stats.estimated_cost
-        cost_text = "n/a" if cost is None else format_usd(cost)
-        if cost and stats.duration_minutes >= 1:
-            cost_text += f" ({format_usd(cost / stats.duration_minutes)}/min)"
         security = str(len(report.security_warnings)) if self.security_mode else "off"
         net = endpoint_summary(buffer.actions) if data.get("net_sampled") else NOT_ATTRIBUTABLE
-        lines = [
-            "Selected: " + self._title(data),
-            f"Health {report.overall_score}%  Efficiency {data.get('_last_eff', 100)}%  "
-            f"Context {'n/a' if ctx is None else f'{ctx}%'}  Cost {cost_text}  "
-            f"Security {security}  {net}",
-        ]
+        health, cost_row, ctx_row = self._graph_rows(data, report, SPARK_STRIP)
+        health.append(f"   Efficiency {data.get('_last_eff', 100)}%  Security {security}  {net}",
+                      "dim")
+        if cost and stats.duration_minutes >= 1:
+            cost_row.append(f"   {format_usd(cost / stats.duration_minutes)}/min", "dim")
+        lines = [Text("Selected: ").append_text(self._title_text(data)), health, cost_row,
+                 ctx_row]
+        blocked = self._blocked_signal(data, report.warnings)
+        if blocked:
+            lines.append(Text(*blocked))
         assessor: LiveLlmAssessor | None = data.get("llm_assessor")
         goal = assessor.stamp_goal_alignment() if assessor else None
+        arrow = ascii_safe("→", "->")
+        for w in _top_warnings(report.warnings, 6 - len(lines) - (goal is not None)):
+            detail = WarningsList._format_details(w)
+            lines.append(Text(f"{w.emoji} {w.message}" + (f" {arrow} {detail}" if detail else ""),
+                              _SEVERITY_STYLE[w.severity]))
         if goal is not None:
             label = {True: "[ALIGNED]", False: "[POSSIBLE DRIFT]"}.get(
                 goal.get("aligned"), "[UNCLEAR]"
             )
             summary = goal.get("drift_summary") or "(model response could not be parsed)"
-            lines.append(f"Tier-2 goal (advisory): {label} {summary}")
-        arrow = ascii_safe("→", "->")
-        for w in _top_warnings(report.warnings, 3 - (goal is not None)):
-            detail = WarningsList._format_details(w)
-            lines.append(f"{w.emoji} {w.message}" + (f" {arrow} {detail}" if detail else ""))
-        if not report.warnings:
-            lines.append("No active warnings")
-        self._selected.update("\n".join(lines))
+            lines.append(Text(f"Tier-2 goal (advisory): {label} {summary}"))
+        if not report.warnings and not blocked:
+            lines.append(Text("No active warnings", "green"))
+        show(self._selected, Text("\n").join(lines))
 
     # -- detail view -----------------------------------------------------
 
@@ -1438,7 +1620,11 @@ class MultiAgentWatchApp(App):
         if assessor is not None:  # Tier-2 verdicts that arrived since the last scoring
             assessor.stamp(report.warnings)
 
-        screen.text("detail-title", self._title(data) + f"  (health {report.overall_score}%)")
+        screen.text("detail-title", self._title_text(data).append(
+            f"  (health {report.overall_score}%)"))
+        # every sample (up to HISTORY_MAX) while the screen has room for it
+        width = max(TREND_WIDTH, min(len(data.get("_hist") or ()), screen.size.width - 42))
+        screen.text("d-graphs", Text("\n").join(self._graph_rows(data, report, width, "  ")))
         health = screen.query_one("#d-health")
         health.score, health.status = report.overall_score, report.status
         if data.get("_last_eff_report") is not None:
@@ -1770,6 +1956,7 @@ class MultiAgentWatchApp(App):
         """`o`: attention -> cost -> recent."""
         self.sort_mode = SORTS[(SORTS.index(self.sort_mode) + 1) % len(SORTS)]
         self._update_subtitle()
+        self._apply_layout(self.size)  # TREND's label (and cells) follow the sort
         self.refresh_ui()
 
     def _update_subtitle(self) -> None:

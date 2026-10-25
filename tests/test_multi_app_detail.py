@@ -35,6 +35,14 @@ async def _shows(pilot, app, *texts: str) -> str:
     return _screen(app)
 
 
+async def _warnings_in_view(pilot, app) -> None:
+    """At 80x24 the Health tab's graphs and bars put the warnings below the
+    fold (the pane scrolls): scroll them to the top."""
+    await _wait(pilot, lambda: isinstance(app.screen, DetailScreen) and app.screen.ready)
+    app.screen.query_one("#d-warnings").scroll_visible(animate=False, top=True)
+    await pilot.pause()
+
+
 async def _open(app, pilot, *names, select: int = 0):
     paths = [_seed(app, n, ago=i + 1) for i, n in enumerate(names)]
     app.refresh_ui()
@@ -103,6 +111,7 @@ async def test_long_warning_list_scrolls_nothing_clipped(size):
         app.refresh_ui()
         await pilot.pause()
         await pilot.press("enter")
+        await _warnings_in_view(pilot, app)
         await _shows(pilot, app, "sig0 warning")
         pane = app.screen.query_one("#health .pane", VerticalScroll)
         assert pane.max_scroll_y > 0
@@ -200,6 +209,7 @@ async def test_wrapped_detail_lines_keep_their_indent():
         app.refresh_ui()
         await pilot.pause()
         await pilot.press("enter")
+        await _warnings_in_view(pilot, app)
         text = await _shows(pilot, app, "editing again. Re-read")
         tip = [line for line in text.splitlines() if "test output" in line]
         assert "💡" in tip[0] and tip[1].startswith(" " * 8 + "failing"), tip

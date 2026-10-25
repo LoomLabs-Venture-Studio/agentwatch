@@ -81,6 +81,7 @@ class DetailScreen(Screen):
         yield Static(id="detail-title", markup=False)
         with TabbedContent(id="detail-tabs"):
             with TabPane("Health", id="health"), VerticalScroll(classes="pane"):
+                yield Static(id="d-graphs", markup=False)
                 yield HealthBar(id="d-health")
                 yield EfficiencyBar(id="d-efficiency")
                 yield ContextHealthWidget(id="d-context")

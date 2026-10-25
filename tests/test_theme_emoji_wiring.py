@@ -268,7 +268,7 @@ class TestMultiAppAsciiCells:
             "buffer": ActionBuffer(),
         }
         cells = app._row_cells(data, calculate_health([]), None)
-        rendered = " ".join(text for text, _ in cells.values())
+        rendered = " ".join(cell[0] for cell in cells.values())
         assert cells["dot"][0] == "o"
         assert cells["agent"][0].startswith("`- sub")
         assert_no_emoji(rendered)

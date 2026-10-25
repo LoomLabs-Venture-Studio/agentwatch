@@ -47,14 +47,33 @@ Columns
   COST        estimated (n/a: no known price for the model)
   COST/BUDGET  with --budget: {a('▮▮▮▯', '###-')} share of it, amber from 80%,
                red once hit
+  TREND H     health over the last 8 samples ({a('▁▃▅█', '_:=#')}, 0-100%);
+              TREND $ under cost sort: cost (lowest to highest)
   CTX         context window fill
   LAST        time since the last action
   TOP SIGNAL  ok, {a('⚠', '!')} top warning (+N more), or
               {a('⛔', 'X')} the loop breaker blocked a call
   {a('○ …', 'o ...')} N idle  sessions idle 15+ min or stopped, folded (a)
   Under 100 columns AGENT, CTX and the Selected strip are hidden
-  (Enter shows them); under 30 rows Events is 3 lines, under 20
-  it is hidden (e shows it).
+  (Enter shows them); TREND goes when TOP SIGNAL would get under
+  25 columns; under 30 rows Events is 3 lines, under 20 it is
+  hidden (e shows it).
+
+Graphs and gauges (Selected strip, detail Health tab)
+  history     memory only: a sample when health, cost or context
+              changed, at most every 15s (a 5+ point move at
+              once), the last 60 kept
+  {a('▲ ▼', '^ v')}         vs a minute ago: health {a('▲', '^')} green {a('▼', 'v')} red; cost
+              and context {a('▲', '^')} amber
+  {a('▮▮▮▯▯', '[###..]'):<11} gauges: health by its colour; budget and context
+              green, amber from 80%, red at 100%
+
+Colours
+  health      green 80+, yellow 60+, orange 40+, red under 40
+  warnings    red Critical, orange HIGH, yellow MEDIUM, dim LOW
+  AGENT       one colour per agent type
+  Arrows, text and --theme ascii's [###..] say the same without
+  colour.
 
 Sort (o)
   attention   Critical and loop-blocked first, then HIGH, other

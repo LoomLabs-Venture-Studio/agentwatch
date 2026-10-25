@@ -204,7 +204,7 @@ async def test_tick_updates_changed_cells_only():
 
 
 def _age_scores(data: dict, seconds: float) -> None:
-    data["_scores"] = deque((t - seconds, v) for t, v in data["_scores"])
+    data["_hist"] = deque(((t - seconds, *v) for t, *v in data["_hist"]), maxlen=60)
 
 
 async def test_health_trend_arrow_vs_a_minute_ago():
