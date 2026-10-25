@@ -15,8 +15,6 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from textual.widgets import ListView
-
 from agentwatch.detectors import create_registry
 from agentwatch.health.rot import RotScorer
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
@@ -39,7 +37,7 @@ async def test_idle_agent_skips_recompute_until_buffer_changes():
     /rot pass — but must still recompute the moment new actions arrive."""
     app = MultiAgentWatchApp(watch_paths=[], security_mode=False)
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         selected_path = Path("selected.jsonl")
         idle_path = Path("idle.jsonl")
 
@@ -60,13 +58,6 @@ async def test_idle_agent_skips_recompute_until_buffer_changes():
 
         selected_item = AgentItem(selected_path, pid=100, team_id=100)
         idle_item = AgentItem(idle_path, pid=200, team_id=100)
-
-        agent_list = app.query_one("#agent-list", ListView)
-        agent_list.append(selected_item)
-        agent_list.append(idle_item)
-        # Let Textual mount the newly appended list items (and their child
-        # Label widgets from compose()) before update_status() queries them.
-        await pilot.pause()
 
         app.agents[selected_path] = {
             "buffer": selected_buffer,
@@ -95,7 +86,7 @@ async def test_idle_agent_skips_recompute_until_buffer_changes():
         # First tick: idle agent has never been scored -> must recompute once.
         app.refresh_ui()
         assert call_count["n"] == 1
-        assert idle_item.health_score == idle_item.health_score  # widget updated, no crash
+        assert app.query_one("#sessions").row_count == 2
 
         # Second and third ticks: idle agent's buffer hasn't changed -> the
         # cached report is reused, no additional detector run.
@@ -114,9 +105,8 @@ async def test_team_header_updates_from_grouped_reports():
     precomputed pid -> team_id map (replacing the old O(T*N) linear scan)."""
     app = MultiAgentWatchApp(watch_paths=[], security_mode=False)
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         from agentwatch.discovery import AgentProcess, AgentTeam
-        from agentwatch.ui.multi_app import TeamHeaderItem
 
         root_proc = AgentProcess(
             pid=100, agent_type="claude-code", working_directory=Path("/tmp/proj"),
@@ -127,21 +117,12 @@ async def test_team_header_updates_from_grouped_reports():
             depth=1, parent_agent_pid=100, team_id=100,
         )
         team = AgentTeam(team_id=100, root=root_proc, members=[root_proc, sub_proc])
-        header = TeamHeaderItem(team)
-        app.teams[100] = header
+        app.teams[100] = team
 
         root_path = Path("root.jsonl")
         sub_path = Path("sub.jsonl")
         root_item = AgentItem(root_path, pid=100, team_id=100)
         sub_item = AgentItem(sub_path, pid=200, team_id=100)
-
-        agent_list = app.query_one("#agent-list", ListView)
-        agent_list.append(header)
-        agent_list.append(root_item)
-        agent_list.append(sub_item)
-        # Let Textual mount the newly appended list items before
-        # update_status() queries their child Label widgets.
-        await pilot.pause()
 
         root_buffer = ActionBuffer(max_size=2000)
         sub_buffer = ActionBuffer(max_size=2000)
@@ -175,8 +156,10 @@ async def test_team_header_updates_from_grouped_reports():
 
         app.refresh_ui()
 
-        # Team header should have moved off its default 100% placeholder,
-        # proving calculate_team_health() actually ran against the grouped
-        # member reports produced via self._team_by_pid.
-        assert isinstance(header.health_score, int)
-        assert 0 <= header.health_score <= 100
+        # calculate_team_health() ran against the grouped member reports
+        # produced via self._team_by_pid, and the team header row shows it.
+        score = app._team_scores[100]
+        assert 0 <= score <= 100
+        table = app.query_one("#sessions")
+        assert table.get_row_index("team:100") == 0
+        assert table.get_cell("team:100", "health").plain == f"{score}%"

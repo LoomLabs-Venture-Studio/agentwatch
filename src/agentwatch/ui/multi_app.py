@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
-from textual.widgets import Footer, Header, Label, ListItem, ListView
+from textual.widgets import DataTable, Footer, Header, Static
 
+from agentwatch.agents import adapter_for
 from agentwatch.alerts import tui_warn
 from agentwatch.detectors import create_registry
+from agentwatch.detectors.base import Severity, format_usd
 from agentwatch.discovery import (
     AgentProcess,
     AgentTeam,
@@ -22,7 +27,6 @@ from agentwatch.discovery import (
 from agentwatch.health import (
     calculate_efficiency,
     calculate_health,
-    calculate_security_score,
     calculate_team_health,
 )
 from agentwatch.health.rot import RotScorer
@@ -36,140 +40,111 @@ from agentwatch.net_sampler import (
 )
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
 from agentwatch.themes import ascii_safe, get_theme
-from agentwatch.ui.app import (
-    EfficiencyBar,
-    HealthBar,
-    SecurityStatus,
-    StatsPanel,
-    WarningsList,
-    plain_notify,
-)
+from agentwatch.ui.app import WarningsList, plain_notify
 from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
-from agentwatch.ui.rot_widget import ContextHealthWidget
 
 if TYPE_CHECKING:
     from agentwatch.alerts import Alerter
     from agentwatch.detectors.base import Warning
     from agentwatch.health.score import HealthReport
 
-
-class TeamHeaderItem(ListItem):
-    """A header row in the agent list representing a team of agents."""
-
-    def __init__(self, team: AgentTeam, **kwargs):
-        super().__init__(**kwargs)
-        self.team = team
-        self.team_id = team.team_id
-        self.health_score = 100
-        self.status = get_theme().level_0
-
-    def compose(self) -> ComposeResult:
-        count = self.team.member_count
-        sub = self.team.subagent_count
-        if sub > 0:
-            label_text = f"TEAM {self.team.name} ({count} agents, {sub} sub)"
-        else:
-            label_text = f"TEAM {self.team.name}"
-        yield Label(label_text, id="team-name-label", markup=False)
-        yield Label(f"Team Health: {self.health_score}%", id="team-health-label", markup=False)
-
-    def update_status(self, score: int, status: str):
-        self.health_score = score
-        self.status = status
-        label = self.query_one("#team-health-label", Label)
-        label.update(f"Team Health: {score}%")
-        theme = get_theme()
-        self.styles.color = theme.color_for(status)
-        self.styles.text_style = "bold"
+# (key, header, width or None for auto). Cells are rich Text, never markup.
+COLUMNS = (
+    ("dot", "", 1),
+    ("agent", "AGENT", 14),
+    ("project", "PROJECT", 14),
+    ("health", "HEALTH", 6),
+    ("cost", "COST", 8),
+    ("ctx", "CTX", 4),
+    ("last", "LAST", 4),
+    ("signal", "TOP SIGNAL", None),
+)
+SORTS = ("attention", "cost", "recent")
+IDLE_AFTER_S = 300  # no action for this long: shown as idle (○), sorted last
+FLASH_S = 2.0  # a row whose data changed is shown bold this long
+TREND_POINTS = 5  # HEALTH gets ▲/▼ when it moved this much since last shown
+SIGNAL_WIDTH = 40
+_WIDTHS = {key: width for key, _, width in COLUMNS}
+_SEVERITY_RANK = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
+_SEVERITY_STYLE = {
+    Severity.CRITICAL: "bold red", Severity.HIGH: "red",
+    Severity.MEDIUM: "yellow", Severity.LOW: "dim",
+}
 
 
-class AgentItem(ListItem):
-    """An item in the agent list representing a single session."""
+@dataclass
+class AgentItem:
+    """One watched session's identity (a row of the sessions table)."""
 
-    def __init__(
-        self,
-        log_path: Path,
-        agent_type: str | None = None,
-        project_name: str | None = None,
-        pid: int | None = None,
-        depth: int = 0,
-        parent_agent_pid: int | None = None,
-        team_id: int | None = None,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.log_path = log_path
-        self.agent_type = agent_type
-        self.project_name = project_name
-        self.pid = pid
-        self.depth = depth
-        self.parent_agent_pid = parent_agent_pid
-        self.team_id = team_id
-        self.health_score = 100
-        self.status = get_theme().level_0  # Theme-aware default status
-        self.cpu_percent: float = 0.0
-        self.memory_mb: float = 0.0
-        self.process_status: str = "active"  # "active" or "stopped"
-
-    def compose(self) -> ComposeResult:
-        if self.agent_type and self.project_name:
-            if self.depth > 0:
-                tree_char = "├── " if self.depth == 1 else "│   " * (self.depth - 1) + "├── "
-                prefix = tree_char
-            else:
-                prefix = ""
-            yield Label(
-                f"{prefix}[{self.agent_type}] {self.project_name}",
-                id="agent-name-label",
-                markup=False,
-            )
-            indent = "  " * self.depth
-            pid_text = f"{indent}PID {self.pid}" if self.pid else ""
-            yield Label(pid_text, id="pid-label", markup=False)
-        else:
-            yield Label(
-                f"{ascii_safe('📄', '(file)')} {self.log_path.name}",
-                id="agent-name-label",
-                markup=False,
-            )
-            yield Label("", id="pid-label", markup=False)
-        yield Label(f"Health: {self.health_score}%", id="health-label", markup=False)
-
-    def update_status(self, score: int, status: str):
-        self.health_score = score
-        self.status = status
-        label = self.query_one("#health-label", Label)
-        role = "sub" if self.depth > 0 else "root"
-        health_text = f"Health: {score}% [{role}]"
-        if self.process_status == "stopped":
-            health_text += " (stopped)"
-        if self.cpu_percent > 0 or self.memory_mb > 0:
-            health_text += f"  CPU:{self.cpu_percent:.1f}% MEM:{self.memory_mb:.0f}MB"
-        label.update(health_text)
-
-        # Color based on status (theme-aware)
-        if self.process_status == "stopped":
-            self.styles.color = "grey"
-        elif self.depth > 0:
-            # Sub-agents use cyan tint when healthy, status color when degraded
-            if score >= 80:
-                self.styles.color = "cyan"
-            else:
-                theme = get_theme()
-                self.styles.color = theme.color_for(status)
-        else:
-            theme = get_theme()
-            color = theme.color_for(status)
-            self.styles.color = color
+    log_path: Path
+    agent_type: str | None = None
+    project_name: str | None = None
+    pid: int | None = None
+    depth: int = 0
+    parent_agent_pid: int | None = None
+    team_id: int | None = None
+    uptime: str = ""
+    process_status: str = "active"  # "active" or "stopped"
 
     def update_process_info(self, proc: AgentProcess) -> None:
-        """Update live process metrics."""
-        self.cpu_percent = proc.cpu_percent
-        self.memory_mb = proc.memory_mb
-        if proc.command == "(stopped)":
-            self.process_status = "stopped"
-        else:
-            self.process_status = "active"
+        self.uptime = proc.uptime
+        self.process_status = "stopped" if proc.command == "(stopped)" else "active"
+
+
+def _ago(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    s = max(0, int(seconds))
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if s >= size:
+            return f"{s // size}{unit}"
+    return f"{s}s"
+
+
+def _age(buffer: ActionBuffer) -> float | None:
+    """Seconds since the session's last action (log timestamps are naive UTC)."""
+    last = buffer.stats.last_action_time
+    if last is None:
+        return None
+    now = datetime.now(last.tzinfo or timezone.utc)
+    if last.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    return (now - last).total_seconds()
+
+
+def _context_pct(buffer: ActionBuffer) -> int | None:
+    """Window fill of the latest call; None when the window is unknown."""
+    stats = buffer.stats
+    window = stats.known_context_window
+    if not (stats.last_context_tokens and window):
+        return None
+    return min(100, int(stats.last_context_tokens / window * 100))
+
+
+def _top_warnings(warnings: list["Warning"], n: int) -> list["Warning"]:
+    return sorted(warnings, key=lambda w: _SEVERITY_RANK[w.severity])[:n]
+
+
+def _signal(warnings: list["Warning"]) -> tuple[str, str]:
+    if not warnings:
+        return "ok", "green"
+    w = _top_warnings(warnings, 1)[0]
+    label = w.signal.replace("_", " ")
+    if w.details.get("tool"):
+        label += f": {w.details['tool']}"
+    count = w.details.get("count") or w.details.get("occurrences")
+    if count:
+        label += f" ({count}x)"
+    if len(warnings) > 1:
+        label += f" +{len(warnings) - 1}"
+    return f"{ascii_safe('⚠', '!')} {label}", _SEVERITY_STYLE[w.severity]
+
+
+def _text(column: str, value: str, style: str) -> Text:
+    """A table cell: literal text (never markup), cut to its column."""
+    text = Text(value, style=style, no_wrap=True)
+    text.truncate(_WIDTHS[column] or SIGNAL_WIDTH, overflow="ellipsis")
+    return text
 
 
 class MultiAgentWatchApp(App):
@@ -178,69 +153,27 @@ class MultiAgentWatchApp(App):
     notify = plain_notify
 
     CSS = """
-    Screen {
-        layout: horizontal;
-    }
-
-    #agent-sidebar {
-        width: 1fr;
-        max-width: 40;
-        border: solid $accent;
-        padding: 1;
-    }
-
-    #detail-area {
-        width: 3fr;
-        border-left: tall $primary;
-    }
-
-    #health-bar {
-        height: auto;
-        border-bottom: solid green;
-        padding: 1;
-    }
-
-    #efficiency-bar {
-        height: auto;
-        border-bottom: solid cyan;
-        padding: 1;
-    }
-
-    #context-health {
-        height: auto;
-        border-bottom: solid magenta;
-        padding: 1;
-    }
-
-    #security-status {
-        height: auto;
-        border-bottom: solid yellow;
-        padding: 1;
-    }
-
-    #warnings-list {
+    #sessions {
         height: 1fr;
-        padding: 1;
-        overflow-y: scroll;
-        border-bottom: solid red;
+        border: round $accent;
+        border-title-align: left;
+        border-subtitle-align: right;
     }
 
-    #stats-display {
+    #selected {
         height: auto;
-        padding: 1;
-        border-top: solid blue;
-        background: $surface;
-    }
-
-    .hidden {
-        display: none;
+        max-height: 7;
+        border: round $primary;
+        padding: 0 1;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     """
 
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("s", "toggle_security", "Toggle Security"),
-        ("c", "clear_cache", "Clear Cache"),
+        ("o", "cycle_sort", "Sort"),
     ]
 
     def __init__(
@@ -262,7 +195,8 @@ class MultiAgentWatchApp(App):
         self.llm = llm
         self.llm_model = llm_model
         self.agents: dict[Path, dict] = {}  # path -> {buffer, registry, item, pid, team_id}
-        self.teams: dict[int, TeamHeaderItem] = {}  # team_id -> header item
+        self.teams: dict[int, AgentTeam] = {}  # team_id -> team (shown as a header row)
+        self._team_scores: dict[int, int] = {}
         self._team_by_pid: dict[int, int] = {}  # pid -> team_id, kept in sync with self.agents
         self._refreshing = False
         self._scanning = False
@@ -271,6 +205,12 @@ class MultiAgentWatchApp(App):
         self._alerted_signals: set[str] = set()
         self._process_mode = agent_processes is not None
         self._net_sampler = NetSampler()
+        self.sort_mode = SORTS[0]
+        self._cells: dict[str, dict[str, tuple[str, str]]] = {}  # row key -> shown cells
+        self._dots: dict[str, Text] = {}  # row key -> its dot cell (identifies it to sort)
+        self._data_sig: dict[str, tuple] = {}  # row key -> data shown (for the flash)
+        self._flash_until: dict[str, float] = {}
+        self._order: list[str] = []
 
         if agent_processes is not None:
             self._initial_processes = agent_processes
@@ -281,22 +221,16 @@ class MultiAgentWatchApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-
-        with Vertical(id="agent-sidebar"):
-            yield Label("Active Agents", variant="title", markup=False)
-            yield ListView(id="agent-list")
-
-        with Vertical(id="detail-area"):
-            yield HealthBar(id="health-bar")
-            yield EfficiencyBar(id="efficiency-bar")
-            yield ContextHealthWidget(id="context-health")
-            yield SecurityStatus(
-                id="security-status",
-                classes="" if self.security_mode else "hidden",
-            )
-            yield WarningsList(id="warnings-list")
-            yield StatsPanel(id="stats-display")
-
+        self._table = table = DataTable(id="sessions", cursor_type="row")
+        table.border_title = "Sessions"
+        table.border_subtitle = f"sort: {self.sort_mode}"
+        for key, label, width in COLUMNS:
+            table.add_column(label, key=key, width=width)
+        yield table
+        self._selected = Static(
+            "Waiting for sessions" + ascii_safe("…", "..."), id="selected", markup=False
+        )
+        yield self._selected
         yield Footer()
 
     def _new_agent_state(
@@ -304,7 +238,7 @@ class MultiAgentWatchApp(App):
         *,
         buffer: ActionBuffer,
         registry,
-        item: "AgentItem",
+        item: AgentItem,
         pid: int | None,
         team_id: int | None,
         log_path: Path,
@@ -334,6 +268,40 @@ class MultiAgentWatchApp(App):
             "llm_assessor": LiveLlmAssessor(self.llm_model) if self.llm else None,
         }
 
+    def _add_agent(self, log_path: Path, proc: AgentProcess | None) -> None:
+        """Start tracking *log_path* (its table row appears on the next tick)."""
+        if proc:
+            item = AgentItem(
+                log_path,
+                agent_type=proc.agent_type,
+                project_name=proc.project_name,
+                pid=proc.pid,
+                depth=proc.depth,
+                parent_agent_pid=proc.parent_agent_pid,
+                team_id=proc.team_id,
+                uptime=proc.uptime,
+            )
+        else:
+            item = AgentItem(log_path)
+        state = self._new_agent_state(
+            buffer=ActionBuffer(max_size=2000),
+            registry=create_registry(mode="all" if self.security_mode else "health"),
+            item=item,
+            pid=item.pid,
+            team_id=item.team_id,
+            log_path=log_path,
+            agent_type=item.agent_type,
+        )
+        if not proc:  # --all-logs: name the agent for the table only (alerts keep None)
+            adapter = adapter_for(log_path)
+            state["agent_name"] = adapter.name if adapter else None
+        self.agents[log_path] = state
+        self._track_net(state, proc)
+        if item.pid is not None and item.team_id is not None:
+            self._team_by_pid[item.pid] = item.team_id
+        if self.selected_path is None:
+            self.selected_path = log_path
+
     def _track_net(self, state: dict, proc: AgentProcess | None) -> None:
         """Sample *proc*'s sockets if it is a real per-agent process."""
         if proc and attributable(proc):
@@ -360,15 +328,10 @@ class MultiAgentWatchApp(App):
         if self.alerter is not None and not self.is_headless:
             self.alerter.warn = tui_warn(self)
 
-        # Pre-populate team headers if we have initial processes
-        if self._initial_processes:
-            teams = build_teams(self._initial_processes)
-            agent_list = self.query_one("#agent-list", ListView)
-            for team in teams:
-                if team.member_count > 1:
-                    header = TeamHeaderItem(team)
-                    self.teams[team.team_id] = header
-                    agent_list.append(header)
+        # Team header rows for the initial processes
+        for team in build_teams(self._initial_processes):
+            if team.member_count > 1:
+                self.teams[team.team_id] = team
 
         # Start the multi-watcher
         self.run_worker(self._watch_loop())
@@ -385,53 +348,8 @@ class MultiAgentWatchApp(App):
         """Background loop to process events from the multi-watcher."""
         async for event_type, data in self.watcher.watch():
             if event_type == "agent_added":
-                log_path = data
-                if log_path not in self.agents:
-                    # Initialize new agent state
-                    buffer = ActionBuffer(max_size=2000)
-                    mode = "all" if self.security_mode else "health"
-                    registry = create_registry(mode=mode)
-
-                    # Get process metadata if available
-                    proc = self.watcher.get_process_meta(log_path)
-                    if proc:
-                        item = AgentItem(
-                            log_path,
-                            agent_type=proc.agent_type,
-                            project_name=proc.project_name,
-                            pid=proc.pid,
-                            depth=proc.depth,
-                            parent_agent_pid=proc.parent_agent_pid,
-                            team_id=proc.team_id,
-                        )
-                        item.cpu_percent = proc.cpu_percent
-                        item.memory_mb = proc.memory_mb
-                    else:
-                        item = AgentItem(log_path)
-
-                    agent_pid = proc.pid if proc else None
-                    agent_team_id = proc.team_id if proc else None
-                    self.agents[log_path] = self._new_agent_state(
-                        buffer=buffer,
-                        registry=registry,
-                        item=item,
-                        pid=agent_pid,
-                        team_id=agent_team_id,
-                        log_path=log_path,
-                        agent_type=proc.agent_type if proc else None,
-                    )
-                    self._track_net(self.agents[log_path], proc)
-                    if agent_pid is not None and agent_team_id is not None:
-                        self._team_by_pid[agent_pid] = agent_team_id
-
-                    # Add to sidebar
-                    agent_list = self.query_one("#agent-list", ListView)
-                    agent_list.append(item)
-
-                    # Auto-select if first
-                    if self.selected_path is None:
-                        self.selected_path = log_path
-                        agent_list.index = 0
+                if data not in self.agents:
+                    self._add_agent(data, self.watcher.get_process_meta(data))
 
             elif event_type == "action":
                 action, path = data
@@ -445,23 +363,20 @@ class MultiAgentWatchApp(App):
                     # The 1s interval timer handles refreshes — don't pile up
                     # extra calls that cause sporadic update behaviour.
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        """Handle selection of an agent in the sidebar (Enter/click)."""
-        item = event.item
-        if isinstance(item, AgentItem):
-            self.selected_path = item.log_path
-            self.refresh_ui()
-
-    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        """Handle highlight change in the sidebar (arrow keys)."""
-        item = event.item
-        if isinstance(item, AgentItem):
-            self.selected_path = item.log_path
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Cursor moved (arrows/click): select that session. A highlight
+        already superseded by a later cursor move (rows added, then the
+        cursor put back on the selected session) is ignored."""
+        if event.cursor_row != self._table.cursor_row:
+            return
+        path = Path(event.row_key.value)
+        if path in self.agents and path != self.selected_path:
+            self.selected_path = path
             self.refresh_ui()
 
     def refresh_ui(self) -> None:
-        """Update the main detail area based on selected agent."""
-        if self.selected_path is None or self.selected_path not in self.agents:
+        """Rescore what changed, then update the table and the Selected strip."""
+        if not self.agents and not self.teams:
             return
         if self._refreshing:
             return
@@ -471,144 +386,253 @@ class MultiAgentWatchApp(App):
         finally:
             self._refreshing = False
 
-    def _do_refresh_ui(self) -> None:
-        """Inner refresh logic, guarded by _refreshing flag."""
-
-        agent_data = self.agents[self.selected_path]
-        buffer = agent_data["buffer"]
-        registry = agent_data["registry"]
-
-        # Run detectors
-        warnings = registry.check_all(buffer)
-
-        self._export_and_assess(agent_data, warnings)
-
-        # Compute efficiency and rot first so they feed into overall health
+    def _score(self, data: dict, selected: bool) -> "HealthReport":
+        """One agent's report. Unselected agents with no new actions reuse
+        the cached one (action_count only grows, so an unchanged count means
+        nothing new to score; skipping rot_scorer.update() also avoids EMA
+        drift from re-scoring identical data). The selected agent is always
+        rescored."""
+        buffer = data["buffer"]
+        count = buffer.stats.action_count
+        if not selected and count == data["_last_count"] and data["_last_report"] is not None:
+            return data["_last_report"]
+        warnings = data["registry"].check_all(buffer)
+        self._export_and_assess(data, warnings)
         eff = calculate_efficiency(warnings, buffer)
-
-        rot_report = None
-        rot_value: float | None = None
-        rot_scorer = agent_data.get("rot_scorer")
-        if rot_scorer:
-            rot_report = rot_scorer.update(buffer)
-            rot_value = rot_report.smoothed_score
-
+        rot_scorer = data.get("rot_scorer")
+        rot_value = rot_scorer.update(buffer).smoothed_score if rot_scorer else None
         report = calculate_health(
             warnings,
             include_security=self.security_mode,
             efficiency_score=eff.score,
             rot_score=rot_value,
         )
-        self._alert(agent_data, warnings, report)
-
-        # Update sidebar item status
-        agent_data["item"].update_status(report.overall_score, report.status)
-
-        # Update main widgets
-        self.query_one("#health-bar", HealthBar).score = report.overall_score
-        self.query_one("#health-bar", HealthBar).status = report.status
-
-        # Update efficiency
-        self.query_one("#efficiency-bar", EfficiencyBar).update_efficiency(eff)
-
-        # Update context health
-        if rot_report is not None:
-            self.query_one("#context-health", ContextHealthWidget).update_report(
-                rot_report, peak_context_tokens=buffer.stats.peak_context_tokens
-            )
-
         if self.security_mode:
-            security_status = self.query_one("#security-status", SecurityStatus)
-            security_status.score = calculate_security_score(warnings)
-            security_status.alert_count = len(report.security_warnings)
-            agent_label = self._agent_label(agent_data)
-            self._fire_secret_alerts(warnings, agent_label)
+            self._fire_secret_alerts(warnings, self._agent_label(data))
+        self._alert(data, warnings, report)
+        data["_last_count"] = count
+        data["_last_report"] = report
+        data["_last_eff"] = eff.score
+        return report
 
-        # Goal-alignment is per-agent (agent_data["llm_assessor"]), but only
-        # the currently-selected agent's cached advisory is ever shown --
-        # mirrors how `warnings` here is already only the selected agent's.
-        warnings_list = self.query_one("#warnings-list", WarningsList)
-        selected_llm_assessor: LiveLlmAssessor | None = agent_data.get("llm_assessor")
-        warnings_list.update_goal_alignment(
-            selected_llm_assessor.stamp_goal_alignment() if selected_llm_assessor else None
-        )
-        warnings_list.update_warnings(warnings)
+    def _do_refresh_ui(self) -> None:
+        """Inner refresh logic, guarded by _refreshing flag."""
+        reports = {
+            path: self._score(data, path == self.selected_path)
+            for path, data in self.agents.items()
+        }
+        self._update_teams(reports)
+        self._sync_table(reports)
+        if self.selected_path in self.agents:
+            self._update_selected(self.agents[self.selected_path], reports[self.selected_path])
 
-        stats = self.query_one("#stats-display", StatsPanel)
-        stats.update_stats(
-            buffer.stats.activity_count,
-            buffer.stats.error_count,
-            buffer.stats.duration_minutes,
-            endpoint_summary(buffer.actions) if agent_data.get("net_sampled")
-            else NOT_ATTRIBUTABLE,
-        )
-
-        # Update sidebar status for all OTHER agents (selected one already done above)
-        # Collect per-agent reports for team scoring
-        all_reports: dict[int, "HealthReport"] = {}
-        if agent_data.get("pid") is not None:
-            all_reports[agent_data["pid"]] = report
-
-        for path, data in self.agents.items():
-            if path == self.selected_path:
-                continue
-
-            # Change detection: action_count is a monotonically increasing
-            # free checkpoint (ActionBuffer.add() always increments it, even
-            # once the deque starts evicting old entries). If it hasn't moved
-            # since the last tick, no new actions arrived for this agent, so
-            # re-running the full detector/efficiency/rot pipeline would just
-            # reproduce the same report — skip it and reuse the cached one.
-            # (Gating rot_scorer.update() here is intentional: no new actions
-            # means no new turn to smooth, so skipping avoids EMA drift from
-            # re-scoring identical data.)
-            current_count = data["buffer"].stats.action_count
-            if current_count == data["_last_count"] and data["_last_report"] is not None:
-                other_report = data["_last_report"]
-            else:
-                other_warnings = data["registry"].check_all(data["buffer"])
-                self._export_and_assess(data, other_warnings)
-                other_eff = calculate_efficiency(other_warnings, data["buffer"])
-                other_rot_value: float | None = None
-                other_rot_scorer = data.get("rot_scorer")
-                if other_rot_scorer:
-                    other_rot_report = other_rot_scorer.update(data["buffer"])
-                    other_rot_value = other_rot_report.smoothed_score
-                other_report = calculate_health(
-                    other_warnings,
-                    include_security=self.security_mode,
-                    efficiency_score=other_eff.score,
-                    rot_score=other_rot_value,
-                )
-                if self.security_mode:
-                    self._fire_secret_alerts(other_warnings, self._agent_label(data))
-                self._alert(data, other_warnings, other_report)
-                data["_last_count"] = current_count
-                data["_last_report"] = other_report
-
-            data["item"].update_status(other_report.overall_score, other_report.status)
-            if data.get("pid") is not None:
-                all_reports[data["pid"]] = other_report
-
-        # Update team health headers. Group reports by team in a single O(N)
-        # pass via the precomputed pid -> team_id map (self._team_by_pid),
-        # replacing the old per-team O(N) linear scan over self.agents.values()
-        # (which was O(T*N) overall across all teams).
+    def _update_teams(self, reports: dict[Path, "HealthReport"]) -> None:
+        """Team health from member reports, grouped in one O(N) pass via the
+        precomputed pid -> team_id map (self._team_by_pid)."""
         reports_by_team: dict[int, dict[int, "HealthReport"]] = {}
-        for pid, r in all_reports.items():
-            team_id = self._team_by_pid.get(pid)
-            if team_id is not None:
-                reports_by_team.setdefault(team_id, {})[pid] = r
+        for path, report in reports.items():
+            pid = self.agents[path].get("pid")
+            team_id = self._team_by_pid.get(pid) if pid is not None else None
+            if team_id in self.teams:
+                reports_by_team.setdefault(team_id, {})[pid] = report
+        for team_id, members in reports_by_team.items():
+            team = self.teams[team_id]
+            team_report = calculate_team_health(members, root_pid=team_id, team_name=team.name)
+            self._team_scores[team_id] = team_report.overall_score
 
-        for team_id, header in self.teams.items():
-            team_member_reports = reports_by_team.get(team_id, {})
-            if team_member_reports:
-                team_report = calculate_team_health(
-                    team_member_reports,
-                    root_pid=team_id,
-                    team_name=header.team.name,
-                )
-                header.update_status(team_report.overall_score, team_report.status)
+    # -- sessions table ---------------------------------------------------
+
+    def _row_cells(
+        self, data: dict, report: "HealthReport", age: float | None
+    ) -> dict[str, tuple[str, str]]:
+        """{column: (text, style)}; text is cut to the column when shown."""
+        item: AgentItem = data["item"]
+        buffer: ActionBuffer = data["buffer"]
+        theme = get_theme()
+        color = theme.color_for(report.status)
+        active = item.process_status != "stopped" and age is not None and age < IDLE_AFTER_S
+
+        score = report.overall_score
+        shown = data.get("_shown_score")
+        if shown is not None and score != shown:
+            data["_trend"] = (
+                ascii_safe("▲", "^") if score - shown >= TREND_POINTS
+                else ascii_safe("▼", "v") if shown - score >= TREND_POINTS
+                else ""
+            )
+        data["_shown_score"] = score
+
+        agent = item.agent_type or data.get("agent_name") or "?"
+        if item.depth > 0:
+            agent = "  " * (item.depth - 1) + f"{ascii_safe('└', '`-')} sub {agent}"
+        cost = buffer.stats.estimated_cost
+        ctx = _context_pct(buffer)
+        return {
+            "dot": (ascii_safe("●", "*") if active else ascii_safe("○", "o"), color),
+            "agent": (agent, ""),
+            "project": (item.project_name or item.log_path.name, ""),
+            "health": (f"{score}% {data.get('_trend', '')}".rstrip(), color),
+            "cost": ("n/a" if cost is None else format_usd(cost).lstrip("~"), ""),
+            "ctx": ("-" if ctx is None else f"{ctx}%", ""),
+            "last": (_ago(age), ""),
+            "signal": _signal(report.warnings),
+        }
+
+    def _team_cells(self, team: AgentTeam) -> dict[str, tuple[str, str]]:
+        score = self._team_scores.get(team.team_id)
+        color = get_theme().color_for(get_theme().status_from_score(score or 100))
+        members = f"{team.member_count} agents"
+        if team.subagent_count:
+            members += f", {team.subagent_count} sub"
+        cells = dict.fromkeys(_WIDTHS, ("", ""))
+        cells["agent"] = (f"TEAM {team.name}", "bold " + color)
+        cells["project"] = (members, "")
+        cells["health"] = ("" if score is None else f"{score}%", "bold " + color)
+        return cells
+
+    def _sort_key(self, data: dict, report: "HealthReport", age: float | None) -> tuple:
+        """Lower sorts first."""
+        recency = age if age is not None else float("inf")
+        if self.sort_mode == "cost":
+            cost = data["buffer"].stats.estimated_cost
+            return (cost is None, -(cost or 0.0), recency)
+        if self.sort_mode == "recent":
+            return (recency,)
+        idle = data["item"].process_status == "stopped" or recency >= IDLE_AFTER_S
+        severities = {w.severity for w in report.warnings}
+        if idle:
+            bucket = 4
+        elif Severity.CRITICAL in severities or report.overall_score < 40:
+            bucket = 0
+        elif Severity.HIGH in severities:
+            bucket = 1
+        elif severities:
+            bucket = 2
+        else:
+            bucket = 3
+        return (bucket, recency)
+
+    def _ordered_keys(self, keys: dict[Path, tuple]) -> list[str]:
+        """Row keys in display order: groups (a team, or one session) by
+        their most urgent member; in a group the team header, then members
+        by depth so subagents sit under their parent."""
+        groups: dict[object, list[Path]] = {}
+        for path in keys:
+            team_id = self.agents[path]["item"].team_id
+            groups.setdefault(team_id if team_id is not None else path, []).append(path)
+        for team_id in self.teams:
+            groups.setdefault(team_id, [])
+
+        def group_key(item):
+            _, members = item
+            return min((keys[p] for p in members), default=(9,))
+
+        order: list[str] = []
+        for gid, members in sorted(groups.items(), key=group_key):
+            if gid in self.teams:
+                order.append(f"team:{gid}")
+            members.sort(key=lambda p: (self.agents[p]["item"].depth, str(p)))
+            order.extend(str(p) for p in members)
+        return order
+
+    def _sync_table(self, reports: dict[Path, "HealthReport"]) -> None:
+        """Update only the cells that changed; add rows for new sessions;
+        reorder only when the order changed, keeping the cursor on the same
+        session. Never clears the table."""
+        table = self._table
+        now = time.monotonic()
+        rows: dict[str, dict[str, tuple[str, str]]] = {}
+        sort_keys: dict[Path, tuple] = {}
+        for path, data in self.agents.items():
+            age = _age(data["buffer"])
+            rows[str(path)] = self._row_cells(data, reports[path], age)
+            sort_keys[path] = self._sort_key(data, reports[path], age)
+        for team_id, team in self.teams.items():
+            rows[f"team:{team_id}"] = self._team_cells(team)
+
+        for key, cells in rows.items():
+            data_sig = tuple(v for col, v in cells.items() if col != "last")
+            old_sig = self._data_sig.get(key)
+            self._data_sig[key] = data_sig
+            if old_sig is not None and old_sig != data_sig:
+                self._flash_until[key] = now + FLASH_S
+            if self._flash_until.get(key, 0) > now:
+                cells = {col: (v, f"bold {style}") for col, (v, style) in cells.items()}
+            shown = self._cells.get(key)
+            if shown is None:
+                texts = [_text(col, *v) for col, v in cells.items()]
+                table.add_row(*texts, key=key)
+                self._dots[key] = texts[0]
+            else:
+                for col, v in cells.items():
+                    if v != shown[col]:
+                        text = _text(col, *v)
+                        table.update_cell(key, col, text, update_width=col == "signal")
+                        if col == "dot":
+                            self._dots[key] = text
+            self._cells[key] = cells
+
+        order = self._ordered_keys(sort_keys)
+        if order != self._order:
+            self._order = order
+            rank = {id(self._dots[key]): i for i, key in enumerate(order)}
+            table.sort("dot", key=lambda dot: rank[id(dot)])
+            if self.selected_path is not None:
+                selected = str(self.selected_path)
+                if selected in self._cells:
+                    table.move_cursor(row=table.get_row_index(selected), animate=False)
+
+    def _drop_row(self, path: Path) -> None:
+        key = str(path)
+        if key in self._cells:
+            self._table.remove_row(key)
+        for cache in (self._cells, self._data_sig, self._flash_until, self._dots):
+            cache.pop(key, None)
+        self._order = []
+
+    # -- Selected strip ---------------------------------------------------
+
+    def _update_selected(self, data: dict, report: "HealthReport") -> None:
+        item: AgentItem = data["item"]
+        buffer: ActionBuffer = data["buffer"]
+        stats = buffer.stats
+        dot = ascii_safe(" · ", " | ")
+        title = [
+            item.project_name or item.log_path.name,
+            item.agent_type or data.get("agent_name") or "?",
+        ]
+        if item.pid:
+            title.append(f"pid {item.pid}")
+        if item.uptime:
+            title.append(item.uptime)
+        ctx = _context_pct(buffer)
+        cost = stats.estimated_cost
+        cost_text = "n/a" if cost is None else format_usd(cost)
+        if cost and stats.duration_minutes >= 1:
+            cost_text += f" ({format_usd(cost / stats.duration_minutes)}/min)"
+        security = str(len(report.security_warnings)) if self.security_mode else "off"
+        net = endpoint_summary(buffer.actions) if data.get("net_sampled") else NOT_ATTRIBUTABLE
+        lines = [
+            "Selected: " + dot.join(title),
+            f"Health {report.overall_score}%  Efficiency {data.get('_last_eff', 100)}%  "
+            f"Context {'n/a' if ctx is None else f'{ctx}%'}  Cost {cost_text}  "
+            f"Security {security}  {net}",
+        ]
+        assessor: LiveLlmAssessor | None = data.get("llm_assessor")
+        goal = assessor.stamp_goal_alignment() if assessor else None
+        if goal is not None:
+            label = {True: "[ALIGNED]", False: "[POSSIBLE DRIFT]"}.get(
+                goal.get("aligned"), "[UNCLEAR]"
+            )
+            summary = goal.get("drift_summary") or "(model response could not be parsed)"
+            lines.append(f"Tier-2 goal (advisory): {label} {summary}")
+        arrow = ascii_safe("→", "->")
+        for w in _top_warnings(report.warnings, 3 - (goal is not None)):
+            detail = WarningsList._format_details(w)
+            lines.append(f"{w.emoji} {w.message}" + (f" {arrow} {detail}" if detail else ""))
+        if not report.warnings:
+            lines.append("No active warnings")
+        self._selected.update("\n".join(lines))
 
     def _alert(self, agent_data: dict, warnings: list["Warning"], report: "HealthReport") -> None:
         """Feed one agent's scoring pass to `--notify`/`--webhook`/`--headless`."""
@@ -708,7 +732,7 @@ class MultiAgentWatchApp(App):
 
     @staticmethod
     def _agent_label(agent_data: dict) -> str:
-        """Derive a short label for an agent from its sidebar item."""
+        """Derive a short label for an agent from its table item."""
         item = agent_data.get("item")
         if item and getattr(item, "project_name", None):
             pid = getattr(item, "pid", None)
@@ -757,37 +781,9 @@ class MultiAgentWatchApp(App):
 
         new_agents = self.watcher.refresh_processes(processes)
 
-        # Add new agents to sidebar
-        agent_list = self.query_one("#agent-list", ListView)
         for proc in new_agents:
             if proc.log_file and proc.log_file not in self.agents:
-                buffer = ActionBuffer(max_size=2000)
-                mode = "all" if self.security_mode else "health"
-                registry = create_registry(mode=mode)
-                item = AgentItem(
-                    proc.log_file,
-                    agent_type=proc.agent_type,
-                    project_name=proc.project_name,
-                    pid=proc.pid,
-                    depth=proc.depth,
-                    parent_agent_pid=proc.parent_agent_pid,
-                    team_id=proc.team_id,
-                )
-                item.cpu_percent = proc.cpu_percent
-                item.memory_mb = proc.memory_mb
-                self.agents[proc.log_file] = self._new_agent_state(
-                    buffer=buffer,
-                    registry=registry,
-                    item=item,
-                    pid=proc.pid,
-                    team_id=proc.team_id,
-                    log_path=proc.log_file,
-                    agent_type=proc.agent_type,
-                )
-                self._track_net(self.agents[proc.log_file], proc)
-                if proc.pid is not None and proc.team_id is not None:
-                    self._team_by_pid[proc.pid] = proc.team_id
-                agent_list.append(item)
+                self._add_agent(proc.log_file, proc)
 
         # Update process info on existing items
         for log_path, agent_data in self.agents.items():
@@ -802,7 +798,7 @@ class MultiAgentWatchApp(App):
         for log_path in expired:
             agent_data = self.agents.pop(log_path, None)
             if agent_data:
-                agent_data["item"].remove()
+                self._drop_row(log_path)
                 reaped_pid = agent_data.get("pid")
                 if reaped_pid is not None:
                     self._team_by_pid.pop(reaped_pid, None)
@@ -814,29 +810,19 @@ class MultiAgentWatchApp(App):
     def action_toggle_security(self) -> None:
         """Toggle security mode across all agents."""
         self.security_mode = not self.security_mode
-
-        security_panel = self.query_one("#security-status")
+        self.title = "AgentWatch - Multi-Agent Dashboard"
         if self.security_mode:
-            security_panel.remove_class("hidden")
-            self.title = "AgentWatch - Multi-Agent Dashboard [SECURITY]"
-        else:
-            security_panel.add_class("hidden")
-            self.title = "AgentWatch - Multi-Agent Dashboard"
+            self.title += " [SECURITY]"
 
         # Recreate registries for all agents
-        for path, data in self.agents.items():
+        for data in self.agents.values():
             mode = "all" if self.security_mode else "health"
             data["registry"] = create_registry(mode=mode)
 
         self.refresh_ui()
 
-    def action_clear_cache(self) -> None:
-        """Clear Python bytecode caches."""
-        import shutil
-        package_dir = Path(__file__).resolve().parent.parent
-        count = 0
-        for cache_dir in package_dir.rglob("__pycache__"):
-            shutil.rmtree(cache_dir)
-            count += 1
-        self.notify(f"Cleared {count} __pycache__ dir(s)")
+    def action_cycle_sort(self) -> None:
+        """`o`: attention -> cost -> recent."""
+        self.sort_mode = SORTS[(SORTS.index(self.sort_mode) + 1) % len(SORTS)]
+        self._table.border_subtitle = f"sort: {self.sort_mode}"
         self.refresh_ui()

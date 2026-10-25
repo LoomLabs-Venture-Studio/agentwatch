@@ -4753,6 +4753,55 @@ Board-approved spec. Claude Code plugin only.
 - [x] End-to-end test on the real Claude Code 2.1.30x fixture.
 - [x] No interaction with `--budget`.
 
+## Watch UI overhaul (Sprint 36)
+Board decisions (2026-10-24):
+- Replace the old `watch-all` screen. `watch` gets the same redesign.
+- Crash fixes ship first.
+- `--all-logs` defaults to the last 24h.
+- Network, detect and the weekly report are in scope now.
+- 9 PRs as a stack, each on the previous one:
+  1. Crash fixes.
+  2. Sessions table.
+  3. Header + event feed.
+  4. Detail view (+ fix stale-after-`s` and selected-only rescoring).
+  5. Loop-breaker + budget columns.
+  6. Many sessions: idle fold, filter, project names, 24h default, team
+     grouping fix.
+  7. Narrow layout + `?` help.
+  8. Net/detect/weekly report.
+  9. `watch` uses the same app.
+
+### PR 1: crash fixes (fix/watch-markup-crashes) -- DONE (superseded by #166 on develop)
+- [x] Claude Code `system/api_error` logs `error` as a dict: the parser
+  (`parser.logs.error_text`) keeps its `message`, else compact JSON. Also
+  used by the flat Claude Code, Moltbot, Antigravity and Copilot CLI
+  parsers. `detectors.base.normalize_error` stringifies any non-str.
+- [x] Log text is plain text in every widget: `markup=False` on the
+  `Static`/`Label` widgets in `ui/app.py`, `ui/multi_app.py` and
+  `ui/rot_widget.py` (none use intentional markup), and both apps' `notify`
+  defaults to `markup=False` (toasts carry agent labels and LLM/SIEM
+  errors). `[/]` no longer crashes, log `[link=...]`/`[@click=...]` are
+  inert, and our `[claude-code]`, `[root]`/`[sub]`, `[loop ...]`,
+  `[Tier-2]`, `[ALIGNED]`/`[POSSIBLE DRIFT]`/`[UNCLEAR]` and `[TIP]` labels
+  show.
+- [x] Tests: `tests/test_ui_markup.py` (synthetic api_error fixture; pilot
+  runs of `watch` and `watch-all`).
+
+### PR 2: sessions table (feature/watch-ui-2-table) -- DONE
+- [x] `watch-all` main screen is a full-width `DataTable` (one row per
+  session, row key = log path) plus a Selected strip; the old panels are not
+  mounted (classes kept for PR 4's detail view). Enter stays unbound.
+- [x] Attention sort (Critical, HIGH, other warnings, active by recency,
+  idle 5+ min/stopped last); `o` cycles attention/cost/recent; the cursor is
+  put back on the selected session after a reorder. Subagents under their
+  parent; team header row kept.
+- [x] Per tick: only changed cells get `update_cell`; rows are added/removed
+  only when sessions appear/disappear; a changed row is bold for ~2s.
+  Unselected sessions keep the cached report (selected-only rescoring is
+  PR 4). `c` (clear cache) removed.
+- [x] Cells are `rich.text.Text` (log text never parsed as markup).
+- [x] Tests: `tests/test_multi_app_table.py`.
+
 ---
 
 ### Sprint 37 -- 0.2.0 release hardening (2026-10-24)

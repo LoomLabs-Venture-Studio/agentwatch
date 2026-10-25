@@ -313,10 +313,23 @@ agentwatch watch --security
 agentwatch watch-all
 ```
 
+`watch-all` shows one row per session: status (`●` active, `○` idle 5+
+minutes or stopped, colored by health), agent, project, health (`▲`/`▼` when
+it moved 5+ points), estimated cost (`n/a` when the model has no known
+price), context window fill, time since the last action, and the top
+warning (`ok` when none). Rows sort by attention: Critical first, then HIGH
+warnings, other warnings, active sessions by recency, idle and stopped last.
+Subagents are listed under their parent (`└ sub`). Below the table, the
+selected session's health, efficiency, context, cost per minute, security
+findings, network endpoints and top 3 warnings.
+
+Keys: arrows select a session, `o` cycles the sort (attention, cost,
+recent), `s` toggles security detectors, `q` quits.
+
 While `watch` / `watch-all` run, AgentWatch polls each agent process's
 sockets (and its child processes') about once a second, unprivileged, and
 records which remote endpoints (IP, port) were open during each action. The
-stats line shows `Net: N endpoints`. With `--security`, the
+stats line (in `watch-all`, the selected session's strip) shows `Net: N endpoints`. With `--security`, the
 `undeclared_egress` detector warns when the agent connects to an address
 that no action declared (a WebFetch host) and that is not a known LLM
 provider (the `detect` list) or agent vendor host (Claude Code telemetry
