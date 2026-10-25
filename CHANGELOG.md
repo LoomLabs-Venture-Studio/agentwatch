@@ -85,7 +85,14 @@ numbers refer to the GitHub repository.
   under their parent. A strip under the table shows the selected session's
   numbers and top 3 warnings; the full panels return in a detail view. Each
   tick updates only the cells that changed. The `c` (clear Python cache) key
-  is gone.
+  is gone. HEALTH's ▲/▼ compares with the score a minute ago; AGENT shows
+  display names (Claude Code, OpenCode, Kilo Code; alert text too); stopped
+  sessions are grey.
+- `watch-all`'s title bar is a one-line header: sessions, active, need you
+  (Critical or a HIGH+ warning), on-screen cost, alerts this run and the
+  time. An Events panel lists sessions started/stopped, new and cleared
+  warnings, alerts sent and `--budget` 80%/100% crossings, newest first;
+  `e` focuses it to scroll, Esc returns to the table.
 - `stats` and `audit` name a Claude Code project after the `cwd` its
   transcripts record, so `agentwatch-main` is no longer shown as `main`
   (the old name decoded the project dir, which can't tell `-` from `/`).

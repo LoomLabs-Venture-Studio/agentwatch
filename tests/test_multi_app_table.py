@@ -5,13 +5,16 @@ tick updates only changed cells (the table is never cleared)."""
 from __future__ import annotations
 
 import json
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Category, Severity, Warning
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
-from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp, _ago
+from agentwatch.themes import get_theme
+from agentwatch.ui.multi_app import STOPPED_STYLE, AgentItem, MultiAgentWatchApp, _ago
 
 HEADERS = ("AGENT", "PROJECT", "HEALTH", "COST", "CTX", "LAST", "TOP SIGNAL")
 
@@ -190,16 +193,80 @@ async def test_tick_updates_changed_cells_only():
         assert "bold" not in str(table.get_cell("b.jsonl", "signal").style)
 
 
-async def test_health_trend_arrow():
+def _age_scores(data: dict, seconds: float) -> None:
+    data["_scores"] = deque((t - seconds, v) for t, v in data["_scores"])
+
+
+async def test_health_trend_arrow_vs_a_minute_ago():
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)):
+        _seed(app, "sel", ago=1)  # selected; "a" is not, so it is only rescored on new actions
+        a = _seed(app, "a", ago=1)
+        data = app.agents[a]
+        app.refresh_ui()
+        table = app.query_one("#sessions")
+        health = lambda: table.get_cell("a.jsonl", "health").plain  # noqa: E731
+
+        def change(severity, i):
+            data["registry"].check_all = lambda buffer: [_warning(severity)]
+            data["buffer"].add(_action(0, i))
+            app.refresh_ui()
+
+        # a drop while the session settles (history loading) is the reference
+        change(Severity.MEDIUM, 1)
+        _age_scores(data, 10)
+        change(Severity.CRITICAL, 2)
+        assert health().endswith("%")  # nothing until a minute of history
+        _age_scores(data, 51)
+        app.refresh_ui()
+        assert health().endswith("▼")  # vs the score 60s ago
+        _age_scores(data, 5)
+        app.refresh_ui()
+        assert health().endswith("▼")  # stays while it holds
+        _age_scores(data, 5)
+        app.refresh_ui()  # no rescore: the arrow clears from the kept scores
+        assert health().endswith("%")
+        change(Severity.MEDIUM, 3)
+        assert health().endswith("▲")
+
+
+async def test_stopped_rows_are_grey_and_idle_rows_are_not():
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)):
+        _seed(app, "stopped", ago=1, stopped=True)
+        _seed(app, "idle", ago=900)
+        app.refresh_ui()
+        table = app.query_one("#sessions")
+        assert str(table.get_cell("stopped.jsonl", "project").style) == STOPPED_STYLE
+        assert str(table.get_cell("stopped.jsonl", "dot").style) == STOPPED_STYLE
+        assert str(table.get_cell("idle.jsonl", "project").style) == ""
+        assert table.get_cell("idle.jsonl", "dot").plain == "○"
+
+
+def test_team_score_zero_is_not_healthy():
+    app = MultiAgentWatchApp()
+    team = SimpleNamespace(team_id=1, name="t", member_count=2, subagent_count=0)
+    theme = get_theme()
+    app._team_scores[1] = 0
+    assert app._team_cells(team)["health"] == (
+        "0%", "bold " + theme.color_for(theme.status_from_score(0))
+    )
+
+
+async def test_agent_column_shows_display_names():
     app = MultiAgentWatchApp()
     async with app.run_test(size=(120, 40)):
         a = _seed(app, "a", ago=1)
+        b = _seed(app, "b", ago=1)
+        app.agents[b]["item"].agent_type = "opencode"
+        c = _seed(app, "c", ago=1)
+        app.agents[c]["item"].agent_type = None
+        app.agents[c]["agent_name"] = "kilo-code"
         app.refresh_ui()
         table = app.query_one("#sessions")
-        assert table.get_cell("a.jsonl", "health").plain.endswith("%")
-        app.agents[a]["registry"].check_all = lambda buffer: [_warning(Severity.CRITICAL)]
-        app.refresh_ui()
-        assert table.get_cell("a.jsonl", "health").plain.endswith("▼")
+        assert [table.get_cell(str(p), "agent").plain for p in (a, b, c)] == [
+            "Claude Code", "OpenCode", "Kilo Code"
+        ]
 
 
 async def test_subagent_rows_sit_under_parent():
@@ -229,7 +296,7 @@ async def test_keys_q_s_o_and_no_clear_cache():
     app = MultiAgentWatchApp()
     async with app.run_test(size=(120, 40)) as pilot:
         keys = {b[0] if isinstance(b, tuple) else b.key for b in app.BINDINGS}
-        assert keys == {"q", "s", "o"}
+        assert keys == {"q", "s", "o", "e", "escape"}
         assert not hasattr(app, "action_clear_cache")
         await pilot.pause()
         screen = _screen(app)

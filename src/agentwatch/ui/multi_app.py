@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,12 +12,14 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.binding import Binding
+from textual.containers import VerticalScroll
+from textual.widgets import DataTable, Footer, Static
 
-from agentwatch.agents import adapter_for
-from agentwatch.alerts import tui_warn
+from agentwatch.agents import adapter_for, display_name
+from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
 from agentwatch.detectors import create_registry
-from agentwatch.detectors.base import Severity, format_usd
+from agentwatch.detectors.base import Severity, format_usd, warning_dedup_key
 from agentwatch.discovery import (
     AgentProcess,
     AgentTeam,
@@ -62,8 +65,13 @@ COLUMNS = (
 SORTS = ("attention", "cost", "recent")
 IDLE_AFTER_S = 300  # no action for this long: shown as idle (○), sorted last
 FLASH_S = 2.0  # a row whose data changed is shown bold this long
-TREND_POINTS = 5  # HEALTH gets ▲/▼ when it moved this much since last shown
+TREND_POINTS = 5  # HEALTH gets ▲/▼ when it moved this much ...
+TREND_WINDOW_S = 60.0  # ... against its score this long ago
+TREND_SETTLE_S = 5.0  # a session's first seconds (log history loading) set the reference
 SIGNAL_WIDTH = 40
+STOPPED_STYLE = "grey50"
+FEED_MAX = 200  # event feed lines kept
+BUDGET_WARN = 0.8  # feed line when a session reaches this share of --budget
 _WIDTHS = {key: width for key, _, width in COLUMNS}
 _SEVERITY_RANK = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
 _SEVERITY_STYLE = {
@@ -153,6 +161,31 @@ class MultiAgentWatchApp(App):
     notify = plain_notify
 
     CSS = """
+    #header {
+        height: 1;
+        padding: 0 1;
+        background: $panel;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+
+    #feed {
+        height: 7;
+        padding: 0 1;
+        border: round $secondary;
+        border-title-align: left;
+    }
+
+    #feed:focus {
+        border: round $accent;
+    }
+
+    #feed-lines {
+        width: 100%;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+
     #sessions {
         height: 1fr;
         border: round $accent;
@@ -174,6 +207,8 @@ class MultiAgentWatchApp(App):
         ("q", "quit", "Quit"),
         ("s", "toggle_security", "Toggle Security"),
         ("o", "cycle_sort", "Sort"),
+        ("e", "toggle_feed", "Events"),
+        Binding("escape", "focus_table", "Table", show=False),
     ]
 
     def __init__(
@@ -211,6 +246,12 @@ class MultiAgentWatchApp(App):
         self._data_sig: dict[str, tuple] = {}  # row key -> data shown (for the flash)
         self._flash_until: dict[str, float] = {}
         self._order: list[str] = []
+        self._events: deque[Text] = deque(maxlen=FEED_MAX)  # newest first
+        # Sessions seen before this (startup) are "loaded", later ones "started".
+        self._loaded_until: float | None = float("inf")
+        self._alerts = 0  # alerts sent this run (or new HIGH+ findings, no alert sinks)
+        self._summary: tuple[int, int, int, float | None] = (0, 0, 0, None)
+        self._header_text = ""
 
         if agent_processes is not None:
             self._initial_processes = agent_processes
@@ -220,7 +261,8 @@ class MultiAgentWatchApp(App):
             self.watcher = MultiLogWatcher(self.watch_paths)
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        self._header = Static(id="header", markup=False)
+        yield self._header
         self._table = table = DataTable(id="sessions", cursor_type="row")
         table.border_title = "Sessions"
         table.border_subtitle = f"sort: {self.sort_mode}"
@@ -231,6 +273,10 @@ class MultiAgentWatchApp(App):
             "Waiting for sessions" + ascii_safe("…", "..."), id="selected", markup=False
         )
         yield self._selected
+        self._feed_lines = Static(id="feed-lines", markup=False)
+        self._feed = VerticalScroll(self._feed_lines, id="feed")
+        self._feed.border_title = "Events"
+        yield self._feed
         yield Footer()
 
     def _new_agent_state(
@@ -301,6 +347,9 @@ class MultiAgentWatchApp(App):
             self._team_by_pid[item.pid] = item.team_id
         if self.selected_path is None:
             self.selected_path = log_path
+        if self._loaded_until is None:
+            name = who(item.agent_type or state.get("agent_name"), item.project_name)
+            self._event(f"{ascii_safe('▶', '>')} {name} started")
 
     def _track_net(self, state: dict, proc: AgentProcess | None) -> None:
         """Sample *proc*'s sockets if it is a real per-agent process."""
@@ -325,8 +374,11 @@ class MultiAgentWatchApp(App):
         self.title = "AgentWatch - Multi-Agent Dashboard"
         if self.security_mode:
             self.title += " [SECURITY]"
-        if self.alerter is not None and not self.is_headless:
-            self.alerter.warn = tui_warn(self)
+        self._loaded_until = time.monotonic() + BASELINE_S
+        if self.alerter is not None:
+            self.alerter.on_send = self._alert_sent
+            if not self.is_headless:
+                self.alerter.warn = tui_warn(self)
 
         # Team header rows for the initial processes
         for team in build_teams(self._initial_processes):
@@ -375,14 +427,19 @@ class MultiAgentWatchApp(App):
             self.refresh_ui()
 
     def refresh_ui(self) -> None:
-        """Rescore what changed, then update the table and the Selected strip."""
-        if not self.agents and not self.teams:
-            return
+        """Rescore what changed, then update the table, the Selected strip
+        and the header."""
         if self._refreshing:
             return
         self._refreshing = True
         try:
-            self._do_refresh_ui()
+            if self.agents or self.teams:
+                self._do_refresh_ui()
+            if self._loaded_until is not None and time.monotonic() >= self._loaded_until:
+                self._loaded_until = None
+                n = len(self.agents)
+                self._event(f"{n} session{'s' * (n != 1)} loaded")
+            self._update_header()
         finally:
             self._refreshing = False
 
@@ -410,6 +467,7 @@ class MultiAgentWatchApp(App):
         if self.security_mode:
             self._fire_secret_alerts(warnings, self._agent_label(data))
         self._alert(data, warnings, report)
+        self._feed_findings(data, warnings)
         data["_last_count"] = count
         data["_last_report"] = report
         data["_last_eff"] = eff.score
@@ -442,8 +500,41 @@ class MultiAgentWatchApp(App):
 
     # -- sessions table ---------------------------------------------------
 
+    @staticmethod
+    def _trend(data: dict, score: int, now: float) -> str:
+        """▲/▼ when *score* is TREND_POINTS off its value TREND_WINDOW_S ago.
+        Scores are kept as (time, score) at each change; the reference is the
+        newest one at least the window old; nothing is shown until the session
+        has a window of history. Its first TREND_SETTLE_S with actions only
+        set the reference (its log history is loading). Evaluated every tick,
+        so an arrow clears on time for rows that are not rescored."""
+        if not data["buffer"].stats.action_count:
+            return ""
+        scores: deque = data.setdefault("_scores", deque())
+        if not scores or (len(scores) == 1 and now - scores[0][0] < TREND_SETTLE_S):
+            start = scores[0][0] if scores else now
+            scores.clear()
+            scores.append((start, score))
+        elif score != scores[-1][1]:
+            scores.append((now, score))
+        while len(scores) > 1 and scores[1][0] <= now - TREND_WINDOW_S:
+            scores.popleft()
+        if scores[0][0] > now - TREND_WINDOW_S:
+            return ""
+        diff = score - scores[0][1]
+        if diff >= TREND_POINTS:
+            return ascii_safe("▲", "^")
+        if -diff >= TREND_POINTS:
+            return ascii_safe("▼", "v")
+        return ""
+
+    @staticmethod
+    def _agent_name(data: dict) -> str:
+        agent = data["item"].agent_type or data.get("agent_name")
+        return display_name(agent) if agent else "?"
+
     def _row_cells(
-        self, data: dict, report: "HealthReport", age: float | None
+        self, data: dict, report: "HealthReport", age: float | None, now: float | None = None
     ) -> dict[str, tuple[str, str]]:
         """{column: (text, style)}; text is cut to the column when shown."""
         item: AgentItem = data["item"]
@@ -453,34 +544,30 @@ class MultiAgentWatchApp(App):
         active = item.process_status != "stopped" and age is not None and age < IDLE_AFTER_S
 
         score = report.overall_score
-        shown = data.get("_shown_score")
-        if shown is not None and score != shown:
-            data["_trend"] = (
-                ascii_safe("▲", "^") if score - shown >= TREND_POINTS
-                else ascii_safe("▼", "v") if shown - score >= TREND_POINTS
-                else ""
-            )
-        data["_shown_score"] = score
-
-        agent = item.agent_type or data.get("agent_name") or "?"
+        trend = self._trend(data, score, time.monotonic() if now is None else now)
+        agent = self._agent_name(data)
         if item.depth > 0:
             agent = "  " * (item.depth - 1) + f"{ascii_safe('└', '`-')} sub {agent}"
         cost = buffer.stats.estimated_cost
         ctx = _context_pct(buffer)
-        return {
+        cells = {
             "dot": (ascii_safe("●", "*") if active else ascii_safe("○", "o"), color),
             "agent": (agent, ""),
             "project": (item.project_name or item.log_path.name, ""),
-            "health": (f"{score}% {data.get('_trend', '')}".rstrip(), color),
+            "health": (f"{score}% {trend}".rstrip(), color),
             "cost": ("n/a" if cost is None else format_usd(cost).lstrip("~"), ""),
             "ctx": ("-" if ctx is None else f"{ctx}%", ""),
             "last": (_ago(age), ""),
             "signal": _signal(report.warnings),
         }
+        if item.process_status == "stopped":  # grey, so stopped differs from idle
+            cells = {col: (v, STOPPED_STYLE) for col, (v, _) in cells.items()}
+        return cells
 
     def _team_cells(self, team: AgentTeam) -> dict[str, tuple[str, str]]:
         score = self._team_scores.get(team.team_id)
-        color = get_theme().color_for(get_theme().status_from_score(score or 100))
+        theme = get_theme()
+        color = theme.color_for(theme.status_from_score(100 if score is None else score))
         members = f"{team.member_count} agents"
         if team.subagent_count:
             members += f", {team.subagent_count} sub"
@@ -543,10 +630,22 @@ class MultiAgentWatchApp(App):
         now = time.monotonic()
         rows: dict[str, dict[str, tuple[str, str]]] = {}
         sort_keys: dict[Path, tuple] = {}
+        active = need_you = 0
+        spend: float | None = None
+        critical = get_theme().level_3
         for path, data in self.agents.items():
             age = _age(data["buffer"])
-            rows[str(path)] = self._row_cells(data, reports[path], age)
-            sort_keys[path] = self._sort_key(data, reports[path], age)
+            report = reports[path]
+            rows[str(path)] = cells = self._row_cells(data, report, age, now)
+            sort_keys[path] = self._sort_key(data, report, age)
+            active += cells["dot"][0] == ascii_safe("●", "*")
+            need_you += report.status == critical or any(
+                _SEVERITY_RANK[w.severity] <= 1 for w in report.warnings
+            )
+            cost = data["buffer"].stats.estimated_cost
+            if cost is not None:
+                spend = (spend or 0.0) + cost
+        self._summary = (len(self.agents), active, need_you, spend)
         for team_id, team in self.teams.items():
             rows[f"team:{team_id}"] = self._team_cells(team)
 
@@ -590,6 +689,95 @@ class MultiAgentWatchApp(App):
             cache.pop(key, None)
         self._order = []
 
+    # -- header and event feed --------------------------------------------
+
+    def _update_header(self) -> None:
+        """One line; redrawn only when its text changes (the clock: each second)."""
+        n, active, need_you, spend = self._summary
+        dot = ascii_safe(" · ", " | ")
+        body = "   ".join((
+            f"{n} session{'s' * (n != 1)}{dot}{active} active{dot}{need_you} need you",
+            f"on screen {'n/a' if spend is None else _usd(spend) if spend else '$0.00'}",
+            f"alerts {self._alerts}",
+            f"{datetime.now():%H:%M:%S}",
+        ))
+        title = "agentwatch" + (" [SECURITY]" if self.security_mode else "")
+        if len(title) + 2 + len(body) > self.size.width - 2:
+            title = ""  # narrow: the counts and the clock matter more
+        text = f"{title}  {body}" if title else body
+        if text != self._header_text:
+            self._header_text = text
+            line = Text(text, no_wrap=True)
+            line.stylize("bold", 0, len(title))
+            self._header.update(line)
+
+    def _event(self, message: str, style: str = "") -> None:
+        """Add one line to the top of the event feed (literal text)."""
+        line = Text(f"{datetime.now():%H:%M:%S} ", style="dim", no_wrap=True)
+        line.append(message, style)
+        self._events.appendleft(line)
+        self._feed_lines.update(Text("\n").join(self._events))
+
+    def _alert_sinks(self) -> list[str]:
+        a = self.alerter
+        return [] if a is None else [k for k, on in (("desktop", a.notify),
+                                                     ("webhook", a.webhook)) if on]
+
+    def _alert_sent(self, title: str, body: str) -> None:
+        """Alerter.on_send: an alert was queued for its sinks."""
+        sinks = self._alert_sinks()
+        if sinks:
+            self._alerts += 1
+            self._event(f"{ascii_safe('→', '->')} alert ({', '.join(sinks)}): "
+                        f"{title.removeprefix('agentwatch: ')}", "magenta")
+
+    def _feed_findings(self, data: dict, warnings: list["Warning"]) -> None:
+        """Feed lines for one session's new and cleared findings (one per
+        warning_dedup_key) and its --budget crossings. Like the Alerter, what
+        a session shows in its first BASELINE_S with actions (its log history)
+        is recorded silently."""
+        item: AgentItem = data["item"]
+        stats = data["buffer"].stats
+        project = item.project_name or item.log_path.name
+        now = time.monotonic()
+        if stats.action_count and "_feed_until" not in data:
+            data["_feed_until"] = now + BASELINE_S
+        found = {warning_dedup_key(w): w for w in warnings}
+        if now >= data.get("_feed_until", float("inf")):
+            shown: dict[str, str] = data.get("_feed_keys", {})
+            count_alerts = not self._alert_sinks()
+            for key, w in found.items():
+                if key in shown:
+                    continue
+                n = w.details.get("count") or w.details.get("occurrences")
+                cost = f" {w.cost_label}" if w.cost_label else ""
+                self._event(f"{w.emoji} {project}: {_label(w.signal)}"
+                            f"{f' ({n}x)' if n else ''}{cost}", _SEVERITY_STYLE[w.severity])
+                self._alerts += count_alerts and _SEVERITY_RANK[w.severity] <= 1
+            for key, label in shown.items():
+                if key not in found:
+                    self._event(f"{ascii_safe('✓', 'ok')} {project}: {label} cleared", "green")
+        data["_feed_keys"] = {key: _label(w.signal) for key, w in found.items()}
+
+        budget = self.alerter.budget if self.alerter is not None else None
+        cost = stats.estimated_cost
+        if budget is None or cost is None or data.get("_budget_hit"):
+            return
+        if cost >= budget:
+            data["_budget_hit"] = data["_budget_warned"] = True
+            self._event(f"$ {project}: budget {_usd(budget)} hit ({_usd(cost)})", "bold red")
+        elif cost >= BUDGET_WARN * budget and not data.get("_budget_warned"):
+            data["_budget_warned"] = True
+            self._event(f"$ {project}: {BUDGET_WARN:.0%} of budget {_usd(budget)} "
+                        f"({_usd(cost)})", "yellow")
+
+    def action_toggle_feed(self) -> None:
+        """`e`: focus the event feed (to scroll it); again: back to the table."""
+        (self._table if self.focused is self._feed else self._feed).focus()
+
+    def action_focus_table(self) -> None:
+        self._table.focus()
+
     # -- Selected strip ---------------------------------------------------
 
     def _update_selected(self, data: dict, report: "HealthReport") -> None:
@@ -599,7 +787,7 @@ class MultiAgentWatchApp(App):
         dot = ascii_safe(" · ", " | ")
         title = [
             item.project_name or item.log_path.name,
-            item.agent_type or data.get("agent_name") or "?",
+            self._agent_name(data),
         ]
         if item.pid:
             title.append(f"pid {item.pid}")
@@ -791,7 +979,12 @@ class MultiAgentWatchApp(App):
             if proc:
                 if proc.pid != agent_data["pid"]:
                     self._repid(agent_data, proc)
-                agent_data["item"].update_process_info(proc)
+                item = agent_data["item"]
+                was = item.process_status
+                item.update_process_info(proc)
+                if was != item.process_status == "stopped":
+                    name = who(item.agent_type, item.project_name)
+                    self._event(f"{ascii_safe('■', '#')} {name} stopped", "dim")
 
         # Remove agents that have been stopped for over 60 seconds
         expired = self.watcher.reap_stopped(timeout=60.0)
