@@ -331,9 +331,26 @@ show)` row at the bottom (a parent stays shown while one of its subagents is);
 `a` shows them, `a` again folds them. `/` opens a filter line at the bottom:
 rows whose project, agent or top warning contain the text (any case) are
 shown as you type (a matching subagent with its parent); Enter keeps the filter (`filter: xyz` next to the sort),
-Esc clears it. Below the table, the
-selected session's health, efficiency, context, cost per minute, security
-findings, network endpoints and top 3 warnings.
+Esc clears it.
+
+Graphs, gauges and colour: each session keeps a short history in memory
+(nothing is written to disk): a sample of its health, cost and context fill
+when one of them changed, at most every 15 seconds (a 5+ point move in health
+or context at once), the last 60 kept (15+ minutes). The `TREND H` column is
+a sparkline of its last 8 health samples (`▁` 0% to `█` 100%, each point in
+its health colour); under the cost sort it is `TREND $`, the cost from its
+lowest to its highest. Below the table, the Selected strip shows the
+session's health, cost and context as a value, a 16-sample sparkline, an
+arrow against a minute ago (health `▲` green `▼` red, cost and context `▲`
+amber) and a gauge (`▮▮▮▮▮▮▮▮▯▯`; health in its colour, context green, amber
+from 80%, red at 100%; with `--budget` the cost row has `budget ▮▮▮▮▮▮▮▮▯▯
+82%`), then efficiency, security findings, network endpoints, cost per
+minute, the top signal in its severity colour (a loop breaker block first)
+and the next warning. The detail view's Health tab has the same rows with
+every sample. Agent names have one colour per agent type; warnings are red
+(Critical), orange (HIGH), yellow (MEDIUM) or dim (LOW). With `--theme ascii`
+sparklines use `_.:-=+*#`, gauges `[########..] 82%` and arrows `^`/`v`; the
+arrows and numbers carry the meaning without colour in every theme.
 
 `watch-all --all-logs` reads every log under the known log directories
 instead of discovering running processes. By default only logs modified in
@@ -381,7 +398,9 @@ first thing the header drops; at 100+ columns `N active` goes before them.
 The layout follows the terminal size (recomputed only on a resize). Under 100
 columns the AGENT and CTX columns and the Selected strip are hidden (Enter
 shows them; the filter still matches the agent), PROJECT is shorter and TOP
-SIGNAL takes the rest of the width. Under 30 rows the Events panel shows 3
+SIGNAL takes the rest of the width. TREND goes when it would leave TOP SIGNAL
+under 25 columns (so 80 columns have no TREND, 120 columns have it, also with
+`--budget`). Under 30 rows the Events panel shows 3
 lines; under 20 rows it is hidden and `e` shows it in place of the table (`e`
 or Esc goes back). An 80x24 terminal shows 13 session rows.
 

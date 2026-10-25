@@ -4769,6 +4769,7 @@ Board decisions (2026-10-24):
      grouping fix.
   7. Narrow layout + `?` help.
   8. Net/detect/weekly report.
+  8b. Visual polish: graphs, gauges, colour (board decision 2026-10-25).
   9. `watch` uses the same app.
 
 ### PR 1: crash fixes (fix/watch-markup-crashes) -- DONE
@@ -5007,3 +5008,49 @@ Board decisions (2026-10-24):
   folded and filtered ones too); help: "need you" = Critical, HIGH+ or
   loop-blocked, not stopped; "Main flags"; the box fits the terminal (max
   76) and wraps with hanging indents (`help.hang`).
+
+### PR 8b: visual polish (feature/watch-ui-8b-visual) -- DONE
+- [x] Board decision (2026-10-25), after trying PRs 1-7 ("too simple"):
+  graphs + gauges, same layout. No new deps, nothing written to disk.
+- [x] History: one per-session deque (`data["_hist"]`, `HISTORY_MAX` 60) of
+  (time, health, cost, ctx), replacing PR 3's 60s trend deque (the arrows
+  read it too). A sample when the values changed, at most every
+  `SAMPLE_S` (15s), at once for a 5+ point health/context move; cost kept
+  to the cent. 15s: 60 samples cover 15+ min (a session's arc, more than the
+  60s arrow window) and a busy session redraws its graphs at most 4x a
+  minute. Idle sessions add nothing.
+- [x] TREND column (8 cells, after COST): `TREND H` (health, 0-100 scale,
+  each point in its health colour) under attention/recent sort, `TREND $`
+  (cost, min..max) under cost sort; the sort is part of `_layout`, so `o`
+  rebuilds the columns. Rich Text cells (not the Sparkline widget). TREND
+  goes when it would leave TOP SIGNAL under `SIGNAL_MIN` (25): 80 columns
+  keep TOP SIGNAL's 33 (a loop block's tool, count and cost), 120 columns
+  show TREND also with `--budget` (84-99 narrow; not 100-119 with
+  `--budget`, 100-109 without).
+- [x] Selected strip (6 lines): title (agent coloured); health / cost / ctx
+  rows with value, 16-sample sparkline, arrow vs a minute ago (health ▲
+  green ▼ red; cost and context ▲ amber), gauge (health by status colour;
+  context and budget green < 80%, amber, red >= 100%; `budget ▮▮▮▮▮▮▮▮▯▯
+  82%` with `--budget`); efficiency/security/net after health, $/min after
+  cost; the top signal (loop block first) and next warning in severity
+  colours. Detail Health tab: the same rows over every sample (up to 60).
+- [x] Colour: one per known agent (`AGENT_COLORS` from `DISPLAY_NAMES`,
+  blues/purples, none a health or severity colour); severity critical bold
+  red, HIGH dark_orange (was red), MEDIUM yellow, LOW dim. Fixed: the
+  theme's `orange` (health 40-59) is not a Rich colour, so those table cells
+  had no colour; `_color()` maps it to dark_orange.
+- [x] `--theme ascii`: sparklines `_.:-=+*#`, gauges `[########..] 82%`,
+  arrows `^`/`v`; meaning never by colour alone (arrows, numbers).
+- [x] Perf: a sparkline is recomputed only when its session gets a sample
+  (cache keyed by the sample count, kind and width); table cells update
+  only on change (existing); TREND does not flash a row. perf8.py, 30s
+  idle, 2 runs each, PR 8 -> 8b: synthetic 10 sessions 3.3% / 1.04-1.15ms
+  -> 2.3-3.5% / 1.32ms (one 2.96ms run with a 34ms outlier tick);
+  `--all-logs` 24h (18 sessions) 3.7-4.3% / 1.23-1.58ms -> 3.8-4.2% /
+  2.16-2.24ms; process mode (1 agent) 11.3-12.6% / 0.59-0.62ms -> 11.2-12.3%
+  / 0.65-0.72ms. Idle CPU flat; the ~0.7ms is the strip's Text (~0.4ms,
+  every tick for the selected session) and per-row colour lookups.
+- [x] Tests: `tests/test_multi_app_graphs.py` (history cap/sampling/
+  reference, arrows, sparkline scaling, gauge thresholds, ascii, TREND vs
+  sort, narrow rule, no recompute without a sample, colours on screen,
+  strip/detail, 120x40 / 80x24).
