@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
 from agentwatch.detectors.health._window import scaled_turn_window, session_maturity_factor
+from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -68,7 +68,10 @@ def _file_churn(turns: list[Turn], n: int = 8) -> tuple[float, list[str]]:
     # Score: 1 churning file = 0.4, 2 = 0.7, 3+ = 1.0
     score = min(len(churning) * 0.35, 1.0)
 
-    evidence = [f"file churning without success: {', '.join(churning[:3])} ({max(file_edit_counts[f] for f in churning)}+ edits)"]
+    evidence = [
+        f"file churning without success: {', '.join(churning[:3])} "
+        f"({max(file_edit_counts[f] for f in churning)}+ edits)"
+    ]
 
     return round(score, 4), evidence
 
@@ -77,10 +80,12 @@ def _file_churn(turns: list[Turn], n: int = 8) -> tuple[float, list[str]]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_progress(buffer: "ActionBuffer", n_turns: int | None = None) -> MetricResult:
+def compute_progress(
+    buffer: "ActionBuffer", n_turns: int | None = None, *, turns: list[Turn] | None = None
+) -> MetricResult:
     """Compute the diff-based progress deficit metric."""
 
-    turns = turns_from_buffer(buffer)
+    turns = turns_from_buffer(buffer) if turns is None else turns
     if len(turns) < 2:
         return MetricResult(name="progress", value=0.0)
 

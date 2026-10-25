@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.reactive import reactive
-from textual.widgets import Footer, Header, Static, ListItem, ListView, Label
+from textual.containers import Vertical
+from textual.widgets import Footer, Header, Label, ListItem, ListView
 
 from agentwatch.detectors import create_registry
-from agentwatch.discovery import AgentProcess, AgentTeam, build_teams, find_running_agents
-from agentwatch.parser import ActionBuffer, MultiLogWatcher
+from agentwatch.discovery import (
+    AgentProcess,
+    AgentTeam,
+    DiscoveryCache,
+    build_teams,
+    find_running_agents,
+)
 from agentwatch.health import (
     calculate_efficiency,
     calculate_health,
@@ -21,13 +25,30 @@ from agentwatch.health import (
     calculate_team_health,
 )
 from agentwatch.health.rot import RotScorer
-from agentwatch.themes import get_theme
-from agentwatch.ui.app import EfficiencyBar, HealthBar, SecurityStatus, WarningsList, StatsPanel
+from agentwatch.llm import DEFAULT_OLLAMA_MODEL
+from agentwatch.net_sampler import (
+    NOT_ATTRIBUTABLE,
+    NetSampler,
+    attach,
+    attributable,
+    endpoint_summary,
+)
+from agentwatch.parser import ActionBuffer, MultiLogWatcher
+from agentwatch.themes import ascii_safe, get_theme
+from agentwatch.ui.app import (
+    EfficiencyBar,
+    HealthBar,
+    SecurityStatus,
+    StatsPanel,
+    WarningsList,
+    plain_notify,
+)
+from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
 from agentwatch.ui.rot_widget import ContextHealthWidget
 
 if TYPE_CHECKING:
-    from agentwatch.parser.models import Action
     from agentwatch.detectors.base import Warning
+    from agentwatch.health.score import HealthReport
 
 
 class TeamHeaderItem(ListItem):
@@ -47,8 +68,8 @@ class TeamHeaderItem(ListItem):
             label_text = f"TEAM {self.team.name} ({count} agents, {sub} sub)"
         else:
             label_text = f"TEAM {self.team.name}"
-        yield Label(label_text, id="team-name-label")
-        yield Label(f"Team Health: {self.health_score}%", id="team-health-label")
+        yield Label(label_text, id="team-name-label", markup=False)
+        yield Label(f"Team Health: {self.health_score}%", id="team-health-label", markup=False)
 
     def update_status(self, score: int, status: str):
         self.health_score = score
@@ -96,15 +117,21 @@ class AgentItem(ListItem):
             else:
                 prefix = ""
             yield Label(
-                f"{prefix}[{self.agent_type}] {self.project_name}", id="agent-name-label"
+                f"{prefix}[{self.agent_type}] {self.project_name}",
+                id="agent-name-label",
+                markup=False,
             )
             indent = "  " * self.depth
             pid_text = f"{indent}PID {self.pid}" if self.pid else ""
-            yield Label(pid_text, id="pid-label")
+            yield Label(pid_text, id="pid-label", markup=False)
         else:
-            yield Label(f"📄 {self.log_path.name}", id="agent-name-label")
-            yield Label("", id="pid-label")
-        yield Label(f"Health: {self.health_score}%", id="health-label")
+            yield Label(
+                f"{ascii_safe('📄', '(file)')} {self.log_path.name}",
+                id="agent-name-label",
+                markup=False,
+            )
+            yield Label("", id="pid-label", markup=False)
+        yield Label(f"Health: {self.health_score}%", id="health-label", markup=False)
 
     def update_status(self, score: int, status: str):
         self.health_score = score
@@ -145,7 +172,9 @@ class AgentItem(ListItem):
 
 class MultiAgentWatchApp(App):
     """Unified dashboard for monitoring all active agents."""
-    
+
+    notify = plain_notify
+
     CSS = """
     Screen {
         layout: horizontal;
@@ -205,29 +234,39 @@ class MultiAgentWatchApp(App):
         display: none;
     }
     """
-    
+
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("s", "toggle_security", "Toggle Security"),
         ("c", "clear_cache", "Clear Cache"),
     ]
-    
+
     def __init__(
         self,
         watch_paths: list[Path] | None = None,
         security_mode: bool = False,
         agent_processes: list[AgentProcess] | None = None,
+        siem_log: Path | None = None,
+        llm: bool = False,
+        llm_model: str = DEFAULT_OLLAMA_MODEL,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.watch_paths = watch_paths or []
         self.security_mode = security_mode
+        self.siem_log = siem_log
+        self.llm = llm
+        self.llm_model = llm_model
         self.agents: dict[Path, dict] = {}  # path -> {buffer, registry, item, pid, team_id}
         self.teams: dict[int, TeamHeaderItem] = {}  # team_id -> header item
+        self._team_by_pid: dict[int, int] = {}  # pid -> team_id, kept in sync with self.agents
         self._refreshing = False
+        self._scanning = False
+        self._discovery_cache = DiscoveryCache()
         self.selected_path: Path | None = None
         self._alerted_signals: set[str] = set()
         self._process_mode = agent_processes is not None
+        self._net_sampler = NetSampler()
 
         if agent_processes is not None:
             self._initial_processes = agent_processes
@@ -235,14 +274,14 @@ class MultiAgentWatchApp(App):
         else:
             self._initial_processes = []
             self.watcher = MultiLogWatcher(self.watch_paths)
-    
+
     def compose(self) -> ComposeResult:
         yield Header()
-        
+
         with Vertical(id="agent-sidebar"):
-            yield Label("Active Agents", variant="title")
+            yield Label("Active Agents", variant="title", markup=False)
             yield ListView(id="agent-list")
-            
+
         with Vertical(id="detail-area"):
             yield HealthBar(id="health-bar")
             yield EfficiencyBar(id="efficiency-bar")
@@ -253,9 +292,62 @@ class MultiAgentWatchApp(App):
             )
             yield WarningsList(id="warnings-list")
             yield StatsPanel(id="stats-display")
-        
+
         yield Footer()
-    
+
+    def _new_agent_state(
+        self,
+        *,
+        buffer: ActionBuffer,
+        registry,
+        item: "AgentItem",
+        pid: int | None,
+        team_id: int | None,
+        log_path: Path,
+        agent_type: str | None,
+    ) -> dict:
+        """Build a fresh per-agent state dict.
+
+        Each tracked agent gets its own `LiveSiemExporter`/`LiveLlmAssessor`
+        instance (when `--siem-log`/`--llm` are set) -- these carry
+        per-agent dedup/throttle state, so one agent's SIEM export or LLM
+        throttle timer is fully independent of every other agent's.
+        """
+        return {
+            "buffer": buffer,
+            "registry": registry,
+            "item": item,
+            "rot_scorer": RotScorer(),
+            "pid": pid,
+            "team_id": team_id,
+            "_last_count": -1,
+            "_last_report": None,
+            "siem_exporter": (
+                LiveSiemExporter(self.siem_log, agent_type=agent_type, source_log=str(log_path))
+                if self.siem_log is not None
+                else None
+            ),
+            "llm_assessor": LiveLlmAssessor(self.llm_model) if self.llm else None,
+        }
+
+    def _track_net(self, state: dict, proc: AgentProcess | None) -> None:
+        """Sample *proc*'s sockets if it is a real per-agent process."""
+        if proc and attributable(proc):
+            self._net_sampler.track(proc.pid)
+            state["net_sampled"] = True
+
+    def _repid(self, state: dict, proc: AgentProcess) -> None:
+        """A new process took over this log: drop the old pid, sample the new."""
+        old = state["pid"]
+        state["pid"] = proc.pid
+        if old is not None and not any(d.get("pid") == old for d in self.agents.values()):
+            self._team_by_pid.pop(old, None)
+            self._net_sampler.untrack(old)
+        if proc.team_id is not None:
+            self._team_by_pid[proc.pid] = proc.team_id
+        state["net_sampled"] = False
+        self._track_net(state, proc)
+
     def on_mount(self) -> None:
         """Called when app starts."""
         self.title = "AgentWatch - Multi-Agent Dashboard"
@@ -280,6 +372,7 @@ class MultiAgentWatchApp(App):
 
         # Periodic process re-scan if in process mode
         if self._process_mode:
+            self._net_sampler.start()  # --all-logs has no pids: no sampling
             self.set_interval(5.0, self._refresh_processes)
 
     async def _watch_loop(self) -> None:
@@ -310,14 +403,20 @@ class MultiAgentWatchApp(App):
                     else:
                         item = AgentItem(log_path)
 
-                    self.agents[log_path] = {
-                        "buffer": buffer,
-                        "registry": registry,
-                        "item": item,
-                        "rot_scorer": RotScorer(),
-                        "pid": proc.pid if proc else None,
-                        "team_id": proc.team_id if proc else None,
-                    }
+                    agent_pid = proc.pid if proc else None
+                    agent_team_id = proc.team_id if proc else None
+                    self.agents[log_path] = self._new_agent_state(
+                        buffer=buffer,
+                        registry=registry,
+                        item=item,
+                        pid=agent_pid,
+                        team_id=agent_team_id,
+                        log_path=log_path,
+                        agent_type=proc.agent_type if proc else None,
+                    )
+                    self._track_net(self.agents[log_path], proc)
+                    if agent_pid is not None and agent_team_id is not None:
+                        self._team_by_pid[agent_pid] = agent_team_id
 
                     # Add to sidebar
                     agent_list = self.query_one("#agent-list", ListView)
@@ -331,7 +430,12 @@ class MultiAgentWatchApp(App):
             elif event_type == "action":
                 action, path = data
                 if path in self.agents:
-                    self.agents[path]["buffer"].add(action)
+                    state = self.agents[path]
+                    if state.get("net_sampled"):
+                        state["net_prev_end"] = attach(
+                            self._net_sampler, state["pid"], action, state.get("net_prev_end")
+                        )
+                    state["buffer"].add(action)
                     # The 1s interval timer handles refreshes — don't pile up
                     # extra calls that cause sporadic update behaviour.
 
@@ -371,6 +475,8 @@ class MultiAgentWatchApp(App):
         # Run detectors
         warnings = registry.check_all(buffer)
 
+        self._export_and_assess(agent_data, warnings)
+
         # Compute efficiency and rot first so they feed into overall health
         eff = calculate_efficiency(warnings, buffer)
 
@@ -400,7 +506,9 @@ class MultiAgentWatchApp(App):
 
         # Update context health
         if rot_report is not None:
-            self.query_one("#context-health", ContextHealthWidget).update_report(rot_report)
+            self.query_one("#context-health", ContextHealthWidget).update_report(
+                rot_report, peak_context_tokens=buffer.stats.peak_context_tokens
+            )
 
         if self.security_mode:
             security_status = self.query_one("#security-status", SecurityStatus)
@@ -409,13 +517,23 @@ class MultiAgentWatchApp(App):
             agent_label = self._agent_label(agent_data)
             self._fire_secret_alerts(warnings, agent_label)
 
-        self.query_one("#warnings-list", WarningsList).update_warnings(warnings)
-        
+        # Goal-alignment is per-agent (agent_data["llm_assessor"]), but only
+        # the currently-selected agent's cached advisory is ever shown --
+        # mirrors how `warnings` here is already only the selected agent's.
+        warnings_list = self.query_one("#warnings-list", WarningsList)
+        selected_llm_assessor: LiveLlmAssessor | None = agent_data.get("llm_assessor")
+        warnings_list.update_goal_alignment(
+            selected_llm_assessor.stamp_goal_alignment() if selected_llm_assessor else None
+        )
+        warnings_list.update_warnings(warnings)
+
         stats = self.query_one("#stats-display", StatsPanel)
         stats.update_stats(
-            buffer.stats.action_count,
+            buffer.stats.activity_count,
             buffer.stats.error_count,
             buffer.stats.duration_minutes,
+            endpoint_summary(buffer.actions) if agent_data.get("net_sampled")
+            else NOT_ATTRIBUTABLE,
         )
 
         # Update sidebar status for all OTHER agents (selected one already done above)
@@ -427,34 +545,55 @@ class MultiAgentWatchApp(App):
         for path, data in self.agents.items():
             if path == self.selected_path:
                 continue
-            other_warnings = data["registry"].check_all(data["buffer"])
-            other_eff = calculate_efficiency(other_warnings, data["buffer"])
-            other_rot_value: float | None = None
-            other_rot_scorer = data.get("rot_scorer")
-            if other_rot_scorer:
-                other_rot_report = other_rot_scorer.update(data["buffer"])
-                other_rot_value = other_rot_report.smoothed_score
-            other_report = calculate_health(
-                other_warnings,
-                include_security=self.security_mode,
-                efficiency_score=other_eff.score,
-                rot_score=other_rot_value,
-            )
+
+            # Change detection: action_count is a monotonically increasing
+            # free checkpoint (ActionBuffer.add() always increments it, even
+            # once the deque starts evicting old entries). If it hasn't moved
+            # since the last tick, no new actions arrived for this agent, so
+            # re-running the full detector/efficiency/rot pipeline would just
+            # reproduce the same report — skip it and reuse the cached one.
+            # (Gating rot_scorer.update() here is intentional: no new actions
+            # means no new turn to smooth, so skipping avoids EMA drift from
+            # re-scoring identical data.)
+            current_count = data["buffer"].stats.action_count
+            if current_count == data["_last_count"] and data["_last_report"] is not None:
+                other_report = data["_last_report"]
+            else:
+                other_warnings = data["registry"].check_all(data["buffer"])
+                self._export_and_assess(data, other_warnings)
+                other_eff = calculate_efficiency(other_warnings, data["buffer"])
+                other_rot_value: float | None = None
+                other_rot_scorer = data.get("rot_scorer")
+                if other_rot_scorer:
+                    other_rot_report = other_rot_scorer.update(data["buffer"])
+                    other_rot_value = other_rot_report.smoothed_score
+                other_report = calculate_health(
+                    other_warnings,
+                    include_security=self.security_mode,
+                    efficiency_score=other_eff.score,
+                    rot_score=other_rot_value,
+                )
+                if self.security_mode:
+                    self._fire_secret_alerts(other_warnings, self._agent_label(data))
+                data["_last_count"] = current_count
+                data["_last_report"] = other_report
+
             data["item"].update_status(other_report.overall_score, other_report.status)
-            if self.security_mode:
-                self._fire_secret_alerts(other_warnings, self._agent_label(data))
             if data.get("pid") is not None:
                 all_reports[data["pid"]] = other_report
 
-        # Update team health headers
+        # Update team health headers. Group reports by team in a single O(N)
+        # pass via the precomputed pid -> team_id map (self._team_by_pid),
+        # replacing the old per-team O(N) linear scan over self.agents.values()
+        # (which was O(T*N) overall across all teams).
+        reports_by_team: dict[int, dict[int, "HealthReport"]] = {}
+        for pid, r in all_reports.items():
+            team_id = self._team_by_pid.get(pid)
+            if team_id is not None:
+                reports_by_team.setdefault(team_id, {})[pid] = r
+
         for team_id, header in self.teams.items():
-            team_member_reports = {
-                pid: r for pid, r in all_reports.items()
-                if any(
-                    d.get("team_id") == team_id and d.get("pid") == pid
-                    for d in self.agents.values()
-                )
-            }
+            team_member_reports = reports_by_team.get(team_id, {})
             if team_member_reports:
                 team_report = calculate_team_health(
                     team_member_reports,
@@ -462,6 +601,91 @@ class MultiAgentWatchApp(App):
                     team_name=header.team.name,
                 )
                 header.update_status(team_report.overall_score, team_report.status)
+
+    def _export_and_assess(self, agent_data: dict, warnings: list["Warning"]) -> None:
+        """Per-agent SIEM export (new warnings only) + throttled Tier-2 LLM
+        triage, mirroring `AgentWatchApp._do_refresh`'s wiring but scoped to
+        one agent's own `LiveSiemExporter`/`LiveLlmAssessor` instance --
+        each tracked agent's dedup/throttle state is fully independent of
+        every other agent's (see `_new_agent_state`). Both failure paths
+        degrade to a one-time `notify()`, never raising into the caller.
+        """
+        siem_exporter: LiveSiemExporter | None = agent_data.get("siem_exporter")
+        if siem_exporter is not None:
+            buffer = agent_data["buffer"]
+            session_id = buffer.actions[0].session_id if buffer.actions else None
+            error = siem_exporter.export_new(warnings, session_id=session_id)
+            if error:
+                label = self._agent_label(agent_data)
+                self.notify(
+                    f"[{label}] {error}", title="SIEM export failed", severity="error", timeout=10
+                )
+
+        llm_assessor: LiveLlmAssessor | None = agent_data.get("llm_assessor")
+        if llm_assessor is not None:
+            llm_assessor.stamp(warnings)
+            if llm_assessor.due():
+                new_warnings = llm_assessor.new_warnings(warnings)
+                llm_assessor.mark_run()
+                label = self._agent_label(agent_data)
+                self.run_worker(self._run_llm_batch(llm_assessor, new_warnings, label))
+
+            # Tier-2 goal-alignment advisory (Sprint 15's assess_goal_
+            # alignment(), wired live here), dispatched per-agent just like
+            # per-warning triage above -- each tracked agent's throttle
+            # clock/cached advisory is independent (LiveLlmAssessor.
+            # goal_alignment_due()/mark_goal_run()), so a background agent's
+            # advisory stays fresh even while a different agent is selected
+            # in the sidebar. Rendering the cached result into the widget is
+            # the caller's job (only the *selected* agent's advisory is
+            # ever shown -- see _do_refresh_ui), not this per-agent helper's.
+            if llm_assessor.goal_alignment_due():
+                llm_assessor.mark_goal_run()
+                buffer = agent_data["buffer"]
+                label = self._agent_label(agent_data)
+                self.run_worker(self._run_goal_alignment_batch(llm_assessor, buffer, label))
+
+    async def _run_llm_batch(
+        self, assessor: LiveLlmAssessor, new_warnings: list["Warning"], agent_label: str
+    ) -> None:
+        """Run Tier-2 assessment for one agent's *new_warnings* off the
+        render path -- `asyncio.to_thread` keeps the blocking Ollama HTTP
+        calls off the event loop so a slow/hanging local model can never
+        stall the dashboard's render tick, no matter how many agents are
+        being watched concurrently.
+        """
+        error = await asyncio.to_thread(assessor.run_batch, new_warnings)
+        if error:
+            self.notify(
+                f"[{agent_label}] {error}", title="Tier-2 LLM unavailable", severity="warning",
+                timeout=10,
+            )
+
+    async def _run_goal_alignment_batch(
+        self, assessor: LiveLlmAssessor, buffer: ActionBuffer, agent_label: str
+    ) -> None:
+        """Run one agent's Tier-2 goal-alignment advisory off the render
+        path. Mirrors `_run_llm_batch` exactly (same `asyncio.to_thread`
+        dispatch, same shared-assessor unavailable-notification dedup via
+        `LiveLlmAssessor._ensure_analyzer`) but for `run_goal_alignment`'s
+        single session-level assessment against *buffer* instead of a batch
+        of per-warning triage calls.
+        """
+        error = await asyncio.to_thread(assessor.run_goal_alignment, buffer)
+        if error:
+            self.notify(
+                f"[{agent_label}] {error}", title="Tier-2 LLM unavailable", severity="warning",
+                timeout=10,
+            )
+
+    def on_unmount(self) -> None:
+        """Flush and release every agent's SIEM log file handle on app exit,
+        and stop the net sampler."""
+        self._net_sampler.stop()
+        for data in self.agents.values():
+            siem_exporter: LiveSiemExporter | None = data.get("siem_exporter")
+            if siem_exporter is not None:
+                siem_exporter.close()
 
     @staticmethod
     def _agent_label(agent_data: dict) -> str:
@@ -478,7 +702,10 @@ class MultiAgentWatchApp(App):
             if w.signal != "secret_leak":
                 continue
             d = w.details
-            key = f"secret_leak:{d.get('secret_type', '')}:{d.get('channel', '')}:{d.get('file_path', '')}:{agent_label}"
+            key = (
+                f"secret_leak:{d.get('secret_type', '')}:"
+                f"{d.get('channel', '')}:{d.get('file_path', '')}:{agent_label}"
+            )
             if key in self._alerted_signals:
                 continue
             self._alerted_signals.add(key)
@@ -492,12 +719,23 @@ class MultiAgentWatchApp(App):
             if w.severity.value == "critical":
                 self.bell()
 
-    def _refresh_processes(self) -> None:
+    async def _refresh_processes(self) -> None:
         """Periodically re-scan running processes and update agent list."""
         if not self._process_mode:
             return
+        if self._scanning:
+            return  # a slow psutil scan is still in flight — don't stack ticks
+        self._scanning = True
+        try:
+            # Only the blocking psutil-based process scan runs off the event
+            # loop; the cache makes already-known PIDs skip cwd resolution
+            # entirely on repeat scans. Everything below touches Textual
+            # widgets/app state and must stay on the event loop, so we don't
+            # offload any further.
+            processes = await asyncio.to_thread(find_running_agents, self._discovery_cache)
+        finally:
+            self._scanning = False
 
-        processes = find_running_agents()
         new_agents = self.watcher.refresh_processes(processes)
 
         # Add new agents to sidebar
@@ -518,20 +756,26 @@ class MultiAgentWatchApp(App):
                 )
                 item.cpu_percent = proc.cpu_percent
                 item.memory_mb = proc.memory_mb
-                self.agents[proc.log_file] = {
-                    "buffer": buffer,
-                    "registry": registry,
-                    "item": item,
-                    "rot_scorer": RotScorer(),
-                    "pid": proc.pid,
-                    "team_id": proc.team_id,
-                }
+                self.agents[proc.log_file] = self._new_agent_state(
+                    buffer=buffer,
+                    registry=registry,
+                    item=item,
+                    pid=proc.pid,
+                    team_id=proc.team_id,
+                    log_path=proc.log_file,
+                    agent_type=proc.agent_type,
+                )
+                self._track_net(self.agents[proc.log_file], proc)
+                if proc.pid is not None and proc.team_id is not None:
+                    self._team_by_pid[proc.pid] = proc.team_id
                 agent_list.append(item)
 
         # Update process info on existing items
         for log_path, agent_data in self.agents.items():
             proc = self.watcher.get_process_meta(log_path)
             if proc:
+                if proc.pid != agent_data["pid"]:
+                    self._repid(agent_data, proc)
                 agent_data["item"].update_process_info(proc)
 
         # Remove agents that have been stopped for over 60 seconds
@@ -540,6 +784,11 @@ class MultiAgentWatchApp(App):
             agent_data = self.agents.pop(log_path, None)
             if agent_data:
                 agent_data["item"].remove()
+                reaped_pid = agent_data.get("pid")
+                if reaped_pid is not None:
+                    self._team_by_pid.pop(reaped_pid, None)
+                    if not any(d.get("pid") == reaped_pid for d in self.agents.values()):
+                        self._net_sampler.untrack(reaped_pid)
             if self.selected_path == log_path:
                 self.selected_path = next(iter(self.agents), None)
 

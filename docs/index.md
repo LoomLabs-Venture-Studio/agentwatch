@@ -19,7 +19,7 @@ hide:
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
     </div>
     <h3 class="aw-card__title">Security Scanning</h3>
-    <p class="aw-card__text">20 security detectors for prompt injection, credential exfiltration, privilege escalation, and supply chain attacks.</p>
+    <p class="aw-card__text">21 security detectors for prompt injection, credential exfiltration, privilege escalation, and supply chain attacks.</p>
   </div>
   <div class="aw-card">
     <div class="aw-card__icon aw-card__icon--tokens">
@@ -62,6 +62,12 @@ agentwatch scan
 # List running agents
 agentwatch ps
 
+# Programs using AI right now
+agentwatch detect
+
+# Who local AI runtimes (Ollama, LM Studio, ...) talk to
+agentwatch net
+
 # Token usage stats
 agentwatch stats
 ```
@@ -97,11 +103,11 @@ agentwatch stats
 
     | Category | Detectors |
     |----------|-----------|
-    | Credentials | credential_access, secret_in_output, credential_exfiltration |
+    | Credentials | credential_access, secret_in_output, credential_exfil, secret_leak_scanner |
     | Injection | prompt_injection, hidden_instruction, indirect_injection |
     | Network | network_anomaly, data_exfiltration, c2_communication, dns_exfiltration |
-    | Privilege | privilege_escalation, dangerous_command, mass_file_operation, sensitive_directory_access |
-    | Supply Chain | malicious_skill, skill_network_activity, new_skill_execution, skill_chain, skill_install |
+    | Privilege | privilege_escalation, dangerous_command, mass_file_operation, sensitive_directory |
+    | Supply Chain | malicious_skill, skill_network, new_skill, skill_chain, skill_install |
 
 === "Efficiency Score"
 
@@ -109,11 +115,11 @@ agentwatch stats
 
     | Metric | Weight | What it measures |
     |--------|--------|------------------|
-    | Context Pressure | 30% | Token usage vs. budget (180K default) |
-    | Token Burn Rate | 20% | Tokens consumed per minute |
+    | Context Pressure | 30% | Latest call's context vs. context window (200K, or 1M once a call exceeds 200K) |
+    | Token Burn Rate | 20% | Fresh tokens per minute (input + cache creation + output; cache reads excluded) |
     | Cache Hit Rate | 15% | How well the agent reuses cached context |
     | Duration | 15% | Session length relative to task |
-    | I/O Ratio | 10% | Balance of input vs. output tokens |
+    | I/O Ratio | 10% | Fresh input (cache reads excluded) vs. output tokens |
     | Actions Per Turn | 10% | Tool call density (thrashing detection) |
 
 ---
@@ -165,7 +171,7 @@ agentwatch stats
 
 <div markdown>
 
-### Security Detectors (20)
+### Security Detectors (21)
 
 **Credentials**
 
@@ -173,7 +179,8 @@ agentwatch stats
 |----------|---------|
 | `credential_access` | Accessing secret files |
 | `secret_in_output` | Secrets in output |
-| `credential_exfiltration` | Credential theft |
+| `credential_exfil` | Credential access followed by network activity |
+| `secret_leak_scanner` | Secrets leaked through any channel |
 
 **Injection**
 
@@ -191,6 +198,7 @@ agentwatch stats
 | `data_exfiltration` | Data exfiltration |
 | `c2_communication` | C2 communication |
 | `dns_exfiltration` | DNS tunneling |
+| `undeclared_egress` | Live: connection no action declared |
 
 **Privilege**
 
@@ -199,15 +207,15 @@ agentwatch stats
 | `privilege_escalation` | Privilege escalation |
 | `dangerous_command` | Dangerous commands |
 | `mass_file_operation` | Mass file operations |
-| `sensitive_directory_access` | Sensitive directory access |
+| `sensitive_directory` | Sensitive directory access |
 
 **Supply Chain**
 
 | Detector | Catches |
 |----------|---------|
 | `malicious_skill` | Malicious skill behavior |
-| `skill_network_activity` | Skill network requests |
-| `new_skill_execution` | New skill execution |
+| `skill_network` | Skill network requests |
+| `new_skill` | New skill execution |
 | `skill_chain` | Chained skill execution |
 | `skill_install` | Skill installation |
 
@@ -221,7 +229,7 @@ agentwatch stats
 
 !!! info "Deterministic-First Design"
 
-    AgentWatch uses **zero LLM calls** for detection. All 35 detectors are rule-based pattern
+    AgentWatch uses **zero LLM calls** for detection. All 36 detectors are rule-based pattern
     matchers operating on log streams. This means:
 
     - **No additional token cost** — monitoring doesn't consume your API budget
@@ -236,11 +244,40 @@ agentwatch stats
 | Agent | Detection | Log Parsing | Teams |
 |-------|-----------|-------------|-------|
 | Claude Code | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } |
+| Moltbot / Clawdbot | — | :material-check-circle:{ .t-green } | — |
 | Aider | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| Codex | :material-check-circle:{ .t-green } | — | — |
+| Codex | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| GitHub Copilot CLI | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| Antigravity CLI (agy) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| Gemini CLI | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| Cursor | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| GitHub Copilot in VS Code | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| Cline (VS Code extension and CLI) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+| Kilo Code 7.x (CLI and VS Code extension) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
 
-Agent processes are discovered via `ps` scanning with pattern matching.
-Sub-agents are linked through PPID chain walking and grouped into teams.
+Each agent is an adapter in `agentwatch.agents` (ordered `ADAPTERS` registry). Running agents are
+found by scanning processes with `psutil` and matching each adapter's pattern against the *program*
+(argv[0], or the script after `node`/`python`), never its arguments, so `copilot --model
+claude-sonnet-4.5` is Copilot, not Claude Code. Sub-agents are linked through PPID chain walking and
+grouped into teams.
+
+Claude Code, Aider, GitHub Copilot CLI and Antigravity CLI (agy) each have the full pipeline:
+process discovery, log-file resolution, and log parsing into actions, both one-shot (`check`,
+`security-scan`) and live (`watch`, `watch-all`). Cursor has the same pipeline, but discovery is
+gated on the Cursor process and reads composers from its `state.vscdb`. GitHub Copilot in VS Code
+works the same way: discovery is gated on the VS Code process, with one entry per recent agent-mode
+chat, read from VS Code's chat-session log. Codex is discovered and its
+rollout JSONL is parsed, but the parser is verified against fixtures only, not a live session.
+Gemini CLI has the full pipeline too, but is likewise fixture-verified only (checked against the
+gemini-cli 0.62.0 source, not a live session).
+Cline is read from two stores: the legacy VS Code extension's `globalStorage` tasks (in VS Code,
+VS Code Insiders, VSCodium and Cursor, each gated on its own editor process; the forks are
+source-verified, not live; Windsurf is not supported) and the SDK store `~/.cline/data/sessions`, shared by the new extension and
+the Cline CLI. It is fixture-verified only; live testing was not approved.
+Kilo Code 7.x is an OpenCode fork and is read from its SQLite store `~/.local/share/kilo/kilo.db`
+with OpenCode's parser. It is fixture-verified only (no live install); Kilo 5.x is not supported.
+Moltbot has a log parser but no process discovery, so you point it at a log file directly. An Aider
+`--analytics-log` JSONL sidecar backfills token and cost data.
 
 ---
 

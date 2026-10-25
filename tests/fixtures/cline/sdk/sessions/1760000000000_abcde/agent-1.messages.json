@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "updated_at": "2026-10-12T10:00:06.000Z",
+  "agent": "subagent",
+  "sessionId": "1760000000000_abcde__agent-1",
+  "taskType": "subagent_task",
+  "origin": {
+    "source": "cli",
+    "mode": "user",
+    "sessionId": "1760000000000_abcde__agent-1"
+  },
+  "messages": []
+}

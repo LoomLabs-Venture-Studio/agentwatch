@@ -6,32 +6,22 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
+from urllib.parse import urlsplit
 
-from .models import Action, ToolType
+from .models import CONTEXT_WINDOW_1M, Action, ToolType
 
-
-# Sensitive path patterns for security detection
-SENSITIVE_PATHS = [
-    r"\.moltbot/credentials",
-    r"\.moltbot/agents/.*/auth-profiles\.json",
-    r"\.clawdbot/",
-    r"\.aws/credentials",
-    r"\.ssh/",
-    r"\.gnupg/",
-    r"\.env$",
-    r"secrets\.json",
-    r"\.netrc",
-    r"\.npmrc",
-    r"\.pypirc",
-    r"id_rsa",
-    r"id_ed25519",
-    r"\.pem$",
-    r"\.key$",
-]
-
-SENSITIVE_PATH_REGEX = re.compile("|".join(SENSITIVE_PATHS), re.IGNORECASE)
-
+# Sensitive path patterns for security detection -- moved to
+# `security_patterns.py` (Sprint 14) so `parser.models.ActionBuffer.add()`'s
+# raw credential-access counter and `detectors/security/credentials.py` can
+# share the same definitions without an import cycle. Re-exported here for
+# backward compatibility with existing `from agentwatch.parser.logs import
+# is_sensitive_path` call sites.
+from .security_patterns import (
+    SENSITIVE_PATH_REGEX,  # noqa: F401 -- re-exported, see comment above
+    SENSITIVE_PATHS,  # noqa: F401 -- re-exported, see comment above
+    is_sensitive_path,  # noqa: F401 -- re-exported, see comment above
+)
 
 # Common agent log locations
 DEFAULT_SEARCH_PATHS = [
@@ -44,17 +34,10 @@ DEFAULT_SEARCH_PATHS = [
 ]
 
 
-def is_sensitive_path(path: str | None) -> bool:
-    """Check if a path matches known sensitive patterns."""
-    if not path:
-        return False
-    return bool(SENSITIVE_PATH_REGEX.search(path))
-
-
 def classify_tool(tool_name: str) -> ToolType:
     """Classify a tool name into a ToolType."""
     name_lower = tool_name.lower()
-    
+
     if any(x in name_lower for x in ["read", "view", "cat", "get_file"]):
         return ToolType.READ
     if any(x in name_lower for x in ["write", "create", "save"]):
@@ -71,8 +54,24 @@ def classify_tool(tool_name: str) -> ToolType:
         return ToolType.BROWSER
     if "mcp" in name_lower:
         return ToolType.MCP
-    
+
     return ToolType.UNKNOWN
+
+
+# Claude models with a 1M-token window (per the Anthropic model table,
+# 2026-10). "[1m]" is Claude Code's 1M-context alias suffix.
+# ponytail: a new 1M family needs a row here; until then its window is
+# unknown, inferred from the first call over 200K, and no % is claimed.
+_CLAUDE_1M_MODELS = re.compile(
+    r"\[1m\]|claude-(fable|mythos|opus-5|opus-4-[678]|sonnet-5|sonnet-4-6|haiku-5)"
+)
+
+
+def claude_context_window(model: Any) -> int:
+    """Context window of a Claude model id, 0 = unknown."""
+    if isinstance(model, str) and _CLAUDE_1M_MODELS.search(model):
+        return CONTEXT_WINDOW_1M
+    return 0
 
 
 def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
@@ -86,6 +85,8 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
 
     We extract actions from tool_use blocks and later merge results.
     """
+    if entry.get("type") in _NON_ACTION_TYPES:
+        return None
     try:
         msg = entry.get("message")
         if not isinstance(msg, dict):
@@ -130,6 +131,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
         )
 
         session_id = entry.get("sessionId")
+        context_window = claude_context_window(msg.get("model"))
 
         actions: list[Action] = []
 
@@ -158,6 +160,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
 
                 file_path = None
                 command = None
+                network_host = None
 
                 if isinstance(tool_input, dict):
                     file_path = (
@@ -166,6 +169,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                         or tool_input.get("file")
                     )
                     command = tool_input.get("command") or tool_input.get("cmd")
+                    network_host = url_hostname(tool_input.get("url"))  # WebFetch
 
                 actions.append(Action(
                     timestamp=timestamp,
@@ -174,11 +178,13 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                     success=True,  # Default; updated when tool_result arrives
                     file_path=file_path,
                     command=command,
+                    network_host=network_host,
                     tokens_in=tokens_in,
                     tokens_out=tokens_out,
                     cost_usd=cost_usd,
                     cache_creation_tokens=cache_creation_tokens,
                     cache_read_tokens=cache_read_tokens,
+                    context_window=context_window,
                     outgoing_data=outgoing_data,
                     session_id=session_id,
                     raw=block,
@@ -196,7 +202,10 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
 
                 if is_error:
                     # Create an action representing the failed result
-                    error_msg = str(result_content)[:500] if result_content else "Tool error"
+                    error_msg = (
+                        _redact_truncate(str(result_content), 500)
+                        if result_content else "Tool error"
+                    )
                     actions.append(Action(
                         timestamp=timestamp,
                         tool_name="tool_result",
@@ -225,6 +234,7 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                 cost_usd=cost_usd,
                 cache_creation_tokens=cache_creation_tokens,
                 cache_read_tokens=cache_read_tokens,
+                context_window=context_window,
                 session_id=session_id,
                 raw={"type": "text", "text": joined[:500]},
             ))
@@ -239,19 +249,88 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
         return None
 
 
-def _parse_timestamp(entry: dict) -> datetime:
-    """Extract timestamp from a log entry."""
+def _redact_truncate(text: str, limit: int) -> str:
+    """Mask secrets, then cut to *limit* (cutting first leaves part of a
+    token straddling the cut unmasked). Imported lazily: the detectors
+    package imports the parser package, so a module-level import cycles.
+    """
+    from agentwatch.detectors.security.secret_scanner import redact_truncate
+
+    return redact_truncate(text, limit)
+
+
+def error_text(value: Any) -> str | None:
+    """A log's ``error`` field as text. Claude Code's ``system/api_error``
+    logs a dict there; detectors expect a string. Falsy values (``False``,
+    ``0``, ``{}``, ``[]``) mean no error."""
+    if not value:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and isinstance(value.get("message"), str):
+        return value["message"]
+    try:
+        return json.dumps(value, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def url_hostname(url: Any) -> str | None:
+    """The hostname of *url*, for ``Action.network_host``.
+
+    Never the full URL: query strings carry tokens, and network_host is
+    displayed and exported verbatim (issue #24).
+    """
+    if not isinstance(url, str):
+        return None
+    try:
+        return urlsplit(url).hostname
+    except ValueError:
+        return None
+
+
+def _parse_timestamp(entry: dict) -> datetime | None:
+    """Extract timestamp from a log entry.
+
+    Returns a naive datetime (tzinfo stripped) so all parsed timestamps
+    compare cleanly, or None when it is missing or unparseable. Never
+    ``datetime.now()``: a stray "now" distorts session duration (#44).
+    """
     timestamp_str = entry.get("timestamp") or entry.get("ts") or entry.get("time")
     if timestamp_str:
         try:
-            return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=None)
         except (ValueError, AttributeError):
             pass
-    return datetime.now()
+    return None
+
+
+# Claude Code 2.1.300+ also logs every model request: "api-request" (params,
+# hashes) and "api-request-shape" (system prompt + tool list), both timed.
+# "api-request-blob" (request message copies) is untimed and its type is
+# neither user nor assistant, so it never yields an action; listed so that
+# stays true.
+_NON_ACTION_TYPES = frozenset(
+    {
+        "attachment", "pr-link", "file-history-delta", "continued-in",
+        "api-request", "api-request-shape", "api-request-blob",
+    }
+)
 
 
 def _parse_claude_code_flat(entry: dict) -> Action | None:
     """Fallback parser for flat Claude Code entries (older format)."""
+    # Current Claude Code logs interleave untimed metadata lines (last-prompt,
+    # mode, ai-title, ...). They are not actions, and stamping them
+    # datetime.now() wrecks session duration (#38).
+    if not (entry.get("timestamp") or entry.get("ts") or entry.get("time")):
+        return None
+    # Plain user prompts are not agent actions either, and no detector reads
+    # them (#46); timestamped bookkeeping (_NON_ACTION_TYPES) is dropped by
+    # parse_claude_code_entry before it gets here.
+    if entry.get("type") == "user" and isinstance(entry.get("message"), dict):
+        return None
     try:
         timestamp = _parse_timestamp(entry)
 
@@ -288,7 +367,9 @@ def _parse_claude_code_flat(entry: dict) -> Action | None:
         if "error" in entry or "err" in entry:
             success = False
 
-        error_message = entry.get("error") or entry.get("err") or entry.get("error_message")
+        error_message = error_text(
+            entry.get("error") or entry.get("err") or entry.get("error_message")
+        )
 
         tokens_in = entry.get("tokens_in") or entry.get("input_tokens") or 0
         tokens_out = entry.get("tokens_out") or entry.get("output_tokens") or 0
@@ -322,21 +403,14 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
     """Parse a Moltbot/Clawdbot JSONL session log entry."""
     try:
         # Moltbot stores sessions in ~/.moltbot/agents/<id>/sessions/*.jsonl
-        timestamp_str = entry.get("ts") or entry.get("timestamp")
-        if timestamp_str:
-            try:
-                timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-            except (ValueError, AttributeError):
-                timestamp = datetime.now()
-        else:
-            timestamp = datetime.now()
-        
+        timestamp = _parse_timestamp(entry)
+
         # Message type detection
         msg_type = entry.get("type") or entry.get("role")
-        
+
         # Skill information - at top level in Moltbot
         skill_name = entry.get("skill")
-        
+
         # Tool calls in Moltbot - can be dict or nested
         tool_call = entry.get("tool_call") or {}
         if isinstance(tool_call, dict):
@@ -345,37 +419,42 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
         else:
             tool_name = msg_type or "message"
             tool_input = {}
-        
+
         # Extract file paths from tool inputs
         file_path = None
         if isinstance(tool_input, dict):
             file_path = tool_input.get("path") or tool_input.get("file")
-        
+
         # Command extraction
         command = None
         if isinstance(tool_input, dict):
             command = tool_input.get("command") or tool_input.get("cmd")
-        
+
         # Network information for security
         network_host = None
         network_port = None
         if isinstance(tool_input, dict):
-            network_host = tool_input.get("host") or tool_input.get("url")
-            network_port = tool_input.get("port")
-        
+            host = tool_input.get("host")
+            if not (isinstance(host, str) and host.strip()):  # non-text/blank: use the URL
+                host = url_hostname(tool_input.get("url"))
+            network_host = host
+            port = tool_input.get("port")
+            if isinstance(port, int) and not isinstance(port, bool):
+                network_port = port
+
         # Incoming messages (for prompt injection detection)
         incoming_message = None
         if msg_type in ("user", "incoming", "message"):
             incoming_message = entry.get("content") or entry.get("text") or entry.get("message")
-        
+
         # Outgoing data (for exfiltration detection)
         outgoing_data = None
         if msg_type in ("assistant", "outgoing", "response"):
             outgoing_data = entry.get("content") or entry.get("text")
-        
+
         # Success/error
         success = entry.get("success", True)
-        error_message = entry.get("error")
+        error_message = error_text(entry.get("error"))
         if error_message:
             success = False
 
@@ -401,25 +480,140 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
         return None
 
 
+#  Known Codex rollout-line event-type strings (RolloutLine envelope's
+#  top-level "type" field). Used by detect_log_format to sniff Codex logs
+#  without a distinctive top-level key the way Claude Code (sessionId/cwd)
+#  or Moltbot (skill/tool_call) have.
+#
+#  PLAYBOOK Sprint 8 (2026-07-14): the original 4 values were confirmed by
+#  research against issue trackers/community tools, not the primary source.
+#  Fetched the real, current codex-rs/protocol/src/protocol.rs from
+#  github.com/openai/codex @ main directly: `RolloutItem`
+#  (`#[serde(tag = "type", content = "payload")]`, flattened into
+#  `RolloutLine`) has 8 real variants, not 4 -- the original set is missing
+#  "compacted", "world_state", "inter_agent_communication", and
+#  "inter_agent_communication_metadata" (the latter two are a multi-agent
+#  feature not previously documented anywhere in this investigation).
+#  Practical impact is low (detect_log_format only needs the FIRST entry,
+#  and "session_meta" is always first in a real rollout file), but this is
+#  now complete against the real enum rather than a partial guess.
+_CODEX_EVENT_TYPES = frozenset(
+    {
+        "session_meta",
+        "response_item",
+        "event_msg",
+        "turn_context",
+        "compacted",
+        "world_state",
+        "inter_agent_communication",
+        "inter_agent_communication_metadata",
+    }
+)
+
+
+class UnsupportedLogFormatError(ValueError):
+    """A log file that is not a recognised agent log (binary, or unknown JSONL)."""
+
+    def __init__(self, path: Path, reason: str):
+        self.path = path
+        self.reason = reason
+        super().__init__(f"unsupported log format: {path} ({reason})")
+
+
+class LogUnreadableError(Exception):
+    """A recognised log that cannot be read right now (e.g. a locked SQLite db)."""
+
+    def __init__(self, path: Path, reason: str):
+        self.path = path
+        self.reason = reason
+        super().__init__(f"cannot read log: {path} ({reason})")
+
+
+# How many decoded dict entries may be unrecognised ("unknown") before a log
+# counts as an unsupported format. "skip" entries, undecodable lines and
+# non-dict JSON don't count. Shared by sniff_jsonl_format, _parse_jsonl and
+# LogWatcher via FormatSniffer, so claims() and the parsers always agree.
+FORMAT_SNIFF_LINES = 50
+
+
+# Claude Code bookkeeping lines with no session id of their own.
+_CLAUDE_METADATA_TYPES = frozenset(
+    {"file-history-snapshot", "file-history-delta", "summary", "config"}
+)
+
+
+def is_binary_file(path: Path) -> bool:
+    """True if the file's head has a NUL byte. JSONL and Markdown never do."""
+    try:
+        with open(path, "rb") as f:
+            return b"\0" in f.read(8192)
+    except OSError:
+        return False
+
+
+def is_json_array_file(path: Path) -> bool:
+    """True if the file's first non-whitespace character is ``[``: a whole-file
+    JSON array (e.g. a Roo/Kilo ``api_conversation_history.json``), never JSONL."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+    except OSError:
+        return False
+    return head.decode("utf-8-sig", errors="ignore").lstrip().startswith("[")
+
+
+def ensure_supported_log(path: Path) -> None:
+    """Raise UnsupportedLogFormatError if no adapter claims *path* and its content
+    is binary or unrecognised JSONL. Empty/undecidable files pass (they may
+    still be filling up)."""
+    from agentwatch.agents import adapter_for
+    from agentwatch.agents.base import sniff_jsonl_format
+
+    if adapter_for(path) is not None:
+        return
+    if is_binary_file(path):
+        raise UnsupportedLogFormatError(path, "binary file, not a JSONL agent log")
+    if is_json_array_file(path):
+        raise UnsupportedLogFormatError(path, "a JSON array no adapter claims, not a JSONL log")
+    if sniff_jsonl_format(path) == "unknown":
+        raise UnsupportedLogFormatError(path, "no recognised agent log records")
+
+
 def detect_log_format(first_entry: dict) -> str:
-    """Detect whether log is from Claude Code or Moltbot.
+    """Detect which agent wrote a log from one decoded JSONL entry.
 
-    Returns "skip" for metadata-only entries (e.g. file-history-snapshot)
-    that should not lock the format decision.
+    Returns "skip" for metadata-only entries that should not lock the format
+    decision, and "unknown" when nothing matches (including non-dict JSON).
     """
-    # Claude Code metadata entries — don't lock format, wait for a real message
+    if not isinstance(first_entry, dict):
+        return "unknown"
     entry_type = first_entry.get("type", "")
-    if entry_type in ("file-history-snapshot", "summary", "config"):
-        return "skip"
+    if not isinstance(entry_type, str):
+        entry_type = ""
 
-    # Claude Code indicators — check first since its logs also have "type" keys
-    # Claude Code entries have top-level sessionId/cwd/version or message.content with tool_use blocks
-    if any(key in first_entry for key in ["sessionId", "cwd", "costUSD", "cacheCreationInputTokens"]):
-        return "claude_code"
+    # Claude Code message: {type: user|assistant, message: {role/content, ...}}
     if entry_type in ("user", "assistant") and "message" in first_entry:
         msg = first_entry.get("message", {})
-        if isinstance(msg, dict) and "role" in msg:
+        if isinstance(msg, dict) and ("role" in msg or "content" in msg):
             return "claude_code"
+
+    # Gemini CLI session header (always line 1 of chats/session-*.jsonl).
+    # Before the Claude Code checks: it also has a sessionId (#39, #65).
+    if "projectHash" in first_entry and "sessionId" in first_entry:
+        return "gemini"
+
+    # Older flat Claude Code entries: Claude-specific field names, or a
+    # sessionId alongside a tool name. A bare sessionId is not enough --
+    # other agents (e.g. Gemini CLI) use that key too (#39).
+    if "costUSD" in first_entry or "cacheCreationInputTokens" in first_entry:
+        return "claude_code"
+    if "sessionId" in first_entry and ("tool" in first_entry or "tool_name" in first_entry):
+        return "claude_code"
+
+    # Claude Code metadata lines (mode, last-prompt, attachment, system, ...)
+    # -- don't lock the format, wait for a real message.
+    if entry_type in _CLAUDE_METADATA_TYPES or (entry_type and "sessionId" in first_entry):
+        return "skip"
 
     # Moltbot indicators
     if "skill" in first_entry:
@@ -429,18 +623,121 @@ def detect_log_format(first_entry: dict) -> str:
     if "role" in first_entry and "skill" not in first_entry:
         return "moltbot"
 
+    # Codex indicators — a "type" value from the known RolloutLine event
+    # set, with none of Claude Code's/Moltbot's distinguishing keys above
+    # (already ruled out by this point).
+    if entry_type in _CODEX_EVENT_TYPES:
+        return "codex"
+
+    # Copilot CLI events.jsonl: dotted "type" with the body under "data".
+    # Only the first entry is sniffed, and that is always session.start. A
+    # live 1.0.90 capture also has model.* events, which this list leaves out.
+    if isinstance(first_entry.get("data"), dict) and entry_type.startswith(
+        ("session.", "user.", "system.", "assistant.", "tool.")
+    ):
+        return "copilot"
+
+    # agy (Antigravity CLI) transcript.jsonl: numbered steps.
+    if "step_index" in first_entry and "source" in first_entry:
+        return "agy"
+
+    # Copilot in VS Code chatSessions/*.jsonl: a mutation log whose first
+    # line is the kind 0 session snapshot (parser/copilot_vscode.py).
+    snapshot = first_entry.get("v")
+    if (
+        first_entry.get("kind") == 0
+        and isinstance(snapshot, dict)
+        and "sessionId" in snapshot
+        and "requests" in snapshot
+    ):
+        return "copilot_vscode"
+
     return "unknown"
 
 
-def parse_file(path: Path, session_id: str | None = None) -> Iterator[Action]:
-    """Parse a JSONL log file, auto-detecting format.
+class FormatSniffer:
+    """Incremental log-format decision over a stream of decoded entries.
 
-    Args:
-        path: Path to the JSONL log file.
-        session_id: Optional session ID to filter by. When provided, only actions
-            from this exact session are yielded (prevents log bleeding between sessions).
+    The first recognised entry locks the format. "skip" entries are ignored,
+    and so are up to FORMAT_SNIFF_LINES "unknown" ones -- a stray first line
+    must not make a real agent log unreadable (#39). Only once that many
+    unknown entries arrive with nothing recognised does the format lock to
+    "unknown". Feed it entries one at a time; state persists across calls, so
+    a live tail can feed it across reads.
     """
+
+    def __init__(self) -> None:
+        self.format: str | None = None
+        self.unknown_seen = 0
+        # "skip" entries are Claude Code metadata. Some carry content the
+        # detectors scan (system, queue-operation), so callers replay them
+        # once the format locks to claude_code instead of dropping them.
+        self.skipped: list[dict] = []
+
+    def feed(self, entry: object) -> str | None:
+        """Return the locked format ("unknown" included), or None if undecided."""
+        if self.format is not None:
+            return self.format
+        fmt = detect_log_format(entry)
+        if fmt == "skip":
+            self.skipped.append(entry)
+            return None
+        if fmt == "unknown":
+            self.unknown_seen += 1
+            if self.unknown_seen >= FORMAT_SNIFF_LINES:
+                self.format = "unknown"
+            return self.format
+        self.format = fmt
+        return fmt
+
+    def finish(self) -> str | None:
+        """Decision at end of input: undecided input that held any unknown
+        entry (and nothing recognised) is "unknown"; skip-only stays None."""
+        if self.format is None and self.unknown_seen:
+            return "unknown"
+        return self.format
+
+    def take_skipped(self) -> list[dict]:
+        """Hand back the skipped Claude Code metadata entries, once."""
+        skipped, self.skipped = self.skipped, []
+        return skipped
+
+    def take_metadata_only(self) -> list[dict]:
+        """End-of-input rule shared by parse_file and LogWatcher: undecided
+        input holding only Claude Code metadata (no unknown entry) is parsed
+        as Claude Code. Returns those entries once, else []."""
+        return self.take_skipped() if self.finish() is None else []
+
+
+def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
+    """JSONL body of parse_file (Claude Code / Moltbot / Codex / Copilot / agy / Gemini)."""
+    # Imported lazily (not at module level) to avoid a logs.py <-> codex.py
+    # circular import — codex.py imports classify_tool from this module at
+    # its own module level.
+    from .agy import AgyParser
+    from .codex import CodexParser
+    from .copilot import CopilotParser
+    from .gemini import GeminiParser
+
+    if is_binary_file(path):
+        raise UnsupportedLogFormatError(path, "binary file, not a JSONL agent log")
+    if is_json_array_file(path):
+        raise UnsupportedLogFormatError(path, "a JSON array no adapter claims, not a JSONL log")
+
+    sniffer = FormatSniffer()
     log_format = None
+    codex_parser: CodexParser | CopilotParser | AgyParser | GeminiParser | None = None
+
+    def parse(entry: dict) -> list[Action]:
+        if log_format == "moltbot":
+            result = parse_moltbot_entry(entry)
+        elif log_format in ("codex", "copilot", "agy", "gemini"):
+            result = codex_parser.parse_line(entry)
+        else:
+            result = parse_claude_code_entry(entry)
+        if not isinstance(result, list):
+            result = [result] if result else []
+        return [a for a in result if session_id is None or a.session_id == session_id]
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -452,48 +749,104 @@ def parse_file(path: Path, session_id: str | None = None) -> Iterator[Action]:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(entry, dict):
+                continue
 
-            # Detect format on first valid entry (skip metadata-only entries)
-            if log_format is None or log_format == "skip":
-                log_format = detect_log_format(entry)
-                if log_format == "skip":
+            # Detect format on the first recognised entry; metadata-only and
+            # (within the sniff window) unrecognised entries are skipped.
+            if log_format is None:
+                log_format = sniffer.feed(entry)
+                if log_format is None:
                     continue
+                if log_format == "unknown":
+                    raise UnsupportedLogFormatError(path, "no recognised agent log records")
+                if log_format == "codex":
+                    codex_parser = CodexParser()
+                elif log_format == "copilot":
+                    codex_parser = CopilotParser()
+                elif log_format == "agy":
+                    # agy transcripts carry no session id; tag with the requested one.
+                    codex_parser = AgyParser(session_id)
+                elif log_format == "gemini":
+                    codex_parser = GeminiParser()
+                elif log_format == "claude_code":
+                    for skipped in sniffer.take_skipped():
+                        yield from parse(skipped)
 
-            # Parse based on format
-            if log_format == "moltbot":
-                result = parse_moltbot_entry(entry)
-            else:
-                result = parse_claude_code_entry(entry)
+            yield from parse(entry)
 
-            # Yield results, optionally filtering by session_id
-            if isinstance(result, list):
-                for action in result:
-                    if session_id is None or action.session_id == session_id:
-                        yield action
-            elif result:
-                if session_id is None or result.session_id == session_id:
-                    yield result
+        if log_format is None:
+            # File ended inside the sniff window with only unrecognised entries.
+            if sniffer.finish() == "unknown":
+                raise UnsupportedLogFormatError(path, "no recognised agent log records")
+            # Only Claude Code metadata (no message yet): parse it as Claude
+            # Code, as before #39.
+            log_format = "claude_code"
+            for skipped in sniffer.take_metadata_only():
+                yield from parse(skipped)
+
+        # One-shot batch read: end-of-file legitimately means "this is
+        # everything", so flush any function_call left waiting for output
+        # that will now never arrive in this file. (LogWatcher's live-tail
+        # equivalent deliberately does NOT do this — see watcher.py.)
+        if codex_parser is not None:
+            for action in codex_parser.flush():
+                if session_id is None or action.session_id == session_id:
+                    yield action
+
+
+def parse_file(
+    path: Path, session_id: str | None = None, analytics_log: Path | None = None
+) -> Iterator[Action]:
+    """Parse an agent log file, auto-detecting format.
+
+    Args:
+        path: Path to the log file. JSONL (Claude Code / Moltbot / Codex) is
+            auto-detected by content; a ``.md`` extension is dispatched to
+            the Aider Markdown chat-history parser, and a ``.vscdb``
+            extension to Cursor's ``state.vscdb`` SQLite store, instead.
+        session_id: Optional session ID to filter by. When provided, only actions
+            from this exact session are yielded (prevents log bleeding between
+            sessions). For a ``.vscdb`` path this is the Cursor composer_id to
+            parse; when omitted the most-recently-active agent-mode composer
+            is auto-picked (see ``cursor_source.select_latest_agent_composer``).
+        analytics_log: Optional path to an Aider ``--analytics-log`` JSONL
+            sidecar. Only used when ``path`` is a ``.md`` Aider transcript;
+            ignored for JSONL logs.
+    """
+    from agentwatch.agents import adapter_for
+
+    adapter = adapter_for(path)
+    if adapter is None:
+        yield from _parse_jsonl(path, session_id)
+        return
+    yield from adapter.parse_file(path, session_id, analytics_log=analytics_log)
 
 
 def find_log_files(base_path: Path | None = None) -> list[Path]:
     """Find all relevant log files for known agents."""
     log_files = []
-    
+
     search_paths = DEFAULT_SEARCH_PATHS
     if base_path:
         search_paths = [base_path]
-    
+
     for search_path in search_paths:
         if search_path.exists():
             log_files.extend(search_path.rglob("*.jsonl"))
-    
+
     # Sort by modification time, newest first
     log_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    
+
     return log_files
 
 
 def find_latest_session(base_path: Path | None = None) -> Path | None:
-    """Find the most recently modified log file."""
+    """Find the most recently modified main session log.
+
+    Claude Code writes subagent transcripts under ``<session>/subagents/``;
+    those are skipped unless nothing else exists (#63).
+    """
     log_files = find_log_files(base_path)
-    return log_files[0] if log_files else None
+    main = [p for p in log_files if "subagents" not in p.parts]
+    return (main or log_files or [None])[0]

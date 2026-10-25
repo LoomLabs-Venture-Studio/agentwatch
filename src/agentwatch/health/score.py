@@ -11,12 +11,13 @@ if TYPE_CHECKING:
 
 from agentwatch.detectors.base import Category, Severity
 from agentwatch.themes import (
-    get_theme,
-    status_from_score as _theme_status_from_score,
     get_status_emojis,
     get_status_labels,
+    get_theme,
 )
-
+from agentwatch.themes import (
+    status_from_score as _theme_status_from_score,
+)
 
 # ---------------------------------------------------------------------------
 # Unified status thresholds — shared by health, efficiency, and rot display
@@ -25,12 +26,19 @@ from agentwatch.themes import (
 STATUS_THRESHOLDS = (80, 60, 40)  # level_0 / level_1 / level_2 / level_3
 
 
-def STATUS_LABELS() -> tuple[str, str, str, str]:
+# Intentionally constant-style-named (not accidental camelCase drift):
+# STATUS_LABELS is re-exported as a public API constant in
+# health/__init__.py's __all__ -- historically a plain tuple, kept
+# SCREAMING_CASE after becoming theme-dependent to avoid a breaking
+# rename for any caller already doing `from agentwatch.health import
+# STATUS_LABELS`. _STATUS_EMOJI is its private, unexported counterpart,
+# kept in the same casing style for consistency with its public sibling.
+def STATUS_LABELS() -> tuple[str, str, str, str]:  # noqa: N802
     """Get status labels from current theme."""
     return get_status_labels()
 
 
-def _STATUS_EMOJI() -> dict[str, str]:
+def _STATUS_EMOJI() -> dict[str, str]:  # noqa: N802
     """Get status emojis from current theme."""
     return get_status_emojis()
 
@@ -43,11 +51,11 @@ def _score_to_status(score: int) -> str:
 @dataclass
 class CategoryScore:
     """Score for a single category."""
-    
+
     category: Category
     score: int  # 0-100
     warnings: list["Warning"] = field(default_factory=list)
-    
+
     @property
     def status(self) -> str:
         return _score_to_status(self.score)
@@ -72,17 +80,17 @@ class HealthReport:
     @property
     def emoji(self) -> str:
         return _STATUS_EMOJI().get(self.status, "❓")
-    
+
     @property
     def health_warnings(self) -> list["Warning"]:
         """Get only health-related warnings."""
         return [w for w in self.warnings if w.is_health]
-    
+
     @property
     def security_warnings(self) -> list["Warning"]:
         """Get only security-related warnings."""
         return [w for w in self.warnings if w.is_security]
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -233,11 +241,11 @@ class EfficiencyReport:
     context_usage_pct: float  # 0-100
     token_burn_rate: float  # tokens/min
     io_ratio: float  # input/output token ratio
-    cost_total: float  # cumulative USD
-    cost_velocity: float  # USD/min
+    cost_total: float | None  # cumulative USD; None = no known price
+    cost_velocity: float | None  # USD/min
     cache_hit_rate: float  # 0.0-1.0
     actions_per_turn: float  # avg tool calls per model response
-    duration_minutes: float  # wall clock
+    duration_minutes: float  # active time, idle gaps capped at 30 min
     # Per-category penalty rollups (0.0 = healthy, 1.0 = full penalty)
     penalty_context: float = 0.0  # max(pressure, burn, io)
     penalty_cache: float = 0.0    # cache miss penalty
@@ -262,6 +270,10 @@ class EfficiencyReport:
         }
 
 
+# Below this many active minutes, per-minute rates are noise: no burn/IO
+# penalty, and the TUI shows "--" instead of tok/min and $/min.
+MIN_RATE_MINUTES = 2.0
+
 # Sub-metric weights for efficiency scoring (sum to 1.0)
 # Cost is excluded — not reported in logs; displayed as informational only.
 _W_CONTEXT_PRESSURE = 0.30
@@ -271,14 +283,6 @@ _W_CACHE_HIT = 0.15
 _W_ACTIONS_TURN = 0.10
 _W_DURATION = 0.15
 
-# Context window and session budget estimates (tokens).
-# The window is the model's context limit.  The budget is the total
-# throughput (input+cache+output summed across all turns) at which we
-# consider the session fully pressured — roughly 10× the window to
-# account for cache-heavy workloads where the same ~200k window is
-# refilled on every turn.
-_CONTEXT_WINDOW = 200_000
-_SESSION_BUDGET = 2_000_000
 
 
 def _clamp01(x: float) -> float:
@@ -294,57 +298,70 @@ def calculate_efficiency(
     ``warnings`` is accepted for call-site compatibility but ignored — all
     signals are derived from the action buffer and its stats.
     """
-    from agentwatch.parser.models import turns_from_buffer
+    from agentwatch.parser.models import CONTEXT_WINDOW_200K, turns_from_buffer
 
     stats = buffer.stats
     duration = stats.duration_minutes
-    action_count = stats.action_count
+    action_count = stats.activity_count  # token-usage records aren't actions
 
-    # Full input including cache — used for pressure, burn rate, and I/O ratio.
-    full_input = stats.total_input_tokens + stats.total_cache_creation + stats.total_cache_read
-    full_throughput = full_input + stats.total_output_tokens
-    # Fall back to total_tokens when no cache data is available.
-    if full_throughput == 0:
-        full_throughput = stats.total_tokens
-        full_input = stats.total_tokens
+    # Fresh input excludes cache reads — used for burn rate and I/O ratio.
+    # Cache reads are the whole conversation re-sent on every API call, so
+    # including them makes both metrics saturate on any normal cached session.
+    fresh_input = stats.total_input_tokens + stats.total_cache_creation
+    fresh_throughput = fresh_input + stats.total_output_tokens
+    # Fall back to total_tokens when no token breakdown is available.
+    if fresh_throughput == 0:
+        fresh_throughput = stats.total_tokens
+        fresh_input = stats.total_tokens
 
     # --- 1. Context pressure (linear 0→1 as usage 0→100%) ---
-    # Uses cumulative throughput against a session budget rather than
-    # current window fill.  This is monotonically increasing — it never
-    # drops after auto-compaction or tool restart, because cumulative
-    # totals are replayed from the log.
-    context_usage_pct = min(full_throughput / _SESSION_BUDGET * 100, 100.0)
+    # Window fill of the latest call (input + cache creation + cache read),
+    # not a cumulative sum: cache reads re-send the whole conversation every
+    # call, so summing them saturates any normal session. Drops after
+    # compaction. 0 when no per-call usage was reported.
+    # Window: log-reported or proven (SessionStats.known_context_window);
+    # unknown counts as 200K here, a penalty is still useful as an estimate.
+    window = stats.known_context_window or CONTEXT_WINDOW_200K
+    context_usage_pct = min(stats.last_context_tokens / window * 100, 100.0)
     pressure_penalty = _clamp01(context_usage_pct / 100.0)
 
     # --- 2. Token burn rate (0 at ≤5k tok/min, 1.0 at ≥30k) ---
-    # Skip penalty for very short sessions where rate naturally spikes
-    burn_rate = full_throughput / duration if duration > 0 else 0.0
-    if duration >= 2.0:
+    # Fresh tokens only (no cache reads). Skip penalty for very short
+    # sessions where rate naturally spikes.
+    burn_rate = fresh_throughput / duration if duration > 0 else 0.0
+    if duration >= MIN_RATE_MINUTES:
         burn_penalty = _clamp01((burn_rate - 5_000) / (30_000 - 5_000))
     else:
         burn_penalty = 0.0
 
     # --- 3. I/O ratio (0 at ratio≤8, 1.0 at ratio≥20) ---
-    # Skip penalty for very short sessions where ratio hasn't stabilized
+    # Fresh input only (no cache reads). Skip penalty for very short
+    # sessions where ratio hasn't stabilized.
     io_ratio = (
-        full_input / stats.total_output_tokens
+        fresh_input / stats.total_output_tokens
         if stats.total_output_tokens > 0
         else 0.0
     )
-    if duration >= 2.0:
+    if duration >= MIN_RATE_MINUTES:
         io_penalty = _clamp01((io_ratio - 8.0) / (20.0 - 8.0))
     else:
         io_penalty = 0.0
 
-    # --- 4. Cost velocity (0 at ≤$0.05/min, 1.0 at ≥$0.30/min) ---
-    cost_total = stats.estimated_cost
-    cost_vel = cost_total / duration if duration > 0 else 0.0
-    cost_penalty = _clamp01((cost_vel - 0.05) / (0.30 - 0.05))
+    # --- 4. Cost velocity (informational only — see _W_* comment above;
+    #        not converted to a penalty since cost is excluded from scoring) ---
+    cost_total = stats.estimated_cost  # None: model has no known price
+    if cost_total is None:
+        cost_vel = None
+    else:
+        cost_vel = cost_total / duration if duration > 0 else 0.0
 
     # --- 5. Cache hit rate (penalty = 1 - hit_rate; 0 if no cache data) ---
+    # Share of all prompt tokens served from cache. Fresh input counts as a
+    # miss: providers without cache writes (Codex) would otherwise read 100%.
     total_cache = stats.total_cache_creation + stats.total_cache_read
+    total_prompt = total_cache + stats.total_input_tokens
     cache_hit_rate = (
-        stats.total_cache_read / total_cache if total_cache > 0 else 0.0
+        stats.total_cache_read / total_prompt if total_cache > 0 else 0.0
     )
     cache_penalty = (1.0 - cache_hit_rate) if total_cache > 0 else 0.0
 
@@ -394,8 +411,8 @@ def calculate_efficiency(
         context_usage_pct=round(context_usage_pct, 1),
         token_burn_rate=round(burn_rate, 1),
         io_ratio=round(io_ratio, 2),
-        cost_total=round(cost_total, 4),
-        cost_velocity=round(cost_vel, 4),
+        cost_total=None if cost_total is None else round(cost_total, 4),
+        cost_velocity=None if cost_vel is None else round(cost_vel, 4),
         cache_hit_rate=round(cache_hit_rate, 3),
         actions_per_turn=round(apt, 2),
         duration_minutes=round(duration, 1),
@@ -445,7 +462,8 @@ def calculate_team_health(
     sub-agents split the remaining 50% equally.  If multiple sub-agents
     are struggling, a cross-agent warning is emitted.
     """
-    from agentwatch.detectors.base import Warning as Warn, Category, Severity
+    from agentwatch.detectors.base import Category, Severity
+    from agentwatch.detectors.base import Warning as Warn
 
     if not member_reports:
         return TeamHealthReport(
@@ -486,7 +504,9 @@ def calculate_team_health(
                     severity=Severity.HIGH,
                     signal="team_cascade_failure",
                     message=f"{struggling}/{len(subagent_pids)} sub-agents are struggling",
-                    suggestion="Root agent may be issuing unclear instructions or an impossible task",
+                    suggestion=(
+                        "Root agent may be issuing unclear instructions or an impossible task"
+                    ),
                     details={"struggling_count": struggling, "total_subagents": len(subagent_pids)},
                 )
             )
@@ -525,23 +545,23 @@ def calculate_team_health(
 def calculate_security_score(warnings: list["Warning"]) -> int:
     """
     Calculate a security-specific score.
-    
+
     Returns:
         Score from 0-100 (100 = secure, 0 = compromised)
     """
     security_warnings = [w for w in warnings if w.is_security]
-    
+
     if not security_warnings:
         return 100
-    
+
     # Security is more strict - critical = immediate 0
     for w in security_warnings:
         if w.severity == Severity.CRITICAL:
             return 0
-    
+
     # Otherwise deduct based on severity
     score = 100
     for w in security_warnings:
         score -= w.severity.score_impact
-    
+
     return max(0, score)

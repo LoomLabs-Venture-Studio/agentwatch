@@ -100,6 +100,7 @@ def _must_touch(
     buffer: "ActionBuffer",
     required_paths: list[str],
     after_turns: int = 6,
+    turns: list[Turn] | None = None,
 ) -> tuple[float, list[str]]:
     """Check that certain paths have been touched after *after_turns* turns.
 
@@ -108,7 +109,7 @@ def _must_touch(
     if not required_paths:
         return 0.0, []
 
-    turns = turns_from_buffer(buffer)
+    turns = turns_from_buffer(buffer) if turns is None else turns
     if len(turns) < after_turns:
         return 0.0, []
 
@@ -129,7 +130,9 @@ def _must_touch(
         return 0.0, []
 
     score = min(len(missing) / max(len(required_paths), 1), 1.0)
-    evidence = [f"required path not yet touched after {after_turns} turns: {p}" for p in missing[:3]]
+    evidence = [
+        f"required path not yet touched after {after_turns} turns: {p}" for p in missing[:3]
+    ]
     return round(score, 4), evidence
 
 
@@ -145,6 +148,7 @@ def compute_constraints(
     forbidden_prefixes: list[str] | None = None,
     must_touch_paths: list[str] | None = None,
     must_touch_after: int = 6,
+    turns: list[Turn] | None = None,
 ) -> MetricResult:
     """Compute the constraint-violations metric.
 
@@ -168,7 +172,7 @@ def compute_constraints(
         scores.append(fp_score)
 
     if must:
-        mt_score, mt_ev = _must_touch(buffer, must, after_turns=must_touch_after)
+        mt_score, mt_ev = _must_touch(buffer, must, after_turns=must_touch_after, turns=turns)
         sub_results.append(MetricResult(name="must_touch", value=mt_score, evidence=mt_ev))
         scores.append(mt_score)
 

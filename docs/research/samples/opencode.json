@@ -1,0 +1,102 @@
+{
+ "_note": "OpenCode SQLite export (~/.local/share/opencode/opencode.db): tables session/message/part; parts JSON in part.data",
+ "session": {
+  "id": "ses_ef2eb479dffeE0mely3S9hRLmP",
+  "directory": "/home/<user>/agent-tests/opencode",
+  "version": "1.18.34",
+  "cost": 0.0,
+  "tokens_input": 58021,
+  "tokens_output": 176,
+  "tokens_reasoning": 110,
+  "tokens_cache_read": 0,
+  "tokens_cache_write": 0,
+  "model": "{\"id\":\"nemotron-3-ultra-free\",\"providerID\":\"opencode\"}",
+  "time_created": 1791220824162
+ },
+ "message": {
+  "id": "msg_10d1502a30014v7MO0ZRj4m8ZE",
+  "session_id": "ses_ef2eb479dffeE0mely3S9hRLmP",
+  "time_created": 1791220843171,
+  "time_updated": 1791220845635,
+  "data": {
+   "parentID": "msg_10d14b96d001fQQla39PmVJcNg",
+   "role": "assistant",
+   "mode": "build",
+   "agent": "build",
+   "path": {
+    "cwd": "/home/<user>/agent-tests/opencode",
+    "root": "/home/<user>/agent-tests/opencode"
+   },
+   "cost": 0,
+   "tokens": {
+    "total": 11577,
+    "input": 11543,
+    "output": 28,
+    "reasoning": 6,
+    "cache": {
+     "write": 0,
+     "read": 0
+    }
+   },
+   "modelID": "nemotron-3-ultra-free",
+   "providerID": "opencode",
+   "time": {
+    "created": 1791220843171,
+    "completed": 1791220845634
+   },
+   "finish": "tool-calls"
+  }
+ },
+ "tool_part": {
+  "id": "prt_10d150af6001a4Aadmn4PL272V",
+  "message_id": "msg_10d1502a30014v7MO0ZRj4m8ZE",
+  "session_id": "ses_ef2eb479dffeE0mely3S9hRLmP",
+  "time_created": 1791220845303,
+  "time_updated": 1791220845548,
+  "data": {
+   "type": "tool",
+   "tool": "bash",
+   "callID": "call-43351533-7138-4187-8576-a6f746eeed42",
+   "state": {
+    "status": "completed",
+    "input": {
+     "command": "python hello.py"
+    },
+    "output": "/bin/bash: line 1: python: command not found\n",
+    "metadata": {
+     "output": "/bin/bash: line 1: python: command not found\n",
+     "exit": 127,
+     "truncated": false
+    },
+    "title": "python hello.py",
+    "time": {
+     "start": 1791220845340,
+     "end": 1791220845546
+    }
+   }
+  }
+ },
+ "step_finish_part": {
+  "id": "prt_10d150c2a001mNQ9zdbu9tXF5l",
+  "message_id": "msg_10d1502a30014v7MO0ZRj4m8ZE",
+  "session_id": "ses_ef2eb479dffeE0mely3S9hRLmP",
+  "time_created": 1791220845610,
+  "time_updated": 1791220845611,
+  "data": {
+   "reason": "tool-calls",
+   "snapshot": "9338327da2077a5ffbbb9dc5c84601dab9e62688",
+   "type": "step-finish",
+   "tokens": {
+    "total": 11577,
+    "input": 11543,
+    "output": 28,
+    "reasoning": 6,
+    "cache": {
+     "write": 0,
+     "read": 0
+    }
+   },
+   "cost": 0
+  }
+ }
+}

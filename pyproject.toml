@@ -1,6 +1,6 @@
 [project]
 name = "agentwatch-monitor"
-version = "0.1.6"
+version = "0.2.0"
 description = "Real-time health and security monitoring for AI coding agents"
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,14 @@ dependencies = [
     "watchfiles>=0.21.0",
     "pydantic>=2.0.0",
     "click>=8.0.0",
+    "psutil>=5.9.0",
 ]
+
+[project.urls]
+Homepage = "https://loomlabs.io"
+Repository = "https://github.com/LoomLabs-Venture-Studio/agentwatch"
+Issues = "https://github.com/LoomLabs-Venture-Studio/agentwatch/issues"
+Changelog = "https://github.com/LoomLabs-Venture-Studio/agentwatch/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
@@ -52,6 +59,17 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentwatch"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/",
+    "tests/",
+    "skills/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "pyproject.toml",
+]
 
 [tool.ruff]
 line-length = 100

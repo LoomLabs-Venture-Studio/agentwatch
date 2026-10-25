@@ -7,7 +7,6 @@ The default theme uses agent-specific language (productive, struggling, spinning
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
 
 
 @dataclass(frozen=True)
@@ -73,7 +72,18 @@ class StatusTheme:
         return self.level_3
 
     def emoji_for(self, status: str) -> str:
-        """Get emoji for a status label."""
+        """Get emoji for a status label.
+
+        The "❓" fallback below is intentionally non-ASCII (it would defeat
+        the point of the `ascii` theme if it were ever actually emitted by
+        it). In practice this is unreachable: every call site passes a
+        `status` string that was itself derived from the *current* theme
+        (`status_from_score()`, `RotState.label`, or a value already stored
+        from `theme.level_0`), so `status` always matches one of the four
+        keys `self.emojis` was just built from. It only fires if a caller
+        passes a label from a *different* theme than the one currently
+        active, which no code in this codebase does today.
+        """
         return self.emojis.get(status, "❓")
 
     def color_for(self, status: str) -> str:
@@ -217,6 +227,27 @@ THEME_TECHNICAL = StatusTheme(
     color_3="red",
 )
 
+# Pure 7-bit ASCII theme — for legacy Windows consoles (plain cmd.exe /
+# powershell.exe via conhost.exe) that have no Unicode font-fallback and
+# render every other theme's glyphs (including `technical`'s ✓/~/!/✗) as
+# "?" or a tofu box. Bracketed text labels instead of dingbats, so this is
+# safe even on the oldest conhost. See CLAUDE.md Known Issues.
+THEME_ASCII = StatusTheme(
+    name="ascii",
+    level_0="ok",
+    level_1="warning",
+    level_2="alert",
+    level_3="failure",
+    emoji_0="[OK]",
+    emoji_1="[WARN]",
+    emoji_2="[ALERT]",
+    emoji_3="[FAIL]",
+    color_0="green",
+    color_1="yellow",
+    color_2="orange",
+    color_3="red",
+)
+
 
 # =============================================================================
 # Theme Registry
@@ -234,6 +265,7 @@ THEMES: dict[str, StatusTheme] = {
     "simple": THEME_SIMPLE,
     "gaming": THEME_GAMING,
     "technical": THEME_TECHNICAL,
+    "ascii": THEME_ASCII,
 }
 
 # Default theme - agent-specific language
@@ -300,3 +332,77 @@ def get_status_emojis() -> dict[str, str]:
 def get_status_colors() -> dict[str, str]:
     """Get all status colors for current theme."""
     return get_theme().colors
+
+
+# =============================================================================
+# Shared cross-surface helpers (Task #9: hardcoded-emoji audit)
+# =============================================================================
+#
+# These exist so widgets/CLI commands that need theme-aware glyphs but don't
+# fit `StatusTheme.emoji_for(status)`'s "look up a status label" model have
+# ONE place to get it right, instead of each call site hand-rolling its own
+# hardcoded emoji (which is exactly how the `--theme ascii` bug this task
+# fixes was introduced: `HealthBar` was wired to the theme correctly,
+# `SecurityStatus` right next to it in the same file was not).
+
+
+# The one security threshold. Every verdict surface (headline, label, JSON
+# status, exit code, dashboard widget) derives from security_tier_from_score():
+#   score == 100  -> "secure"      (exit 0)
+#   50 <= score   -> "at_risk"     (exit 1)
+#   score < 50    -> "compromised" (exit 2)
+SECURITY_TIER_LABELS = {"secure": "SECURE", "at_risk": "AT RISK", "compromised": "COMPROMISED"}
+SECURITY_TIER_EXIT_CODES = {"secure": 0, "at_risk": 1, "compromised": 2}
+
+
+def security_tier_from_score(score: float) -> str:
+    """Security tier for a 0-100 security score: "secure", "at_risk" or "compromised"."""
+    if score >= 100:
+        return "secure"
+    if score >= 50:
+        return "at_risk"
+    return "compromised"
+
+
+def security_status_from_score(score: float) -> str:
+    """Map a security score (0-100) onto a theme status label, for the
+    colour and emoji of the SECURE / AT RISK / COMPROMISED tiers.
+
+    Deliberately does NOT reuse ``StatusTheme.status_from_score()``'s 4-way
+    80/60/40 banding: the security verdict is its own 3-way threshold, not a
+    general health-score band.
+
+    Maps onto 3 of the theme's 4 levels -- level_0 (secure), level_1 (at
+    risk), level_3 (compromised) -- intentionally skipping level_2, so the
+    at-risk/compromised colors line up with the yellow/red (not orange).
+    """
+    theme = get_theme()
+    level = {
+        "secure": theme.level_0,
+        "at_risk": theme.level_1,
+        "compromised": theme.level_3,
+    }[security_tier_from_score(score)]
+    return level
+
+
+def security_label_from_score(score: float) -> str:
+    """Security verdict text for a 0-100 security score: SECURE / AT RISK /
+    COMPROMISED. The theme levels are health words, so this text never comes
+    from the theme."""
+    return SECURITY_TIER_LABELS[security_tier_from_score(score)]
+
+
+def ascii_safe(default_glyph: str, ascii_fallback: str) -> str:
+    """Return ``default_glyph`` normally, or ``ascii_fallback`` when the
+    ``ascii`` theme is active.
+
+    For decorative glyphs that are NOT a status-level indicator at all (a
+    suggestion "tip" bullet, a generic file marker, ...) and so have no
+    natural home on ``StatusTheme``'s 4-level model -- unlike
+    ``emoji_for()``, which maps a *status label* onto that theme's glyph for
+    it, this is for one-off decoration that every theme otherwise renders
+    identically and only needs an ASCII-safe substitute under `ascii`.
+    """
+    if get_current_theme_name() == "ascii":
+        return ascii_fallback
+    return default_glyph

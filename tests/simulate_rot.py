@@ -28,7 +28,9 @@ def emit(f, entry: dict, label: str = ""):
         print(f"  -> {label}")
 
 
-def assistant_entry(t: datetime, text: str, tool_name: str, tool_input: dict, sid: str = "sim-session") -> dict:
+def assistant_entry(
+    t: datetime, text: str, tool_name: str, tool_input: dict, sid: str = "sim-session"
+) -> dict:
     """Build a Claude Code-style assistant message with text + tool_use."""
     return {
         "type": "assistant",
@@ -44,7 +46,9 @@ def assistant_entry(t: datetime, text: str, tool_name: str, tool_input: dict, si
     }
 
 
-def tool_result_entry(t: datetime, is_error: bool = False, content: str = "", sid: str = "sim-session") -> dict:
+def tool_result_entry(
+    t: datetime, is_error: bool = False, content: str = "", sid: str = "sim-session"
+) -> dict:
     """Build a Claude Code-style user message with tool_result."""
     return {
         "type": "user",
@@ -99,10 +103,18 @@ def main():
         print()
         print("== Phase 2: Hedging and apologising ==")
         hedge_texts = [
-            "I'm sorry, I might have made a mistake earlier. Perhaps I should maybe re-examine this. Let me possibly try a different approach, although I'm not entirely sure it will work. I apologize for the confusion.",
-            "Actually, I apologize, that was incorrect. Maybe I should probably look at this from a different angle. Perhaps the issue is likely somewhere else. I'm sorry for the mistake.",
-            "Let me correct my earlier mistake. I apologize — I was wrong about the import. Perhaps it should possibly be a different module. I'm sorry, let me try again with a presumably better approach.",
-            "I'm sorry about that. Maybe perhaps I should likely reconsider. Possibly the issue is approximately related to the config. My apologies, let me presumably try something different.",
+            "I'm sorry, I might have made a mistake earlier. Perhaps I should maybe "
+            "re-examine this. Let me possibly try a different approach, although I'm "
+            "not entirely sure it will work. I apologize for the confusion.",
+            "Actually, I apologize, that was incorrect. Maybe I should probably look at "
+            "this from a different angle. Perhaps the issue is likely somewhere else. "
+            "I'm sorry for the mistake.",
+            "Let me correct my earlier mistake. I apologize — I was wrong about the "
+            "import. Perhaps it should possibly be a different module. I'm sorry, let "
+            "me try again with a presumably better approach.",
+            "I'm sorry about that. Maybe perhaps I should likely reconsider. Possibly "
+            "the issue is approximately related to the config. My apologies, let me "
+            "presumably try something different.",
         ]
         for i, text in enumerate(hedge_texts):
             t = tick(8)
@@ -115,7 +127,11 @@ def main():
         # -----------------------------------------------------------
         print()
         print("== Phase 3: Repetitive output ==")
-        repeated_text = "The issue is in the database connection handler. We need to update the retry logic in the connection pool. The timeout parameter should be increased to handle slow queries."
+        repeated_text = (
+            "The issue is in the database connection handler. We need to update the "
+            "retry logic in the connection pool. The timeout parameter should be "
+            "increased to handle slow queries."
+        )
         for i in range(5):
             t = tick(6)
             emit(f, assistant_entry(t, repeated_text, "Read", {"file_path": "src/db.py"}),
@@ -133,8 +149,15 @@ def main():
                                     "Bash", {"command": "npm test"}),
                  f"bash npm test (fail #{i+1})")
             t = tick(2)
-            emit(f, tool_result_entry(t, is_error=True, content="FAIL: TypeError: Cannot read property 'map' of undefined"),
-                 "  result: FAIL")
+            emit(
+                f,
+                tool_result_entry(
+                    t,
+                    is_error=True,
+                    content="FAIL: TypeError: Cannot read property 'map' of undefined",
+                ),
+                "  result: FAIL",
+            )
             time.sleep(1.0)
 
         # -----------------------------------------------------------
@@ -164,8 +187,13 @@ def main():
                                     "Bash", {"command": "pytest tests/test_app.py"}),
                  "bash pytest (fail)")
             t = tick(2)
-            emit(f, tool_result_entry(t, is_error=True, content="FAIL: AssertionError: expected 200 got 500"),
-                 "  result: FAIL")
+            emit(
+                f,
+                tool_result_entry(
+                    t, is_error=True, content="FAIL: AssertionError: expected 200 got 500"
+                ),
+                "  result: FAIL",
+            )
             time.sleep(1.0)
 
         print()

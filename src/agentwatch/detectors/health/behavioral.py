@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
 from agentwatch.detectors.health._window import scaled_turn_window
+from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -100,10 +100,12 @@ def _length_inflation_slope(lengths: list[int]) -> float:
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_behavioral(buffer: ActionBuffer, n_turns: int | None = None) -> MetricResult:
+def compute_behavioral(
+    buffer: ActionBuffer, n_turns: int | None = None, *, turns: list[Turn] | None = None
+) -> MetricResult:
     """Compute the behavioral-degradation metric over the last *n_turns* turns."""
 
-    turns = turns_from_buffer(buffer)
+    turns = turns_from_buffer(buffer) if turns is None else turns
     if len(turns) < 2:
         return MetricResult(name="behavioral", value=0.0)
 
@@ -123,7 +125,11 @@ def compute_behavioral(buffer: ActionBuffer, n_turns: int | None = None) -> Metr
     inflation_result = MetricResult(
         name="length_inflation",
         value=round(inflation, 4),
-        evidence=[f"word counts over last {len(lengths)} turns: {lengths}"] if inflation > 0.1 else [],
+        evidence=(
+            [f"word counts over last {len(lengths)} turns: {lengths}"]
+            if inflation > 0.1
+            else []
+        ),
     )
 
     # Sub-metric: hedge density (average over recent outputs)

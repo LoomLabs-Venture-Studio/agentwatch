@@ -1,0 +1,10 @@
+environments:
+  dev:
+    is_production: false
+    is_default: true
+    services: {}
+  prod:
+    is_production: true
+    is_default: false
+    guard: require --i-know-this-is-prod or EXPLICIT_PROD_OP=1
+    services: {}

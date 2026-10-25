@@ -1,0 +1,42 @@
+"""The agentwatch-scrub Claude Code skill file (spec AC12, static part)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+SKILL = Path(__file__).resolve().parents[1] / "skills" / "agentwatch-scrub" / "SKILL.md"
+
+
+def test_skill_frontmatter_and_length():
+    lines = SKILL.read_text(encoding="utf-8").splitlines()
+    assert len(lines) < 150
+    assert lines[0] == "---"
+    end = lines.index("---", 1)
+    meta = dict(line.split(":", 1) for line in lines[1:end])
+    assert meta["name"].strip() == "agentwatch-scrub"
+    assert meta["description"].strip()
+
+
+def test_session_logs_offer_scrub_and_state_audit_limit():
+    text = SKILL.read_text(encoding="utf-8")
+    section = text[text.index("## 3. Claude Code session logs") : text.index("## 4.")]
+    assert "agentwatch scrub <log>.jsonl" in section
+    assert "--dry-run --json" in section
+    assert "audit --redact --pii" in section
+    assert "prompts" in section and "tool results" in section
+
+
+def test_scrubbed_session_log_moved_out_of_projects():
+    text = SKILL.read_text(encoding="utf-8")
+    section = text[text.index("## 3. Claude Code session logs") : text.index("## 4.")]
+    assert "mv <log>.scrubbed.jsonl" in section
+    assert "out of ~/.claude/projects" in section
+
+
+def test_skill_does_not_claim_audit_skips_prompts_or_tool_results():
+    # audit scans every channel (extract_scannable_content), prompts and tool
+    # results included; the skill must not tell users otherwise.
+    text = " ".join(SKILL.read_text(encoding="utf-8").split())
+    assert "does NOT look at user prompts or tool results" not in text
+    assert "scans every channel" in text
+    assert "user_message" in text and "tool_output" in text

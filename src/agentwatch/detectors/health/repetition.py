@@ -6,7 +6,6 @@ import re
 from typing import TYPE_CHECKING
 
 from agentwatch.parser.models import MetricResult, Turn, turns_from_buffer
-from agentwatch.detectors.health._window import scaled_turn_window
 
 if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
@@ -80,7 +79,9 @@ def _repeated_sentences(outputs: list[str]) -> float:
         return 0.0
 
     current_text = outputs[-1]
-    current_sentences = [s.strip().lower() for s in _SENTENCE_RE.findall(current_text) if len(s.strip()) > 20]
+    current_sentences = [
+        s.strip().lower() for s in _SENTENCE_RE.findall(current_text) if len(s.strip()) > 20
+    ]
     if not current_sentences:
         return 0.0
 
@@ -103,10 +104,12 @@ def _repeated_sentences(outputs: list[str]) -> float:
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_repetition(buffer: ActionBuffer, k: int | None = None) -> MetricResult:
+def compute_repetition(
+    buffer: ActionBuffer, k: int | None = None, *, turns: list[Turn] | None = None
+) -> MetricResult:
     """Compute the repetition metric over recent turns."""
 
-    turns = turns_from_buffer(buffer)
+    turns = turns_from_buffer(buffer) if turns is None else turns
     outputs = [t.model_output for t in turns if t.model_output]
     if not outputs:
         return MetricResult(name="repetition", value=0.0)
@@ -128,7 +131,9 @@ def compute_repetition(buffer: ActionBuffer, k: int | None = None) -> MetricResu
     jaccard_result = MetricResult(
         name="cross_turn_overlap",
         value=round(jaccard, 4),
-        evidence=[f"Jaccard overlap with prior {k} outputs: {jaccard:.2f}"] if jaccard > 0.2 else [],
+        evidence=(
+            [f"Jaccard overlap with prior {k} outputs: {jaccard:.2f}"] if jaccard > 0.2 else []
+        ),
     )
 
     # Sub-metric: repeated sentences

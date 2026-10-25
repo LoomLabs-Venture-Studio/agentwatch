@@ -2,36 +2,38 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from .base import Category, Detector, Warning
+from .base import Detector, Warning, warning_dedup_key
 from .health import get_all_health_detectors
 from .security import get_all_security_detectors
 
 if TYPE_CHECKING:
-    from agentwatch.parser.models import ActionBuffer
+    from collections.abc import Iterable
+
+    from agentwatch.parser.models import Action, ActionBuffer
 
 
 class DetectorRegistry:
     """Registry for managing and running detectors."""
-    
+
     def __init__(
         self,
         include_health: bool = True,
         include_security: bool = False,
     ):
         self.detectors: list[Detector] = []
-        
+
         if include_health:
             self.detectors.extend(get_all_health_detectors())
-        
+
         if include_security:
             self.detectors.extend(get_all_security_detectors())
-    
+
     def add_detector(self, detector: Detector) -> None:
         """Add a custom detector to the registry."""
         self.detectors.append(detector)
-    
+
     def remove_detector(self, name: str) -> bool:
         """Remove a detector by name."""
         for i, d in enumerate(self.detectors):
@@ -39,18 +41,18 @@ class DetectorRegistry:
                 self.detectors.pop(i)
                 return True
         return False
-    
+
     def get_detector(self, name: str) -> Detector | None:
         """Get a detector by name."""
         for d in self.detectors:
             if d.name == name:
                 return d
         return None
-    
+
     def check_all(self, buffer: "ActionBuffer") -> list[Warning]:
         """Run all detectors and collect warnings."""
         warnings = []
-        
+
         for detector in self.detectors:
             try:
                 warning = detector.check(buffer)
@@ -59,7 +61,7 @@ class DetectorRegistry:
             except Exception:
                 # Don't let one detector crash everything
                 pass
-        
+
         # Sort by severity (critical first)
         severity_order = {
             "critical": 0,
@@ -68,13 +70,33 @@ class DetectorRegistry:
             "low": 3,
         }
         warnings.sort(key=lambda w: severity_order.get(w.severity.value, 4))
-        
+
         return warnings
-    
+
+    def scan(self, actions: "Iterable[Action]", buffer: "ActionBuffer") -> list[Warning]:
+        """Feed *actions* into *buffer* and return the session's warnings.
+
+        Security detectors only look at the last 5-50 actions, so for a
+        one-shot scan they run after every add, like the live TUI, and each
+        distinct finding is kept once (#35). Health detectors describe the
+        current state, so they run once at the end.
+        """
+        seen: dict[str, Warning] = {}
+        has_security = any(d.is_security_detector for d in self.detectors)
+        for action in actions:
+            buffer.add(action)
+            if has_security:
+                for w in self.check_security(buffer):
+                    seen.setdefault(warning_dedup_key(w), w)
+        warnings = self.check_health(buffer) + list(seen.values())
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        warnings.sort(key=lambda w: order.get(w.severity.value, 4))
+        return warnings
+
     def check_health(self, buffer: "ActionBuffer") -> list[Warning]:
         """Run only health detectors."""
         warnings = []
-        
+
         for detector in self.detectors:
             if not detector.is_security_detector:
                 try:
@@ -83,13 +105,13 @@ class DetectorRegistry:
                         warnings.append(warning)
                 except Exception:
                     pass
-        
+
         return warnings
-    
+
     def check_security(self, buffer: "ActionBuffer") -> list[Warning]:
         """Run only security detectors."""
         warnings = []
-        
+
         for detector in self.detectors:
             if detector.is_security_detector:
                 try:
@@ -98,29 +120,82 @@ class DetectorRegistry:
                         warnings.append(warning)
                 except Exception:
                     pass
-        
+
         return warnings
-    
+
+    def check_security_with_audit(
+        self, buffer: "ActionBuffer"
+    ) -> tuple[list[Warning], list[dict[str, Any]]]:
+        """Run only security detectors via `check_with_audit()`.
+
+        Unlike `check_security()` (which calls the plain `.check()` and
+        only ever sees detectors that fired a `Warning`), this exercises
+        `SecurityDetector.check_with_audit()` -- previously fully
+        implemented but with zero call sites (Sprint 14 dead-code sweep) --
+        to also collect one audit-log entry *per detector that ran*,
+        whether it triggered or not. That's a "prove you checked"
+        compliance trail, distinct from the SIEM export (`--siem-log`),
+        which only ever records positive findings.
+
+        Mirrors `check_security()`'s exception-isolation invariant: one
+        detector raising must never abort the run for the others. A
+        detector that raises still gets a best-effort audit entry (with
+        `"error"` set) so the "did every detector run" trail doesn't
+        silently drop it.
+
+        Returns:
+            (warnings, audit_logs) -- `warnings` is exactly the triggered
+            subset also present (as `audit_log["warning"]`) inside the
+            corresponding `audit_logs` entries.
+        """
+        warnings: list[Warning] = []
+        audit_logs: list[dict[str, Any]] = []
+
+        for detector in self.detectors:
+            # `is_security_detector` (not `isinstance(detector,
+            # SecurityDetector)`) to match the exact filtering convention
+            # `check_security()`/`health_detectors`/`security_detectors`
+            # already use elsewhere in this class -- a detector that sets
+            # the flag without providing a real `check_with_audit()` still
+            # falls into the `except` below rather than crashing the run.
+            if not detector.is_security_detector:
+                continue
+            try:
+                warning, audit_log = detector.check_with_audit(buffer)
+                audit_logs.append(audit_log)
+                if warning:
+                    warnings.append(warning)
+            except Exception:
+                audit_logs.append({
+                    "detector": detector.name,
+                    "category": detector.category.value,
+                    "triggered": False,
+                    "action_count": len(buffer),
+                    "error": "detector raised an exception",
+                })
+
+        return warnings, audit_logs
+
     @property
     def health_detectors(self) -> list[Detector]:
         """Get all health detectors."""
         return [d for d in self.detectors if not d.is_security_detector]
-    
+
     @property
     def security_detectors(self) -> list[Detector]:
         """Get all security detectors."""
         return [d for d in self.detectors if d.is_security_detector]
-    
+
     def list_detectors(self) -> dict[str, list[str]]:
         """List all registered detectors by category."""
         result: dict[str, list[str]] = {}
-        
+
         for detector in self.detectors:
             cat = detector.category.value
             if cat not in result:
                 result[cat] = []
             result[cat].append(f"{detector.name}: {detector.description}")
-        
+
         return result
 
 
@@ -130,11 +205,11 @@ def create_registry(
 ) -> DetectorRegistry:
     """
     Create a detector registry for a specific mode.
-    
+
     Args:
         mode: "health", "security", or "all"
         custom_detectors: Optional list of custom detectors to add
-    
+
     Returns:
         Configured DetectorRegistry
     """
@@ -146,9 +221,9 @@ def create_registry(
         registry = DetectorRegistry(include_health=True, include_security=True)
     else:
         raise ValueError(f"Unknown mode: {mode}")
-    
+
     if custom_detectors:
         for detector in custom_detectors:
             registry.add_detector(detector)
-    
+
     return registry

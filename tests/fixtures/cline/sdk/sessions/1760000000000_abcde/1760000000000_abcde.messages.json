@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "updated_at": "2026-10-12T10:00:06.000Z",
+  "agent": "lead",
+  "sessionId": "1760000000000_abcde",
+  "origin": {
+    "source": "cli",
+    "mode": "user",
+    "sessionId": "1760000000000_abcde"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "Fix the failing test",
+      "ts": 1760000000000
+    },
+    {
+      "role": "assistant",
+      "id": "msg-1",
+      "modelInfo": {
+        "id": "claude-sonnet-4-5",
+        "provider": "anthropic"
+      },
+      "metrics": {
+        "inputTokens": 900,
+        "outputTokens": 60,
+        "cacheReadTokens": 300,
+        "cacheWriteTokens": 100,
+        "cost": 0.0031
+      },
+      "ts": 1760000001000,
+      "content": [
+        {
+          "type": "text",
+          "text": "Running the tests."
+        },
+        {
+          "type": "tool_use",
+          "id": "call_a",
+          "name": "run_commands",
+          "input": {
+            "commands": [
+              "npm test",
+              {
+                "command": "git",
+                "args": [
+                  "status",
+                  "--short"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "ts": 1760000002000,
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_a",
+          "name": "run_commands",
+          "content": "1 failing",
+          "is_error": true
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "id": "msg-2",
+      "modelInfo": {
+        "id": "claude-sonnet-4-5",
+        "provider": "anthropic"
+      },
+      "metrics": {
+        "inputTokens": 1100,
+        "outputTokens": 40,
+        "cacheReadTokens": 900,
+        "cacheWriteTokens": 0,
+        "cost": 0.0022
+      },
+      "ts": 1760000003000,
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call_b",
+          "name": "read_files",
+          "input": {
+            "files": [
+              {
+                "path": "/home/dev/project/src/index.ts",
+                "start_line": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "ts": 1760000004000,
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_b",
+          "name": "read_files",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const x = 1"
+            }
+          ],
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "id": "msg-3",
+      "modelInfo": {
+        "id": "claude-sonnet-4-5",
+        "provider": "anthropic"
+      },
+      "ts": 1760000005000,
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call_c",
+          "name": "editor",
+          "input": {
+            "path": "/home/dev/project/src/index.ts",
+            "old_text": "1",
+            "new_text": "2"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "call_d",
+          "name": "fetch_web_content",
+          "input": {
+            "requests": [
+              {
+                "url": "https://registry.example.org/pkg?key=abc",
+                "prompt": "version?"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "ts": 1760000006000,
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_c",
+          "name": "editor",
+          "content": "ok"
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_d",
+          "name": "fetch_web_content",
+          "content": "1.2.3"
+        }
+      ]
+    }
+  ]
+}

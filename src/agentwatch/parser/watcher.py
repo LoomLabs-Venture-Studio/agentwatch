@@ -4,41 +4,115 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import sqlite3
 import time
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
-from watchfiles import awatch, Change
+from watchfiles import Change, awatch
 
-from .logs import parse_claude_code_entry, parse_moltbot_entry, detect_log_format
+from agentwatch.agents.base import Watcher
+from agentwatch.discovery import AgentProcess
+
+from . import cline, copilot_vscode, opencode
+from .agy import AgyParser
+from .aider import parse_aider_sessions
+from .codex import CodexParser
+from .copilot import CopilotParser
+from .cursor_source import (
+    bubble_to_action,
+    fetch_bubbles,
+    fetch_checkpoint,
+    fetch_composer_headers,
+    open_readonly,
+)
+from .gemini import GeminiParser
+from .logs import (
+    FormatSniffer,
+    ensure_supported_log,
+    parse_claude_code_entry,
+    parse_moltbot_entry,
+)
 from .models import Action
 
-from agentwatch.discovery import AgentProcess
+logger = logging.getLogger(__name__)
+
+
+def _resolve(path: Path) -> Path:
+    """Resolve symlinks (macOS reports /private/var for /var) for comparison."""
+    try:
+        return path.resolve()
+    except OSError:
+        return path
 
 
 class LogWatcher:
     """Watches a log file for new entries in real-time."""
-    
+
+    _POLL_TICK_MS = 1000  # fallback tick; see watch()
+
     def __init__(self, path: Path, session_id: str | None = None):
         self.path = path
         self.session_id = session_id
         self._position = 0
+        self._prefix = b""  # first min(_position, 4096) bytes consumed so far
+        self._last_sig: tuple[int, int, int] | None = None
         self._log_format: str | None = None
+        self._sniffer = FormatSniffer()
+        self._codex_parser: CodexParser | CopilotParser | AgyParser | GeminiParser | None = None
         self._callbacks: list[Callable[[Action], None]] = []
-    
+
     def on_action(self, callback: Callable[[Action], None]) -> None:
         """Register a callback for new actions."""
         self._callbacks.append(callback)
-    
+
     def _parse_entry(self, entry: dict) -> list[Action]:
         """Parse an entry using the detected format. Returns list of actions."""
-        if self._log_format is None or self._log_format == "skip":
-            self._log_format = detect_log_format(entry)
-            if self._log_format == "skip":
+        if not isinstance(entry, dict):
+            return []
+        if self._log_format is None:
+            # Shared with parse_file()/claims(): unrecognised entries within
+            # the sniff window are skipped, not locked in (#39). The sniffer
+            # lives on the instance so the window spans successive reads.
+            self._log_format = self._sniffer.feed(entry)
+            if self._log_format is None:
                 return []
+            if self._log_format == "codex":
+                self._codex_parser = CodexParser()
+            elif self._log_format == "copilot":
+                self._codex_parser = CopilotParser()
+            elif self._log_format == "agy":
+                self._codex_parser = AgyParser(self.session_id)
+            elif self._log_format == "gemini":
+                self._codex_parser = GeminiParser()
+            elif self._log_format == "claude_code":
+                # Claude Code metadata seen before the first message (#39).
+                replayed = [
+                    a for e in self._sniffer.take_skipped() for a in self._parse_entry(e)
+                ]
+                return replayed + self._parse_entry(entry)
 
+        if self._log_format == "unknown":
+            # Not an agent log we understand (#39): emit nothing rather than
+            # misparse every record as Claude Code.
+            return []
         if self._log_format == "moltbot":
             result = parse_moltbot_entry(entry)
+        elif self._log_format in ("codex", "copilot", "agy", "gemini"):
+            # NOTE: deliberately never call self._codex_parser.flush() here.
+            # parse_file()'s one-shot batch read flushes at EOF because
+            # end-of-file there genuinely means "this is everything" -- but
+            # a live LogWatcher tail re-reads the same still-growing file on
+            # every poll cycle, and a function_call's output may simply not
+            # have arrived yet. Flushing here would emit a call as
+            # "output never arrived" prematurely, then have no way to
+            # retract that once the real output line shows up moments
+            # later. Pending calls are meant to sit in
+            # self._codex_parser._pending indefinitely across polls until
+            # matched (or the watcher itself is torn down). Do not "fix"
+            # this by unifying with parse_file()'s flush-at-EOF behavior.
+            return self._codex_parser.parse_line(entry)
         else:
             result = parse_claude_code_entry(entry)
 
@@ -47,22 +121,49 @@ class LogWatcher:
         if result:
             return [result]
         return []
-    
+
+    def _stat_sig(self) -> tuple[int, int, int] | None:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_size, st.st_mtime_ns, st.st_ino)
+
+    _PREFIX_BYTES = 4096
+
+    def _read_prefix(self) -> bytes | None:
+        try:
+            with open(self.path, "rb") as f:
+                return f.read(min(self._position, self._PREFIX_BYTES))
+        except OSError:
+            return None
+
     def _read_new_lines(self) -> list[Action]:
         """Read any new lines since last check."""
         actions = []
-        
+
+        sig = self._stat_sig()
+        if sig is not None and sig != self._last_sig and self._position > 0:
+            # The file changed. Keep the offset only if the bytes before it
+            # are still the ones we consumed (prefix fingerprint): an atomic
+            # rewrite with identical leading content keeps its offset (no
+            # duplicates), while a truncate-then-regrow or a replacement with
+            # different content is re-read from the start.
+            if sig[0] < self._position or self._read_prefix() != self._prefix:
+                self._position = 0
+        self._last_sig = sig
+
         try:
             with open(self.path, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(self._position)
-                
+
                 while True:
                     last_pos = f.tell()
                     line = f.readline()
-                    
+
                     if not line:
                         break
-                    
+
                     # If the line doesn't end with a newline, it might be a partial write
                     # unless we've reached EOF and the file is closed (not our case).
                     if not line.endswith("\n"):
@@ -70,12 +171,12 @@ class LogWatcher:
                         # Move back to where we started this line.
                         f.seek(last_pos)
                         break
-                        
+
                     line_stripped = line.strip()
                     if not line_stripped:
                         self._position = f.tell()
                         continue
-                        
+
                     try:
                         entry = json.loads(line_stripped)
                         parsed = self._parse_entry(entry)
@@ -93,24 +194,59 @@ class LogWatcher:
                         # If it's a full line but invalid JSON, skip it to avoid getting stuck
                         self._position = f.tell()
                         continue
+                    except Exception as exc:
+                        # A log line must never kill the watch. Advance past it so it is
+                        # not re-read every poll; log only the type (lines can hold secrets).
+                        self._position = f.tell()
+                        logger.debug(
+                            "Skipping unparseable line in %s (%s)", self.path, type(exc).__name__
+                        )
+                        continue
         except FileNotFoundError:
             pass
-        
+
+        if self._position == 0:
+            self._prefix = b""
+        elif len(self._prefix) < min(self._position, self._PREFIX_BYTES):
+            self._prefix = self._read_prefix() or b""
+
+        if self._log_format is None:
+            # Same end-of-input rule as parse_file (#39): Claude Code metadata
+            # with no message yet is emitted now, not held back. The format
+            # stays undecided; take_* drains, so nothing is replayed later.
+            for entry in self._sniffer.take_metadata_only():
+                result = parse_claude_code_entry(entry)
+                for a in result if isinstance(result, list) else [result] if result else []:
+                    if not self.session_id or a.session_id == self.session_id:
+                        actions.append(a)
+
         return actions
-    
+
     async def watch(self) -> AsyncIterator[Action]:
         """Watch for new actions, yielding them as they arrive."""
         # First, read existing content
         for action in self._read_new_lines():
             yield action
-        
-        # Then watch for changes
-        async for changes in awatch(self.path.parent):
-            for change_type, changed_path in changes:
-                if Path(changed_path) == self.path and change_type == Change.modified:
-                    for action in self._read_new_lines():
-                        yield action
-    
+
+        # Then watch for changes. Any event for the file triggers a read, not
+        # just Change.modified: macOS FSEvents coalesces flags, so an append to
+        # a recently created file arrives as Change.added, and the directory
+        # may be reported via a symlink (/var vs /private/var). The 1s timeout
+        # tick covers appends landing before the OS watch is armed. Reads are
+        # gated on (size, mtime, inode) so an idle file costs one stat.
+        target = _resolve(self.path)
+        async for changes in awatch(
+            self.path.parent,
+            rust_timeout=self._POLL_TICK_MS,
+            yield_on_timeout=True,
+        ):
+            if changes and not any(_resolve(Path(p)) == target for _, p in changes):
+                continue
+            if self._stat_sig() == self._last_sig:
+                continue
+            for action in self._read_new_lines():
+                yield action
+
     async def watch_with_callbacks(self) -> None:
         """Watch and dispatch to registered callbacks."""
         async for action in self.watch():
@@ -121,13 +257,449 @@ class LogWatcher:
                     pass  # Don't let callback errors stop watching
 
 
+class AiderLogWatcher:
+    """Watches a ``.aider.chat.history.md`` transcript for new turns/edits.
+
+    PLAYBOOK Sprint 6 item 6 (live tailing) implementation. Unlike
+    ``LogWatcher``'s byte-offset JSONL tailing, Aider's Markdown format has
+    no fixed record boundary per line -- a turn's edit blocks can span many
+    lines and are only safely "complete" once matched by
+    ``aider.py::_extract_edit_blocks``'s closing-marker regexes (an
+    in-progress diff/udiff block simply doesn't match yet, so re-parsing
+    mid-write only ever emits actions that are already fully written -- see
+    the one known exception noted below).
+
+    Reparses the WHOLE file via ``parse_aider_sessions()`` on every
+    file-change trigger (the same ``watchfiles.awatch`` signal ``LogWatcher``
+    uses -- Aider's Markdown file is a real append-only file, unlike
+    Cursor's rewritten-in-place SQLite DB, so an awatch-based trigger is the
+    natural fit here rather than ``CursorWatcher``'s timer poll) and emits
+    only the NEW tail of each session's action list, tracked by a
+    per-session emitted-count cursor -- the same "count, not content-diff"
+    idiom ``CursorWatcher._bubble_cursor`` already uses for exactly this
+    kind of incremental-emit problem.
+
+    **Known limitation, not fixed here (documented, not hidden)**: a turn's
+    ``aider_prompt`` action is emitted as soon as its ``#### `` header line
+    appears, using whatever body content has been written so far
+    (``outgoing_data`` is a snapshot, truncated to 2000 chars) -- if polled
+    mid-write, an early snapshot could be incomplete. This action is never
+    re-emitted once its slot is counted, so the file's growth afterward is
+    only reflected in *later* actions (edit blocks / the next turn), not by
+    re-emitting a corrected prompt snapshot. Matches the same "accepted,
+    documented" bar as PLAYBOOK Sprint 6 item 5's ``zip()``-shortest-wins
+    caveat -- a live-tailing precision tradeoff, not a crash/data-loss risk.
+
+    Analytics-log backfill (``parse_aider_log``'s token/cost merge) is
+    deliberately NOT wired into live tailing -- ``--analytics-log`` merge
+    is a whole-file, whole-session operation (see ``_session_time_windows``)
+    that doesn't have an obvious incremental equivalent; live-tailed Aider
+    actions keep ``tokens_in``/``tokens_out``/``cost_usd`` at their
+    Markdown-only defaults (0/0/0.0), same as ``parse_aider_markdown()``
+    without a sidecar.
+    """
+
+    _POLL_TICK_MS = 1000  # fallback reparse tick; see watch()
+
+    def __init__(self, path: Path, session_id: str | None = None):
+        self.path = path
+        self.session_id = session_id
+        self._emitted_count: dict[str, int] = {}
+        self._last_sig: tuple[int, int, int] | None = None
+        self._callbacks: list[Callable[[Action], None]] = []
+
+    def on_action(self, callback: Callable[[Action], None]) -> None:
+        """Register a callback for new actions."""
+        self._callbacks.append(callback)
+
+    def _stat_sig(self) -> tuple[int, int, int] | None:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_size, st.st_mtime_ns, st.st_ino)
+
+    def _read_new_actions(self, *, only_if_changed: bool = False) -> list[Action]:
+        # Stat BEFORE parsing so a write landing mid-parse changes the
+        # signature and is picked up by the next tick.
+        sig = self._stat_sig()
+        if only_if_changed and sig == self._last_sig:
+            return []
+        self._last_sig = sig
+        if sig is None:
+            return []
+
+        sessions = parse_aider_sessions(self.path)
+        new_actions: list[Action] = []
+        for session in sessions:
+            already = self._emitted_count.get(session.session_id, 0)
+            if len(session.actions) < already:
+                # Session shrank (file rewritten/truncated, or the session id
+                # vanished and returned smaller): re-anchor the cursor without
+                # re-emitting kept actions, so later growth is still seen.
+                self._emitted_count[session.session_id] = already = len(session.actions)
+            tail = session.actions[already:]
+            if not tail:
+                continue
+            self._emitted_count[session.session_id] = len(session.actions)
+            if self.session_id is None or session.session_id == self.session_id:
+                new_actions.extend(tail)
+        return new_actions
+
+    async def watch(self) -> AsyncIterator[Action]:
+        """Watch for new actions, yielding them as they arrive."""
+        for action in self._read_new_actions():
+            yield action
+
+        target = self._resolved(self.path)
+        # Reparse on ANY event for the file, not just Change.modified: on
+        # macOS FSEvents coalesces flags, so an append to a recently created
+        # file arrives as Change.added (and the dir may be reported through a
+        # symlink, e.g. /var vs /private/var). The 1s timeout tick is a cheap
+        # safety net for appends that land before the OS watch is armed or
+        # that FSEvents coalesces away; the emitted-count cursor makes a
+        # redundant reparse a no-op.
+        async for changes in awatch(
+            self.path.parent,
+            rust_timeout=self._POLL_TICK_MS,
+            yield_on_timeout=True,
+        ):
+            if not changes:
+                # Timeout tick: parse only if size/mtime/inode moved, so an
+                # idle multi-MB history file costs one stat per second. Real
+                # events are gated the same way (FSEvents replays stale
+                # creation events at arm time; those carry no new bytes).
+                new = self._read_new_actions(only_if_changed=True)
+            elif any(self._resolved(Path(c)) == target for _, c in changes):
+                new = self._read_new_actions(only_if_changed=True)
+            else:
+                continue
+            for action in new:
+                yield action
+
+    @staticmethod
+    def _resolved(path: Path) -> Path:
+        try:
+            return path.resolve()
+        except OSError:
+            return path
+
+    async def watch_with_callbacks(self) -> None:
+        """Watch and dispatch to registered callbacks."""
+        async for action in self.watch():
+            for callback in self._callbacks:
+                try:
+                    callback(action)
+                except Exception:
+                    pass  # Don't let callback errors stop watching
+
+
+class CopilotVscodeWatcher:
+    """Watches one Copilot-in-VS-Code chat-session mutation log.
+
+    ``AiderLogWatcher``'s shape: on each watchfiles trigger, replay the whole
+    file and emit actions whose key (``toolCallId`` / ``requestId``) was not
+    emitted yet. ``added`` counts too: VS Code may rewrite the file whole.
+
+    A finished request's actions wait until it has been seen finished for
+    ``SETTLE_S``: VS Code writes the terminal ``modelState`` first in the
+    finishing append, then tokens and the last response parts, and a request
+    is never written again once finished. Emitting on the first sighting
+    could freeze a torn read's stale tokens (#91).
+    """
+
+    SETTLE_S = 1.0
+    _TICK_MS = 500  # re-replay this often while something is held
+
+    def __init__(self, path: Path, session_id: str | None = None):
+        self.path = path
+        self.session_id = session_id
+        self._emitted: set[str] = set()
+        self._finished_at: dict[str, float] = {}  # request -> first seen finished
+        self._held = False
+        self._callbacks: list[Callable[[Action], None]] = []
+
+    def on_action(self, callback: Callable[[Action], None]) -> None:
+        self._callbacks.append(callback)
+
+    def _read_new_actions(self, now: float | None = None) -> list[Action]:
+        now = time.monotonic() if now is None else now
+        state = copilot_vscode.replay(self.path)
+        if state is None:
+            return []  # e.g. a whole-file rewrite caught mid-write: keep _held
+        self._held = False
+        new: list[Action] = []
+        for key, action, sealed in copilot_vscode.request_actions(state, self.session_id):
+            if key in self._emitted:
+                continue
+            if sealed is not None:
+                if now - self._finished_at.setdefault(sealed, now) < self.SETTLE_S:
+                    self._held = True
+                    continue
+            self._emitted.add(key)
+            new.append(action)
+        return new
+
+    async def watch(self) -> AsyncIterator[Action]:
+        for action in self._read_new_actions():
+            yield action
+
+        target = _resolve(self.path)
+        async for changes in awatch(
+            self.path.parent, yield_on_timeout=True, rust_timeout=self._TICK_MS
+        ):
+            changed = any(
+                _resolve(Path(p)) == target and t in (Change.added, Change.modified)
+                for t, p in changes
+            )
+            if changed or self._held:
+                for action in self._read_new_actions():
+                    yield action
+
+    async def watch_with_callbacks(self) -> None:
+        async for action in self.watch():
+            for callback in self._callbacks:
+                try:
+                    callback(action)
+                except Exception:
+                    pass  # Don't let callback errors stop watching
+
+
+class ClineWatcher(CopilotVscodeWatcher):
+    """Watches one Cline task/session file (``parser/cline.py``).
+
+    ``CopilotVscodeWatcher``'s loop (whole-file reparse on ``added`` /
+    ``modified``, emitted-key set), without its settle step: Cline appends
+    whole messages, so a parsed file has no half-written message. The legacy
+    temp-file rename shows up as ``added``. The SDK file is rewritten
+    non-atomically, so a torn read fails to parse; it is skipped and retried
+    on the parent's ``_TICK_MS`` tick, even if no further change arrives.
+    """
+
+    def _read_new_actions(self, now: float | None = None) -> list[Action]:
+        loaded = cline.load(self.path)
+        self._held = loaded is None  # torn mid-write: the parent's tick re-reads
+        if loaded is None:
+            return []
+        new = []
+        for key, action in cline.actions(*loaded, session_id=self.session_id):
+            if key not in self._emitted:
+                self._emitted.add(key)
+                new.append(action)
+        return new
+
+
+class CursorWatcher:
+    """Polls a Cursor ``state.vscdb`` for new composer bubble activity.
+
+    Unlike ``LogWatcher``, there is no append-only byte stream to tail --
+    SQLite files are rewritten in place and Cursor does not leave a WAL to
+    stream incrementally when idle (see
+    ``C:\\Users\\alice\\.claude\\plans\\cursor-sqlite-architecture-review.md``).
+    This watcher instead re-queries on an interval, using
+    ``composerHeaders.lastUpdatedAt`` as a cheap per-composer change signal
+    before paying to re-fetch that composer's ``bubbleId:*`` rows (the
+    round-4-confirmed real per-bubble content store -- see
+    ``cursor_source.py``'s module docstring for the schema-correction
+    history this is built against, and for why ``Action`` field values like
+    ``tokens_in``/``tokens_out``/``cost_usd`` stay at ``0``/``0.0`` rather
+    than being estimated).
+
+    Two-tier poll, matching the architecture review's recommendation (a)
+    gated by (c) -- a plain timer-based loop is used as the baseline (no
+    ``watchfiles.awatch`` early-wake optimization; not needed to satisfy
+    this sprint's scope):
+
+    1. Every ``header_poll_interval`` seconds, cheaply check every
+       composer's ``lastUpdatedAt`` watermark via
+       ``fetch_composer_headers``.
+    2. Only for composers whose watermark advanced *and* whose last bubble
+       refetch was at least ``min_blob_poll_interval`` seconds ago, pay for
+       the more expensive ``fetch_bubbles`` query and emit ``Action``s for
+       any bubbles not yet seen, tracked via a per-composer emitted-count
+       cursor. If a composer is throttled by ``min_blob_poll_interval``,
+       its watermark is deliberately left un-advanced so the next tick
+       retries it -- a delta is only ever delayed, never silently dropped.
+    """
+
+    def __init__(
+        self,
+        db_path: Path,
+        header_poll_interval: float = 5.0,
+        min_blob_poll_interval: float = 1.0,
+        composer_id_filter: str | None = None,
+    ):
+        self.db_path = db_path
+        self.header_poll_interval = header_poll_interval
+        self.min_blob_poll_interval = min_blob_poll_interval
+        # Restricts polling to one composer -- needed when multiple
+        # AgentProcess entries share one state.vscdb (MultiLogWatcher spins
+        # up one CursorWatcher per composer via cursor_discovery.py); None
+        # preserves the original whole-DB behavior for direct/standalone use.
+        self.composer_id_filter = composer_id_filter
+        self._last_updated: dict[str, int] = {}  # composer_id -> lastUpdatedAt watermark
+        self._bubble_cursor: dict[str, int] = {}  # composer_id -> bubbles already emitted
+        self._last_blob_fetch: dict[str, float] = {}  # composer_id -> monotonic fetch time
+        self._callbacks: list[Callable[[Action], None]] = []
+
+    def on_action(self, callback: Callable[[Action], None]) -> None:
+        """Register a callback for new actions."""
+        self._callbacks.append(callback)
+
+    def _poll_once(self) -> list[Action]:
+        """Run one full poll tick: cheap header scan, then a selective
+        bubble refetch for composers whose watermark advanced.
+
+        Synchronous and side-effect-only-via-instance-state, so tests can
+        drive it directly without running the async ``watch()`` loop.
+        """
+        actions: list[Action] = []
+        conn = open_readonly(self.db_path)
+        try:
+            headers = fetch_composer_headers(conn)
+            if self.composer_id_filter is not None:
+                headers = {
+                    cid: h for cid, h in headers.items() if cid == self.composer_id_filter
+                }
+            for composer_id, header in headers.items():
+                last_updated = header.get("lastUpdatedAt")
+                if last_updated is None:
+                    continue  # composer exists but never got a message (real case)
+
+                prev = self._last_updated.get(composer_id)
+                if prev is not None and last_updated <= prev:
+                    continue  # unchanged since last poll
+
+                now = time.monotonic()
+                last_fetch = self._last_blob_fetch.get(composer_id)
+                if last_fetch is not None and (now - last_fetch) < self.min_blob_poll_interval:
+                    # Throttled: leave the watermark un-advanced so the next
+                    # tick retries this composer instead of losing the delta.
+                    continue
+
+                self._last_blob_fetch[composer_id] = now
+                self._last_updated[composer_id] = last_updated
+
+                bubbles = fetch_bubbles(conn, composer_id)
+                seen = self._bubble_cursor.get(composer_id, 0)
+                new_bubbles = bubbles[seen:]
+                self._bubble_cursor[composer_id] = len(bubbles)
+
+                for bubble in new_bubbles:
+                    checkpoint = None
+                    checkpoint_id = bubble.get("checkpointId")
+                    if checkpoint_id:
+                        checkpoint = fetch_checkpoint(conn, composer_id, checkpoint_id)
+                    actions.append(bubble_to_action(bubble, composer_id, checkpoint))
+        finally:
+            conn.close()
+        return actions
+
+    async def watch(self) -> AsyncIterator[Action]:
+        """Watch for new bubble actions, yielding them as they arrive."""
+        for action in self._poll_once():
+            yield action
+
+        while True:
+            await asyncio.sleep(self.header_poll_interval)
+            for action in self._poll_once():
+                yield action
+
+    async def watch_with_callbacks(self) -> None:
+        """Watch and dispatch to registered callbacks."""
+        async for action in self.watch():
+            for callback in self._callbacks:
+                try:
+                    callback(action)
+                except Exception:
+                    pass  # Don't let callback errors stop watching
+
+
+class OpencodeWatcher:
+    """Polls opencode's SQLite store for one session's newly finished messages.
+
+    Same timer-poll shape as ``CursorWatcher``; the cursor is the set of
+    message ids already emitted (see ``parser/opencode.py``). With no
+    *session_id* it follows the most recently updated session.
+    """
+
+    def __init__(self, db_path: Path, session_id: str | None = None, poll_interval: float = 1.0):
+        self.db_path = db_path
+        self.session_id = session_id
+        self.poll_interval = poll_interval
+        self._emitted: set[str] = set()
+        self._callbacks: list[Callable[[Action], None]] = []
+
+    def on_action(self, callback: Callable[[Action], None]) -> None:
+        self._callbacks.append(callback)
+
+    async def watch_with_callbacks(self) -> None:
+        """For ``watch --log opencode.db`` (the single-agent TUI)."""
+        async for action in self.watch():
+            for callback in self._callbacks:
+                try:
+                    callback(action)
+                except Exception:
+                    pass  # Don't let callback errors stop watching
+
+    def _poll_once(self) -> list[Action]:
+        conn = opencode.open_readonly(self.db_path)
+        try:
+            if self.session_id is None:
+                self.session_id = opencode.latest_session(conn)
+                if self.session_id is None:
+                    return []
+            # ponytail: re-reads the session's message rows every tick; add a
+            # time_updated watermark if sessions with thousands of steps lag.
+            actions: list[Action] = []
+            for mid, acts in opencode.read_session(conn, self.session_id, self._emitted):
+                self._emitted.add(mid)
+                actions.extend(acts)
+            return actions
+        finally:
+            conn.close()
+
+    async def watch(self) -> AsyncIterator[Action]:
+        while True:
+            try:
+                actions = self._poll_once()
+            except sqlite3.Error:
+                # e.g. opencode mid-migration; a transient error must not end the watch.
+                logger.debug("opencode poll failed for %s", self.db_path, exc_info=True)
+                actions = []
+            for action in actions:
+                yield action
+            await asyncio.sleep(self.poll_interval)
+
+
+def _has_live_log(proc: AgentProcess) -> bool:
+    """Whether *proc* has a real, currently-readable data source.
+
+    Delegates to the agent's adapter. By default that means the real
+    ``log_file`` exists on disk; Cursor entries use a synthetic,
+    never-created ``log_file`` as a ``MultiLogWatcher`` identity key (see
+    ``cursor_discovery.py::_cursor_synthetic_log_key``), so its adapter
+    checks the real ``cursor_db_path`` instead. Unknown agent types fall
+    back to the default log-file check.
+    """
+    from agentwatch.agents import get
+
+    adapter = get(proc.agent_type)
+    if adapter is not None:
+        return adapter.is_live(proc)
+    return proc.log_file is not None and proc.log_file.exists()
+
+
 class MultiLogWatcher:
     """Watches multiple log files and directories for new logs."""
 
     def __init__(self, paths: list[Path], poll_interval: float = 0.5):
         self.base_paths = paths
         self.poll_interval = poll_interval
-        self.watchers: dict[Path, LogWatcher] = {}
+        self.watchers: dict[Path, Watcher] = {}
+        # The task running each entry of self.watchers, so reap_stopped() can
+        # stop it: at most one live watcher per log, nothing emitted twice.
+        self._tasks: dict[Path, asyncio.Task] = {}
         self._active_files: set[Path] = set()
         self._process_meta: dict[Path, AgentProcess] = {}  # log_path -> process info
         self._stopped_at: dict[Path, float] = {}  # log_path -> monotonic time when first stopped
@@ -145,7 +717,7 @@ class MultiLogWatcher:
         instance = cls(paths=[], poll_interval=poll_interval)
         instance._process_mode = True
         for proc in processes:
-            if proc.log_file and proc.log_file.exists():
+            if proc.log_file and _has_live_log(proc):
                 instance._process_meta[proc.log_file] = proc
         return instance
 
@@ -155,14 +727,13 @@ class MultiLogWatcher:
         Updates internal process metadata, adds new log files,
         and marks stopped processes. Returns list of new processes.
         """
-        current_pids = {proc.pid for proc in processes}
         new_agents: list[AgentProcess] = []
 
         # Track which log files belong to still-running processes
         active_log_files: set[Path] = set()
 
         for proc in processes:
-            if proc.log_file and proc.log_file.exists():
+            if proc.log_file and _has_live_log(proc):
                 active_log_files.add(proc.log_file)
 
                 if proc.log_file not in self._process_meta:
@@ -195,6 +766,7 @@ class MultiLogWatcher:
                 parent_agent_pid=old_proc.parent_agent_pid,
                 depth=old_proc.depth,
                 team_id=old_proc.team_id,
+                cursor_db_path=old_proc.cursor_db_path,
             )
 
         return new_agents
@@ -219,20 +791,36 @@ class MultiLogWatcher:
         for path in expired:
             self._stopped_at.pop(path, None)
             self._active_files.discard(path)
-            self.watchers.pop(path, None)
+            self._stop_watcher(path)
             # Keep path in _process_meta so refresh_processes won't re-add it
         return expired
+
+    def _stop_watcher(self, path: Path) -> None:
+        """Forget *path*'s watcher and cancel its task."""
+        self.watchers.pop(path, None)
+        task = self._tasks.pop(path, None)
+        if task is not None:
+            task.cancel()
 
     def get_process_meta(self, log_path: Path) -> AgentProcess | None:
         """Get process metadata for a given log file path."""
         return self._process_meta.get(log_path)
 
     def _find_all_logs(self) -> list[Path]:
-        """Find all .jsonl files in base paths."""
+        """Find all watchable log entries in base paths.
+
+        In process mode this is every non-stopped entry whose agent has a
+        registered adapter (or whose path an adapter claims). Cursor entries
+        are matched by ``agent_type``, not suffix, since their key is a
+        synthetic never-created path -- see ``cursor_discovery.py``.
+        """
         if self._process_mode:
+            from agentwatch.agents import adapter_for, get
+
             return [
                 p for p, proc in self._process_meta.items()
-                if p.suffix == ".jsonl" and proc.command != "(stopped)"
+                if (get(proc.agent_type) is not None or adapter_for(p) is not None)
+                and proc.command != "(stopped)"
             ]
 
         logs = []
@@ -243,6 +831,22 @@ class MultiLogWatcher:
                 logs.extend(p.rglob("*.jsonl"))
         return logs
 
+    def _make_watcher(self, log_meta: Path) -> Watcher:
+        """Build the watcher for one tracked entry via its agent's adapter.
+
+        Falls back to adapter_for(path), then plain LogWatcher -- the
+        historical default for any JSONL path.
+        """
+        from agentwatch.agents import adapter_for, get
+
+        proc = self._process_meta.get(log_meta)
+        sid = proc.session_id if proc else None
+        adapter = (get(proc.agent_type) if proc else None) or adapter_for(log_meta)
+        if adapter is None:
+            ensure_supported_log(log_meta)  # raises; watch() skips the entry (#39)
+            return LogWatcher(log_meta, session_id=sid)
+        return adapter.make_watcher(proc if proc is not None else log_meta, sid)
+
     async def watch(self) -> AsyncIterator[tuple[str, Action | Path]]:
         """
         Watch all files, yielding events.
@@ -250,11 +854,9 @@ class MultiLogWatcher:
         """
         queue: asyncio.Queue = asyncio.Queue()
 
-        async def fill_queue(watcher: LogWatcher):
+        async def fill_queue(watcher: Watcher, key: Path):
             async for action in watcher.watch():
-                await queue.put(("action", (action, watcher.path)))
-
-        tasks: dict[Path, asyncio.Task] = {}
+                await queue.put((watcher, key, action))
 
         try:
             while True:
@@ -263,18 +865,34 @@ class MultiLogWatcher:
                 for log_meta in current_logs:
                     if log_meta not in self._active_files:
                         self._active_files.add(log_meta)
-                        proc = self._process_meta.get(log_meta)
-                        sid = proc.session_id if proc else None
-                        watcher = LogWatcher(log_meta, session_id=sid)
+                        try:
+                            watcher = self._make_watcher(log_meta)
+                        except Exception:
+                            # One adapter failing to build a watcher must not
+                            # kill watch-all. Key stays in _active_files so it
+                            # is not retried (and re-logged) every poll tick.
+                            # DEBUG, not WARNING: no handler is configured, so
+                            # WARNING would reach stderr and garble the TUI.
+                            logger.debug(
+                                "make_watcher failed for %s", log_meta, exc_info=True
+                            )
+                            continue
+                        self._stop_watcher(log_meta)  # never two watchers on one log
                         self.watchers[log_meta] = watcher
-                        tasks[log_meta] = asyncio.create_task(fill_queue(watcher))
+                        self._tasks[log_meta] = asyncio.create_task(
+                            fill_queue(watcher, log_meta)
+                        )
                         yield ("agent_added", log_meta)
 
-                # Check queue for actions
+                # Check queue for actions. A watcher stopped since it queued
+                # an action (reaped or replaced) no longer speaks for its log.
                 while not queue.empty():
-                    yield await queue.get()
+                    source, key, action = queue.get_nowait()
+                    if self.watchers.get(key) is source:
+                        yield ("action", (action, key))
 
                 await asyncio.sleep(self.poll_interval)
         finally:
-            for task in tasks.values():
+            for task in self._tasks.values():
                 task.cancel()
+            self._tasks.clear()

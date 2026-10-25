@@ -5,7 +5,6 @@ from .credentials import (
     CredentialExfiltrationDetector,
     SecretInOutputDetector,
 )
-from .secret_scanner import SecretLeakScanner
 from .injection import (
     HiddenInstructionDetector,
     IndirectInjectionDetector,
@@ -16,6 +15,7 @@ from .network import (
     DataExfiltrationDetector,
     DNSExfiltrationDetector,
     NetworkAnomalyDetector,
+    UndeclaredEgressDetector,
 )
 from .privilege import (
     DangerousCommandDetector,
@@ -23,6 +23,7 @@ from .privilege import (
     PrivilegeEscalationDetector,
     SensitiveDirectoryAccessDetector,
 )
+from .secret_scanner import SecretLeakScanner
 from .supply_chain import (
     MaliciousSkillDetector,
     NewSkillExecutionDetector,
@@ -46,6 +47,7 @@ __all__ = [
     "DataExfiltrationDetector",
     "C2CommunicationDetector",
     "DNSExfiltrationDetector",
+    "UndeclaredEgressDetector",
     # Privilege detectors
     "PrivilegeEscalationDetector",
     "DangerousCommandDetector",
@@ -77,6 +79,7 @@ def get_all_security_detectors():
         DataExfiltrationDetector(),
         C2CommunicationDetector(),
         DNSExfiltrationDetector(),
+        UndeclaredEgressDetector(),
         # Privilege
         PrivilegeEscalationDetector(),
         DangerousCommandDetector(),

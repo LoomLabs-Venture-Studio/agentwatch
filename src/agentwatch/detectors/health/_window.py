@@ -13,7 +13,9 @@ if TYPE_CHECKING:
     from agentwatch.parser.models import ActionBuffer
 
 
-def scaled_action_window(buffer: "ActionBuffer", base: int = 20, fraction: float = 0.15, cap: int = 100) -> int:
+def scaled_action_window(
+    buffer: "ActionBuffer", base: int = 20, fraction: float = 0.15, cap: int = 100
+) -> int:
     """Return an action-count window that grows with buffer size.
 
     Formula: max(base, min(cap, int(len(buffer) * fraction)))
@@ -26,7 +28,9 @@ def scaled_action_window(buffer: "ActionBuffer", base: int = 20, fraction: float
     return max(base, min(cap, int(len(buffer) * fraction)))
 
 
-def scaled_turn_window(turn_count: int, base: int = 8, fraction: float = 0.20, cap: int = 30) -> int:
+def scaled_turn_window(
+    turn_count: int, base: int = 8, fraction: float = 0.20, cap: int = 30
+) -> int:
     """Return a turn-count window that grows with total turns.
 
     Formula: max(base, min(cap, int(turn_count * fraction)))

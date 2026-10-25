@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import json
-import textwrap
 from pathlib import Path
-
-import pytest
 
 from agentwatch.cc_stats import (
     BashCategory,
     StatsReport,
     TokenBucket,
     ToolCategory,
-    TrivialCall,
     classify_bash_command,
     classify_tool_name,
     compute_stats,
@@ -22,7 +18,7 @@ from agentwatch.cc_stats import (
     parse_session_stats,
     project_dir_to_name,
 )
-
+from agentwatch.path_encoding import encode_path_for_claude
 
 # ---------------------------------------------------------------------------
 # Tool classification
@@ -338,15 +334,20 @@ class TestCwdMapping:
     def test_cwd_to_project_dir_existing(self, tmp_path, monkeypatch):
         projects = tmp_path / ".claude" / "projects"
         projects.mkdir(parents=True)
-        # Simulate: CWD = /Users/zaid/foo -> dir = -Users-zaid-foo
-        cwd = Path("/Users/zaid/foo")
-        expected_name = "-Users-zaid-foo"
+        # Use a real directory so cwd.resolve() behaves identically to
+        # production, and derive the expected encoded name from the shared
+        # encoder itself rather than a hardcoded POSIX literal — this keeps
+        # the test correct on both POSIX (/ -> -) and Windows (\, :, space
+        # -> -) without branching on platform.
+        target = tmp_path / "myproject"
+        target.mkdir()
+        expected_name = encode_path_for_claude(target.resolve())
         (projects / expected_name).mkdir()
 
         monkeypatch.setattr(
             "agentwatch.cc_stats.CLAUDE_PROJECTS_DIR", projects
         )
-        result = cwd_to_project_dir(cwd)
+        result = cwd_to_project_dir(target)
         assert result is not None
         assert result.name == expected_name
 
@@ -360,7 +361,7 @@ class TestCwdMapping:
         assert result is None
 
     def test_project_dir_to_name(self):
-        assert project_dir_to_name(Path("-Users-zaid-Projects-agentwatch")) == "agentwatch"
+        assert project_dir_to_name(Path("-Users-alice-Projects-agentwatch")) == "agentwatch"
         assert project_dir_to_name(Path("-private-tmp-foo")) == "foo"
 
 
@@ -593,6 +594,42 @@ class TestParseSessionStats:
 
         report = parse_session_stats(jsonl)
         assert report.message_count == 1
+
+    def test_skips_non_utf8_bytes(self, tmp_path):
+        """Lines containing non-UTF-8 bytes are skipped, not fatal.
+
+        Regression test for a real crash against ~/.claude/projects/*.jsonl
+        on Windows: opening the file without an explicit encoding falls back
+        to the platform locale encoding (e.g. cp1252), and a stray non-UTF-8
+        byte anywhere in the file raised an uncaught UnicodeDecodeError while
+        iterating lines -- outside the try/except that only guards
+        json.loads(). `agentwatch stats --all` crashed outright instead of
+        skipping the bad line the way malformed JSON already is.
+        """
+        good_user_line = _make_user_line().encode("utf-8")
+        # A lone continuation byte (0x8F) is invalid both as UTF-8 (not a
+        # valid start byte) and as cp1252 (undefined code point), so this
+        # reliably raises UnicodeDecodeError under either encoding.
+        garbage_line = b"\x8f\x9d\x81garbage line with invalid bytes\x90"
+        good_assistant_line = _make_assistant_line(
+            "msg-1",
+            [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}],
+            input_tokens=100,
+            output_tokens=50,
+        ).encode("utf-8")
+
+        jsonl = tmp_path / "session.jsonl"
+        jsonl.write_bytes(good_user_line + b"\n" + garbage_line + b"\n" + good_assistant_line)
+
+        # (a) No exception raised.
+        report = parse_session_stats(jsonl)
+
+        # (b) The garbage line was skipped rather than corrupting other data.
+        # (c) The valid assistant line was still processed correctly.
+        assert report.message_count == 1
+        assert report.tool_call_count == 1
+        assert report.totals.input_tokens == 100
+        assert report.totals.output_tokens == 50
 
     def test_empty_file(self, tmp_path):
         """Empty file produces empty report."""

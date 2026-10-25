@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 import math
 import os
 import re
+import stat
+import tempfile
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
-
+from .pii import _PII_VALIDATORS, PII_LABELS
 
 # ---------------------------------------------------------------------------
 # Pattern registry — each entry: (compiled regex, secret_type label)
@@ -50,7 +56,10 @@ _p(r"glpat-[a-zA-Z0-9\-]{20,}", "gitlab_pat")
 
 # AWS
 _p(r"AKIA[0-9A-Z]{16}", "aws_access_key")
-_p(r"(?:aws_secret_access_key|aws_secret)['\"]?\s*[:=]\s*['\"]?[A-Za-z0-9/+=]{40}", "aws_secret_key")
+_p(
+    r"(?:aws_secret_access_key|aws_secret)['\"]?\s*[:=]\s*['\"]?[A-Za-z0-9/+=]{40}",
+    "aws_secret_key",
+)
 
 # Google Cloud
 _p(r"AIza[0-9A-Za-z\-_]{35}", "google_api_key")
@@ -62,21 +71,45 @@ _p(r"xox[bpors]-[0-9a-zA-Z\-]{10,}", "slack_token")
 _p(r"sk_live_[0-9a-zA-Z]{24,}", "stripe_secret_key")
 _p(r"pk_live_[0-9a-zA-Z]{24,}", "stripe_publishable_key")
 
+# Connection strings: user and password are bounded and possessive, since
+# unbounded each "postgres://" start scans to the end of the text (quadratic
+# on long tool output); 256 chars is far beyond any real user/password. The
+# host tail stops at "@" and "\" (a raw-JSON escape such as "\n"), so it
+# never overlaps the next URL's tail. The user may be empty (redis://:pw@h)
+# and the password may hold raw "@"s (#33). A piece after an "@" joins the
+# password only if it has no "/", "\", ":" or ";", so a host followed by a
+# glued-on second URL is never swallowed.
+_URL_USERINFO = r"[^:\s]{0,256}+:[^@\s]{1,256}+@(?:[^@\s/\:;]{1,256}+@)*+"
+_URL_TAIL = r"[^\s@\\]"
+
 # Neon DB connection string — must be before generic database pattern
-_p(r"postgres://[^:\s]+:[^@\s]+@[^\s]*neon\.tech", "neondb_connection_string")
+_p(r"postgres://" + _URL_USERINFO + _URL_TAIL + r"*neon\.tech", "neondb_connection_string")
 
 # Database connection strings with embedded passwords (generic)
-_p(r"(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://[^:\s]+:[^@\s]+@[^\s]+", "database_connection_string")
+_p(
+    r"(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://" + _URL_USERINFO + _URL_TAIL + "++",
+    "database_connection_string",
+)
 
 # Private keys
 _p(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", "private_key")
 _p(r"-----BEGIN PGP PRIVATE KEY BLOCK-----", "pgp_private_key")
+# The whole key: the header-only patterns above leave the body behind on
+# redaction. The body is lazy and bounded, so an unterminated BEGIN scans
+# at most 20000 chars; [\s\S] spans real newlines and JSON "\n" escapes.
+_p(
+    r"-----BEGIN (?P<kind>(?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?"
+    r"PRIVATE KEY(?: BLOCK)?)-----"
+    r"(?P<secret>[\s\S]{1,20000}?)-----END (?P=kind)-----",
+    "private_key_block",
+)
 
 # Supabase (anon/JWT) — must be before generic JWT
 _p(r"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJpc3[a-zA-Z0-9_\-\.]+", "supabase_jwt_key")
 
-# JWT tokens (generic)
-_p(r"eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*", "jwt_token")
+# JWT tokens (generic). Starts only at the beginning of a token-char run: from
+# every eyJ inside a long run the scan went to its end (quadratic, #32).
+_p(r"(?<![\w-])eyJ[a-zA-Z0-9_-]*+\.eyJ[a-zA-Z0-9_-]*+\.[a-zA-Z0-9_-]*", "jwt_token")
 
 # Generic password assignments
 _p(r"(?:password|passwd|pwd)['\"]?\s*[:=]\s*['\"][^'\"]{8,}['\"]", "password_assignment")
@@ -87,9 +120,13 @@ _p(r"(?:bearer|token)['\"]?\s*[:=]\s*['\"]?[a-zA-Z0-9_\-]{20,}", "bearer_token")
 # Generic API key assignments
 _p(r"(?:api[_-]?key|apikey)['\"]?\s*[:=]\s*['\"]?[a-zA-Z0-9_\-]{20,}", "generic_api_key")
 
-# High-entropy hex/base64 assigned to key-like variable names
+# High-entropy hex/base64 assigned to key-like variable names. The name tail
+# stops at the next key word, so each char is scanned from one start only:
+# otherwise every key word in a long identifier scanned to its end
+# (quadratic, #32). The match starts at the name's last key word.
+_KEY_WORD = r"(?:secret|key|token|credential|auth)"
 _p(
-    r"(?:secret|key|token|credential|auth)[_-]?\w*['\"]?\s*[:=]\s*['\"]?"
+    _KEY_WORD + rf"[_-]?(?:(?!{_KEY_WORD})\w)*+['\"]?\s*[:=]\s*['\"]?"
     r"[A-Za-z0-9+/=_\-]{32,}",
     "high_entropy_secret",
 )
@@ -133,8 +170,9 @@ _p(r"r8_[a-zA-Z0-9]{36,}", "replicate_api_key")
 # Pinecone
 _p(r"pc-[a-zA-Z0-9]{32,}", "pinecone_api_key")
 
-# Discord Bot
-_p(r"[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27,}", "discord_bot_token")
+# Discord Bot. Starts only at the beginning of an alphanumeric run: from every
+# M/N inside a long run the scan went to its end (quadratic, #32).
+_p(r"(?<![A-Za-z\d])[MN][A-Za-z\d]{23,}+\.[\w-]{6}\.[\w-]{27,}", "discord_bot_token")
 
 # Doppler
 _p(r"dp\.st\.[a-zA-Z0-9_\-]{40,}", "doppler_service_token")
@@ -151,18 +189,179 @@ _p(r"pypi-[a-zA-Z0-9\-_]{16,}", "pypi_token")
 # Cloudflare
 _p(r"v1\.0-[a-f0-9]{24}-[a-f0-9]{146,}", "cloudflare_api_token")
 
+# Unprefixed secrets recognisable only by their command/header context. The
+# named group ``secret`` marks the value: only it is masked/redacted, since
+# the match also holds the context (``mysql -u root -p...``) that mask_secret
+# would otherwise mistake for the value. A value never starts with ``$``
+# (a variable reference) or ``…``/``[`` (an already-masked value). A
+# trailing ":" is punctuation, not value ("-pXXX: Access denied", #31).
+# A backslash escape pair is part of the value, so a shell-escaped quote
+# ("S3cret\"Pw0rd") does not end it. A value never starts with a backslash:
+# in raw JSON text the \" before a value is its quote, and the decoded-value
+# pass (_redact_line) redacts it there. A backtick ends it: markdown and
+# shell quote commands in them (`password=...`).
+_SECRET_VALUE = r"(?P<secret>[^\s'\"`$…\[\\](?:\\.|[^\s'\"`:\\]|:(?=[^\s'\"`]))*+)"
+_p(r"\b(?:PGPASSWORD|MYSQL_PWD)\s*=\s*['\"]?" + _SECRET_VALUE, "db_password_env")
+# curl/mysql as a program word anywhere on a line (error text quotes
+# commands mid-line, behind prompts, bash -c, ssh, docker exec, xargs ...),
+# but not inside a path, variable or identifier -- except a bin/ directory.
+_CMD = r"(?:(?<=/bin/)|(?<![\w/.$-]))"
+# curl may sit at the end of any path (/opt/x/curl, #31): unlike mysql, a
+# directory named curl followed by "-u user:pw" is not a real case.
+_CURL_CMD = r"(?:(?<=/)|(?<![\w/.$-]))"
+
+
+def _flag_gap(word: str, cmd: str = _CMD) -> str:
+    """1 to 40 whitespace-separated tokens between *word* and its flag.
+
+    At least one: "-p" glued to the word ("mysql-python") is not a flag.
+
+    Stops at shell separators and newlines, and never runs past another
+    *word*, not even one glued inside a token ("mysql:mysql:..."): each char
+    is then scanned from at most one start, which keeps these patterns
+    linear on long tool output (an unbounded or overlapping gap goes
+    quadratic). Each token is possessive: otherwise a run of spaces can be
+    split between tokens in exponentially many ways.
+    """
+    token = rf"(?:(?!{cmd}(?:{word})\b)[^\s;&|(`])*+"
+    return rf"\b(?:{token}[^\S\n]++(?!['\"]?(?:{word})\b)){{1,40}}?['\"]?"
+
+
+_MYSQL = (
+    r"mysql(?:dump|admin|import|show|check|sh|binlog|_secure_installation)?"
+    r"|mariadb(?:-\w+)?"
+)
+# -p is case-sensitive: mysql's -P is the port. find's -perm/-print/-prune/
+# -path are not passwords (find / -name mysql -print).
+_p(
+    _CMD + rf"(?:{_MYSQL})" + _flag_gap(_MYSQL)
+    + r"(?-i:-p)(?!(?:erm|rint\w*|rune|ath)\b)['\"]?" + _SECRET_VALUE,
+    "cli_password_flag",
+)
+_p(r"--password=['\"]?" + _SECRET_VALUE, "cli_password_flag")
+_p(
+    _CURL_CMD + r"curl" + _flag_gap("curl", _CURL_CMD)
+    + r"(?:-u[\s'\",]*+|--user[\s=,'\"]++)[^\s:'\"]+:" + _SECRET_VALUE,
+    "curl_basic_auth",
+)
+# The scheme is bounded and dot-free for the same reason (dotted schemes
+# are rare; "a.a.a..." would otherwise restart a scheme scan at every "a").
+# Any scheme except the database ones database_connection_string handles.
+_p(
+    r"\b(?!(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://)[a-z][a-z0-9+-]{0,30}://"
+    r"[^\s:/@]+:(?P<secret>[^\s@/$…\[][^\s@/]*)@",
+    "url_credentials",
+)
+_p(r"\bbearer\s+['\"]?(?P<secret>[a-z0-9_\-.=~+/]{20,})", "bearer_header")
+# Bare key=value / key: value secrets (password=Hunter2!, token: ...), which
+# the assignment patterns above miss: unquoted or under 8/20 chars. The key
+# may end a compound or env-var name (client_secret, AUTH_TOKEN, SECRET_KEY).
+# False positives are judged by the value, which must be 8+ chars with a
+# digit and a letter or with a symbol, and must not be:
+# - a short all-lowercase word (exe_token="gpt4all", model=llama3b8);
+# - code: a call or subscript ("get_token(", "Optional[str]");
+# - a placeholder (***, gho_****, <...>, ${VAR}, {{ var }}, %(x)s, changeme)
+#   or a path (PWD=/home/...).
+# Its masked form never shows a tail (_NO_TAIL_LABELS).
+_KV_VALUE_CHAR = r"[^\s'\"`]"
+_p(
+    r"(?<![a-z0-9])(?:[a-z0-9]*[_-])?"
+    r"(?:password|passwd|pwd|secret|token|api[_-]?key|apikey)(?:[_-]key)?"
+    r"['\"]?[^\S\n]*[:=][^\S\n]*['\"]?"
+    # The look-aheads that scan the value are bounded: unbounded, every key in
+    # a long run ("token:token:...") scanned to its end (quadratic).
+    rf"(?![*<{{%/]|changeme\b|[\w.]*[(\[]|{_KV_VALUE_CHAR}{{0,64}}?\*{{3}})"
+    rf"(?!(?-i:[a-z0-9]{{1,9}})(?!{_KV_VALUE_CHAR}))"
+    rf"(?={_KV_VALUE_CHAR}{{8}})"
+    rf"(?={_KV_VALUE_CHAR}{{0,64}}?[!@#^&*+=?~]"
+    rf"|(?={_KV_VALUE_CHAR}{{0,64}}?\d)(?={_KV_VALUE_CHAR}{{0,64}}?[a-z]))"
+    + _SECRET_VALUE,
+    "key_value_secret",
+)
+# Labels whose masked value never reveals its last chars, however long: a
+# password-like value has no "which key to rotate" hint worth leaking. Every
+# label whose value is a human-chosen password belongs here, including the
+# password of a connection-string URL.
+_NO_TAIL_LABELS = frozenset({
+    "key_value_secret",
+    "password_assignment",
+    "db_password_env",
+    "cli_password_flag",
+    "curl_basic_auth",
+    "url_credentials",
+    "database_connection_string",
+    "neondb_connection_string",
+})
+
 
 # ---------------------------------------------------------------------------
 # Placeholder / false-positive filters
 # ---------------------------------------------------------------------------
 
-_PLACEHOLDER_RE = re.compile(
-    r"your[_-]?(?:key|token|secret|api|password)|"
-    r"example|xxx{3,}|<REPLACE>|TODO|CHANGEME|"
-    r"insert[_-]?(?:key|token|here)|"
-    r"placeholder|dummy|test[_-]?(?:key|token|secret)",
+# A value IS a placeholder only when it is made of nothing else. A value that
+# merely contains a placeholder word ("MyExample#Pass1", "sk_live_TODO<key>")
+# is a real secret that happens to hold the word, and must be redacted.
+#
+# 1. It starts with "your_key" / "insert_token" ...: nobody's real secret does,
+#    and what follows ("_here_abcdef12") is filler.
+_PLACEHOLDER_PREFIX_RE = re.compile(
+    r"(?:your|insert)[_-]?(?:key|token|secret|api|password|here)", re.IGNORECASE
+)
+# 2. It is a bracketed name: <password>.
+_PLACEHOLDER_BRACKET_RE = re.compile(r"<[\w -]+>")
+# 3. Every word of it (split on non-alphanumerics) is a placeholder word, a
+#    filler word, digits or a run of x's, with at least one placeholder word:
+#    "example", "TODO_replace_me", "xxxxxxxx", "placeholder_value_123".
+_PLACEHOLDER_WORDS = frozenset({
+    "example", "todo", "changeme", "placeholder", "dummy", "your", "insert", "test",
+})
+_FILLER_WORDS = frozenset({
+    "key", "token", "secret", "password", "passwd", "api", "value", "here", "my", "the",
+    "a", "an", "me", "replace", "goes", "with", "com",
+})
+_X_RUN_RE = re.compile(r"x{3,}", re.IGNORECASE)
+# The vendor prefix of a token (as in the patterns above). A placeholder keeps
+# it ("sk-xxxxxxxx", "ghp_xxxx...", "sk-your-key-here"), so it is stripped
+# before judging what is left. Longest first: sk-ant-api03- before sk-ant-.
+_TOKEN_PREFIX_RE = re.compile(
+    r"(?:sk-ant-api03-|sk-or-v1-|sk-ant-|sk-proj-|sk_live_|sk_test_|pk_live_|pk_test_|sk-"
+    r"|ghp_|gho_|ghs_|github_pat_|glpat-|xox[bpors]-|AKIA|AIza|SG\.|hf_|r8_|pc-|fc-|npm_"
+    r"|pypi-|lin_api_|nfp_|sbp_|railway_|vercel_|neondb_|dp\.st\.|key-)",
     re.IGNORECASE,
 )
+
+
+def _is_placeholder_value(value: str) -> bool:
+    """True if *value* (a bare value, quotes stripped) is only a placeholder."""
+    if _PLACEHOLDER_PREFIX_RE.match(value) or _PLACEHOLDER_BRACKET_RE.fullmatch(value):
+        return True
+    prefix = _TOKEN_PREFIX_RE.match(value)
+    if prefix and prefix.end() < len(value):
+        return _is_placeholder_value(value[prefix.end() :])
+    words = [w.lower() for w in re.split(r"[^A-Za-z0-9]+", value) if w]
+    strong = False
+    for w in words:
+        if w in _PLACEHOLDER_WORDS or _X_RUN_RE.fullmatch(w):
+            strong = True
+        elif not (w in _FILLER_WORDS or w.isdigit()):
+            return False
+    return strong
+
+
+# Stock/default credentials: a value that is exactly one of these is a
+# placeholder or a well-known default, not a leaked secret, but in a URL only
+# where it cannot reach a real system: see _LOCAL_HOSTS.
+_DEFAULT_CREDENTIALS = frozenset({"admin", "postgres", "root", "mysql"})
+# Placeholder passwords: the word for the thing itself, written where a real
+# password would go. Exempt on any host.
+_PLACEHOLDER_PASSWORDS = frozenset({"pass", "passwd", "password", "secret"})
+
+# In a URL the stock-credential exemption holds only for loopback hosts: a
+# dev database on this machine. postgres:postgres@prod.internal (or a
+# docker-compose service name, which may well be a shared server) is a real
+# credential for a real host, and a missed secret costs far more than a
+# redaction that the per-run backup can undo.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 _TEST_PATH_RE = re.compile(r"(?:^|/)(?:test_|tests/|fixture|mock|conftest)", re.IGNORECASE)
 
@@ -178,14 +377,21 @@ def _shannon_entropy(s: str) -> float:
     return -sum((c / length) * math.log2(c / length) for c in freq.values())
 
 
-def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
-    """Return True if the match is likely a placeholder or test fixture."""
-    if _PLACEHOLDER_RE.search(match_text):
-        return True
+def _is_false_positive(
+    match_text: str, file_path: str | None = None, *, stock_ok: bool = True
+) -> bool:
+    """Return True if the match is a placeholder or test fixture.
+
+    Judged on the value (the text after ``=``/``:``), which must BE a
+    placeholder, not just contain a placeholder word. *stock_ok* False turns
+    off the stock-credential exemption (``root``, ``postgres`` ...), for a
+    URL whose host is not loopback.
+    """
     if file_path and _TEST_PATH_RE.search(file_path):
         return True
     # Low Shannon entropy suggests a pattern like "aaaaaaa..." rather than a real key
     # Extract the value portion (after = or :) for entropy check
+    value = match_text
     for sep in ("=", ":"):
         idx = match_text.find(sep)
         if idx != -1:
@@ -193,7 +399,23 @@ def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
             if len(value) >= 16 and _shannon_entropy(value) < 3.0:
                 return True
             break
-    return False
+    if _is_placeholder_value(value) or value.lower() in _PLACEHOLDER_PASSWORDS:
+        return True
+    return stock_ok and value.lower() in _DEFAULT_CREDENTIALS
+
+
+_HOST_RE = re.compile(r"[^/?#\\\s;]*")
+
+
+def _url_host(rest: str) -> str:
+    """Lower-case host of the URL whose userinfo ends just before *rest*
+    (``@db.host:5432/app...``), without port or brackets."""
+    authority = _HOST_RE.match(rest.lstrip("@")).group(0)
+    host = authority.rsplit("@", 1)[-1].lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    head, _, port = host.rpartition(":")
+    return head if head and port.isdigit() else host
 
 
 # ---------------------------------------------------------------------------
@@ -265,9 +487,13 @@ _CHANNEL_SEVERITY: dict[str, Severity] = {
 # ---------------------------------------------------------------------------
 
 _REMEDIATION: dict[str, str] = {
-    "openai_api_key": "Remove from file, use env var OPENAI_API_KEY, rotate key at platform.openai.com",
+    "openai_api_key": (
+        "Remove from file, use env var OPENAI_API_KEY, rotate key at platform.openai.com"
+    ),
     "openai_project_key": "Remove from file, use env var, rotate at platform.openai.com",
-    "anthropic_api_key": "Remove from file, use env var ANTHROPIC_API_KEY, rotate at console.anthropic.com",
+    "anthropic_api_key": (
+        "Remove from file, use env var ANTHROPIC_API_KEY, rotate at console.anthropic.com"
+    ),
     "github_pat": "Remove immediately, rotate at github.com/settings/tokens",
     "github_oauth": "Remove and rotate at GitHub OAuth app settings",
     "github_app_token": "Remove and rotate at GitHub app settings",
@@ -279,54 +505,162 @@ _REMEDIATION: dict[str, str] = {
     "slack_token": "Remove from file, use env var, rotate in Slack app settings",
     "stripe_secret_key": "Remove immediately, rotate at dashboard.stripe.com/apikeys",
     "stripe_publishable_key": "Review exposure scope, rotate at dashboard.stripe.com/apikeys",
-    "database_connection_string": "Remove from file, use env var or secret manager for DB credentials",
+    "database_connection_string": (
+        "Remove from file, use env var or secret manager for DB credentials"
+    ),
     "private_key": "Remove from file, regenerate key pair, never commit private keys",
     "pgp_private_key": "Remove from file, regenerate PGP key pair",
+    "private_key_block": "Remove from file, regenerate key pair, never commit private keys",
     "jwt_token": "Remove from file, tokens may need regeneration if leaked",
     "password_assignment": "Remove hardcoded password, use env var or secret manager",
     "bearer_token": "Remove from file, rotate token, use env var",
     "generic_api_key": "Remove from file, use env var, rotate if committed to git",
+    "key_value_secret": "Remove hardcoded secret, use env var or secret manager, rotate it",
     "high_entropy_secret": "Review value—if a real secret, remove from file and rotate",
-    "claude_api_key": "Remove from file, use env var ANTHROPIC_API_KEY, rotate at console.anthropic.com",
+    "claude_api_key": (
+        "Remove from file, use env var ANTHROPIC_API_KEY, rotate at console.anthropic.com"
+    ),
     "openrouter_api_key": "Remove from file, use env var, rotate at openrouter.ai/keys",
     "firecrawl_api_key": "Remove from file, use env var, rotate at firecrawl.dev dashboard",
     "railway_token": "Remove from file, use env var, rotate at railway.app account settings",
     "supabase_service_key": "Remove from file, use env var, rotate in Supabase dashboard",
-    "supabase_jwt_key": "Remove from file, use env var, rotate JWT secret in Supabase dashboard",
+    "supabase_jwt_key": (
+        "Remove from file, use env var, rotate JWT secret in Supabase dashboard"
+    ),
     "neondb_api_key": "Remove from file, use env var, rotate at console.neon.tech",
     "neondb_connection_string": "Remove from file, use env var, rotate password in Neon console",
     "vercel_token": "Remove from file, use env var, rotate at vercel.com/account/tokens",
     "netlify_pat": "Remove from file, use env var, rotate at app.netlify.com/user/applications",
     "twilio_api_key": "Remove from file, use env var, rotate at twilio.com/console",
-    "sendgrid_api_key": "Remove from file, use env var, rotate at app.sendgrid.com/settings/api_keys",
-    "mailgun_api_key": "Remove from file, use env var, rotate at app.mailgun.com/settings/api_security",
-    "datadog_api_key": "Remove from file, use env var, rotate at app.datadoghq.com/organization-settings/api-keys",
-    "huggingface_token": "Remove from file, use env var, rotate at huggingface.co/settings/tokens",
-    "replicate_api_key": "Remove from file, use env var, rotate at replicate.com/account/api-tokens",
+    "sendgrid_api_key": (
+        "Remove from file, use env var, rotate at app.sendgrid.com/settings/api_keys"
+    ),
+    "mailgun_api_key": (
+        "Remove from file, use env var, rotate at app.mailgun.com/settings/api_security"
+    ),
+    "datadog_api_key": (
+        "Remove from file, use env var, rotate at "
+        "app.datadoghq.com/organization-settings/api-keys"
+    ),
+    "huggingface_token": (
+        "Remove from file, use env var, rotate at huggingface.co/settings/tokens"
+    ),
+    "replicate_api_key": (
+        "Remove from file, use env var, rotate at replicate.com/account/api-tokens"
+    ),
     "pinecone_api_key": "Remove from file, use env var, rotate at app.pinecone.io",
-    "discord_bot_token": "Remove from file, use env var, regenerate at discord.com/developers/applications",
+    "discord_bot_token": (
+        "Remove from file, use env var, regenerate at discord.com/developers/applications"
+    ),
     "doppler_service_token": "Remove from file, use env var, rotate at dashboard.doppler.com",
     "linear_api_key": "Remove from file, use env var, rotate at linear.app/settings/api",
     "npm_token": "Remove from file, use env var, rotate at npmjs.com/settings/tokens",
     "pypi_token": "Remove from file, use env var, rotate at pypi.org/manage/account",
-    "cloudflare_api_token": "Remove from file, use env var, rotate at dash.cloudflare.com/profile/api-tokens",
+    "cloudflare_api_token": (
+        "Remove from file, use env var, rotate at dash.cloudflare.com/profile/api-tokens"
+    ),
 }
 
 
-def _safe_prefix(match_text: str, max_len: int = 12) -> str:
-    """Return a safe partial display of a matched secret."""
-    # Find the likely secret value (after = or : or just the match start)
-    for sep in ("=", ":"):
-        idx = match_text.find(sep)
-        if idx != -1:
-            value = match_text[idx + 1 :].strip().strip("'\"").strip()
-            if len(value) > max_len:
-                return value[:max_len] + "..."
-            return value
-    # Fallback: prefix of the whole match
-    if len(match_text) > max_len:
-        return match_text[:max_len] + "..."
-    return match_text
+# A value this long is assumed to be a random token, where the last 4 chars
+# are the standard hint for identifying which credential to rotate. Anything
+# shorter (typically a human-chosen password) reveals no characters at all.
+_MASK_TAIL_MIN_LEN = 20
+_MASK_TAIL_CHARS = 4
+
+
+def mask_secret(match_text: str, label: str | None = None) -> str:
+    """Return a display-safe form of a matched secret.
+
+    Reveals at most the last 4 chars of the secret value, and only when the
+    value is >= 20 chars; shorter values reveal nothing but their length.
+    The value is the text after ``=``/``:`` (quotes stripped) when present,
+    otherwise the whole match -- never the scheme prefix (``ghp_``, ``AKIA``
+    ...), which ``secret_type`` already identifies. For a connection-string
+    URL the value is its password, never the host tail. With a password-like
+    *label* (``_NO_TAIL_LABELS``) not even the last 4 chars are shown.
+    """
+    value = match_text
+    url = _URL_PASSWORD_RE.match(match_text)
+    if url:
+        value = url.group(1)
+    else:
+        sep = re.search(r"[=:]", match_text)  # the first separator, = or : (#64)
+        if sep:
+            value = match_text[sep.end() :].strip().strip("'\"").strip()
+    return _mask_value(value, label)
+
+
+def _mask_value(value: str, label: str | None = None) -> str:
+    """Display-safe form of a bare secret *value* (see ``mask_secret``)."""
+    if len(value) >= _MASK_TAIL_MIN_LEN and label not in _NO_TAIL_LABELS:
+        return "…" + value[-_MASK_TAIL_CHARS:]
+    return f"[hidden, {len(value)} chars]"
+
+
+def _match_value(m: re.Match) -> str:
+    """The secret part of a match: its ``secret`` group if it has one."""
+    return m.group("secret") if "secret" in m.re.groupindex else m.group(0)
+
+
+def _mask_match_value(m: re.Match, label: str | None = None) -> str:
+    """Masked secret of *m*. A ``secret`` group is already the bare value, so
+    it is not split again on ``=``/``:`` (#64)."""
+    if "secret" in m.re.groupindex:
+        return _mask_value(m.group("secret"), label)
+    return mask_secret(m.group(0), label)
+
+
+def _mask_match(m: re.Match, label: str) -> str:
+    """*m*'s text with only its secret value masked.
+
+    Keeps the key name and quotes of an assignment match, so
+    ``MYSQL_PWD="..."`` reads ``MYSQL_PWD="[hidden, N chars]"`` rather than
+    ``MYSQL_[hidden, N chars]``.
+    """
+    if "secret" not in m.re.groupindex and label not in _ASSIGNMENT_LABELS:
+        return mask_secret(m.group(0), label)
+    start, end = _value_span(m, label)
+    return m.string[m.start() : start] + _mask_match_value(m, label) + m.string[end : m.end()]
+
+
+def redact_secrets(text: str) -> str:
+    """Replace every ``_SECRET_PATTERNS`` match in *text* with its masked form.
+
+    For free text (e.g. a shell command) that is about to be placed in a
+    ``Warning``. Deliberately skips the placeholder/false-positive filter:
+    masking a harmless placeholder costs nothing, leaking a real secret the
+    heuristic misjudged does. Callers that truncate must redact *first* --
+    truncating first can cut a token so the pattern no longer matches.
+    """
+    for pattern, label in _SECRET_PATTERNS:
+        text = pattern.sub(lambda m: _mask_match(m, label), text)
+    return text
+
+
+# Extra chars scanned past the display cut-off so a secret that starts before
+# the cut-off still has its full minimum-length match inside the window. The
+# longest minimum match in _SECRET_PATTERNS is cloudflare_api_token (176:
+# "v1.0-" + 24 hex + "-" + 146 hex); claude_api_key is next at 103.
+_REDACT_WINDOW_MARGIN = 256
+
+
+def redact_truncate(text: str, limit: int) -> str:
+    """Return ``redact_secrets(text)[:limit]`` without scanning all of *text*.
+
+    Commands can be megabytes (heredocs), but callers only keep the first
+    *limit* chars; redacting a bounded window keeps detectors cheap. A secret
+    straddling *limit* is still masked because the window extends
+    ``_REDACT_WINDOW_MARGIN`` chars past it.
+    """
+    return _redact_window(text[: limit + _REDACT_WINDOW_MARGIN])[:limit]
+
+
+@lru_cache(maxsize=4096)
+def _redact_window(window: str) -> str:
+    """Memoized ``redact_secrets`` for bounded windows: detectors re-redact
+    the same commands and errors on every watch tick (#25)."""
+    return redact_secrets(window)
 
 
 # ---------------------------------------------------------------------------
@@ -383,13 +717,8 @@ class SecretLeakScanner(SecurityDetector):
             contents = extract_scannable_content(action)
             for text, channel, file_path in contents:
                 for pattern, secret_type in _SECRET_PATTERNS:
-                    m = pattern.search(text)
+                    m = _first_live_match(pattern, secret_type, text, file_path)
                     if m is None:
-                        continue
-
-                    match_text = m.group(0)
-
-                    if _is_false_positive(match_text, file_path):
                         continue
 
                     dedup = self._dedup_key(secret_type, channel, file_path)
@@ -415,7 +744,7 @@ class SecretLeakScanner(SecurityDetector):
                             "channel": channel,
                             "file_path": file_path,
                             "tool": tool_name,
-                            "matched_prefix": _safe_prefix(match_text),
+                            "matched_prefix": _mask_match_value(m, secret_type),
                             "remediation": _REMEDIATION.get(
                                 secret_type,
                                 "Remove from file, use env var, rotate if committed to git",
@@ -474,6 +803,7 @@ def audit_log_file(
     log_path: Path,
     *,
     project_name: str = "",
+    patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
 ) -> list[AuditFinding]:
     """Scan a single JSONL log file for secret leaks. Returns all findings."""
     from agentwatch.parser import parse_file
@@ -482,18 +812,11 @@ def audit_log_file(
     findings: list[AuditFinding] = []
     seen: set[str] = set()  # dedup: (secret_type, channel, file_path) per session
 
-    for action in parse_file(log_path):
-        ts = getattr(action, "timestamp", None)
-        ts_str = ts.isoformat() if ts else None
-
-        for text, channel, file_path in extract_scannable_content(action):
-            for pattern, secret_type in _SECRET_PATTERNS:
-                m = pattern.search(text)
+    def _scan(items: list[tuple[str, str, str | None]], ts_str: str | None) -> None:
+        for text, channel, file_path in items:
+            for pattern, secret_type in patterns:
+                m = _first_live_match(pattern, secret_type, text, file_path)
                 if m is None:
-                    continue
-
-                match_text = m.group(0)
-                if _is_false_positive(match_text, file_path):
                     continue
 
                 dedup_key = f"{secret_type}:{channel}:{file_path or ''}"
@@ -502,6 +825,13 @@ def audit_log_file(
                 seen.add(dedup_key)
 
                 severity = _CHANNEL_SEVERITY.get(channel, Severity.MEDIUM)
+                remediation = _REMEDIATION.get(
+                    secret_type,
+                    "Remove from file, use env var, rotate if committed to git",
+                )
+                if secret_type in PII_LABELS:
+                    severity = Severity.LOW
+                    remediation = "Personal info; remove it before sharing this log"
 
                 findings.append(
                     AuditFinding(
@@ -511,47 +841,623 @@ def audit_log_file(
                         log_file=log_path.name,
                         session_id=session_id,
                         project_name=project_name,
-                        matched_prefix=_safe_prefix(match_text),
+                        matched_prefix=_mask_match_value(m, secret_type),
                         severity=_SEVERITY_LABEL.get(severity, "medium"),
-                        remediation=_REMEDIATION.get(
-                            secret_type,
-                            "Remove from file, use env var, rotate if committed to git",
-                        ),
+                        remediation=remediation,
                         timestamp=ts_str,
                     )
                 )
 
+    for action in parse_file(log_path):
+        ts = getattr(action, "timestamp", None)
+        _scan(extract_scannable_content(action), ts.isoformat() if ts else None)
+
+    # The parser turns assistant output and tool calls into actions, but not
+    # the user entries of a Claude Code log (prompts and tool_result blocks:
+    # `cat .env` output). Scan those from the raw lines, on their decoded
+    # strings. Findings share `seen`, so nothing is counted twice.
+    for ts_str, items in _claude_user_entries(log_path):
+        _scan(items, ts_str)
+
     return findings
 
 
-def redact_log_file(log_path: Path) -> int:
-    """Replace all detected secrets in a JSONL log file with [REDACTED].
+def _claude_user_entries(
+    log_path: Path,
+) -> Iterator[tuple[str | None, list[tuple[str, str, str | None]]]]:
+    """(timestamp, [(text, channel, None)]) for each Claude Code user entry of
+    a JSONL log: prompt text is ``user_message``, a ``tool_result`` is
+    ``tool_output``. Unparseable lines and other shapes are skipped."""
+    with log_path.open("rb") as fh:
+        for raw_line in fh:
+            # Cheap pre-filter: most lines are assistant entries.
+            if b'"user"' not in raw_line:
+                continue
+            try:
+                entry = json.loads(raw_line)
+            except ValueError:
+                continue
+            message = entry.get("message") if isinstance(entry, dict) else None
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            items: list[tuple[str, str, str | None]] = []
+            _user_content_items(message.get("content"), "user_message", items)
+            if items:
+                ts = entry.get("timestamp")
+                yield (ts if isinstance(ts, str) else None), items
 
-    Operates line-by-line on the raw text so the JSONL structure is preserved.
-    Returns the number of replacements made.
+
+def _user_content_items(
+    content: Any, channel: str, items: list[tuple[str, str, str | None]]
+) -> None:
+    if isinstance(content, str):
+        if content:
+            items.append((content, channel, None))
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                _user_content_items(block, channel, items)
+            elif isinstance(block, dict):
+                if block.get("type") == "tool_result":
+                    _user_content_items(block.get("content"), "tool_output", items)
+                elif isinstance(block.get("text"), str):
+                    _user_content_items(block["text"], channel, items)
+
+
+_REDACTED = "[REDACTED]"
+
+# Patterns whose match includes a key name + separator (``password": "...``).
+# Only the value after the separator is redacted.
+_ASSIGNMENT_LABELS = frozenset({
+    "aws_secret_key",
+    "password_assignment",
+    "bearer_token",
+    "generic_api_key",
+    "high_entropy_secret",
+})
+_ASSIGNMENT_PREFIX_RE = re.compile(r"[^:=]*[:=]\s*['\"]?")
+
+# Connection-string patterns: only the password between ``user:`` and ``@``.
+_URL_LABELS = frozenset({"neondb_connection_string", "database_connection_string"})
+_URL_PASSWORD_RE = re.compile(r"[a-z]+://[^:\s]*:(\S+)@", re.IGNORECASE)
+
+
+def _value_span(m: re.Match, label: str) -> tuple[int, int]:
+    """Return the (start, end) span of the secret value inside a pattern match.
+
+    Detection patterns may include the key name, separator, quotes or a URL
+    host. Redacting the whole match would destroy JSON structure, so only the
+    value itself is replaced.
     """
-    lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
-    total_replacements = 0
+    if "secret" in m.re.groupindex:
+        return m.span("secret")
+    start, end = m.span()
+    text = m.group(0)
+    if label in _ASSIGNMENT_LABELS:
+        prefix = _ASSIGNMENT_PREFIX_RE.match(text)
+        if prefix:
+            start += prefix.end()
+            value = text[prefix.end():]
+            end -= len(value) - len(value.rstrip("'\""))
+    elif label in _URL_LABELS:
+        pw = _URL_PASSWORD_RE.match(text)
+        if pw:
+            return m.start() + pw.start(1), m.start() + pw.end(1)
+    return start, end
+
+
+def _is_redacted_value(m: re.Match, label: str) -> bool:
+    """True if the secret VALUE of this match already holds [REDACTED].
+
+    Only the value span is checked, never the whole match: greedy tails (e.g.
+    a DB URL's host part) can swallow an unrelated placeholder while the real
+    password in the same match is still there.
+    """
+    vstart, vend = _value_span(m, label)
+    return _REDACTED in m.string[vstart:vend]
+
+
+def _iter_matches(pattern: re.Pattern, label: str, text: str) -> Iterator[re.Match]:
+    """Like ``pattern.finditer(text)``, but resume after a DB URL's password.
+
+    A DB URL's host tail stops only at whitespace, so it can run over the
+    next URL: in raw JSON a newline is the two chars ``\\n``, and URLs may be
+    glued with ``;``. Resuming after the whole match would skip that URL.
+    """
+    pos = 0
+    while (m := pattern.search(text, pos)) is not None:
+        yield m
+        pos = _value_span(m, label)[1] if label in _URL_LABELS else m.end()
+
+
+def _is_placeholder(m: re.Match, label: str, file_path: str | None = None) -> bool:
+    """``_is_false_positive`` for a match, judged on the right text.
+
+    For a URL that is only its password: a host like ``db.example.com``
+    or a ``?application_name=test_key`` tail says nothing about it. The host
+    only decides whether a stock password (``postgres``) is a real one.
+    """
+    if label in _URL_LABELS or label == "url_credentials":
+        start, end = _value_span(m, label)
+        rest = m.string[end : m.end() if label in _URL_LABELS else end + 512]
+        local = _url_host(rest) in _LOCAL_HOSTS
+        return _is_false_positive(m.string[start:end], file_path, stock_ok=local)
+    validator = _PII_VALIDATORS.get(label)
+    if validator is not None and not validator(_match_value(m)):
+        return True
+    return _is_false_positive(_match_value(m), file_path)
+
+
+def _first_live_match(
+    pattern: re.Pattern, label: str, text: str, file_path: str | None = None
+) -> re.Match | None:
+    """First match of *pattern* in *text* that is neither redacted nor a placeholder.
+
+    Both are skipped here, not by the caller: a placeholder or redacted
+    match must not hide a live one later in the same text.
+    """
+    for m in _iter_matches(pattern, label, text):
+        if not _is_redacted_value(m, label) and not _is_placeholder(m, label, file_path):
+            return m
+    return None
+
+
+def _find_spans(
+    text: str, patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS
+) -> list[tuple[int, int, str]]:
+    """Merged (start, end, label) value spans of every real match in *text*.
+
+    Every pattern is matched against the original text and overlapping value
+    spans are merged before anything is replaced: replacing pattern by
+    pattern let one replacement hide another value ("sk-proj-...api_key=V"
+    became "[REDACTED]_key=V", which no pattern matches). A merged span keeps
+    the label of its first (leftmost) span.
+    """
+    spans: list[tuple[int, int, str]] = []
+    for pattern, label in patterns:
+        for m in _iter_matches(pattern, label, text):
+            # Leave placeholders/test data alone; they are not real redactions.
+            if _is_placeholder(m, label):
+                continue
+            vstart, vend = _value_span(m, label)
+            # Skip only values that are exactly the placeholder (idempotent
+            # re-runs). A value that merely contains it ("hunter-[REDACTED]!")
+            # still gets fully redacted so no fragment of it is left behind.
+            if vstart < vend and text[vstart:vend] != _REDACTED:
+                spans.append((vstart, vend, label))
+    merged: list[list] = []
+    for start, end, label in sorted(spans, key=lambda s: (s[0], s[1])):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end, label])
+    return [(start, end, label) for start, end, label in merged]
+
+
+def _redact_text(
+    text: str,
+    patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
+    found: list[dict] | None = None,
+    line: int | None = None,
+) -> tuple[str, int]:
+    """Redact secret values in *text*. Returns (new_text, real_redaction_count).
+
+    If *found* is given, a masked finding per redaction is appended to it,
+    on *line* or else on the line of *text* the value starts on.
+    """
+    merged = _find_spans(text, patterns)
+    pieces: list[str] = []
+    pos = 0
+    lineno = 1  # line of *pos*, counted incrementally (spans are sorted)
+    for start, end, label in merged:
+        pieces += [text[pos:start], _REDACTED]
+        lineno += text.count("\n", pos, start)
+        if found is not None:
+            found.append({
+                "type": label,
+                "line": line if line is not None else lineno,
+                "preview": _mask_value(text[start:end], label),
+            })
+        lineno += text.count("\n", start, end)
+        pos = end
+    return "".join(pieces) + text[pos:], len(merged)
+
+
+# A JSON string token; group 1 is set when it is an object key. An
+# unterminated one (only in nested, non-JSON text) runs to the end of the
+# text and fails to decode: failing the match instead would rescan the rest
+# of the text from every later quote (quadratic).
+_JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*+(?:"(\s*:)?|\\?\Z)')
+
+
+def _redact_json_strings(
+    text: str, patterns: list[tuple[re.Pattern, str]], found: list[dict]
+) -> tuple[str, int]:
+    """Redact secrets in the decoded value of every string value of *text*,
+    a JSON document. Only strings that change are re-encoded, so every other
+    byte (layout, key order, escapes) is kept. Keys are left alone.
+
+    A decoded value that still holds escapes can be JSON text itself (a
+    tool_result of ``cat many.json``), whose ``\\"`` hide its secrets just as
+    they did one layer up: its string tokens are redacted the same way. That
+    text need not be valid JSON, so a token that does not decode is skipped.
+    """
+    count = 0
+    pos, lineno = 0, 1  # line of *pos*, counted incrementally (sub goes in order)
+
+    def _sub(m: re.Match) -> str:
+        nonlocal count, pos, lineno
+        if m.group(1):
+            return m.group(0)
+        try:
+            value = json.loads(m.group(0))
+        except ValueError:  # only in nested text: quotes that are not a token
+            return m.group(0)
+        new_found: list[dict] = []
+        value, n = _redact_text(value, patterns, new_found, 0)
+        if "\\" in value:
+            # ponytail: one recursion per escape layer; each layer halves the
+            # backslashes, so depth stays logarithmic in the string length.
+            value, extra = _redact_json_strings(value, patterns, new_found)
+            n += extra
+        if not n:
+            return m.group(0)
+        count += n
+        lineno += text.count("\n", pos, m.start())
+        pos = m.start()
+        found.extend({**f, "line": lineno} for f in new_found)
+        # ensure_ascii=True keeps lone surrogates (e.g. a JS-truncated emoji
+        # "\ud83d") as \u escapes, so the text always encodes as valid UTF-8.
+        return json.dumps(value, ensure_ascii=True)
+
+    return _JSON_STRING_RE.sub(_sub, text), count
+
+
+_NOT_JSON = object()
+
+
+def _json_skeleton(text: str) -> Any:
+    """Parse *text* and blank out string values, keeping keys and structure.
+
+    Returns ``_NOT_JSON`` if *text* is not valid JSON.
+    """
+    def _shape(obj: Any) -> Any:
+        if isinstance(obj, str):
+            return str
+        if isinstance(obj, list):
+            return [_shape(v) for v in obj]
+        if isinstance(obj, dict):
+            return {k: _shape(v) for k, v in obj.items()}
+        return obj
+
+    try:
+        return _shape(json.loads(text))
+    except ValueError:
+        return _NOT_JSON
+
+
+def _redact_line(
+    line: str,
+    patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
+    found: list[dict] | None = None,
+) -> tuple[str, int]:
+    """Redact one JSONL line (without its newline) or one JSON document.
+
+    Invariant: text that was valid JSON stays valid JSON with the same keys
+    and structure. The raw text is redacted first, which sees key/value
+    context (``"password": "..."``); if that would change the JSON structure
+    (e.g. a match spanning two string values) it is dropped. Then every
+    string value is redacted again after decoding its escapes: in the raw
+    text a shell quote is ``\\"`` and a newline ``\\n``, which hide secrets
+    ("...nmysql -p..."). *found* collects findings as for ``_redact_text``.
+    """
+    raw_found: list[dict] = []
+    new_line, count = _redact_text(line, patterns, raw_found)
+    before = _json_skeleton(line)
+    if before is not _NOT_JSON:
+        if count and _json_skeleton(new_line) != before:
+            new_line, count, raw_found = line, 0, []
+        new_line, extra = _redact_json_strings(new_line, patterns, raw_found)
+        count += extra
+    if found is not None:
+        found += raw_found
+    return new_line, count
+
+
+def _create_exclusive(path: Path, data: bytes, mode: int) -> None:
+    """Create *path* (``FileExistsError`` if it exists), write *data*, fsync."""
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(path, mode)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise
+
+
+def _atomic_write_bytes(
+    path: Path,
+    data: bytes,
+    mode: int,
+    *,
+    before_replace: Callable[[], None] | None = None,
+    exclusive: bool = False,
+) -> None:
+    """Write *data* to *path* via a same-directory temp file + os.replace().
+
+    *before_replace* runs last, once the temp file is complete and durable;
+    if it raises, nothing is replaced and the temp file is removed. With
+    *exclusive* the temp file is hard-linked into place instead, which fails
+    with ``FileExistsError`` rather than overwrite *path*.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+        if before_replace is not None:
+            before_replace()
+        if exclusive:
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                raise
+            except (OSError, NotImplementedError):
+                # No hard links here (exFAT, some SMB mounts): create the
+                # file exclusively and write it in place. A crash can leave
+                # it partial, so a failed write removes it.
+                _create_exclusive(path, data, mode)
+            os.unlink(tmp)
+        else:
+            os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+class LogBusyError(OSError):
+    """The log was written to a moment ago, so a running agent may own it."""
+
+
+class LogChangedError(OSError):
+    """The log kept changing while it was being redacted; nothing was written."""
+
+
+# A log last written to less than this many seconds ago is assumed to belong
+# to a running agent: refused unless the caller forces it.
+_RECENT_WRITE_SECONDS = 5.0
+# Redaction passes before giving up on a log that keeps growing under us.
+_MAX_REDACT_ATTEMPTS = 3
+
+
+def _file_signature(st: os.stat_result) -> tuple[int, int, int, int]:
+    """What changes when someone writes to, truncates or replaces a file."""
+    return (st.st_size, st.st_mtime_ns, st.st_ino, st.st_dev)
+
+
+def _refuse_symlink(path: Path) -> None:
+    if path.is_symlink():
+        raise ValueError(
+            f"{path} is a symlink; refusing to rewrite it (the link would be replaced "
+            f"by a regular file and the real file {path.resolve()} would keep every "
+            "secret). Run the command on the real file."
+        )
+
+
+def _backup_path(log_path: Path) -> Path:
+    """A not-yet-used ``<name>.bak.<UTC timestamp>`` beside *log_path*."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    base = log_path.with_name(f"{log_path.name}.bak.{stamp}")
+    candidate, n = base, 0
+    while candidate.exists():
+        n += 1
+        candidate = base.with_name(f"{base.name}-{n}")
+    return candidate
+
+
+def _redact_log_once(
+    log_path: Path,
+    patterns: list[tuple[re.Pattern, str]],
+    force: bool,
+) -> tuple[int, Path | None]:
+    """One read-redact-replace pass. Raises ``LogChangedError`` if the file
+    changed after it was read (nothing written, any backup removed)."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(log_path, flags)
+    with os.fdopen(fd, "rb") as fh:
+        before = os.fstat(fh.fileno())
+        original = fh.read()
+    signature = _file_signature(before)
+
+    total = 0
     new_lines: list[str] = []
-
-    for line in lines:
-        new_line = line
-        for pattern, _label in _SECRET_PATTERNS:
-            # Replace all occurrences of each pattern in this line
-            def _redact(m: re.Match) -> str:
-                matched = m.group(0)
-                if _is_false_positive(matched):
-                    return matched  # leave placeholders/test data alone
-                return "[REDACTED]"
-
-            new_line, count = pattern.subn(_redact, new_line)
-            total_replacements += count
+    for line in original.decode("utf-8", errors="surrogateescape").split("\n"):
+        new_line, count = _redact_line(line, patterns)
         new_lines.append(new_line)
+        total += count
+    if total == 0:
+        return 0, None
 
-    if total_replacements > 0:
-        log_path.write_text("".join(new_lines), encoding="utf-8")
+    age = time.time() - before.st_mtime
+    if not force and age < _RECENT_WRITE_SECONDS:
+        raise LogBusyError(
+            f"{log_path} was modified {max(age, 0.0):.1f}s ago and may still be in use; "
+            "not redacted. Wait for the agent to finish, or use --force."
+        )
 
-    return total_replacements
+    def _unchanged() -> None:
+        if _file_signature(os.stat(log_path)) != signature:
+            raise LogChangedError(
+                f"{log_path} changed while it was being redacted; nothing was written"
+            )
+
+    _unchanged()
+    backup = _backup_path(log_path)
+    while True:
+        try:
+            _atomic_write_bytes(backup, original, 0o600, exclusive=True)
+            break
+        except FileExistsError:
+            backup = _backup_path(log_path)
+    try:
+        data = "\n".join(new_lines).encode("utf-8", errors="surrogateescape")
+        _atomic_write_bytes(
+            log_path, data, stat.S_IMODE(before.st_mode), before_replace=_unchanged
+        )
+    except BaseException:
+        # No redacted file was written, so no backup of this run is wanted.
+        with contextlib.suppress(OSError):
+            backup.unlink()
+        raise
+    return total, backup
+
+
+def redact_log_file(
+    log_path: Path,
+    backups: list[Path] | None = None,
+    *,
+    patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
+    force: bool = False,
+) -> int:
+    """Replace the values of detected secrets in a JSONL log file with [REDACTED].
+
+    Works line-by-line on the raw bytes (decoded with ``surrogateescape`` so
+    invalid UTF-8 round-trips exactly). Only the secret value is replaced; key
+    names, quotes and every other byte are kept, and valid JSON lines stay
+    valid JSON. When anything is redacted, a fresh ``<name>.bak.<UTC time>``
+    copy of the original bytes is kept for this run (owner-only permissions,
+    it still holds the secrets) and the file is replaced atomically with its
+    original permission mode. Earlier backups are never touched or reused, so
+    a backup always holds exactly the file this run started from.
+
+    The file is read, redacted and replaced; a line appended in between would
+    be lost, so the file's size, mtime and inode are compared before the
+    replace and the pass is redone (up to ``_MAX_REDACT_ATTEMPTS`` times) if
+    they moved. A file that keeps changing raises ``LogChangedError`` with the
+    log untouched. A file written to within ``_RECENT_WRITE_SECONDS`` raises
+    ``LogBusyError`` unless *force*. A symlink raises ``ValueError``.
+
+    If *backups* is given and anything was redacted, the new backup path is
+    appended to it so callers can tell the user where the unredacted copy lives.
+
+    Returns the number of real (non-false-positive) redactions.
+    """
+    _refuse_symlink(log_path)
+    for attempt in range(_MAX_REDACT_ATTEMPTS):
+        try:
+            total, backup = _redact_log_once(log_path, patterns, force)
+        except LogChangedError:
+            if attempt == _MAX_REDACT_ATTEMPTS - 1:
+                raise
+            continue
+        if backup is not None and backups is not None:
+            backups.append(backup)
+        return total
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+@dataclass
+class ScrubResult:
+    """Outcome of ``scrub_file``. ``findings`` hold masked previews only."""
+
+    file: Path
+    output: Path | None
+    backup: Path | None
+    dry_run: bool
+    redacted: int
+    findings: list[dict] = field(default_factory=list)
+
+
+def _redact_lines(
+    text: str, patterns: list[tuple[re.Pattern, str]], findings: list[dict]
+) -> tuple[str, int]:
+    """``_redact_line`` on each line of *text*, findings on file line numbers.
+
+    Refuses (``ValueError``) a result where a JSON line would stop parsing.
+    """
+    new_lines: list[str] = []
+    redacted = 0
+    for lineno, line in enumerate(text.split("\n"), start=1):
+        found: list[dict] = []
+        new_line, n = _redact_line(line, patterns, found)
+        if n and _json_skeleton(new_line) is _NOT_JSON and _json_skeleton(line) is not _NOT_JSON:
+            raise ValueError(f"line {lineno}: scrubbed output would not be valid JSON; not written")
+        for f in found:
+            f["line"] += lineno - 1
+        findings += found
+        new_lines.append(new_line)
+        redacted += n
+    return "\n".join(new_lines), redacted
+
+
+# Around a JSON document: whitespace and a UTF-8 BOM.
+_JSON_PADDING = " \t\r\n﻿"
+
+
+def scrub_file(
+    path: Path,
+    *,
+    patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
+    in_place: bool = False,
+    dry_run: bool = False,
+) -> ScrubResult:
+    """Redact *patterns* in one file; write a ``.scrubbed`` copy or, with
+    *in_place*, replace the file keeping ``<name>.bak``. Raises ``ValueError``
+    for a binary file or an existing ``.bak`` (it would be stale), ``OSError``
+    on I/O failure. *dry_run* does all the work but writes nothing.
+    """
+    if in_place:
+        _refuse_symlink(path)
+    original = path.read_bytes()
+    if b"\0" in original[:8192]:
+        raise ValueError(f"{path} looks like a binary file (NUL byte); not scrubbed")
+    backup = path.with_name(path.name + ".bak")
+    if in_place and not dry_run and backup.exists():
+        raise ValueError(f"{backup} already exists; move it away before --in-place")
+    text = original.decode("utf-8", errors="surrogateescape")
+    findings: list[dict] = []
+    body = text.strip(_JSON_PADDING)
+    doc = _json_skeleton(body) if path.suffix.lower() != ".jsonl" else _NOT_JSON
+    if doc is not _NOT_JSON:
+        # One JSON document (.json, a Cline api_conversation_history.json,
+        # any file that parses): secrets in it hide behind JSON escapes.
+        lead = text[: len(text) - len(text.lstrip(_JSON_PADDING))]
+        new_body, redacted = _redact_line(body, patterns, findings)
+        if _json_skeleton(new_body) != doc:
+            raise ValueError(f"{path}: scrubbed output would not be valid JSON; not written")
+        new_text = lead + new_body + text[len(lead) + len(body) :]
+        for f in findings:
+            f["line"] += lead.count("\n")
+    elif path.suffix.lower() == ".jsonl":
+        new_text, redacted = _redact_lines(text, patterns, findings)
+    else:
+        # Whole text first: some secrets (PEM blocks) span lines. Then each
+        # line again, so JSON lines (a copied JSONL log) get the decoded pass.
+        new_text, redacted = _redact_text(text, patterns, findings)
+        new_text, extra = _redact_lines(new_text, patterns, findings)
+        redacted += extra
+
+    findings.sort(key=lambda f: f["line"])
+    result = ScrubResult(path, None, None, dry_run, redacted, findings)
+    if dry_run or (in_place and not redacted):
+        return result
+    data = new_text.encode("utf-8", errors="surrogateescape")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if in_place:
+        _atomic_write_bytes(backup, original, 0o600)
+        _atomic_write_bytes(path, data, mode)
+        result.output, result.backup = path, backup
+    else:
+        result.output = path.with_name(path.stem + ".scrubbed" + path.suffix)
+        _atomic_write_bytes(result.output, data, mode)
+    return result
 
 
 # ---------------------------------------------------------------------------

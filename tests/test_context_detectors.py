@@ -65,6 +65,19 @@ class TestContextRotDetector:
         assert w.signal == "context_rot"
         assert "forgotten_files" in w.details
 
+    def test_forgotten_files_order_is_deterministic(self):
+        """#33: the list came from a set, so its order (and check --json)
+        changed with PYTHONHASHSEED."""
+        det = ContextRotDetector(early_fraction=0.25, recent_window=10, min_actions=40)
+        buf = ActionBuffer()
+        files = [f"src/{c}.py" for c in "qzambk"]
+        for f in files:
+            buf.add(_make_action(ToolType.EDIT, file_path=f))
+        for i in range(40):
+            buf.add(_make_action(ToolType.READ, file_path=f"other/file{i}.py"))
+
+        assert det.check(buf).details["forgotten_files"] == sorted(files)[:5]
+
     def test_no_fire_when_early_files_still_referenced(self):
         """Doesn't fire if early files are still being touched."""
         det = ContextRotDetector(early_fraction=0.25, recent_window=15, min_actions=40)
@@ -101,39 +114,84 @@ class TestContextRotDetector:
 # ContextPressureDetector
 # ---------------------------------------------------------------------------
 
+def _call(context: int, window: int = 0) -> Action:
+    """One model call whose request carried *context* tokens (mostly cache reads)."""
+    return Action(
+        timestamp=datetime(2026, 1, 29, 12, 0),
+        tool_name="Bash",
+        tool_type=ToolType.BASH,
+        success=True,
+        tokens_in=2,
+        cache_read_tokens=context - 2,
+        tokens_out=300,
+        context_window=window,
+    )
+
+
+def _pressure(*calls: Action):
+    buf = ActionBuffer()
+    for a in calls:
+        buf.add(a)
+    return ContextPressureDetector().check(buf)
+
+
 class TestContextPressureDetector:
-    def test_no_fire_small_session(self):
-        det = ContextPressureDetector(warning_threshold=0.7, model="claude")
+    def test_long_session_is_not_a_sum_of_calls(self):
+        """The 231% bug: 500 calls of 50K each are 50K of context, not 25M."""
+        assert _pressure(*[_call(50_000, 200_000) for _ in range(500)]) is None
+
+    def test_warning_on_current_context(self):
+        w = _pressure(_call(20_000, 200_000), _call(150_000, 200_000))
+        assert w.signal == "context_pressure" and w.details["usage_percent"] == 75
+
+    def test_critical_on_current_context(self):
+        w = _pressure(_call(180_000, 200_000))
+        assert w.signal == "context_critical" and w.severity.name == "HIGH"
+        assert w.details == {"estimated_tokens": 180_000, "usage_percent": 90, "limit": 200_000}
+
+    def test_1m_window_inferred_from_a_call_over_200k(self):
+        """The 104%/231% sessions: Opus at 330K on a 1M window is 33%."""
+        assert _pressure(_call(331_746)) is None
+        w = _pressure(_call(900_000))
+        assert w.details["limit"] == 1_000_000 and w.details["usage_percent"] == 90
+
+    def test_unknown_window_claims_no_percentage(self):
+        assert _pressure(_call(190_000)) is None
+
+    def test_no_reported_usage_claims_no_percentage(self):
         buf = ActionBuffer()
-        for i in range(20):
-            buf.add(_make_action(tokens_in=100, tokens_out=50))
-        assert det.check(buf) is None
+        for _ in range(500):
+            buf.add(_make_action(tokens_in=0, tokens_out=0))
+        assert ContextPressureDetector().check(buf) is None
 
-    def test_fires_warning_at_70_percent(self):
-        det = ContextPressureDetector(warning_threshold=0.7, model="claude")
-        buf = ActionBuffer()
-        # 180k limit * 0.7 = 126k tokens needed
-        # 130 actions * 1000 tokens each = 130k
-        for i in range(130):
-            buf.add(_make_action(tokens_in=700, tokens_out=300))
+    def test_capped_at_100_percent(self):
+        assert _pressure(_call(250_000, 200_000)).details["usage_percent"] == 100
 
-        w = det.check(buf)
-        assert w is not None
-        assert w.signal == "context_pressure"
+    def test_drops_after_compaction(self):
+        assert _pressure(_call(190_000, 200_000), _call(30_000, 200_000)) is None
 
-    def test_fires_critical_at_85_percent(self):
-        det = ContextPressureDetector(
-            warning_threshold=0.7, critical_threshold=0.85, model="claude"
-        )
-        buf = ActionBuffer()
-        # 180k * 0.85 = 153k tokens needed
-        for i in range(160):
-            buf.add(_make_action(tokens_in=700, tokens_out=300))
 
-        w = det.check(buf)
-        assert w is not None
-        assert w.signal == "context_critical"
-        assert w.severity.name == "HIGH"
+class TestClaudeContextWindow:
+    def test_model_ids(self):
+        from agentwatch.parser.logs import claude_context_window
+
+        assert claude_context_window("claude-opus-5-5") == 1_000_000
+        assert claude_context_window("claude-sonnet-5") == 1_000_000
+        assert claude_context_window("us.anthropic.claude-opus-4-6") == 1_000_000
+        assert claude_context_window("claude-sonnet-4-5[1m]") == 1_000_000
+        assert claude_context_window("claude-haiku-4-5-20251001") == 0
+        assert claude_context_window("<synthetic>") == 0
+        assert claude_context_window(None) == 0
+
+    def test_claude_code_transcript_reports_the_window(self):
+        from pathlib import Path
+
+        from agentwatch.parser.logs import parse_file
+
+        fixture = Path(__file__).parent / "fixtures" / "claude_code_2_1_30x.jsonl"
+        assert {a.context_window for a in parse_file(fixture) if a.tool_name != "tool_result"} == {
+            1_000_000
+        }
 
 
 # ---------------------------------------------------------------------------

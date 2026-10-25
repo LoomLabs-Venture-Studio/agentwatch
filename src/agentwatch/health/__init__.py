@@ -1,19 +1,19 @@
 """Health scoring and reporting."""
 
+from .rot import RotReport, RotScorer, RotState
 from .score import (
+    STATUS_LABELS,
+    STATUS_THRESHOLDS,
     CategoryScore,
     EfficiencyReport,
     HealthReport,
     HealthWeights,
     TeamHealthReport,
-    STATUS_LABELS,
-    STATUS_THRESHOLDS,
     calculate_efficiency,
     calculate_health,
     calculate_security_score,
     calculate_team_health,
 )
-from .rot import RotReport, RotScorer, RotState
 
 __all__ = [
     "CategoryScore",

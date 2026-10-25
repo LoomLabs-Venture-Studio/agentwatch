@@ -23,6 +23,12 @@ Features:
 
 __version__ = "0.2.0"
 
+from agentwatch.cc_stats import (
+    BashCategory,
+    StatsReport,
+    ToolCategory,
+    compute_stats,
+)
 from agentwatch.detectors import (
     Category,
     Detector,
@@ -41,18 +47,12 @@ from agentwatch.parser import (
     find_latest_session,
     parse_file,
 )
-from agentwatch.cc_stats import (
-    BashCategory,
-    StatsReport,
-    ToolCategory,
-    compute_stats,
-)
 from agentwatch.themes import (
+    THEMES,
     StatusTheme,
     get_theme,
-    set_theme,
     list_themes,
-    THEMES,
+    set_theme,
 )
 
 __all__ = [
