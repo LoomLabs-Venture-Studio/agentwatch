@@ -581,6 +581,9 @@ agentguard watch
 | 1    | Warning             |
 | 2    | Critical            |
 
+`audit` uses the same codes by finding severity: 2 if any critical finding,
+1 if any high, otherwise 0. Medium, low and `--pii` findings never fail it.
+
 Use in CI/CD:
 
 ```bash
