@@ -115,7 +115,8 @@ def listeners_of(pid: int) -> list[tuple[str, int, str, bool]]:
 
 def _endpoint_table(rows: list[tuple[str, ...]], width: int) -> list[str]:
     """The Outgoing table. Too wide for *width*: each AI-PROVIDER flag goes on
-    its own line under the ENDPOINT column, then FIRST SEEN goes if needed."""
+    its own line under the ENDPOINT column, then FIRST SEEN goes, then HOST is
+    cut short if needed."""
     table = _table(rows)
     if width <= 20 or max(map(len, table)) < width:
         return table
@@ -123,6 +124,12 @@ def _endpoint_table(rows: list[tuple[str, ...]], width: int) -> list[str]:
         table = _table([tuple(r[i] for i in keep) for r in rows])
         if max(map(len, table)) < width:
             break
+    else:  # still too wide: HOST cut with an ellipsis, one line per endpoint
+        dots = ascii_safe("…", "...")
+        cut = max(10, max(len(r[0]) for r in rows) - (max(map(len, table)) - width + 1))
+        rows = [(r[0] if len(r[0]) <= cut else r[0][:cut - len(dots)] + dots, *r[1:])
+                for r in rows]
+        table = _table([(r[0], r[1], r[3]) for r in rows])
     hang = " " * (4 + max(len(r[0]) for r in rows) + 2)
     out = []
     for line, row in zip(table, rows):
@@ -254,6 +261,7 @@ def report_text(week: dict | None, synced_at: float | None, failed: bool,
         return "History unavailable: the history DB could not be synced or read."
     if week is None:
         return "Syncing history" + ascii_safe("…", "...")
-    note = (f"From the history DB, synced at {_clock(synced_at)} (every {every_s / 60:.0f} min; "
-            "logs written in the last minute wait for the next sync).")
-    return "\n".join(render(week, limit=5)) + "\n\n" + note
+    # first and one line: in view without scrolling (80x24)
+    note = (f"History DB synced at {_clock(synced_at)} (every {every_s / 60:.0f} min; "
+            "the last minute's logs wait).")
+    return note + "\n\n" + "\n".join(render(week, limit=3))
