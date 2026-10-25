@@ -4769,6 +4769,7 @@ Board decisions (2026-10-24):
      grouping fix.
   7. Narrow layout + `?` help.
   8. Net/detect/weekly report.
+  8b. Visual polish: graphs, gauges, colour (board decision 2026-10-25).
   9. `watch` uses the same app.
 
 ### PR 1: crash fixes (fix/watch-markup-crashes) -- DONE (superseded by #166 on develop)
@@ -5015,6 +5016,67 @@ Board decisions (2026-10-24):
   link-local and multicast endpoints like `agentwatch net`, and at 80
   columns puts AI-PROVIDER under ENDPOINT (then drops FIRST SEEN); overlays
   wrap beside their scrollbar; `d` says SUPPORTED like `detect`.
+
+### PR 8b: visual polish (feature/watch-ui-8b-visual) -- DONE
+- [x] Board decision (2026-10-25), after trying PRs 1-7 ("too simple"):
+  graphs + gauges, same layout. No new deps, nothing written to disk.
+- [x] History: one per-session deque (`data["_hist"]`, `HISTORY_MAX` 60) of
+  (time, health, cost, ctx), replacing PR 3's 60s trend deque (the arrows
+  read it too). A sample when the values changed, at most every
+  `SAMPLE_S` (15s), at once for a 5+ point health/context move; cost kept
+  to the cent. 15s: 60 samples cover 15+ min (a session's arc, more than the
+  60s arrow window) and a busy session redraws its graphs at most 4x a
+  minute. Idle sessions add nothing.
+- [x] TREND column (8 cells, after COST): `TREND H` (health, 0-100 scale,
+  each point in its health colour) under attention/recent sort, `TREND $`
+  (cost, min..max) under cost sort; the sort is part of `_layout`, so `o`
+  rebuilds the columns. Rich Text cells (not the Sparkline widget). TREND
+  goes when it would leave TOP SIGNAL under `SIGNAL_MIN` (25): 80 columns
+  keep TOP SIGNAL's 33 (a loop block's tool, count and cost), 120 columns
+  show TREND also with `--budget` (84-99 narrow; not 100-119 with
+  `--budget`, 100-109 without).
+- [x] Selected strip (6 lines): title (agent coloured); health / cost / ctx
+  rows with value, 16-sample sparkline, arrow vs a minute ago (health ▲
+  green ▼ red; cost and context ▲ amber), gauge (health by status colour;
+  context and budget green < 80%, amber, red >= 100%; `budget ▮▮▮▮▮▮▮▮▯▯
+  82%` with `--budget`); efficiency/security/net after health, $/min after
+  cost; the top signal (loop block first) and next warning in severity
+  colours. Detail Health tab: the same rows over every sample (up to 60).
+- [x] Colour: one per known agent (`AGENT_COLORS` from `DISPLAY_NAMES`,
+  blues/purples, none a health or severity colour); severity critical bold
+  red, HIGH dark_orange (was red), MEDIUM yellow, LOW dim. Fixed: the
+  theme's `orange` (health 40-59) is not a Rich colour, so those table cells
+  had no colour; `_color()` maps it to dark_orange.
+- [x] `--theme ascii`: sparklines `_.:-=+*#`, gauges `[########..] 82%`,
+  arrows `^`/`v`; meaning never by colour alone (arrows, numbers).
+- [x] Perf: a sparkline is recomputed only when its session gets a sample
+  (cache keyed by the sample count, kind and width); table cells update
+  only on change (existing); TREND does not flash a row. perf8.py, 30s
+  idle, 2 runs each, PR 8 -> 8b: synthetic 10 sessions 3.3% / 1.04-1.15ms
+  -> 2.3-3.5% / 1.32ms (one 2.96ms run with a 34ms outlier tick);
+  `--all-logs` 24h (18 sessions) 3.7-4.3% / 1.23-1.58ms -> 3.8-4.2% /
+  2.16-2.24ms; process mode (1 agent) 11.3-12.6% / 0.59-0.62ms -> 11.2-12.3%
+  / 0.65-0.72ms. Idle CPU flat; the ~0.7ms was mostly the strip's Text
+  (~0.4ms a tick). Follow-up: the strip is rebuilt only when its signature
+  (report, sample count, arrows, title, coach state, Tier-2 verdicts/goal,
+  security mode) changes: `--all-logs` (16 sessions) 1.12-1.80ms ->
+  1.16-1.46ms, synthetic 0.98ms.
+- [x] The one-off `test_enter_opens_detail_tabs...[120x40]` failure (cursor
+  on the fold row) was a laptop suspend mid-run: the wall clock jumped ~9h,
+  the seeded sessions became idle 15+ min and folded, the selected one too,
+  so the fold row was the right place. Not an app race; a test now folds
+  sessions while the detail view is open and checks Esc keeps the cursor on
+  the selected session (30x green).
+- [x] Tests: `tests/test_multi_app_graphs.py` (history cap/sampling/
+  reference, arrows, sparkline scaling, gauge thresholds, ascii, TREND vs
+  sort, narrow rule, no recompute without a sample, colours on screen,
+  strip/detail, 120x40 / 80x24).
+- [x] PR 8b QA minors: at 80 columns the Network tab keeps one row per
+  endpoint (after FIRST SEEN goes, HOST is cut with an ellipsis); both
+  footers are compact (`d` is "AI", no palette item) and fit with nothing
+  cut; the `w` overlay puts a one-line "History DB synced at" note first
+  (in view at 80x24) and lists 3 per group; `report.render` cuts names at
+  22 with an ellipsis so the cost columns align (CLI too).
 
 
 ---

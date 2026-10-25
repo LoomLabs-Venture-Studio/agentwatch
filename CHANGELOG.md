@@ -8,6 +8,17 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- `watch-all` graphs, gauges and colour: a `TREND H` column (a sparkline of
+  each session's last 8 health samples; `TREND $`, cost, under the cost
+  sort), and the Selected strip and the detail Health tab show health, cost
+  and context as sparklines with an arrow against a minute ago and gauges
+  (context fill, health, `budget ▮▮▮▮▮▮▮▮▯▯ 82%` with `--budget`). The
+  history is in memory only: a sample on change, at most every 15 s, the
+  last 60. Agent names have one colour per agent type; warnings are coloured
+  by severity (HIGH is now orange, not red). `--theme ascii` uses
+  `_.:-=+*#` sparklines and `[####....]` gauges. TREND is hidden when it
+  would leave TOP SIGNAL under 25 columns (80-column terminals). `?` lists
+  the graphs, gauges and colours.
 - `watch-all`: the header shows `today $X · week $Y ▲Z%` from the history
   store (`history sync` runs in a separate process at startup and every 5
   minutes; logs written in the last minute wait), and `w` shows the weekly
@@ -108,6 +119,8 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- `watch-all`: sessions with health 40-59 had no colour in the table (the
+  theme's `orange` is not a colour Rich knows; it now shows orange).
 - `watch-all --budget`: the cost column switches between its wide and
   narrow form when the terminal is resized across 100 columns; the narrow
   header says `spent $X` and the limit reads `budget $X/session`.

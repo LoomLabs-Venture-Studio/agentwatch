@@ -47,8 +47,11 @@ async def test_layout_follows_the_terminal_size(size, narrow, feed):
         _many(app)
         await pilot.pause()
         table = app.query_one("#sessions")
-        expected = (["dot", "project", "health", "cost", "last", "signal"] if narrow else
-                    ["dot", "agent", "project", "health", "cost", "ctx", "last", "signal"])
+        # TREND: while TOP SIGNAL keeps 25+ (with --budget: 84-99 and 120+ columns)
+        trend = ["trend"] * (84 <= size[0] < 100 or size[0] >= 120)
+        expected = (["dot", "project", "health", "cost", *trend, "last", "signal"] if narrow
+                    else ["dot", "agent", "project", "health", "cost", *trend, "ctx", "last",
+                          "signal"])
         assert [c.value for c in table.columns] == expected
         assert app.query_one("#selected").display == (not narrow)
         events = app.query_one("#feed")
@@ -203,9 +206,17 @@ async def test_footer_most_important_keys_first(width):
     async with app.run_test(size=(width, 24)) as pilot:
         await pilot.pause()
         footer = _screen(app).splitlines()[-1]
-        keys = ["Detail", "Filter", "Idle", "? Help", "Quit", "Sort", "Events", "Security"]
+        keys = ["Detail", "Filter", "Idle", "? Help", "Quit", "Sort", "Events", "Security",
+                "d AI", "w Report"]
         assert [footer.index(k) for k in keys] == sorted(footer.index(k) for k in keys)
+        assert footer.rstrip().endswith("w Report"), footer  # nothing cut at 80 columns
         assert "palette" not in footer and app.screen.query_one(Footer)
+        _many(app, 1)
+        await pilot.press("enter")
+        await _wait(pilot, lambda: isinstance(app.screen, DetailScreen) and app.screen.ready)
+        await pilot.pause()
+        footer = _screen(app).splitlines()[-1]
+        assert footer.rstrip().endswith("w Report") and "palette" not in footer, footer
 
 
 async def test_narrow_header_keeps_counts_spend_and_budget():

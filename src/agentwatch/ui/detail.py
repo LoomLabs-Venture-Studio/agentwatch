@@ -81,6 +81,7 @@ class DetailScreen(Screen):
         yield Static(id="detail-title", markup=False)
         with TabbedContent(id="detail-tabs"):
             with TabPane("Health", id="health"), VerticalScroll(classes="pane"):
+                yield Static(id="d-graphs", markup=False)
                 yield HealthBar(id="d-health")
                 yield EfficiencyBar(id="d-efficiency")
                 yield ContextHealthWidget(id="d-context")
@@ -99,7 +100,7 @@ class DetailScreen(Screen):
                 yield Static(id="d-net", markup=False)
             with TabPane("Process", id="process"), VerticalScroll(classes="pane"):
                 yield Static(id="d-process", markup=False)
-        yield Footer()
+        yield Footer(show_command_palette=False, compact=True)  # fits 80 columns
 
     def on_mount(self) -> None:
         self.ready = True
