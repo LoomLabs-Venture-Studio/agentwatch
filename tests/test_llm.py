@@ -200,3 +200,65 @@ class TestMissingLlmExtra:
         monkeypatch.setattr(builtins, "__import__", fake_import)
         with pytest.raises(LlmUnavailableError, match="llm"):
             OllamaAnalyzer()
+
+
+# ---------------------------------------------------------------------------
+# Local-only host policy: OLLAMA_HOST pointing off-box must not be used.
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaHostIsLocalOnly:
+    @pytest.fixture
+    def fake_client(self, monkeypatch):
+        client = _FakeOllamaClient()
+        monkeypatch.setattr("agentwatch.llm._import_ollama_client", lambda: client)
+        return client
+
+    @pytest.mark.parametrize(
+        "env_host",
+        [
+            "http://ollama.example.com:11434",
+            "10.0.0.5:11434",
+            "https://gpu-box.internal",
+            "http://192.168.1.10:11434",
+            "http://8.8.8.8:11434",
+            "http://[2001:db8::1]:11434",
+        ],
+    )
+    def test_remote_env_host_is_refused(self, env_host, fake_client, monkeypatch):
+        monkeypatch.setenv("OLLAMA_HOST", env_host)
+        with pytest.raises(LlmUnavailableError, match="OLLAMA_HOST") as excinfo:
+            OllamaAnalyzer()
+        assert "\n" not in str(excinfo.value)  # one-line message
+        assert not hasattr(fake_client, "host")  # no client was ever created
+
+    @pytest.mark.parametrize(
+        "env_host",
+        [
+            "http://127.0.0.1:11434",
+            "127.0.0.2",
+            "localhost:11434",
+            "https://LOCALHOST:11434",
+            "http://[::1]:11434",
+            "0.0.0.0",
+            "0.0.0.0:11434",
+            "http://0.0.0.0:11434",
+            "[::]:11434",
+            "http://[::]:11434",
+        ],
+    )
+    def test_local_env_host_is_accepted(self, env_host, fake_client, monkeypatch):
+        """Loopback and unspecified (bind-all) addresses reach this machine."""
+        monkeypatch.setenv("OLLAMA_HOST", env_host)
+        OllamaAnalyzer()
+        assert fake_client.host is None  # client reads OLLAMA_HOST itself
+
+    def test_unset_env_host_is_accepted(self, fake_client, monkeypatch):
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        OllamaAnalyzer()
+        assert fake_client.host is None
+
+    def test_explicit_host_is_allowed_even_with_remote_env(self, fake_client, monkeypatch):
+        monkeypatch.setenv("OLLAMA_HOST", "http://ollama.example.com:11434")
+        OllamaAnalyzer(host="http://10.0.0.5:11434")
+        assert fake_client.host == "http://10.0.0.5:11434"

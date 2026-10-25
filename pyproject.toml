@@ -29,6 +29,12 @@ dependencies = [
     "psutil>=5.9.0",
 ]
 
+[project.urls]
+Homepage = "https://loomlabs.io"
+Repository = "https://github.com/LoomLabs-Venture-Studio/agentwatch"
+Issues = "https://github.com/LoomLabs-Venture-Studio/agentwatch/issues"
+Changelog = "https://github.com/LoomLabs-Venture-Studio/agentwatch/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",

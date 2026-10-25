@@ -105,14 +105,6 @@ numbers refer to the GitHub repository.
   sessions kept their old report). The selected session is no longer
   rescored every second without new actions, which moved its context health
   and state on its own; every session is now rescored only on new actions.
-- `watch-all` and `watch` no longer exit when a Claude Code session logs an
-  API error (`system/api_error`, whose `error` is an object): the parser keeps
-  the error's `message`, and error matching accepts any value.
-- `watch` and `watch-all` show text from logs as written. A command or error
-  containing `[/]` no longer exits the app, `[link=...]` or `[@click=...]` in
-  a log no longer becomes a live link or action, and text like `[a-z]+`,
-  `[claude-code]`, `[loop`, `[root]`, `[Tier-2]` and `[ALIGNED]` is no
-  longer dropped. Toasts show their text the same way.
 
 ### Security
 
@@ -208,6 +200,10 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
 - `agentwatch detect`: machine-wide detection of AI use. It attributes
   connections to AI providers and local model ports to processes
   (#79, PR #80).
+- `agentwatch detect` names version-named binaries by their adapter, so
+  Claude Code shows as `claude-code` instead of `2.1.310`. Without an
+  adapter it uses the nearest meaningful parent folder. `detect --json` has
+  a new `display_name` field, and `name` is unchanged (PR #172).
 - `agentwatch check` reports session efficiency in text and JSON output
   (#40, PR #51).
 - Cursor support: `check`, `security-scan` and `watch-all` read Cursor
@@ -235,6 +231,16 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
 
 ### Changed
 
+- Behaviour change: `agentwatch ps --json` is always a flat list of agent
+  objects. It used to switch to a team-shaped list when sub-agents existed.
+  Each object now has `parent_agent_pid`, `team_id`, `team_name` and `depth`,
+  so the tree can be rebuilt. The per-team `member_count`,
+  `subagent_count` and `max_depth` fields are gone (PR #172).
+- Behaviour change: `security-scan` and the TUI security panel now say SECURE /
+  AT RISK / COMPROMISED instead of health labels such as STUCK. A score of
+  exactly 50 is now AT RISK with JSON `status: at_risk` (it was COMPROMISED /
+  `compromised`). The exit code is unchanged (1 at 50). Scores below 50 stay
+  COMPROMISED with exit 2 (PR #172).
 - Claude Code and Gemini actions take their network host from a tool's
   `url`, so URL fetches reach the network detectors (#130, PR #130).
 - Status messages such as "Using log ..." go to stderr, so `--json` stdout
@@ -371,6 +377,45 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
 - Security: `c2_beacon` patterns match whole words only (#41, PR #55).
 - Net: `watch-all` re-tracks a session's sockets when a new process takes
   over its log, and `net --once` exits 1 when every `--pid` is missing.
+- Watchers: live tailing works on macOS. Appends reported as `added` by
+  FSEvents are read, and a 1 s fallback tick catches missed events. A
+  truncated log, or one rewritten with different content, is re-read from the
+  start; an atomic rewrite with the same content keeps its place. Covers Aider
+  and the JSONL watcher behind `watch` (PR #165).
+- `watch` / `watch-all` no longer exit when Claude Code logs an `error` that
+  is an object, or when log text contains Textual markup such as `[/]`.
+  Log text is shown literally (PR #166).
+- A log line that fails to parse is skipped and the watch continues. Codex
+  tool output that is not a string no longer raises (PR #166).
+- Several Claude Code sessions in one project directory are tracked as
+  separate agents. Each process is mapped through its own session record,
+  the mapping is re-checked on every scan, and watchers are no longer leaked,
+  so a log that comes back is not emitted twice (PR #169).
+- Behaviour change: Cursor lists only composers active in the last 30 minutes
+  as running agents. Older composers in `state.vscdb` are no longer reported
+  (PR #167).
+- Cursor: reading `state.vscdb` waits at most 1 s for a database lock (PR #167).
+- `net`: traffic of a tracked child agent is attributed to the child only, not
+  counted again under its tracked parent (PR #167).
+- Security: the hidden-instruction HTML comment check runs in linear time.
+  Padding no longer hides an instruction, and an unterminated `<!--` no
+  longer stalls a scan (PR #167).
+- Behaviour change: a non-local `OLLAMA_HOST` disables Tier-2 LLM analysis
+  with a one-line reason. Loopback and bind-all addresses are accepted, and an
+  explicit `host=` still works (PR #167).
+- Behaviour change: `audit --redact` refuses a log that was written in the
+  last 5 s, unless `--force` is given (which prints a warning). Appends made
+  while a log is being redacted are no longer lost (PR #168).
+- Behaviour change: each `audit --redact` run writes its own
+  `<log>.bak.<UTC timestamp>` backup and lists the exact paths. Earlier `.bak`
+  files are left alone (PR #168).
+- Behaviour change: `scrub --in-place` and `audit --redact` refuse symlinks
+  instead of replacing them, which left the target's secrets in place (PR #168).
+- Behaviour change: `audit` scans user prompts and tool results. The scrub
+  skill documentation says so (PR #168).
+- Security: real secrets that contain a placeholder word (for example
+  `sk_live_TODO...`) are redacted. Password previews no longer show the last
+  4 characters (PR #168).
 
 ### Documentation
 

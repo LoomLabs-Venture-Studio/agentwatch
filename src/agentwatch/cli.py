@@ -38,10 +38,13 @@ from agentwatch.parser.logs import (
 )
 from agentwatch.siem import SiemExportError, SiemLogger
 from agentwatch.themes import (
+    SECURITY_TIER_EXIT_CODES,
     ascii_safe,
     get_theme,
     list_themes,
+    security_label_from_score,
     security_status_from_score,
+    security_tier_from_score,
     set_theme,
 )
 
@@ -709,54 +712,30 @@ def ps(json_output: bool):
     has_subagents = any(a.depth > 0 for a in agents)
 
     if json_output:
-        if has_subagents:
-            team_list = build_teams(agents)
-            output = []
-            for t in team_list:
-                output.append({
-                    "team_id": t.team_id,
-                    "team_name": t.name,
-                    "member_count": t.member_count,
-                    "subagent_count": t.subagent_count,
-                    "max_depth": t.max_depth,
-                    "members": [
-                        {
-                            "pid": a.pid,
-                            "parent_pid": a.parent_pid,
-                            "parent_agent_pid": a.parent_agent_pid,
-                            "depth": a.depth,
-                            "team_id": a.team_id,
-                            "agent_type": a.agent_type,
-                            "project": a.project_name,
-                            "working_directory": (
-                                str(a.working_directory) if a.working_directory else None
-                            ),
-                            "log_file": str(a.log_file) if a.log_file else None,
-                            "session_id": a.session_id,
-                            "cpu_percent": a.cpu_percent,
-                            "memory_mb": round(a.memory_mb, 1),
-                            "uptime": a.uptime,
-                        }
-                        for a in t.members
-                    ],
-                })
-            click.echo(json.dumps(output, indent=2))
-        else:
-            output = []
-            for a in agents:
-                output.append({
-                    "pid": a.pid,
-                    "parent_pid": a.parent_pid,
-                    "agent_type": a.agent_type,
-                    "project": a.project_name,
-                    "working_directory": str(a.working_directory) if a.working_directory else None,
-                    "log_file": str(a.log_file) if a.log_file else None,
-                    "session_id": a.session_id,
-                    "cpu_percent": a.cpu_percent,
-                    "memory_mb": round(a.memory_mb, 1),
-                    "uptime": a.uptime,
-                })
-            click.echo(json.dumps(output, indent=2))
+        # Always a flat list of agent objects, with or without sub-agents, so
+        # scripts can rely on one shape. Rebuild the tree from parent_agent_pid,
+        # depth and team_id.
+        team_names = {t.team_id: t.name for t in build_teams(agents)}
+        output = [
+            {
+                "pid": a.pid,
+                "parent_pid": a.parent_pid,
+                "parent_agent_pid": a.parent_agent_pid,
+                "team_id": a.team_id,
+                "team_name": team_names.get(a.team_id),
+                "depth": a.depth,
+                "agent_type": a.agent_type,
+                "project": a.project_name,
+                "working_directory": str(a.working_directory) if a.working_directory else None,
+                "log_file": str(a.log_file) if a.log_file else None,
+                "session_id": a.session_id,
+                "cpu_percent": a.cpu_percent,
+                "memory_mb": round(a.memory_mb, 1),
+                "uptime": a.uptime,
+            }
+            for a in agents
+        ]
+        click.echo(json.dumps(output, indent=2))
         return
 
     click.echo()
@@ -794,6 +773,7 @@ def detect(json_output: bool):
                 {
                     "pid": u.pid,
                     "name": u.name,
+                    "display_name": u.display_name,
                     "exe": u.exe,
                     "providers": sorted(u.providers),
                     "connections": u.connections,
@@ -827,7 +807,8 @@ def detect(json_output: bool):
             f"  {'PID':<8}{'PROGRAM':<20}{'PROVIDERS':<22}{'CONNS':>6}  {'LOCAL':<11}SUPPORTED"
         )
         for u in result.usages:
-            name = u.name if len(u.name) <= 18 else u.name[:15] + "..."
+            label = u.display_name
+            name = label if len(label) <= 18 else label[:15] + "..."
             providers = ",".join(sorted(u.providers)) or "-"
             if len(providers) > 20:
                 providers = providers[:17] + "..."
@@ -1418,7 +1399,11 @@ def security_scan(
     llm: bool,
     llm_model: str,
 ):
-    """Run a security-focused scan on agent logs."""
+    """Run a security-focused scan on agent logs.
+
+    Exit codes: 0 = secure (score 100), 1 = at risk (score 50-99),
+    2 = compromised (score below 50).
+    """
     note = None
     if log is None:
         log, note = _default_log()
@@ -1472,11 +1457,7 @@ def security_scan(
     if json_output:
         output = {
             "security_score": security_score,
-            "status": (
-                "secure" if security_score == 100
-                else "at_risk" if security_score > 50
-                else "compromised"
-            ),
+            "status": security_tier_from_score(security_score),
             "warnings": [w.to_dict() for w in warnings],
             "action_count": len(buffer),
             "security_stats": security_stats,
@@ -1498,12 +1479,15 @@ def security_scan(
         # same SECURE/AT-RISK/COMPROMISED thresholds a second time (that
         # duplication is exactly how this class of bug -- fix the emoji in
         # one copy, miss the other -- was introduced).
+        # Verdict text is security wording (SECURE / AT RISK / COMPROMISED);
+        # emoji and colour still come from the theme's tier for that score.
         theme = get_theme()
-        status = security_status_from_score(security_score)
-        emoji = theme.emoji_for(status)
-        color = theme.color_for(status)
+        tier_status = security_status_from_score(security_score)
+        emoji = theme.emoji_for(tier_status)
+        color = theme.color_for(tier_status)
+        label = security_label_from_score(security_score)
         click.echo(
-            click.style(f"  {emoji} {status.upper()} ({security_score}%)", fg=color, bold=True)
+            click.style(f"  {emoji} {label} ({security_score}%)", fg=color, bold=True)
         )
 
         click.echo()
@@ -1525,12 +1509,7 @@ def security_scan(
             _print_llm_assessments(warnings)
             _print_goal_alignment(goal_alignment)
 
-    # Exit code
-    if security_score < 50:
-        sys.exit(2)
-    elif security_score < 100:
-        sys.exit(1)
-    sys.exit(0)
+    sys.exit(SECURITY_TIER_EXIT_CODES[security_tier_from_score(security_score)])
 
 
 @cli.command()
@@ -1937,7 +1916,8 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
 @click.option(
     "--force",
     is_flag=True,
-    help="Allow redacting active session logs (default: skip them)",
+    help="Redact active or just-written logs too (default: skip/refuse them). "
+    "Risky: lines a running agent writes during the rewrite can be lost.",
 )
 @click.option(
     "--pii",
@@ -1972,6 +1952,7 @@ def audit(
     from agentwatch.detectors.security.secret_scanner import (
         _SECRET_PATTERNS,
         AuditFinding,
+        LogBusyError,
         assess_impact,
         audit_log_file,
         redact_log_file,
@@ -2047,6 +2028,19 @@ def audit(
                 fp = pdir / f.log_file
                 if fp.is_file():
                     affected_files[str(fp)] = fp
+        if force and affected_files:
+            click.echo(
+                click.style(
+                    "  WARNING: --force rewrites logs that a running agent may still be "
+                    "writing. Lines appended during the rewrite are detected and the run "
+                    "aborts if the file keeps changing, but an agent that holds the log "
+                    "open can keep writing to the replaced copy and lose those lines. "
+                    "Close the session first when you can.",
+                    fg="red",
+                    bold=True,
+                ),
+                err=True,
+            )
         for fp_str, fp in affected_files.items():
             # Skip active session logs unless --force
             if not force and fp.name in active_log_files:
@@ -2054,12 +2048,12 @@ def audit(
                 continue
             # One bad file must not abort the run and skip the remaining files.
             try:
-                redact_count += redact_log_file(fp, backups=backups, **pat)
-            except (OSError, UnicodeError, ValueError) as exc:
+                redact_count += redact_log_file(fp, backups=backups, force=force, **pat)
+            except LogBusyError:
+                # Written to a moment ago: same outcome as an active session.
+                skipped_active.append(fp.name)
+            except (OSError, UnicodeError, ValueError, NotImplementedError) as exc:
                 redact_errors.append({"log_file": str(fp), "error": str(exc)})
-                bak = fp.with_name(fp.name + ".bak")
-                if bak.exists() and bak not in backups:
-                    backups.append(bak)
 
     if json_output:
         finding_dicts = []
@@ -2141,7 +2135,8 @@ def audit(
             for log_name in sorted(set(skipped_active)):
                 click.echo(
                     click.style(
-                        f"  Skipped {log_name} (active session). Use --force to redact.",
+                        f"  Skipped {log_name} (active session or modified in the last "
+                        "few seconds). Use --force to redact.",
                         fg="yellow",
                     )
                 )

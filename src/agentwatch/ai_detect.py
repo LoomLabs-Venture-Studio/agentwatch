@@ -9,6 +9,7 @@ AI_PROVIDERS. Design: docs/superpowers/specs/2026-10-09-ai-detect-design.md
 
 from __future__ import annotations
 
+import re
 import socket
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
@@ -163,6 +164,20 @@ BROWSER_NAMES = frozenset({
 _PROC_ERRORS = (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError)
 
 
+_VERSION_NAME = re.compile(r"^\d+(\.\d+)+([-+.\w]*)?$")
+# Folder names that describe a install layout, not the program: never shown as a label.
+_GENERIC_FOLDERS = frozenset({
+    "bin", "sbin", "versions", "macos", "contents", "resources", "lib", "app",
+})
+
+
+def _usable_folder(part: str) -> bool:
+    """True for a directory name that can stand in for the program's name."""
+    if not part or part.endswith(":") or _VERSION_NAME.match(part):
+        return False
+    return part.lower() not in _GENERIC_FOLDERS
+
+
 @dataclass
 class AiUsage:
     pid: int
@@ -172,6 +187,23 @@ class AiUsage:
     connections: int = 0
     local_runtime: str | None = None
     adapter: str | None = None
+
+    @property
+    def display_name(self) -> str:
+        """Human label for *name*. A version-named binary (Claude Code's
+        `claude/versions/2.1.310`) gets the matched adapter's name, else its
+        exe's parent directory, else the raw name. `name` itself is unchanged."""
+        if not _VERSION_NAME.match(self.name):
+            return self.name
+        if self.adapter:
+            return self.adapter
+        # Walk up at most 3 directories from the binary, skipping folders that
+        # name a layout rather than a program (bin/, versions/, Contents/...).
+        parts = re.split(r"[/\\]", self.exe or "")
+        for part in reversed(parts[-4:-1]):
+            if _usable_folder(part):
+                return part
+        return self.name
 
 
 @dataclass

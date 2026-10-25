@@ -10,7 +10,7 @@ import re
 import stat
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -279,27 +279,89 @@ _p(
     "key_value_secret",
 )
 # Labels whose masked value never reveals its last chars, however long: a
-# password-like value has no "which key to rotate" hint worth leaking.
-_NO_TAIL_LABELS = frozenset({"key_value_secret"})
+# password-like value has no "which key to rotate" hint worth leaking. Every
+# label whose value is a human-chosen password belongs here, including the
+# password of a connection-string URL.
+_NO_TAIL_LABELS = frozenset({
+    "key_value_secret",
+    "password_assignment",
+    "db_password_env",
+    "cli_password_flag",
+    "curl_basic_auth",
+    "url_credentials",
+    "database_connection_string",
+    "neondb_connection_string",
+})
 
 
 # ---------------------------------------------------------------------------
 # Placeholder / false-positive filters
 # ---------------------------------------------------------------------------
 
-_PLACEHOLDER_RE = re.compile(
-    r"your[_-]?(?:key|token|secret|api|password)|"
-    r"example|xxx{3,}|<[\w-]+>|TODO|CHANGEME|"
-    r"insert[_-]?(?:key|token|here)|"
-    r"placeholder|dummy|test[_-]?(?:key|token|secret)",
+# A value IS a placeholder only when it is made of nothing else. A value that
+# merely contains a placeholder word ("MyExample#Pass1", "sk_live_TODO<key>")
+# is a real secret that happens to hold the word, and must be redacted.
+#
+# 1. It starts with "your_key" / "insert_token" ...: nobody's real secret does,
+#    and what follows ("_here_abcdef12") is filler.
+_PLACEHOLDER_PREFIX_RE = re.compile(
+    r"(?:your|insert)[_-]?(?:key|token|secret|api|password|here)", re.IGNORECASE
+)
+# 2. It is a bracketed name: <password>.
+_PLACEHOLDER_BRACKET_RE = re.compile(r"<[\w -]+>")
+# 3. Every word of it (split on non-alphanumerics) is a placeholder word, a
+#    filler word, digits or a run of x's, with at least one placeholder word:
+#    "example", "TODO_replace_me", "xxxxxxxx", "placeholder_value_123".
+_PLACEHOLDER_WORDS = frozenset({
+    "example", "todo", "changeme", "placeholder", "dummy", "your", "insert", "test",
+})
+_FILLER_WORDS = frozenset({
+    "key", "token", "secret", "password", "passwd", "api", "value", "here", "my", "the",
+    "a", "an", "me", "replace", "goes", "with", "com",
+})
+_X_RUN_RE = re.compile(r"x{3,}", re.IGNORECASE)
+# The vendor prefix of a token (as in the patterns above). A placeholder keeps
+# it ("sk-xxxxxxxx", "ghp_xxxx...", "sk-your-key-here"), so it is stripped
+# before judging what is left. Longest first: sk-ant-api03- before sk-ant-.
+_TOKEN_PREFIX_RE = re.compile(
+    r"(?:sk-ant-api03-|sk-or-v1-|sk-ant-|sk-proj-|sk_live_|sk_test_|pk_live_|pk_test_|sk-"
+    r"|ghp_|gho_|ghs_|github_pat_|glpat-|xox[bpors]-|AKIA|AIza|SG\.|hf_|r8_|pc-|fc-|npm_"
+    r"|pypi-|lin_api_|nfp_|sbp_|railway_|vercel_|neondb_|dp\.st\.|key-)",
     re.IGNORECASE,
 )
 
+
+def _is_placeholder_value(value: str) -> bool:
+    """True if *value* (a bare value, quotes stripped) is only a placeholder."""
+    if _PLACEHOLDER_PREFIX_RE.match(value) or _PLACEHOLDER_BRACKET_RE.fullmatch(value):
+        return True
+    prefix = _TOKEN_PREFIX_RE.match(value)
+    if prefix and prefix.end() < len(value):
+        return _is_placeholder_value(value[prefix.end() :])
+    words = [w.lower() for w in re.split(r"[^A-Za-z0-9]+", value) if w]
+    strong = False
+    for w in words:
+        if w in _PLACEHOLDER_WORDS or _X_RUN_RE.fullmatch(w):
+            strong = True
+        elif not (w in _FILLER_WORDS or w.isdigit()):
+            return False
+    return strong
+
+
 # Stock/default credentials: a value that is exactly one of these is a
-# placeholder or a well-known default, not a leaked secret.
-_DEFAULT_CREDENTIALS = frozenset({
-    "admin", "pass", "passwd", "password", "postgres", "root", "secret", "mysql",
-})
+# placeholder or a well-known default, not a leaked secret, but in a URL only
+# where it cannot reach a real system: see _LOCAL_HOSTS.
+_DEFAULT_CREDENTIALS = frozenset({"admin", "postgres", "root", "mysql"})
+# Placeholder passwords: the word for the thing itself, written where a real
+# password would go. Exempt on any host.
+_PLACEHOLDER_PASSWORDS = frozenset({"pass", "passwd", "password", "secret"})
+
+# In a URL the stock-credential exemption holds only for loopback hosts: a
+# dev database on this machine. postgres:postgres@prod.internal (or a
+# docker-compose service name, which may well be a shared server) is a real
+# credential for a real host, and a missed secret costs far more than a
+# redaction that the per-run backup can undo.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 _TEST_PATH_RE = re.compile(r"(?:^|/)(?:test_|tests/|fixture|mock|conftest)", re.IGNORECASE)
 
@@ -315,10 +377,16 @@ def _shannon_entropy(s: str) -> float:
     return -sum((c / length) * math.log2(c / length) for c in freq.values())
 
 
-def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
-    """Return True if the match is likely a placeholder or test fixture."""
-    if _PLACEHOLDER_RE.search(match_text):
-        return True
+def _is_false_positive(
+    match_text: str, file_path: str | None = None, *, stock_ok: bool = True
+) -> bool:
+    """Return True if the match is a placeholder or test fixture.
+
+    Judged on the value (the text after ``=``/``:``), which must BE a
+    placeholder, not just contain a placeholder word. *stock_ok* False turns
+    off the stock-credential exemption (``root``, ``postgres`` ...), for a
+    URL whose host is not loopback.
+    """
     if file_path and _TEST_PATH_RE.search(file_path):
         return True
     # Low Shannon entropy suggests a pattern like "aaaaaaa..." rather than a real key
@@ -331,7 +399,23 @@ def _is_false_positive(match_text: str, file_path: str | None = None) -> bool:
             if len(value) >= 16 and _shannon_entropy(value) < 3.0:
                 return True
             break
-    return value.lower() in _DEFAULT_CREDENTIALS
+    if _is_placeholder_value(value) or value.lower() in _PLACEHOLDER_PASSWORDS:
+        return True
+    return stock_ok and value.lower() in _DEFAULT_CREDENTIALS
+
+
+_HOST_RE = re.compile(r"[^/?#\\\s;]*")
+
+
+def _url_host(rest: str) -> str:
+    """Lower-case host of the URL whose userinfo ends just before *rest*
+    (``@db.host:5432/app...``), without port or brackets."""
+    authority = _HOST_RE.match(rest.lstrip("@")).group(0)
+    host = authority.rsplit("@", 1)[-1].lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    head, _, port = host.rpartition(":")
+    return head if head and port.isdigit() else host
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +569,7 @@ _MASK_TAIL_MIN_LEN = 20
 _MASK_TAIL_CHARS = 4
 
 
-def mask_secret(match_text: str) -> str:
+def mask_secret(match_text: str, label: str | None = None) -> str:
     """Return a display-safe form of a matched secret.
 
     Reveals at most the last 4 chars of the secret value, and only when the
@@ -493,7 +577,8 @@ def mask_secret(match_text: str) -> str:
     The value is the text after ``=``/``:`` (quotes stripped) when present,
     otherwise the whole match -- never the scheme prefix (``ghp_``, ``AKIA``
     ...), which ``secret_type`` already identifies. For a connection-string
-    URL the value is its password, never the host tail.
+    URL the value is its password, never the host tail. With a password-like
+    *label* (``_NO_TAIL_LABELS``) not even the last 4 chars are shown.
     """
     value = match_text
     url = _URL_PASSWORD_RE.match(match_text)
@@ -503,7 +588,7 @@ def mask_secret(match_text: str) -> str:
         sep = re.search(r"[=:]", match_text)  # the first separator, = or : (#64)
         if sep:
             value = match_text[sep.end() :].strip().strip("'\"").strip()
-    return _mask_value(value)
+    return _mask_value(value, label)
 
 
 def _mask_value(value: str, label: str | None = None) -> str:
@@ -523,7 +608,7 @@ def _mask_match_value(m: re.Match, label: str | None = None) -> str:
     it is not split again on ``=``/``:`` (#64)."""
     if "secret" in m.re.groupindex:
         return _mask_value(m.group("secret"), label)
-    return mask_secret(m.group(0))
+    return mask_secret(m.group(0), label)
 
 
 def _mask_match(m: re.Match, label: str) -> str:
@@ -534,7 +619,7 @@ def _mask_match(m: re.Match, label: str) -> str:
     ``MYSQL_[hidden, N chars]``.
     """
     if "secret" not in m.re.groupindex and label not in _ASSIGNMENT_LABELS:
-        return mask_secret(m.group(0))
+        return mask_secret(m.group(0), label)
     start, end = _value_span(m, label)
     return m.string[m.start() : start] + _mask_match_value(m, label) + m.string[end : m.end()]
 
@@ -739,11 +824,8 @@ def audit_log_file(
     findings: list[AuditFinding] = []
     seen: set[str] = set()  # dedup: (secret_type, channel, file_path) per session
 
-    for action in parse_file(log_path):
-        ts = getattr(action, "timestamp", None)
-        ts_str = ts.isoformat() if ts else None
-
-        for text, channel, file_path in extract_scannable_content(action):
+    def _scan(items: list[tuple[str, str, str | None]], ts_str: str | None) -> None:
+        for text, channel, file_path in items:
             for pattern, secret_type in patterns:
                 m = _first_live_match(pattern, secret_type, text, file_path)
                 if m is None:
@@ -778,7 +860,60 @@ def audit_log_file(
                     )
                 )
 
+    for action in parse_file(log_path):
+        ts = getattr(action, "timestamp", None)
+        _scan(extract_scannable_content(action), ts.isoformat() if ts else None)
+
+    # The parser turns assistant output and tool calls into actions, but not
+    # the user entries of a Claude Code log (prompts and tool_result blocks:
+    # `cat .env` output). Scan those from the raw lines, on their decoded
+    # strings. Findings share `seen`, so nothing is counted twice.
+    for ts_str, items in _claude_user_entries(log_path):
+        _scan(items, ts_str)
+
     return findings
+
+
+def _claude_user_entries(
+    log_path: Path,
+) -> Iterator[tuple[str | None, list[tuple[str, str, str | None]]]]:
+    """(timestamp, [(text, channel, None)]) for each Claude Code user entry of
+    a JSONL log: prompt text is ``user_message``, a ``tool_result`` is
+    ``tool_output``. Unparseable lines and other shapes are skipped."""
+    with log_path.open("rb") as fh:
+        for raw_line in fh:
+            # Cheap pre-filter: most lines are assistant entries.
+            if b'"user"' not in raw_line:
+                continue
+            try:
+                entry = json.loads(raw_line)
+            except ValueError:
+                continue
+            message = entry.get("message") if isinstance(entry, dict) else None
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            items: list[tuple[str, str, str | None]] = []
+            _user_content_items(message.get("content"), "user_message", items)
+            if items:
+                ts = entry.get("timestamp")
+                yield (ts if isinstance(ts, str) else None), items
+
+
+def _user_content_items(
+    content: Any, channel: str, items: list[tuple[str, str, str | None]]
+) -> None:
+    if isinstance(content, str):
+        if content:
+            items.append((content, channel, None))
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                _user_content_items(block, channel, items)
+            elif isinstance(block, dict):
+                if block.get("type") == "tool_result":
+                    _user_content_items(block.get("content"), "tool_output", items)
+                elif isinstance(block.get("text"), str):
+                    _user_content_items(block["text"], channel, items)
 
 
 _REDACTED = "[REDACTED]"
@@ -850,12 +985,15 @@ def _iter_matches(pattern: re.Pattern, label: str, text: str) -> Iterator[re.Mat
 def _is_placeholder(m: re.Match, label: str, file_path: str | None = None) -> bool:
     """``_is_false_positive`` for a match, judged on the right text.
 
-    For a DB URL that is only its password: a host like ``db.example.com``
-    or a ``?application_name=test_key`` tail says nothing about it.
+    For a URL that is only its password: a host like ``db.example.com``
+    or a ``?application_name=test_key`` tail says nothing about it. The host
+    only decides whether a stock password (``postgres``) is a real one.
     """
-    if label in _URL_LABELS:
+    if label in _URL_LABELS or label == "url_credentials":
         start, end = _value_span(m, label)
-        return _is_false_positive(m.string[start:end], file_path)
+        rest = m.string[end : m.end() if label in _URL_LABELS else end + 512]
+        local = _url_host(rest) in _LOCAL_HOSTS
+        return _is_false_positive(m.string[start:end], file_path, stock_ok=local)
     validator = _PII_VALIDATORS.get(label)
     if validator is not None and not validator(_match_value(m)):
         return True
@@ -1038,8 +1176,36 @@ def _redact_line(
     return new_line, count
 
 
-def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:
-    """Write *data* to *path* via a same-directory temp file + os.replace()."""
+def _create_exclusive(path: Path, data: bytes, mode: int) -> None:
+    """Create *path* (``FileExistsError`` if it exists), write *data*, fsync."""
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(path, mode)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise
+
+
+def _atomic_write_bytes(
+    path: Path,
+    data: bytes,
+    mode: int,
+    *,
+    before_replace: Callable[[], None] | None = None,
+    exclusive: bool = False,
+) -> None:
+    """Write *data* to *path* via a same-directory temp file + os.replace().
+
+    *before_replace* runs last, once the temp file is complete and durable;
+    if it raises, nothing is replaced and the temp file is removed. With
+    *exclusive* the temp file is hard-linked into place instead, which fails
+    with ``FileExistsError`` rather than overwrite *path*.
+    """
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as fh:
@@ -1047,11 +1213,122 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.chmod(tmp, mode)
-        os.replace(tmp, path)
+        if before_replace is not None:
+            before_replace()
+        if exclusive:
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                raise
+            except (OSError, NotImplementedError):
+                # No hard links here (exFAT, some SMB mounts): create the
+                # file exclusively and write it in place. A crash can leave
+                # it partial, so a failed write removes it.
+                _create_exclusive(path, data, mode)
+            os.unlink(tmp)
+        else:
+            os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+class LogBusyError(OSError):
+    """The log was written to a moment ago, so a running agent may own it."""
+
+
+class LogChangedError(OSError):
+    """The log kept changing while it was being redacted; nothing was written."""
+
+
+# A log last written to less than this many seconds ago is assumed to belong
+# to a running agent: refused unless the caller forces it.
+_RECENT_WRITE_SECONDS = 5.0
+# Redaction passes before giving up on a log that keeps growing under us.
+_MAX_REDACT_ATTEMPTS = 3
+
+
+def _file_signature(st: os.stat_result) -> tuple[int, int, int, int]:
+    """What changes when someone writes to, truncates or replaces a file."""
+    return (st.st_size, st.st_mtime_ns, st.st_ino, st.st_dev)
+
+
+def _refuse_symlink(path: Path) -> None:
+    if path.is_symlink():
+        raise ValueError(
+            f"{path} is a symlink; refusing to rewrite it (the link would be replaced "
+            f"by a regular file and the real file {path.resolve()} would keep every "
+            "secret). Run the command on the real file."
+        )
+
+
+def _backup_path(log_path: Path) -> Path:
+    """A not-yet-used ``<name>.bak.<UTC timestamp>`` beside *log_path*."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    base = log_path.with_name(f"{log_path.name}.bak.{stamp}")
+    candidate, n = base, 0
+    while candidate.exists():
+        n += 1
+        candidate = base.with_name(f"{base.name}-{n}")
+    return candidate
+
+
+def _redact_log_once(
+    log_path: Path,
+    patterns: list[tuple[re.Pattern, str]],
+    force: bool,
+) -> tuple[int, Path | None]:
+    """One read-redact-replace pass. Raises ``LogChangedError`` if the file
+    changed after it was read (nothing written, any backup removed)."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(log_path, flags)
+    with os.fdopen(fd, "rb") as fh:
+        before = os.fstat(fh.fileno())
+        original = fh.read()
+    signature = _file_signature(before)
+
+    total = 0
+    new_lines: list[str] = []
+    for line in original.decode("utf-8", errors="surrogateescape").split("\n"):
+        new_line, count = _redact_line(line, patterns)
+        new_lines.append(new_line)
+        total += count
+    if total == 0:
+        return 0, None
+
+    age = time.time() - before.st_mtime
+    if not force and age < _RECENT_WRITE_SECONDS:
+        raise LogBusyError(
+            f"{log_path} was modified {max(age, 0.0):.1f}s ago and may still be in use; "
+            "not redacted. Wait for the agent to finish, or use --force."
+        )
+
+    def _unchanged() -> None:
+        if _file_signature(os.stat(log_path)) != signature:
+            raise LogChangedError(
+                f"{log_path} changed while it was being redacted; nothing was written"
+            )
+
+    _unchanged()
+    backup = _backup_path(log_path)
+    while True:
+        try:
+            _atomic_write_bytes(backup, original, 0o600, exclusive=True)
+            break
+        except FileExistsError:
+            backup = _backup_path(log_path)
+    try:
+        data = "\n".join(new_lines).encode("utf-8", errors="surrogateescape")
+        _atomic_write_bytes(
+            log_path, data, stat.S_IMODE(before.st_mode), before_replace=_unchanged
+        )
+    except BaseException:
+        # No redacted file was written, so no backup of this run is wanted.
+        with contextlib.suppress(OSError):
+            backup.unlink()
+        raise
+    return total, backup
 
 
 def redact_log_file(
@@ -1059,42 +1336,43 @@ def redact_log_file(
     backups: list[Path] | None = None,
     *,
     patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
+    force: bool = False,
 ) -> int:
     """Replace the values of detected secrets in a JSONL log file with [REDACTED].
 
     Works line-by-line on the raw bytes (decoded with ``surrogateescape`` so
     invalid UTF-8 round-trips exactly). Only the secret value is replaced; key
     names, quotes and every other byte are kept, and valid JSON lines stay
-    valid JSON. When anything is redacted, a one-time ``<name>.bak`` copy of the
-    original bytes is kept (owner-only permissions, it still holds the secrets)
-    and the file is replaced atomically with its original permission mode.
+    valid JSON. When anything is redacted, a fresh ``<name>.bak.<UTC time>``
+    copy of the original bytes is kept for this run (owner-only permissions,
+    it still holds the secrets) and the file is replaced atomically with its
+    original permission mode. Earlier backups are never touched or reused, so
+    a backup always holds exactly the file this run started from.
 
-    If *backups* is given and anything was redacted, the ``.bak`` path (new or
-    pre-existing) is appended to it so callers can tell the user where the
-    unredacted copy lives.
+    The file is read, redacted and replaced; a line appended in between would
+    be lost, so the file's size, mtime and inode are compared before the
+    replace and the pass is redone (up to ``_MAX_REDACT_ATTEMPTS`` times) if
+    they moved. A file that keeps changing raises ``LogChangedError`` with the
+    log untouched. A file written to within ``_RECENT_WRITE_SECONDS`` raises
+    ``LogBusyError`` unless *force*. A symlink raises ``ValueError``.
+
+    If *backups* is given and anything was redacted, the new backup path is
+    appended to it so callers can tell the user where the unredacted copy lives.
 
     Returns the number of real (non-false-positive) redactions.
     """
-    original = log_path.read_bytes()
-    total_replacements = 0
-    new_lines: list[str] = []
-
-    for line in original.decode("utf-8", errors="surrogateescape").split("\n"):
-        new_line, count = _redact_line(line, patterns)
-        new_lines.append(new_line)
-        total_replacements += count
-
-    if total_replacements > 0:
-        mode = stat.S_IMODE(log_path.stat().st_mode)
-        backup = log_path.with_name(log_path.name + ".bak")
-        if not backup.exists():
-            _atomic_write_bytes(backup, original, 0o600)
-        data = "\n".join(new_lines).encode("utf-8", errors="surrogateescape")
-        _atomic_write_bytes(log_path, data, mode)
-        if backups is not None:
+    _refuse_symlink(log_path)
+    for attempt in range(_MAX_REDACT_ATTEMPTS):
+        try:
+            total, backup = _redact_log_once(log_path, patterns, force)
+        except LogChangedError:
+            if attempt == _MAX_REDACT_ATTEMPTS - 1:
+                raise
+            continue
+        if backup is not None and backups is not None:
             backups.append(backup)
-
-    return total_replacements
+        return total
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 @dataclass
@@ -1147,6 +1425,8 @@ def scrub_file(
     for a binary file or an existing ``.bak`` (it would be stale), ``OSError``
     on I/O failure. *dry_run* does all the work but writes nothing.
     """
+    if in_place:
+        _refuse_symlink(path)
     original = path.read_bytes()
     if b"\0" in original[:8192]:
         raise ValueError(f"{path} looks like a binary file (NUL byte); not scrubbed")

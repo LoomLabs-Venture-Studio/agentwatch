@@ -71,6 +71,9 @@ def _real_email(value: str) -> bool:
     domain = domain.lower()
     return not (
         local.lower() in {"git", "noreply", "no-reply"}
+        # RFC 2606 reserved names: documentation addresses, never a person's.
+        or domain in {"example.com", "example.org", "example.net"}
+        or domain.rsplit(".", 1)[-1] in {"example", "test", "invalid", "localhost"}
         or "noreply" in domain
         or re.match(r"\d+x\.", domain)
         or domain.rsplit(".", 1)[-1] in _FILE_EXTS
