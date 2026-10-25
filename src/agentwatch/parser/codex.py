@@ -123,6 +123,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .logs import _redact_truncate, classify_tool
+from .logs import error_text as _error_text
 from .models import USAGE_RECORD, Action, ToolType
 
 # Boundary between the "mid" and "new" (>=0.44) Codex rollout schema eras,
@@ -423,7 +424,7 @@ def _extract_exec_command_end(payload: dict) -> _ExecResult | None:
     """
     if not isinstance(payload, dict) or payload.get("type") != "exec_command_end":
         return None
-    detail = payload.get("stderr") or payload.get("formatted_output") or ""
+    detail = _error_text(payload.get("stderr") or payload.get("formatted_output")) or ""
     return _exec_status_result(
         payload.get("call_id"), payload.get("status"), payload.get("exit_code"), detail
     )
@@ -476,7 +477,7 @@ def _extract_patch_apply_end(payload: dict) -> _ExecResult | None:
 
     error_text = None
     if is_error:
-        detail = (payload.get("stderr") or "").strip()
+        detail = (_error_text(payload.get("stderr")) or "").strip()
         error_text = _redact_truncate(detail, 200) or None
 
     return _ExecResult(call_id=call_id, is_error=is_error, error_text=error_text)
@@ -543,7 +544,8 @@ def _extract_code_mode_nested(payload: dict, session_id: str | None, entry: dict
         return [action(ToolType.BASH, not result.is_error, result.error_text, command=command)]
     if kind == "FileChange":
         failed = status in ("failed", "declined")
-        error = _redact_truncate((item.get("stderr") or "").strip(), 200) if failed else ""
+        stderr = (_error_text(item.get("stderr")) or "").strip()
+        error = _redact_truncate(stderr, 200) if failed else ""
         changes = item.get("changes")
         paths = list(changes) if isinstance(changes, dict) and changes else [None]
         return [action(ToolType.EDIT, not failed, error or None, file_path=p) for p in paths]
@@ -587,11 +589,12 @@ def _extract_item_completed(payload: dict) -> _ExecResult | None:
             item.get("id"),
             item.get("status"),
             item.get("exit_code"),
-            item.get("aggregated_output") or "",
+            _error_text(item.get("aggregated_output")) or "",
         )
     if kind == "FileChange" and item.get("status") in ("completed", "failed", "declined"):
         is_error = item["status"] != "completed"
-        detail = _redact_truncate((item.get("stderr") or "").strip(), 200) if is_error else ""
+        stderr = (_error_text(item.get("stderr")) or "").strip()
+        detail = _redact_truncate(stderr, 200) if is_error else ""
         return _ExecResult(call_id=item.get("id"), is_error=is_error, error_text=detail or None)
     return None
 
