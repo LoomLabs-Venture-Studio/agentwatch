@@ -9,6 +9,7 @@ AI_PROVIDERS. Design: docs/superpowers/specs/2026-10-09-ai-detect-design.md
 
 from __future__ import annotations
 
+import re
 import socket
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
@@ -163,6 +164,9 @@ BROWSER_NAMES = frozenset({
 _PROC_ERRORS = (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError)
 
 
+_VERSION_NAME = re.compile(r"^\d+(\.\d+)+([-+.\w]*)?$")
+
+
 @dataclass
 class AiUsage:
     pid: int
@@ -172,6 +176,21 @@ class AiUsage:
     connections: int = 0
     local_runtime: str | None = None
     adapter: str | None = None
+
+    @property
+    def display_name(self) -> str:
+        """Human label for *name*. A version-named binary (Claude Code's
+        `claude/versions/2.1.310`) gets the matched adapter's name, else its
+        exe's parent directory, else the raw name. `name` itself is unchanged."""
+        if not _VERSION_NAME.match(self.name):
+            return self.name
+        if self.adapter:
+            return self.adapter
+        parts = re.split(r"[/\\]", self.exe or "")
+        parent = parts[-2] if len(parts) >= 2 else ""
+        if parent and not _VERSION_NAME.match(parent):
+            return parent
+        return self.name
 
 
 @dataclass

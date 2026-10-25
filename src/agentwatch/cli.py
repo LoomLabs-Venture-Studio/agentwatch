@@ -671,6 +671,7 @@ def detect(json_output: bool):
                 {
                     "pid": u.pid,
                     "name": u.name,
+                    "display_name": u.display_name,
                     "exe": u.exe,
                     "providers": sorted(u.providers),
                     "connections": u.connections,
@@ -704,7 +705,8 @@ def detect(json_output: bool):
             f"  {'PID':<8}{'PROGRAM':<20}{'PROVIDERS':<22}{'CONNS':>6}  {'LOCAL':<11}SUPPORTED"
         )
         for u in result.usages:
-            name = u.name if len(u.name) <= 18 else u.name[:15] + "..."
+            label = u.display_name
+            name = label if len(label) <= 18 else label[:15] + "..."
             providers = ",".join(sorted(u.providers)) or "-"
             if len(providers) > 20:
                 providers = providers[:17] + "..."

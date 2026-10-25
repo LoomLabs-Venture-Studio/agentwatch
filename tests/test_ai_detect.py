@@ -355,3 +355,32 @@ def test_oserror_on_exe_treated_like_access_denied():
 
     r = run([conn(1, "160.79.104.10")], [Proc(1, "Orca.exe")])
     assert (r.usages[0].pid, r.usages[0].exe) == (1, None)
+
+
+def test_version_named_binary_shows_adapter_display_name():
+    """Claude Code's native binary is named after its version (`versions/2.1.310`)."""
+    r = run(
+        [conn(1, "160.79.104.10")],
+        [FakeProc(1, "2.1.310", "/home/dev/.local/share/claude/versions/2.1.310")],
+    )
+    [u] = r.usages
+    assert u.name == "2.1.310"  # raw OS name is kept
+    assert u.adapter == "claude-code"
+    assert u.display_name == "claude-code"
+
+
+@pytest.mark.parametrize(
+    ("name", "exe", "adapter", "expected"),
+    [
+        ("2.1.310", "/opt/acme/bin/2.1.310", None, "bin"),  # no adapter: exe's parent dir
+        ("2.1.310", "/opt/acme/2.1.310", "acme-agent", "acme-agent"),  # adapter wins
+        ("2.1.310", "/opt/1.0/2.1.310", None, "2.1.310"),  # parent is a version too
+        ("2.1.310", None, None, "2.1.310"),  # no exe and no adapter: keep the name
+        ("Orca.exe", "/apps/Orca/Orca.exe", None, "Orca.exe"),  # not version-like
+        ("claude", "/x/claude", "claude-code", "claude"),  # not version-like
+    ],
+)
+def test_display_name_only_replaces_version_like_names(name, exe, adapter, expected):
+    from agentwatch.ai_detect import AiUsage
+
+    assert AiUsage(pid=1, name=name, exe=exe, adapter=adapter).display_name == expected
