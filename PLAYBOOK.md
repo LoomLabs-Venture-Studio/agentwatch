@@ -4385,7 +4385,7 @@ Source: CTO + 3-way QA review of `develop` (2026-10-22) and PR #157's crash find
 3. The board approves every PR.
 4. Package name stays `agentwatch-monitor` (PyPI `agentwatch` upload was rejected with 400; `agent-watch` exists).
 5. Pick the model by task complexity to keep cost down.
-6. OPEN: how 0.2.0 ships, given the 2026-09-30 "never merge into main" rule (see CLAUDE.md Git Rules). Phase 1 does not depend on it.
+6. RESOLVED 2026-10-25: the "never merge into main" rule means merges into `main` need a board-reviewed PR; it is not a ban (see CLAUDE.md Git Rules). 0.2.0 ships through a `develop` -> `main` promotion PR, then a `v0.2.0` tag on `main`.
 
 ### Acceptance Criteria
 - [x] F1 `watch` / `watch-all` no longer exit on dict `error` fields or on `[...]` text in logs; log text never renders as markup, links or actions (port of #157)

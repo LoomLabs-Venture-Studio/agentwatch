@@ -353,10 +353,17 @@ agentwatch watch --security     # manual smoke test (live TUI)
 ```
 
 ## Git Rules
-- **NEVER push to `main`, and NEVER recommend or propose merging anything
-  into `main`** (standing board rule, 2026-09-30). This includes
-  release/promote PRs; leave `main` out of next steps entirely.
-  (Native memory is per-machine, so this rule lives here too.)
+- **Never push to `main`. Merges into `main` go only through a PR that the
+  board reviews and approves** (board rule 2026-09-30, clarified
+  2026-10-25). It is not a ban: propose a release/promote PR into `main`
+  when it is the right next step, but never merge one without the board's
+  explicit go. (Native memory is per-machine, so this rule lives here too.)
+- Promoting `develop` to `main`: `main` has 3 commits (ee1f65e, 349c7a1,
+  dc5d03d) that revert PRs #2, #3 and #4, which `develop` still contains. A
+  plain merge conflicts and silently drops their code. Cut a branch from
+  `develop`, run `git merge -s ours origin/main`, PR it into `main` and merge
+  with a merge commit, not a squash. Needed only until `main` is an ancestor
+  of `develop`.
 - `develop` is the integration line (v0.2.0+). Branch `feature/`, `fix/`,
   `chore/` or `docs/` **from `develop`**; PRs target `develop`.
 - One commit per logical change
