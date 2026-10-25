@@ -77,6 +77,11 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
 
 ### Changed
 
+- Behaviour change: `agentwatch ps --json` is always a flat list of agent
+  objects. It used to switch to a team-shaped list when sub-agents existed.
+  Each object now has `parent_agent_pid`, `team_id`, `team_name` and `depth`,
+  so the tree can be rebuilt. The per-team `member_count`,
+  `subagent_count` and `max_depth` fields are gone.
 - Claude Code and Gemini actions take their network host from a tool's
   `url`, so URL fetches reach the network detectors (#130, PR #130).
 - Status messages such as "Using log ..." go to stderr, so `--json` stdout
