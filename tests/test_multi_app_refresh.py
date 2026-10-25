@@ -15,6 +15,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from test_multi_app_table import _now, _seed
+
 from agentwatch.detectors import create_registry
 from agentwatch.health.rot import RotScorer
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
@@ -163,3 +165,73 @@ async def test_team_header_updates_from_grouped_reports():
         table = app.query_one("#sessions")
         assert table.get_row_index("team:100") == 0
         assert table.get_cell("team:100", "health").plain == f"{score}%"
+
+
+# -- Sprint 36 PR 4: `s` rescores every session; no rescoring without new actions
+
+
+def _real_session(app, name: str, actions: list[Action]) -> Path:
+    path = _seed(app, name)
+    buffer = ActionBuffer()
+    for a in actions:
+        buffer.add(a)
+    data = app.agents[path]
+    data["buffer"] = buffer
+    data["registry"] = create_registry(mode="all" if app.security_mode else "health")
+    return path
+
+
+def _read(file_path: str) -> Action:
+    return Action(timestamp=_now(), tool_name="Read", tool_type=ToolType.READ, success=True,
+                  file_path=file_path)
+
+
+async def test_s_rescores_unselected_idle_sessions_on_next_tick():
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        _real_session(app, "selected", [_read("a.py")])
+        idle = _real_session(app, "idle", [_read("notes.txt")] * 3 + [_read(".env")])
+        app.refresh_ui()
+        await pilot.pause()
+        assert app.selected_path != idle
+        before = app.agents[idle]["_last_report"]
+        assert not before.security_warnings
+
+        await pilot.press("s")
+        await pilot.pause()
+        after = app.agents[idle]["_last_report"]
+        assert after is not before and after.security_warnings
+        app.refresh_ui()  # and the next tick reuses the new report
+        assert app.agents[idle]["_last_report"] is after
+
+
+async def test_selected_session_is_not_refed_to_rotscorer_without_new_actions():
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        actions = [_read(f"f{i % 2}.py") for i in range(30)]  # repetitive: rot > 0
+        path = _real_session(app, "selected", actions)
+        data = app.agents[path]
+        scorer = data["rot_scorer"]
+        calls = []
+        original = scorer.update
+        scorer.update = lambda buffer: (calls.append(1), original(buffer))[1]
+        app.refresh_ui()
+        await pilot.pause()
+        assert app.selected_path == path and calls == [1]
+        rot, score = data["_rot"].smoothed_score, data["_last_report"].overall_score
+        state = scorer._state
+
+        for _ in range(5):
+            app.refresh_ui()
+            await pilot.pause()
+        assert calls == [1]
+        assert data["_rot"].smoothed_score == rot and scorer._state == state
+        assert data["_last_report"].overall_score == score
+
+        await pilot.press("s")  # rescores (new registry) but rot is not re-fed
+        await pilot.pause()
+        assert calls == [1]
+
+        data["buffer"].add(_read("new.py"))
+        app.refresh_ui()
+        assert calls == [1, 1]

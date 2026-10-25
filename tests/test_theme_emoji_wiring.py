@@ -129,8 +129,9 @@ class TestSecurityStatusThemeWiring:
         widget.score = 100
         rendered = widget.render()
         assert theme.emoji_0 in rendered
+        assert "Security: clean" in rendered
         assert "SECURE" in rendered
-        assert theme.level_0.upper() not in rendered  # health word, not the verdict
+        assert theme.level_0.upper() not in rendered  # health words are HealthBar's
         assert "\U0001F6E1" not in rendered  # old hardcoded shield emoji gone
 
     @pytest.mark.parametrize(("score", "label"), [(60, "AT RISK"), (10, "COMPROMISED")])

@@ -66,6 +66,10 @@ numbers refer to the GitHub repository.
 - `--log`, `--analytics-log`, `--siem-log` and `--audit-log` given a
   directory (`check`, `security-scan`, `watch`, `watch-all`, `agentguard`) is
   a one-line usage error instead of an `IsADirectoryError` traceback.
+- `watch-all`: after `s`, every session is rescored on the next tick (idle
+  sessions kept their old report). The selected session is no longer
+  rescored every second without new actions, which moved its context health
+  and state on its own; every session is now rescored only on new actions.
 
 ### Security
 
@@ -92,7 +96,17 @@ numbers refer to the GitHub repository.
   (Critical or a HIGH+ warning), on-screen cost, alerts this run and the
   time. An Events panel lists sessions started/stopped, new and cleared
   warnings, alerts sent and `--budget` 80%/100% crossings, newest first;
-  `e` focuses it to scroll, Esc returns to the table.
+  `e` focuses it to scroll, Esc returns to the table. Stopped sessions are
+  not counted as needing you. Sessions already over `--budget` when loaded
+  give one "N sessions over budget; N alerts sent" line instead of two lines
+  each (the alerts themselves are still sent).
+- `watch-all`: Enter opens a session full screen with Health, Security,
+  Network and Process tabs (Tab/Shift+Tab or 1-4; Esc, Backspace or `q`
+  back to the same row). The health panels are shorter in `watch` too: one
+  status word (on the overall health bar), no raw 0.00-1.00 numbers next to
+  bars, context modules at 0 left out, durations in hours and minutes, all
+  warnings and full suggestions in the detail view. The security panel reads
+  "Security: clean" or "N findings" instead of reusing health words.
 - `stats` and `audit` name a Claude Code project after the `cwd` its
   transcripts record, so `agentwatch-main` is no longer shown as `main`
   (the old name decoded the project dir, which can't tell `-` from `/`).

@@ -4819,6 +4819,33 @@ Board decisions (2026-10-24):
 - [x] `e` focuses the feed, `e`/Esc back to the table.
 - [x] Tests: `tests/test_multi_app_feed.py`.
 
+### PR 4: detail view (feature/watch-ui-4-detail) -- DONE
+- [x] Enter (priority binding; not on a team header row; a click on the
+  highlighted row too) pushes `ui/detail.py`'s `DetailScreen`: title line,
+  `TabbedContent` Health/Security/Network/Process, each a `VerticalScroll`.
+  Esc/Backspace/`q` pop it; the table keeps its cursor. Tab/Shift+Tab, 1-4,
+  arrows and PgUp/PgDn are screen bindings. `o`/`e`/Enter are off there.
+- [x] The PR 2 widget classes are reused and compacted in place (so `watch`
+  changes too): one status word (HealthBar), no 0-1 numbers by bars, zero
+  context modules dropped, `_hm` durations, no padding rows;
+  `WarningsList.limit = None` in the detail view (all warnings, suggestions
+  not cut). `SecurityStatus` says "Security: clean / N findings".
+- [x] Live: `_update_detail` on the 1s tick, only for the shown session, from
+  its cached scoring; widgets update only when their text changed (`show`).
+- [x] Network: endpoints seen in the session's actions (PR 8 extends).
+  Process: `AgentProcess` fields from the watcher, `n/a` with `--all-logs`.
+- [x] Fixed: `s` drops every cached report (rescored next tick). Every
+  session, selected included, is rescored only on new actions; RotScorer is
+  fed only new actions (`_rot_count`). Tier-2 verdicts are re-stamped onto
+  the shown session's cached warnings each tick; LLM dispatch now happens on
+  scoring passes only (as for unselected sessions before).
+- [x] Tests: `tests/test_multi_app_detail.py`.
+- [x] PR 3 QA follow-ups: budget feed lines held in a session's window
+  (`_in_window`, like findings) and alert-sent lines held during startup,
+  then one `_flush_held` line ("$ N sessions over budget $X; N alerts sent");
+  Alerter delivery unchanged. "need you" skips stopped sessions.
+  `Alerter._send` survives a raising `on_send` (warned once).
+
 ---
 
 ### Sprint 37 -- 0.2.0 release hardening (2026-10-24)
