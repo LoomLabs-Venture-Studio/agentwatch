@@ -90,7 +90,7 @@ numbers refer to the GitHub repository.
   its usage). An unlisted model makes the cost "n/a" instead of a Sonnet-rate
   guess.
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-10-25
 
 Everything on `develop` since `v0.1.6` (2026-03-10).
 
