@@ -105,9 +105,12 @@ agentwatch audit --redact --pii          # hide the findings
 agentwatch audit --all --redact --pii    # every project
 ```
 
-`audit` does NOT look at user prompts or tool results. Personal info or
-secrets typed into a prompt stay in the log after `audit`; tell the user so,
-and share the `scrub` copy instead.
+`audit` scans every channel of a Claude Code log: the model's text, file
+writes, bash commands, your prompts (`user_message`) and tool results such as
+`cat .env` output (`tool_output`). It reports each secret type once per
+channel, and it only finds what its patterns recognise: free-form personal
+info or an unusual secret typed into a prompt can stay in the log after
+`audit`. Tell the user so, and share the `scrub` copy instead.
 
 Never run `scrub --in-place` on an active session log, one an agent is
 still writing (including this session's own log).

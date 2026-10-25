@@ -29,6 +29,16 @@ def _no_machine_checks(monkeypatch):
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_recent_write_guard(monkeypatch):
+    """`redact_log_file` refuses a log written to in the last few seconds; test
+    logs are written just before they are redacted. Tests of the guard itself
+    turn it back on (see test_redact_data_safety.py)."""
+    from agentwatch.detectors.security import secret_scanner
+
+    monkeypatch.setattr(secret_scanner, "_RECENT_WRITE_SECONDS", 0.0)
+
+
 @pytest.fixture
 def needs_siem():
     """Skip unless the `siem` extra (python-json-logger) is installed."""
