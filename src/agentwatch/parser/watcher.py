@@ -39,13 +39,25 @@ from .models import Action
 logger = logging.getLogger(__name__)
 
 
+def _resolve(path: Path) -> Path:
+    """Resolve symlinks (macOS reports /private/var for /var) for comparison."""
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
 class LogWatcher:
     """Watches a log file for new entries in real-time."""
+
+    _POLL_TICK_MS = 1000  # fallback tick; see watch()
 
     def __init__(self, path: Path, session_id: str | None = None):
         self.path = path
         self.session_id = session_id
         self._position = 0
+        self._prefix = b""  # first min(_position, 4096) bytes consumed so far
+        self._last_sig: tuple[int, int, int] | None = None
         self._log_format: str | None = None
         self._sniffer = FormatSniffer()
         self._codex_parser: CodexParser | CopilotParser | AgyParser | GeminiParser | None = None
@@ -110,9 +122,36 @@ class LogWatcher:
             return [result]
         return []
 
+    def _stat_sig(self) -> tuple[int, int, int] | None:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_size, st.st_mtime_ns, st.st_ino)
+
+    _PREFIX_BYTES = 4096
+
+    def _read_prefix(self) -> bytes | None:
+        try:
+            with open(self.path, "rb") as f:
+                return f.read(min(self._position, self._PREFIX_BYTES))
+        except OSError:
+            return None
+
     def _read_new_lines(self) -> list[Action]:
         """Read any new lines since last check."""
         actions = []
+
+        sig = self._stat_sig()
+        if sig is not None and sig != self._last_sig and self._position > 0:
+            # The file changed. Keep the offset only if the bytes before it
+            # are still the ones we consumed (prefix fingerprint): an atomic
+            # rewrite with identical leading content keeps its offset (no
+            # duplicates), while a truncate-then-regrow or a replacement with
+            # different content is re-read from the start.
+            if sig[0] < self._position or self._read_prefix() != self._prefix:
+                self._position = 0
+        self._last_sig = sig
 
         try:
             with open(self.path, "r", encoding="utf-8", errors="ignore") as f:
@@ -166,6 +205,11 @@ class LogWatcher:
         except FileNotFoundError:
             pass
 
+        if self._position == 0:
+            self._prefix = b""
+        elif len(self._prefix) < min(self._position, self._PREFIX_BYTES):
+            self._prefix = self._read_prefix() or b""
+
         if self._log_format is None:
             # Same end-of-input rule as parse_file (#39): Claude Code metadata
             # with no message yet is emitted now, not held back. The format
@@ -184,12 +228,24 @@ class LogWatcher:
         for action in self._read_new_lines():
             yield action
 
-        # Then watch for changes
-        async for changes in awatch(self.path.parent):
-            for change_type, changed_path in changes:
-                if Path(changed_path) == self.path and change_type == Change.modified:
-                    for action in self._read_new_lines():
-                        yield action
+        # Then watch for changes. Any event for the file triggers a read, not
+        # just Change.modified: macOS FSEvents coalesces flags, so an append to
+        # a recently created file arrives as Change.added, and the directory
+        # may be reported via a symlink (/var vs /private/var). The 1s timeout
+        # tick covers appends landing before the OS watch is armed. Reads are
+        # gated on (size, mtime, inode) so an idle file costs one stat.
+        target = _resolve(self.path)
+        async for changes in awatch(
+            self.path.parent,
+            rust_timeout=self._POLL_TICK_MS,
+            yield_on_timeout=True,
+        ):
+            if changes and not any(_resolve(Path(p)) == target for _, p in changes):
+                continue
+            if self._stat_sig() == self._last_sig:
+                continue
+            for action in self._read_new_lines():
+                yield action
 
     async def watch_with_callbacks(self) -> None:
         """Watch and dispatch to registered callbacks."""
@@ -243,24 +299,45 @@ class AiderLogWatcher:
     without a sidecar.
     """
 
+    _POLL_TICK_MS = 1000  # fallback reparse tick; see watch()
+
     def __init__(self, path: Path, session_id: str | None = None):
         self.path = path
         self.session_id = session_id
         self._emitted_count: dict[str, int] = {}
+        self._last_sig: tuple[int, int, int] | None = None
         self._callbacks: list[Callable[[Action], None]] = []
 
     def on_action(self, callback: Callable[[Action], None]) -> None:
         """Register a callback for new actions."""
         self._callbacks.append(callback)
 
-    def _read_new_actions(self) -> list[Action]:
-        if not self.path.exists():
+    def _stat_sig(self) -> tuple[int, int, int] | None:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_size, st.st_mtime_ns, st.st_ino)
+
+    def _read_new_actions(self, *, only_if_changed: bool = False) -> list[Action]:
+        # Stat BEFORE parsing so a write landing mid-parse changes the
+        # signature and is picked up by the next tick.
+        sig = self._stat_sig()
+        if only_if_changed and sig == self._last_sig:
+            return []
+        self._last_sig = sig
+        if sig is None:
             return []
 
         sessions = parse_aider_sessions(self.path)
         new_actions: list[Action] = []
         for session in sessions:
             already = self._emitted_count.get(session.session_id, 0)
+            if len(session.actions) < already:
+                # Session shrank (file rewritten/truncated, or the session id
+                # vanished and returned smaller): re-anchor the cursor without
+                # re-emitting kept actions, so later growth is still seen.
+                self._emitted_count[session.session_id] = already = len(session.actions)
             tail = session.actions[already:]
             if not tail:
                 continue
@@ -274,11 +351,38 @@ class AiderLogWatcher:
         for action in self._read_new_actions():
             yield action
 
-        async for changes in awatch(self.path.parent):
-            for change_type, changed_path in changes:
-                if Path(changed_path) == self.path and change_type == Change.modified:
-                    for action in self._read_new_actions():
-                        yield action
+        target = self._resolved(self.path)
+        # Reparse on ANY event for the file, not just Change.modified: on
+        # macOS FSEvents coalesces flags, so an append to a recently created
+        # file arrives as Change.added (and the dir may be reported through a
+        # symlink, e.g. /var vs /private/var). The 1s timeout tick is a cheap
+        # safety net for appends that land before the OS watch is armed or
+        # that FSEvents coalesces away; the emitted-count cursor makes a
+        # redundant reparse a no-op.
+        async for changes in awatch(
+            self.path.parent,
+            rust_timeout=self._POLL_TICK_MS,
+            yield_on_timeout=True,
+        ):
+            if not changes:
+                # Timeout tick: parse only if size/mtime/inode moved, so an
+                # idle multi-MB history file costs one stat per second. Real
+                # events are gated the same way (FSEvents replays stale
+                # creation events at arm time; those carry no new bytes).
+                new = self._read_new_actions(only_if_changed=True)
+            elif any(self._resolved(Path(c)) == target for _, c in changes):
+                new = self._read_new_actions(only_if_changed=True)
+            else:
+                continue
+            for action in new:
+                yield action
+
+    @staticmethod
+    def _resolved(path: Path) -> Path:
+        try:
+            return path.resolve()
+        except OSError:
+            return path
 
     async def watch_with_callbacks(self) -> None:
         """Watch and dispatch to registered callbacks."""
@@ -340,11 +444,12 @@ class CopilotVscodeWatcher:
         for action in self._read_new_actions():
             yield action
 
+        target = _resolve(self.path)
         async for changes in awatch(
             self.path.parent, yield_on_timeout=True, rust_timeout=self._TICK_MS
         ):
             changed = any(
-                Path(p) == self.path and t in (Change.added, Change.modified)
+                _resolve(Path(p)) == target and t in (Change.added, Change.modified)
                 for t, p in changes
             )
             if changed or self._held:
