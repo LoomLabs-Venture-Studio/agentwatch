@@ -484,7 +484,7 @@ def find_all_project_dirs() -> list[Path]:
 
 def project_dir_to_name(project_dir: Path) -> str:
     """Extract a readable project name from a project directory path."""
-    name = project_dir.name  # e.g. -Users-zaid-Projects-agentwatch
+    name = project_dir.name  # e.g. -Users-alice-Projects-agentwatch
     # Take the last component as the project name
     parts = name.strip("-").split("-")
     return parts[-1] if parts else name

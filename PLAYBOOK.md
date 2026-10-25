@@ -51,7 +51,7 @@ type: fix | feat | refactor | test | docs | chore
 **Priority:** Unblocks all future sprints (no committed baseline, no CI gate,
 no accurate docs existed before this)
 **PRD Status:** not needed (recon-driven; see
-`C:\Users\Zaid\.claude\plans\what-do-you-recommend-unified-tulip.md` for the
+`C:\Users\<user>\.claude\plans\what-do-you-recommend-unified-tulip.md` for the
 full plan)
 **Harness:** PLAYBOOK standalone (`.loom/config.yml` shows no GSD/Ruflo
 signal)
@@ -124,7 +124,7 @@ follow-up (not yet assigned).
 today (POSIX-only `ps`/`lsof` shell-outs + POSIX-only path encoding fail
 silently instead of erroring)
 **PRD Status:** full implementation plan approved; see
-`C:\Users\Zaid\.claude\plans\whats-the-plans-glittery-forest.md`
+`C:\Users\<user>\.claude\plans\whats-the-plans-glittery-forest.md`
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
 
 ### Acceptance Criteria
@@ -132,8 +132,8 @@ silently instead of erroring)
 - [x] New `src/agentwatch/path_encoding.py` with `encode_path_for_claude()`
       (unconditional regex-replace of `/`, `\`, `:`, ` ` with `-`),
       unit-tested including the empirically-confirmed case
-      (`C:\Users\Zaid\Desktop\claude work\...` ->
-      `C--Users-Zaid-Desktop-claude-work-...`)
+      (`C:\Users\<user>\Desktop\claude work\...` ->
+      `C--Users-<user>-Desktop-claude-work-...`)
 - [x] `discovery.py::_encode_path_for_claude` removed, replaced by the
       shared function; `cc_stats.py::cwd_to_project_dir` wired to the same
       shared function
@@ -182,7 +182,7 @@ silently instead of erroring)
 
 ### Implementation Plan
 See full file-by-file plan at
-`C:\Users\Zaid\.claude\plans\whats-the-plans-glittery-forest.md`.
+`C:\Users\<user>\.claude\plans\whats-the-plans-glittery-forest.md`.
 Landed as: (1) `pyproject.toml` psutil dep, (2) new `path_encoding.py` +
 tests, (3) `cc_stats.py` wired to shared encoder + test fix, (4)
 `discovery.py` full psutil rewrite (including `_find_open_jsonl`, a
@@ -197,7 +197,7 @@ UTF-8 stdio fix found via the manual smoke test. Status: done.
   installed on this machine, so this is web/source research against
   Aider's real GitHub repo and live sample files, not a local capture).
   **PRD written** (2026-07-10):
-  `C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md` — full file-by-file
+  `C:\Users\<user>\.claude\plans\aider-log-parser-prd.md` — full file-by-file
   design (new `parser/aider.py`, ordinal turn-pairing between the Markdown
   and opt-in analytics JSONL, dual diff-marker regex support), 6 open
   questions flagged for live-install confirmation. Ready for sprint
@@ -245,7 +245,7 @@ UTF-8 stdio fix found via the manual smoke test. Status: done.
   github.com/openai/codex): researched + independently verified
   2026-07-10 (not installed on this machine — web/source research
   against the real GitHub repo, issues, and docs). **PRD written**
-  (2026-07-10): `C:\Users\Zaid\.claude\plans\codex-cli-support-prd.md` —
+  (2026-07-10): `C:\Users\<user>\.claude\plans\codex-cli-support-prd.md` —
   new `_resolve_codex_log()` + dedicated `parser/codex.py` with
   `call_id`-based buffering and explicit era-detection, 7-item
   live-install-gated open-questions list, acceptance criteria that block
@@ -300,7 +300,7 @@ UTF-8 stdio fix found via the manual smoke test. Status: done.
   resolution). Researched 2026-07-10 against this machine's real Cursor
   install — findings below correct and supersede the earlier note (which
   pointed at the wrong file). **Architecture review written** (2026-07-10):
-  `C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md` —
+  `C:\Users\<user>\.claude\plans\cursor-sqlite-architecture-review.md` —
   weighs polling-strategy and watcher-abstraction alternatives (recommends
   a two-tier `composerHeaders`-then-`composerData` poll and a new
   `CursorWatcher` class rather than generalizing `LogWatcher`), recommends
@@ -428,9 +428,9 @@ reviewed — per the architecture review's own Delegation section, this is
 a harder gate than the usual "board approval to merge": it's board
 approval to even start writing Phase 1.
 **PRD Status:** architecture review exists (not a PRD) at
-`C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md`; this
+`C:\Users\<user>\.claude\plans\cursor-sqlite-architecture-review.md`; this
 sprint's own scoping plan is at
-`C:\Users\Zaid\.claude\plans\whats-next-serialized-elephant.md`
+`C:\Users\<user>\.claude\plans\whats-next-serialized-elephant.md`
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
 
 **Why Cursor over Aider/Codex CLI:** board reviewed a comparison of all
@@ -636,7 +636,7 @@ resolves their log path (`discovery.py::_resolve_aider_log`), but
 today — `parse_file()` is JSONL-only and every Markdown line fails
 `json.loads()`.
 **PRD Status:** full implementation plan approved, includes ready-to-use
-code:  `C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md`
+code:  `C:\Users\<user>\.claude\plans\aider-log-parser-prd.md`
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
 **Board decision (2026-07-11):** started in parallel with the blocked
 Cursor Phase 0 spike (Sprint 2) and the devops pre-push hook fix below —
@@ -747,7 +747,7 @@ branches on `"claude-code"`/`"aider"` — Codex processes always get
 `log_file=None`, so `agentwatch check`/`watch` can never parse a Codex
 session even though the process is visible in `agentwatch ps`.
 **PRD Status:** full implementation plan exists:
-`C:\Users\Zaid\.claude\plans\codex-cli-support-prd.md` — written entirely
+`C:\Users\<user>\.claude\plans\codex-cli-support-prd.md` — written entirely
 from source/issue-tracker research (real `openai/codex` repo,
 `codex-rs/protocol/src/protocol.rs`, issues #4963/#13463/#21660,
 `PixelPaw-Labs/codex-trace`), **no live Codex CLI install was available to
@@ -880,7 +880,7 @@ round (1-3) was blocked on "no populated conversation exists to inspect";
 round 4 (2026-07-12) closed that gap with real, three-way-corroborated
 content.
 **PRD Status:** architecture review + 4 rounds of investigation exist at
-`C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md`. No
+`C:\Users\<user>\.claude\plans\cursor-sqlite-architecture-review.md`. No
 separate PRD document — this section's acceptance criteria serve that role,
 derived directly from round 4's confirmed findings.
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
@@ -1068,7 +1068,7 @@ verbatim into a PR body whenever this branch is actually opened for review.
 shipped — several materially affect correctness for real aider sessions
 (resumed sessions, long-lived analytics files) even though none blocked
 the original PR
-**PRD Status:** original PRD (`C:\Users\Zaid\.claude\plans\
+**PRD Status:** original PRD (`C:\Users\<user>\.claude\plans\
 aider-log-parser-prd.md`) Open Questions section is the source for this
 sprint's scope
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
@@ -1334,8 +1334,8 @@ platform-clean (pure `Path` / `watchfiles`).
    - Verified against this machine's real `~/.claude/projects/`: Claude
      Code's actual Windows encoding replaces `\`, `:`, **and spaces**
      with `-`, e.g.
-     `C:\Users\Zaid\Desktop\claude work\agentwatch\agentwatch-main` ->
-     `C--Users-Zaid-Desktop-claude-work-agentwatch-agentwatch-main`.
+     `C:\Users\<user>\Desktop\claude work\agentwatch\agentwatch-main` ->
+     `C--Users-<user>-Desktop-claude-work-agentwatch-agentwatch-main`.
    - This is the root cause of the known-failing test
      `test_cc_stats.py::TestCwdMapping::test_cwd_to_project_dir_existing`.
 
@@ -1742,7 +1742,7 @@ Markdown, and `MultiLogWatcher._find_all_logs()` hardcoded a `.jsonl`-only
 filter that excluded `.aider.chat.history.md` from process-mode discovery
 entirely.
 **PRD Status:** no separate PRD; scope is exactly Sprint 6 item 6's own
-description (`C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md`'s
+description (`C:\Users\<user>\.claude\plans\aider-log-parser-prd.md`'s
 lineage).
 **Board decision:** same continuous-pass authorization as Sprint 7's Cursor
 half above.

@@ -361,7 +361,7 @@ class TestCwdMapping:
         assert result is None
 
     def test_project_dir_to_name(self):
-        assert project_dir_to_name(Path("-Users-zaid-Projects-agentwatch")) == "agentwatch"
+        assert project_dir_to_name(Path("-Users-alice-Projects-agentwatch")) == "agentwatch"
         assert project_dir_to_name(Path("-private-tmp-foo")) == "foo"
 
 
