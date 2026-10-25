@@ -324,16 +324,38 @@ plugin's loop breaker has blocked a call in a session, its top warning reads
 `⛔ loop blocked: Bash (7x) $1.40` (the command itself is never shown).
 Rows sort by attention: Critical and loop-blocked sessions first, then HIGH
 warnings, other warnings, active sessions by recency, idle and stopped last.
-Subagents are listed under their parent (`└ sub`). Below the table, the
+Subagents are listed under their parent (`└ sub`), and a team's sessions
+under its `TEAM` row (the team sorts by its most urgent member). Sessions with
+no action for 15+ minutes, and stopped ones, fold into one `○ … N idle (a to
+show)` row at the bottom (a parent stays shown while one of its subagents is);
+`a` shows them, `a` again folds them. `/` opens a filter line at the bottom:
+rows whose project, agent or top warning contain the text (any case) are
+shown as you type; Enter keeps the filter (`filter: xyz` next to the sort),
+Esc clears it. Below the table, the
 selected session's health, efficiency, context, cost per minute, security
 findings, network endpoints and top 3 warnings.
+
+`watch-all --all-logs` reads every log under the known log directories
+instead of discovering running processes. By default only logs modified in
+the last 24 hours are loaded (older ones are not read at all, and one shows up
+once it is written to again); `--since 6h`, `--since 2d` or `--since all`
+changes that. The Events panel says how many were loaded
+(`23 sessions loaded (last 24h of 118 logs)`). Each session is shown by its
+project name: for Claude Code the last part of the working directory its
+transcript records (a `.claude/worktrees/...` worktree counts as its project,
+the home directory is `~`), else its `~/.claude/projects` folder; other agents
+as `agentwatch history` names them. Claude Code subagent logs sit under their
+session. The log file is on the detail view's Process tab.
 
 The header line counts sessions, active ones and those that need you (Critical,
 or a HIGH or worse warning), the estimated cost of the sessions on screen
 (not your history: `agentwatch report` has that), alerts this run (sent to
 `--notify`/`--webhook`; without those, new HIGH or worse findings), loop
 breaker blocks this run (`blocks N`, including sessions already blocked at
-startup), the `--budget` limit when set, and the time. The Events panel at the bottom lists, newest first: sessions started
+startup), the per-session `--budget` limit when set (`budget $5.00/session`),
+and the time. Under 100 columns the cost reads `spent $X`.
+
+The Events panel at the bottom lists, newest first: sessions started
 and stopped, each new warning (one line per finding) and when it clears,
 alerts sent, a loop breaker block (`⛔ proj loop breaker blocked a repeated
 call (~$1.40)`), `s` (`security on: N findings` / `security off`, one line,
@@ -342,13 +364,18 @@ Warnings and blocks a session already has when it is first seen are not
 listed (one "N sessions loaded; M loop blocks so far" line at startup
 instead). Loop breaker state is the coach's per-session state file, read
 only: its modification time is checked every 2 seconds and the file is read
-only when it changed.
+only when it changed. watch-all finds that file through the plugin's data dir
+(`~/.claude/plugins/data/agentwatch-*/coach`) or the pointer the hook leaves
+in the per-user cache (`$XDG_CACHE_HOME/agentwatch/coach`); if the hook and
+watch-all run with different `XDG_CACHE_HOME` values and the plugin data is
+outside `~/.claude/plugins/data`, it can't.
 
 Enter opens the selected session full screen, in four tabs: Health (overall
 health and its status, efficiency, context health, actions/errors/duration
 and every warning with its suggestion and cost; plus a `Loop breaker:` line:
 `armed (Nx)`, `blocked once`, `not armed`, or
-`off (AGENTWATCH_LOOP_BREAKER=off)`), Security (findings, or how
+`off in this shell (AGENTWATCH_LOOP_BREAKER=off)`: the variable is read
+from watch-all's environment, not the hook's), Security (findings, or how
 to turn security mode on, plus raw counts of credential file accesses,
 privilege commands, network actions and injection-like messages), Network
 (the remote endpoints seen during its actions) and Process (pid, type,
@@ -357,7 +384,8 @@ uptime, working directory, CPU, memory, team, session id; `n/a` with
 has new actions (or after `s`), the same for every session.
 
 Keys: arrows select a session, Enter opens it, `o` cycles the sort
-(attention, cost, recent), `e` focuses the Events panel to scroll it (`e` or
+(attention, cost, recent), `a` shows/folds idle sessions, `/` filters,
+`e` focuses the Events panel to scroll it (`e` or
 Esc goes back), `s` toggles security detectors, `q` quits. In the detail
 view: Tab/Shift+Tab or `1`-`4` switch tabs, arrows and PgUp/PgDn scroll, Esc,
 Backspace or `q` go back to the table.

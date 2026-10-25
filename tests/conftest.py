@@ -11,6 +11,15 @@ def _no_live_process_scan(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _private_coach_dirs(monkeypatch, tmp_path):
+    """The coach hook writes a pointer file in the per-user cache dir
+    (coach.user_state_dir()); no test may write the developer's real one."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_recent_write_guard(monkeypatch):
     """`redact_log_file` refuses a log written to in the last few seconds; test
     logs are written just before they are redacted. Tests of the guard itself

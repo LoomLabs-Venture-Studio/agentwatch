@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -1185,6 +1186,22 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
     click.echo()
 
 
+ALL_LOGS_SINCE_S = 86400  # watch-all --all-logs: logs modified in the last 24h
+
+
+def _parse_since(value: str | None) -> float | str | None:
+    """--since: 'Nh' / 'Nd' as seconds, 'all', or None when not given."""
+    if value is None:
+        return None
+    value = value.strip().lower()
+    if value == "all":
+        return value
+    match = re.fullmatch(r"([1-9]\d*)([hd])", value)
+    if not match:
+        raise click.BadParameter("use Nh, Nd or all (e.g. 24h, 2d)", param_hint="--since")
+    return int(match[1]) * (3600 if match[2] == "h" else 86400)
+
+
 @cli.command()
 @click.option(
     "--security", "-s",
@@ -1195,6 +1212,13 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
     "--all-logs",
     is_flag=True,
     help="Scan all log directories instead of using process-based discovery",
+)
+@click.option(
+    "--since",
+    callback=lambda ctx, param, value: _parse_since(value),
+    metavar="Nh|Nd|all",
+    help="With --all-logs: only logs modified in this window (default 24h; "
+         "`all` for every log). Older logs appear once they are written to",
 )
 @click.option(
     "--siem-log",
@@ -1228,6 +1252,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
 def watch_all(
     security: bool,
     all_logs: bool,
+    since: float | str | None,
     siem_log: Path | None,
     llm: bool,
     llm_model: str,
@@ -1243,6 +1268,8 @@ def watch_all(
     By default, auto-discovers active agent processes and monitors only their
     log files. Use --all-logs to scan all known log directories instead.
     """
+    if since is not None and not all_logs:
+        raise click.UsageError("--since applies to --all-logs only")
     alerter = _make_alerter(notify, notify_min, notify_existing, webhook, budget, headless)
     from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
     from agentwatch.ui.multi_app import MultiAgentWatchApp
@@ -1260,6 +1287,7 @@ def watch_all(
             llm=llm,
             llm_model=llm_model,
             alerter=alerter,
+            since=None if since == "all" else since or ALL_LOGS_SINCE_S,
         )
     else:
         # Process-based discovery
