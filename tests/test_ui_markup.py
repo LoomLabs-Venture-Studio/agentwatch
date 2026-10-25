@@ -81,7 +81,7 @@ def _write_markup_only_log(path: Path) -> None:
 
 def _assert_plain(widget, *literals: str) -> None:
     content = widget.render()
-    text = str(content)
+    text = " ".join(str(content).split())  # lines may be pre-wrapped (hanging indent)
     for literal in literals:
         assert literal in text, (literal, text)
     styles = " ".join(str(span.style) for span in getattr(content, "spans", []))

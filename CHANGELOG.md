@@ -8,6 +8,16 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- `watch-all` shows the Claude Code loop breaker: a blocked session's top
+  warning is `⛔ loop blocked: <tool> (Nx) $X` and it sorts with Critical
+  sessions; one Events line per block; `blocks N` in the header; a
+  `Loop breaker:` line on the detail view's Health tab. The coach's state
+  file is read only, and only when its modification time changes.
+- `watch-all --budget`: the cost column becomes `COST / BUDGET` with a
+  4-cell bar (amber from 80%, red once hit) and the header shows the budget.
+- `watch-all`: `s` adds one Events line (`security on: N findings` /
+  `security off`) instead of one line per finding the rescoring adds or clears.
+
 - Loop circuit breaker in the Claude Code plugin: a PreToolUse hook denies,
   once, the next call that repeats a HIGH loop (6+ identical actions in the
   last 10 calls), with a fixed reason shown to Claude. Retries are allowed,

@@ -175,3 +175,35 @@ async def test_detail_updates_live_only_when_changed():
         app.refresh_ui()
         assert calls == [1]
         await _shows(pilot, app, "fresh_signal warning")
+
+
+def test_module_bars_that_round_to_empty_are_left_out():
+    from agentwatch.health.rot import MetricResult, RotReport, RotState
+    from agentwatch.ui.rot_widget import ContextHealthWidget
+
+    widget = ContextHealthWidget()
+    modules = {"behavioral": MetricResult("behavioral", 0.04),
+               "thrash": MetricResult("thrash", 0.3)}
+    widget._report = RotReport(0.1, 0.1, RotState.HEALTHY, modules)
+    text = widget._build_content()
+    assert "Behavioral" not in text and "Tool Thrash  [███░░░░░░░]" in text
+
+
+async def test_wrapped_detail_lines_keep_their_indent():
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        w = _warning(Severity.MEDIUM)
+        w.suggestion = "Re-read the failing test output before editing again. " * 3
+        path = _seed(app, "a", warnings=[w])
+        long_path = Path("/very/long/" + "d" * 50 + "/" + "x" * 60 + ".jsonl")
+        app.agents[path]["item"].log_path = long_path
+        app.refresh_ui()
+        await pilot.pause()
+        await pilot.press("enter")
+        text = await _shows(pilot, app, "editing again. Re-read")
+        tip = [line for line in text.splitlines() if "test output" in line]
+        assert "💡" in tip[0] and tip[1].startswith(" " * 8 + "failing"), tip
+        await pilot.press("4")
+        text = await _shows(pilot, app, "xxxxx.jsonl")
+        log = text[text.index("Log      /very"):].splitlines()[:2]
+        assert log[1].startswith(" " * 11 + "x"), log

@@ -42,7 +42,9 @@ async def test_header_counts():
             await pilot.pause()
             header = _header(app)
             assert "6 sessions · 3 active · 2 need you" in header, header
-            assert "on screen $1.75" in header and "alerts 0" in header
+            wide = size[0] == 120  # 80 columns: "$1.75" without "on screen"
+            assert ("on screen $1.75" if wide else "  $1.75  ") in header
+            assert "alerts 0" in header and "blocks 0" in header
             assert header.rstrip()[-8:].count(":") == 2  # HH:MM:SS
             assert header.startswith("agentwatch") == (size[0] == 120), header
             assert "AgentWatch - Multi-Agent Dashboard" not in _screen(app)
