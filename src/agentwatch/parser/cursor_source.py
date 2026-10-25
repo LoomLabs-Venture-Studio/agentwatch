@@ -61,7 +61,9 @@ def open_readonly(db_path: Path) -> sqlite3.Connection:
     ``Cursor.exe``, 0 errors, sub-10ms latency).
     """
     uri = f"file:{db_path.as_posix()}?mode=ro"
-    return sqlite3.connect(uri, uri=True)
+    # timeout: wait up to 1s on a lock held by Cursor's writer instead of
+    # failing immediately (matches parser/opencode.py).
+    return sqlite3.connect(uri, uri=True, timeout=1.0)
 
 
 def fetch_composer_headers(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:

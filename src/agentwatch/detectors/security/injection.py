@@ -87,6 +87,13 @@ class PromptInjectionDetector(SecurityDetector):
         return None
 
 
+# Whole-word instruction keywords inside an HTML comment body: not part of a
+# hyphenated token (prettier-ignore, re-run) and not a word fragment (runtime).
+_COMMENT_KEYWORD_RE = re.compile(
+    r"(?<![\w-])(?:ignore|execute|run|instructions?)(?![\w-])", re.IGNORECASE
+)
+
+
 class HiddenInstructionDetector(SecurityDetector):
     """Detects hidden instructions in various encodings."""
 
@@ -99,9 +106,6 @@ class HiddenInstructionDetector(SecurityDetector):
         # Unicode tricks
         r"[\u200b-\u200f\u2060-\u206f]",  # Zero-width characters
         r"[\u2800-\u28ff]{10,}",  # Braille patterns (sometimes used to hide text)
-
-        # HTML/XML comments with instructions
-        r"<!--.*(?:ignore|execute|run|instruction).*-->",
 
         # Base64 that might contain instructions
         r"(?:aWdub3Jl|ZXhlY3V0ZQ|cnVuIHRoZQ)",  # base64 for ignore, execute, run the
@@ -123,6 +127,31 @@ class HiddenInstructionDetector(SecurityDetector):
             re.IGNORECASE
         )
 
+    @staticmethod
+    def _has_instruction_comment(text: str) -> bool:
+        """True if an HTML comment whose body names an instruction keyword.
+
+        Linear scan, not a regex: an HTML comment closes at the first ``-->``,
+        and an unterminated comment runs to the end of the text (it still
+        hides what follows). Bodies never overlap, so total work is O(n) and
+        there is no length cap for an attacker to pad past.
+        """
+        pos = 0
+        while True:
+            start = text.find("<!--", pos)
+            if start < 0:
+                return False
+            body_start = start + 4
+            close = text.find("-->", body_start)
+            body_end = len(text) if close < 0 else close
+            # Slice so the body is its own string: the "-" of "<!--" must not
+            # block a keyword that opens the body.
+            if _COMMENT_KEYWORD_RE.search(text[body_start:body_end]):
+                return True
+            if close < 0:
+                return False  # no later comment can close either
+            pos = close + 3
+
     def check(self, buffer: ActionBuffer) -> Warning | None:
         recent = buffer.last(10)
 
@@ -133,7 +162,7 @@ class HiddenInstructionDetector(SecurityDetector):
             if action.raw.get("content"):
                 content += str(action.raw.get("content", ""))
 
-            if self._pattern.search(content):
+            if self._pattern.search(content) or self._has_instruction_comment(content):
                 return Warning(
                     category=self.category,
                     severity=Severity.HIGH,

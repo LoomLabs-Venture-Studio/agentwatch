@@ -20,7 +20,12 @@ from agentwatch.net_sampler import (
     attributable,
     endpoint_summary,
 )
-from agentwatch.themes import ascii_safe, get_theme, security_status_from_score
+from agentwatch.themes import (
+    ascii_safe,
+    get_theme,
+    security_label_from_score,
+    security_status_from_score,
+)
 from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
 if TYPE_CHECKING:
@@ -72,10 +77,11 @@ class SecurityStatus(Static):
         theme = get_theme()
         status = security_status_from_score(self.score)
         emoji = theme.emoji_for(status)
+        label = security_label_from_score(self.score)
 
         return f"""
   Security Score: {self.score}%
-  Status: {emoji} {status.upper()}
+  Status: {emoji} {label}
   Active Alerts: {self.alert_count}
 """
 

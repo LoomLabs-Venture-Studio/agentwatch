@@ -129,8 +129,20 @@ class TestSecurityStatusThemeWiring:
         widget.score = 100
         rendered = widget.render()
         assert theme.emoji_0 in rendered
-        assert theme.level_0.upper() in rendered
+        assert "SECURE" in rendered
+        assert theme.level_0.upper() not in rendered  # health word, not the verdict
         assert "\U0001F6E1" not in rendered  # old hardcoded shield emoji gone
+
+    @pytest.mark.parametrize(("score", "label"), [(60, "AT RISK"), (10, "COMPROMISED")])
+    def test_widget_verdict_text_is_security_wording_not_health(self, score, label):
+        """The dashboard widget and `security-scan` must name the same verdict."""
+        set_theme("agent")
+        widget = SecurityStatus()
+        widget.score = score
+        rendered = widget.render()
+        assert label in rendered
+        for health in ("STUCK", "STRUGGLING", "SPINNING", "PRODUCTIVE"):
+            assert health not in rendered
 
     def test_default_theme_at_risk_and_compromised_map_to_level_1_and_level_3(self):
         """security_status_from_score() skips level_2 by design (see its
@@ -139,7 +151,8 @@ class TestSecurityStatusThemeWiring:
         theme = get_theme("agent")
         assert security_status_from_score(100) == theme.level_0
         assert security_status_from_score(75) == theme.level_1
-        assert security_status_from_score(50) == theme.level_3
+        assert security_status_from_score(50) == theme.level_1
+        assert security_status_from_score(49) == theme.level_3
         assert security_status_from_score(0) == theme.level_3
 
     @pytest.mark.parametrize("theme_name", [n for n in THEMES if n != "ascii"])

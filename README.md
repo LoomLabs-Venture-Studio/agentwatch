@@ -1149,3 +1149,5 @@ MIT
 ---
 
 Built for developers who give AI agents real power and want to keep that power in check.
+
+Built by [LoomLabs](https://loomlabs.io).
