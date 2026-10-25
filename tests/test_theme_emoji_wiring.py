@@ -46,7 +46,6 @@ from agentwatch.cli import print_health_report, print_security_alert
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Category, Severity, Warning
 from agentwatch.health import calculate_health
-from agentwatch.health.rot import RotScorer
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
 from agentwatch.themes import (
     THEMES,
@@ -55,7 +54,7 @@ from agentwatch.themes import (
     security_status_from_score,
     set_theme,
 )
-from agentwatch.ui.app import AgentWatchApp, SecurityStatus, WarningsList
+from agentwatch.ui.app import SecurityStatus, WarningsList
 from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
 EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF☀-➿⬀-⯿]")
@@ -583,61 +582,3 @@ class TestCliRunnerEndToEnd:
         result = runner.invoke(cli, args)
         assert result.exit_code in (0, 1, 2), result.output
         assert EMOJI_RE.search(result.output) is not None
-
-
-# ---------------------------------------------------------------------------
-# True end-to-end for the TUI: `agentwatch --theme ascii watch --security`
-# is exactly the command the user ran when they hit this bug (a tofu'd
-# emoji in the Security panel). It's not CliRunner-drivable since it's an
-# interactive Textual App, so this drives the actual AgentWatchApp through
-# Textual's headless pilot (`App.run_test()`, same pattern as
-# test_multi_app_refresh.py) and runs the REAL `_do_refresh()` pipeline
-# (detectors -> calculate_health/calculate_security_score -> widget
-# updates), then reads the SecurityStatus panel's actual rendered text.
-# ---------------------------------------------------------------------------
-
-
-class TestWatchSecurityTuiEndToEnd:
-    async def test_security_panel_ascii_theme_pure_ascii_after_real_refresh(self, tmp_path):
-        set_theme("ascii")
-        log_path = tmp_path / "session.jsonl"
-        log_path.write_text("", encoding="utf-8")
-
-        app = AgentWatchApp(log_path=log_path, security_mode=True)
-        async with app.run_test():
-            # Seed the same state on_mount() would (buffer/registry/rot
-            # scorer), then drive the exact refresh path `set_interval`
-            # calls in the real app, using the fixture that produces real
-            # HIGH/CRITICAL security warnings.
-            app._buffer = _build_buffer_with_real_warnings()
-            app._detector_registry = create_registry(mode="all")
-            app._rot_scorer = RotScorer()
-            app._do_refresh()
-
-            security_status = app.query_one("#security-status", SecurityStatus)
-            rendered = security_status.render()
-            assert all(ord(c) < 128 for c in rendered), rendered
-
-            warnings_list = app.query_one("#warnings-list", WarningsList)
-            warnings_rendered = warnings_list._build_content()
-            assert_no_emoji(warnings_rendered)
-
-    async def test_security_panel_default_theme_still_shows_theme_emoji(self, tmp_path):
-        """Regression: the same real pipeline under the default theme still
-        shows a real theme emoji in the Security panel (unchanged from
-        Task #9's perspective -- SecurityStatus is now theme-driven for
-        every theme, not just newly-ASCII for `ascii`)."""
-        set_theme("agent")
-        log_path = tmp_path / "session.jsonl"
-        log_path.write_text("", encoding="utf-8")
-
-        app = AgentWatchApp(log_path=log_path, security_mode=True)
-        async with app.run_test():
-            app._buffer = _build_buffer_with_real_warnings()
-            app._detector_registry = create_registry(mode="all")
-            app._rot_scorer = RotScorer()
-            app._do_refresh()
-
-            security_status = app.query_one("#security-status", SecurityStatus)
-            rendered = security_status.render()
-            assert EMOJI_RE.search(rendered) is not None

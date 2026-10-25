@@ -8,6 +8,7 @@ from pathlib import Path
 import agentwatch.discovery as discovery
 from agentwatch import agents
 from agentwatch.agents.base import BaseAdapter
+from agentwatch.parser.watcher import MultiLogWatcher
 
 
 class _FakeProcess:
@@ -228,28 +229,34 @@ class TestMultiLogWatcherViaRegistry:
         assert mlw._find_all_logs() == []
 
 
-class TestSingleAgentAppViaRegistry:
-    def test_select_watcher_uses_adapter(self, tmp_path, monkeypatch):
+class TestSingleSessionViaRegistry:
+    """`watch` hands MultiLogWatcher the one log by name: any format an
+    adapter claims is followed, not only *.jsonl."""
+
+    def test_named_file_uses_adapter(self, tmp_path, monkeypatch):
         from agentwatch.parser.watcher import LogWatcher
-        from agentwatch.ui.app import select_single_agent_watcher
 
         log = tmp_path / "s.fake"
         log.write_text("", encoding="utf-8")
         _isolate(monkeypatch, FakeAgentAdapter(log))
 
-        w = select_single_agent_watcher(log, cursor_composer_id=None)
-
+        mlw = MultiLogWatcher([log])
+        assert mlw._find_all_logs() == [log]
+        w = mlw._make_watcher(log)
         assert isinstance(w, LogWatcher) and w.path == log
 
-    def test_select_watcher_defaults(self, tmp_path):
-        from agentwatch.parser.watcher import AiderLogWatcher, CursorWatcher, LogWatcher
-        from agentwatch.ui.app import select_single_agent_watcher
+    def test_named_file_defaults(self, tmp_path):
+        from agentwatch.parser.watcher import AiderLogWatcher, LogWatcher
 
-        assert isinstance(select_single_agent_watcher(tmp_path / "a.jsonl", None), LogWatcher)
-        assert isinstance(select_single_agent_watcher(tmp_path / "a.md", None), AiderLogWatcher)
-        assert isinstance(select_single_agent_watcher(tmp_path / "x.log", None), LogWatcher)
-        cw = select_single_agent_watcher(tmp_path / "state.vscdb", "comp-1")
-        assert isinstance(cw, CursorWatcher) and cw.composer_id_filter == "comp-1"
+        md, jl = tmp_path / "a.md", tmp_path / "a.jsonl"
+        md.write_text("", encoding="utf-8")
+        jl.write_text("", encoding="utf-8")
+        mlw = MultiLogWatcher([md, jl])
+        assert mlw._find_all_logs() == [md, jl]
+        assert isinstance(mlw._make_watcher(md), AiderLogWatcher)
+        assert isinstance(mlw._make_watcher(jl), LogWatcher)
+        # a directory scan still takes only *.jsonl
+        assert MultiLogWatcher([tmp_path])._find_all_logs() == [jl]
 
 
 class TestAdapterFailureIsolation:

@@ -377,6 +377,8 @@ class MultiAgentWatchApp(App):
         alerter: Alerter | None = None,
         since: float | None = None,
         machine_checks: bool = True,
+        session: Path | None = None,
+        session_proc: AgentProcess | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -447,8 +449,16 @@ class MultiAgentWatchApp(App):
         self._syncing = False
         self._sync_proc: asyncio.subprocess.Process | None = None
         self.sync_seconds: float | None = None  # the last sync's duration
+        # `watch`: the one log followed, opened in the detail view when it
+        # appears; session_proc is its running agent, if one was found.
+        self.session = session
 
-        if agent_processes is not None:
+        if session is not None:
+            self._initial_processes = []
+            self.watcher = MultiLogWatcher([session])
+            if session_proc is not None:  # its pid, project, Cursor composer
+                self.watcher._process_meta[session] = session_proc
+        elif agent_processes is not None:
             self._initial_processes = agent_processes
             self.watcher = MultiLogWatcher.from_processes(agent_processes)
         else:
@@ -556,6 +566,8 @@ class MultiAgentWatchApp(App):
             self._team_by_pid[item.pid] = item.team_id
         if self.selected_path is None:
             self.selected_path = log_path
+        if log_path == self.session:
+            self.push_screen(DetailScreen(log_path))
         if self._loaded_until is None:
             name = who(item.agent_type or state.get("agent_name"), item.project_name)
             self._event(f"{ascii_safe('▶', '>')} {name} started")
@@ -601,7 +613,7 @@ class MultiAgentWatchApp(App):
         self.set_interval(1.0, self.refresh_ui)
 
         # Periodic process re-scan if in process mode
-        if self._process_mode:
+        if self._process_mode or self.session is not None:
             self._net_sampler.start()  # --all-logs has no pids: no sampling
             self.set_interval(5.0, self._refresh_processes)
 

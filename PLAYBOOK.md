@@ -5072,6 +5072,37 @@ Board decisions (2026-10-24):
   sort, narrow rule, no recompute without a sample, colours on screen,
   strip/detail, 120x40 / 80x24).
 
+### PR 9: `watch` uses the new app (feature/watch-ui-9-watch) -- DONE
+- [x] Board decision (2026-10-25): the new screen replaces the old one, for
+  `watch` too. `watch` runs `MultiAgentWatchApp(session=<log>)`: a
+  `MultiLogWatcher` on that one file, opened straight into its detail view
+  (Esc: the table, just that row; q there quits). Same log pick as before
+  (`--log`, else `_default_log()`), same `ensure_supported_log` check.
+- [x] Flags: `--security`, `--siem-log`, `--llm`, `--llm-model`, `--notify`,
+  `--notify-min`, `--notify-existing`, `--webhook`, `--budget` pass through
+  unchanged; `guard watch` too.
+- [x] `cli._session_proc`: the running agent writing the log (resolved-path
+  match, one psutil scan at start, was the old app's `_find_own_process`)
+  seeds the watcher's process meta: pid, project, net sampling. Cursor
+  `state.vscdb`: the newest agent-mode composer (`select_latest_agent_composer`,
+  as `check`); none (or an unreadable DB) now exits 1 with a message instead
+  of the old idle dashboard + toast.
+- [x] `MultiLogWatcher` takes a file named outright in any format an adapter
+  reads (Aider `.md`, Cline `.json`, `.vscdb`); directory scans still take
+  `*.jsonl` only.
+- [x] Deleted: `AgentWatchApp` and `select_single_agent_watcher` (ui/app.py
+  keeps the widgets the detail view uses) and the tests that drove only
+  them (`test_app_live_wiring`, `test_app_live_goal_alignment`,
+  `test_app_on_action_regression`, `test_live_wiring_end_to_end`,
+  `test_cursor_single_agent_tui`; the multi app's own tests cover SIEM/LLM/
+  goal alignment). Ported: net wiring, markup, registry dispatch, CLI flags.
+- [x] Not carried over: the Process tab's CPU/MEM are a start-time snapshot
+  (no rescan, which would add other agents); an agent started after `watch`
+  is not picked up (the log is still followed).
+- [x] Tests: `tests/test_watch_session.py` (CLI passes the session and every
+  flag; real watcher -> detail view opens by itself -> SIEM line, Esc shows
+  one row; Aider `.md` followed; Cursor composer pick and clear exit).
+
 
 ---
 

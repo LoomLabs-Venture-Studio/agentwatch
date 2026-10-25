@@ -672,9 +672,10 @@ def watch(
     webhook: str | None,
     budget: float | None,
 ):
-    """Watch agent logs in real-time with a TUI dashboard."""
+    """Watch one agent session in real-time (the watch-all dashboard, opened
+    on that session)."""
     # Import here to avoid slow startup for non-watch commands
-    from agentwatch.ui.app import AgentWatchApp
+    from agentwatch.ui.multi_app import MultiAgentWatchApp
 
     # Find log file
     if log is None:
@@ -688,8 +689,9 @@ def watch(
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    app = AgentWatchApp(
-        log_path=log,
+    app = MultiAgentWatchApp(
+        session=log,
+        session_proc=_session_proc(log),
         security_mode=security,
         siem_log=siem_log,
         llm=llm,
@@ -697,6 +699,47 @@ def watch(
         alerter=_make_alerter(notify, notify_min, notify_existing, webhook, budget),
     )
     app.run()
+
+
+def _session_proc(log: Path):
+    """The running agent writing *log* (its pid feeds the Net and Process
+    tabs), or None. For Cursor's shared state.vscdb, the newest agent-mode
+    composer, as `check` picks it; exits when there is none."""
+    if log.suffix == ".vscdb":
+        from agentwatch.parser.cursor_source import (
+            fetch_composer_headers,
+            open_readonly,
+            select_latest_agent_composer,
+        )
+
+        try:
+            conn = open_readonly(log)
+            try:
+                composer = select_latest_agent_composer(fetch_composer_headers(conn))
+            finally:
+                conn.close()
+        except Exception:
+            composer = None
+        if composer is None:
+            click.echo(f"No Cursor agent-mode conversation found in {log}", err=True)
+            sys.exit(1)
+        from agentwatch.cursor_discovery import _synthetic_pid
+
+        return AgentProcess(pid=_synthetic_pid(composer), agent_type="cursor",
+                            working_directory=None, log_file=log, session_id=composer,
+                            cursor_db_path=log)
+
+    def resolved(p: Path) -> Path:
+        try:
+            return p.resolve()
+        except OSError:
+            return p
+
+    # ponytail: resolved once at start; an agent started after `watch` is not
+    # picked up (the log is still followed, only the pid is missing).
+    target = resolved(log)
+    return next((p for p in find_running_agents()
+                 if p.log_file and resolved(p.log_file) == target), None)
 
 
 @cli.command()
