@@ -206,9 +206,17 @@ async def test_footer_most_important_keys_first(width):
     async with app.run_test(size=(width, 24)) as pilot:
         await pilot.pause()
         footer = _screen(app).splitlines()[-1]
-        keys = ["Detail", "Filter", "Idle", "? Help", "Quit", "Sort", "Events", "Security"]
+        keys = ["Detail", "Filter", "Idle", "? Help", "Quit", "Sort", "Events", "Security",
+                "d AI", "w Report"]
         assert [footer.index(k) for k in keys] == sorted(footer.index(k) for k in keys)
+        assert footer.rstrip().endswith("w Report"), footer  # nothing cut at 80 columns
         assert "palette" not in footer and app.screen.query_one(Footer)
+        _many(app, 1)
+        await pilot.press("enter")
+        await _wait(pilot, lambda: isinstance(app.screen, DetailScreen) and app.screen.ready)
+        await pilot.pause()
+        footer = _screen(app).splitlines()[-1]
+        assert footer.rstrip().endswith("w Report") and "palette" not in footer, footer
 
 
 async def test_narrow_header_keeps_counts_spend_and_budget():

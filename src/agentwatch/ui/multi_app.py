@@ -345,7 +345,7 @@ class MultiAgentWatchApp(App):
     }
     """
 
-    BINDINGS = [  # footer order: most important first (80 columns cut the rest)
+    BINDINGS = [  # footer order: most important first; all fit 80 columns
         Binding("enter", "open_detail", "Detail", priority=True),
         ("slash", "filter", "Filter"),
         ("a", "toggle_idle", "Idle"),
@@ -354,7 +354,7 @@ class MultiAgentWatchApp(App):
         ("o", "cycle_sort", "Sort"),
         ("e", "toggle_feed", "Events"),
         ("s", "toggle_security", "Security"),
-        ("d", "other_ai", "Other AI"),
+        ("d", "other_ai", "AI"),  # other AI on this machine (short: 80 columns)
         ("w", "report", "Report"),
         Binding("escape", "focus_table", "Table", show=False),
     ]
@@ -491,7 +491,7 @@ class MultiAgentWatchApp(App):
         yield self._feed
         self._filter_input = Input(id="filter", placeholder="filter: project, agent or signal")
         yield self._filter_input
-        yield Footer(show_command_palette=False)  # ^p still opens it
+        yield Footer(show_command_palette=False, compact=True)  # ^p still opens it
         self._apply_layout(self.size)
 
     def _new_agent_state(

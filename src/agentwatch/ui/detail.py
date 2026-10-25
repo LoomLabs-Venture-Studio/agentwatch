@@ -100,7 +100,7 @@ class DetailScreen(Screen):
                 yield Static(id="d-net", markup=False)
             with TabPane("Process", id="process"), VerticalScroll(classes="pane"):
                 yield Static(id="d-process", markup=False)
-        yield Footer()
+        yield Footer(show_command_palette=False, compact=True)  # fits 80 columns
 
     def on_mount(self) -> None:
         self.ready = True

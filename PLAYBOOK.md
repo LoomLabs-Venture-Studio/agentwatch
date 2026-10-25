@@ -5071,6 +5071,12 @@ Board decisions (2026-10-24):
   reference, arrows, sparkline scaling, gauge thresholds, ascii, TREND vs
   sort, narrow rule, no recompute without a sample, colours on screen,
   strip/detail, 120x40 / 80x24).
+- [x] PR 8b QA minors: at 80 columns the Network tab keeps one row per
+  endpoint (after FIRST SEEN goes, HOST is cut with an ellipsis); both
+  footers are compact (`d` is "AI", no palette item) and fit with nothing
+  cut; the `w` overlay puts a one-line "History DB synced at" note first
+  (in view at 80x24) and lists 3 per group; `report.render` cuts names at
+  22 with an ellipsis so the cost columns align (CLI too).
 
 ### PR 9: `watch` uses the new app (feature/watch-ui-9-watch) -- DONE
 - [x] Board decision (2026-10-25): the new screen replaces the old one, for

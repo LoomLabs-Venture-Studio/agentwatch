@@ -131,6 +131,20 @@ async def test_network_tab_names_endpoints_flags_providers_and_lists_listeners(
         print(f"\n--- Network tab {size[0]}x{size[1]} ---\n{_screen(app)}")
 
 
+def test_network_tab_cuts_long_hosts_one_row_per_endpoint_at_80_columns():
+    spans = [Endpoint("203.0.113.9", 8443, NOW - 30, NOW - 5),
+             Endpoint("2001:db8::1", 443, NOW - 20, NOW - 1)]
+    host = "ec2-203-0-113-9.eu-west-1.compute.amazonaws.example.com"
+    names = {"203.0.113.9": (host, "rdns", None), "2001:db8::1": (host, "rdns", None)}
+    text = machine.net_text(4242, spans, names, [], "Net: 2 endpoints", 80)
+    lines = text.splitlines()
+    rows = [line for line in lines if line.startswith("    ec2-")]
+    assert len(rows) == 2 and all(len(line) < 80 and "…" in line for line in rows), text
+    assert datetime.fromtimestamp(NOW - 1).strftime("%H:%M:%S") in rows[1]  # LAST SEEN kept
+    assert "FIRST SEEN" not in text
+    assert lines[lines.index(rows[1]) + 1].strip() == ""  # nothing wrapped onto a 2nd line
+
+
 async def test_network_tab_names_on_a_worker_and_the_ui_stays_responsive(monkeypatch):
     gate = threading.Event()
     namer = FakeNamer(gate)
@@ -299,12 +313,14 @@ async def test_header_today_week_trend_and_report_overlay(monkeypatch, history_o
         for line in ("agentwatch report: last 7 days", "Sessions 2", "Spend ~$12.50",
                      "Waste: ~$1.50", "vs previous 7 days: spend +$2.50",
                      "Costliest findings", "loop", "By agent", "codex", "By project",
-                     "From the history DB, synced at", "every 5 min"):
+                     "History DB synced at", "every 5 min"):
             assert line in text, (line, text)
         print(f"\n--- report overlay 120x40 ---\n{_screen(app)}")
         await pilot.resize_terminal(80, 24)
         await pilot.pause()
-        print(f"\n--- report overlay 80x24 ---\n{_screen(app)}")
+        screen = _screen(app)
+        assert "│ History DB synced at" in screen.splitlines()[1], screen  # in view, no scrolling
+        print(f"\n--- report overlay 80x24 ---\n{screen}")
         await pilot.resize_terminal(80, 18)  # too short for it: it scrolls
         await pilot.pause()
         scroll = app.screen.query_one("#help")
