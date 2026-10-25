@@ -10,8 +10,13 @@ rest only format text, shown literally (never markup).
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 import sys
 import textwrap
+import threading
+import time
 from datetime import datetime
 
 from agentwatch.alerts import _usd
@@ -20,8 +25,58 @@ from agentwatch.themes import ascii_safe
 SYNC_DAYS = 14  # the week and the week before it (`agentwatch report` syncs 2x its days)
 # `history.sync` runs in its own process: its parse pool must not fork this
 # (threaded) one, and its parsing stays off the UI process.
-SYNC_ARGS = (sys.executable, "-c",
-             f"from agentwatch.history import connect, sync; sync(connect(), days={SYNC_DAYS})")
+# It runs in its own process group (see kill_group) and exits with its parent.
+SYNC_ARGS = (sys.executable, "-c", "from agentwatch.ui.machine import sync_main; sync_main()")
+# start the sync in a new group, so one kill reaches its pool workers too
+GROUP_KWARGS = (
+    {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32"
+    else {"start_new_session": True}
+)
+
+
+def exit_with_parent() -> None:
+    """If this process's parent dies (SIGKILL, crash), kill this process
+    within a second: its whole group (pool workers included) when it leads
+    one, else only itself. POSIX only."""
+    if sys.platform == "win32":
+        return
+    parent = os.getppid()
+
+    def watchdog() -> None:
+        while os.getppid() == parent:
+            time.sleep(1)
+        if os.getpgid(0) == os.getpid():
+            os.killpg(0, signal.SIGKILL)
+        os.kill(os.getpid(), signal.SIGKILL)
+
+    threading.Thread(target=watchdog, daemon=True).start()
+
+
+def sync_main() -> None:
+    """The sync subprocess: `history.sync`, gone with watch-all."""
+    from agentwatch.history import connect, sync
+
+    exit_with_parent()
+    sync(connect(), days=SYNC_DAYS)
+
+
+def kill_group(pid: int, grace: float = 0.5) -> None:
+    """Stop the sync process *pid* and its pool workers: SIGTERM its process
+    group, SIGKILL whatever is left after *grace* seconds. Windows: taskkill
+    the tree. Never raises."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                           capture_output=True, timeout=5, check=False)
+            return
+        os.killpg(pid, signal.SIGTERM)
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            os.killpg(pid, 0)  # ProcessLookupError once the group is gone
+            time.sleep(0.05)
+        os.killpg(pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass  # already gone (ProcessLookupError), or nothing more we can do
 
 
 def _clock(epoch: float) -> str:

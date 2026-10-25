@@ -5,6 +5,7 @@ and show in the header, the `d`/`w` overlays and one feed line each."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 import sys
@@ -364,3 +365,77 @@ async def test_header_order_when_tight():
             assert "+2 unmonitored AI" in header and "need you" in header, (width, header)
             if width == 99:  # under 100: today/week go, the counts stay
                 assert header.startswith("12 sessions · 12 active"), header
+
+
+# QA B1: a sync's pool workers never outlive watch-all ------------------------
+
+# A stand-in for the sync: its own pool workers (sleeping), like history.sync's.
+_POOL = ("import time\n"
+         "from concurrent.futures import ProcessPoolExecutor\n"
+         "pool = ProcessPoolExecutor(2)\n"
+         "futures = [pool.submit(time.sleep, 60) for _ in range(2)]\n"
+         "time.sleep(60)\n")
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="process groups")
+
+
+def _tree(pid: int, n: int = 3, timeout: float = 15.0) -> list:
+    """*pid* and its descendants, once there are at least *n* processes."""
+    import psutil
+
+    proc, procs = psutil.Process(pid), []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        procs = [proc, *proc.children(recursive=True)]
+        if len(procs) >= n:
+            return procs
+        time.sleep(0.05)
+    raise AssertionError(f"sync tree never reached {n} processes: {procs}")
+
+
+def _all_gone(procs: list, timeout: float = 5.0) -> list:
+    """The processes still running after *timeout* (zombies count as gone)."""
+    import psutil
+
+    deadline = time.monotonic() + timeout
+    alive = procs
+    while alive and time.monotonic() < deadline:
+        alive = [p for p in alive if p.is_running() and p.status() != psutil.STATUS_ZOMBIE]
+        time.sleep(0.05)
+    for p in alive:  # never leave them behind, even on failure
+        p.kill()
+    return alive
+
+
+@posix_only
+async def test_quit_mid_sync_leaves_no_pool_workers(monkeypatch, history_on):
+    monkeypatch.setattr(machine, "SYNC_ARGS", (sys.executable, "-c", _POOL))
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait(pilot, lambda: app._sync_proc is not None)
+        procs = await asyncio.to_thread(_tree, app._sync_proc.pid)
+        await pilot.press("q")
+    assert _all_gone(procs) == []
+
+
+@posix_only
+def test_sync_exits_when_watch_all_is_killed(tmp_path):
+    """watch-all SIGKILLed mid-sync: the sync and its workers follow."""
+    import signal
+    import subprocess
+
+    child = ("from agentwatch.ui.machine import exit_with_parent\n"
+             "exit_with_parent()\n" + _POOL)
+    parent = subprocess.Popen(
+        [sys.executable, "-c",
+         "import subprocess, sys, time\n"
+         f"p = subprocess.Popen([sys.executable, '-c', {child!r}], start_new_session=True)\n"
+         "print(p.pid, flush=True)\n"
+         "time.sleep(60)\n"],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        sync_pid = int(parent.stdout.readline())
+        procs = _tree(sync_pid)
+    finally:
+        parent.send_signal(signal.SIGKILL)
+        parent.wait()
+    assert _all_gone(procs) == [], "sync tree outlived its parent"
