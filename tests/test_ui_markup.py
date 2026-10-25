@@ -150,7 +150,7 @@ async def test_watch_all_renders_log_text_literally(tmp_path):
     _write_log(tmp_path / "session.jsonl")
     app = MultiAgentWatchApp(watch_paths=[tmp_path])
     app._show_idle = True  # the log's actions are old
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         await _wait_for_selected(app, pilot)
         assert app.is_running
         _assert_plain(app.query_one("#selected"), ERROR, "Repeated action: Bash")
@@ -166,7 +166,7 @@ async def test_watch_all_renders_log_text_literally(tmp_path):
 async def test_markup_only_log_renders_literally(tmp_path, make):
     _write_markup_only_log(tmp_path / "session.jsonl")
     app = make(tmp_path)
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         if isinstance(app, MultiAgentWatchApp):  # the strip shows the error, not the command
             _assert_plain(await _wait_for_selected(app, pilot), ERROR, "Repeated action")
         else:

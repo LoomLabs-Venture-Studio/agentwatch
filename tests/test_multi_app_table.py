@@ -62,8 +62,12 @@ def _seed(app, name, *, ago=1.0, warnings=(), depth=0, team_id=None, pid=None, s
 
 
 def _order(app) -> list[str]:
+    """PROJECT top to bottom; the idle fold row as its "(a to show)" (in
+    TOP SIGNAL when there is no AGENT column, under 100 columns)."""
     table = app.query_one("#sessions")
-    return [table.get_cell_at((i, 2)).plain for i in range(table.row_count)]
+    narrow = "agent" not in table.columns
+    return [table.get_cell(key, "signal" if key == "fold" and narrow else "project").plain
+            for key in (row.key.value for row in table.ordered_rows)]
 
 
 def _screen(app) -> str:
@@ -109,9 +113,11 @@ async def test_one_row_per_session_with_columns(tmp_path):
             await pilot.pause(1.1)
             assert table.row_count == 3
             screen = _screen(app)
-            for header in HEADERS[: 4 if size[0] == 80 else None]:
-                assert header in screen, (size, header)
-            assert "Selected: session" in screen
+            narrow = size[0] == 80  # no AGENT/CTX column, no Selected strip
+            for header in HEADERS:
+                assert (header in screen) == (not narrow or header not in ("AGENT", "CTX")), (
+                    size, header)
+            assert ("Selected: session" in screen) == (not narrow)
             assert "sort: attention" in screen
 
 
@@ -301,11 +307,11 @@ async def test_keys_q_s_o_and_no_clear_cache():
     app = MultiAgentWatchApp()
     async with app.run_test(size=(120, 40)) as pilot:
         keys = {b[0] if isinstance(b, tuple) else b.key for b in app.BINDINGS}
-        assert keys == {"q", "s", "o", "e", "a", "slash", "escape", "enter"}
+        assert keys == {"q", "s", "o", "e", "a", "slash", "escape", "enter", "question_mark"}
         assert not hasattr(app, "action_clear_cache")
         await pilot.pause()
         screen = _screen(app)
-        assert "Toggle Security" in screen and "Sort" in screen and "Clear Cache" not in screen
+        assert "Security" in screen and "Sort" in screen and "Clear Cache" not in screen
 
 
 async def test_refresh_after_screens_are_gone_is_a_no_op():
