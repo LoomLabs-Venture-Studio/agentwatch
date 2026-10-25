@@ -50,6 +50,10 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
 - `agentwatch detect`: machine-wide detection of AI use. It attributes
   connections to AI providers and local model ports to processes
   (#79, PR #80).
+- `agentwatch detect` names version-named binaries by their adapter, so
+  Claude Code shows as `claude-code` instead of `2.1.310`. Without an
+  adapter it uses the nearest meaningful parent folder. `detect --json` has
+  a new `display_name` field, and `name` is unchanged (PR #172).
 - `agentwatch check` reports session efficiency in text and JSON output
   (#40, PR #51).
 - Cursor support: `check`, `security-scan` and `watch-all` read Cursor
@@ -77,6 +81,16 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
 
 ### Changed
 
+- Behaviour change: `agentwatch ps --json` is always a flat list of agent
+  objects. It used to switch to a team-shaped list when sub-agents existed.
+  Each object now has `parent_agent_pid`, `team_id`, `team_name` and `depth`,
+  so the tree can be rebuilt. The per-team `member_count`,
+  `subagent_count` and `max_depth` fields are gone (PR #172).
+- Behaviour change: `security-scan` and the TUI security panel now say SECURE /
+  AT RISK / COMPROMISED instead of health labels such as STUCK. A score of
+  exactly 50 is now AT RISK with JSON `status: at_risk` (it was COMPROMISED /
+  `compromised`). The exit code is unchanged (1 at 50). Scores below 50 stay
+  COMPROMISED with exit 2 (PR #172).
 - Claude Code and Gemini actions take their network host from a tool's
   `url`, so URL fetches reach the network detectors (#130, PR #130).
 - Status messages such as "Using log ..." go to stderr, so `--json` stdout
