@@ -34,11 +34,13 @@ from agentwatch.parser.logs import (
 )
 from agentwatch.siem import SiemExportError, SiemLogger
 from agentwatch.themes import (
+    SECURITY_TIER_EXIT_CODES,
     ascii_safe,
     get_theme,
     list_themes,
     security_label_from_score,
     security_status_from_score,
+    security_tier_from_score,
     set_theme,
 )
 
@@ -1227,8 +1229,8 @@ def security_scan(
 ):
     """Run a security-focused scan on agent logs.
 
-    Exit codes: 0 = no security issues, 1 = issues found with score 50 or
-    above, 2 = score below 50 (compromised).
+    Exit codes: 0 = secure (score 100), 1 = at risk (score 50-99),
+    2 = compromised (score below 50).
     """
     note = None
     if log is None:
@@ -1283,11 +1285,7 @@ def security_scan(
     if json_output:
         output = {
             "security_score": security_score,
-            "status": (
-                "secure" if security_score == 100
-                else "at_risk" if security_score > 50
-                else "compromised"
-            ),
+            "status": security_tier_from_score(security_score),
             "warnings": [w.to_dict() for w in warnings],
             "action_count": len(buffer),
             "security_stats": security_stats,
@@ -1339,12 +1337,7 @@ def security_scan(
             _print_llm_assessments(warnings)
             _print_goal_alignment(goal_alignment)
 
-    # Exit code
-    if security_score < 50:
-        sys.exit(2)
-    elif security_score < 100:
-        sys.exit(1)
-    sys.exit(0)
+    sys.exit(SECURITY_TIER_EXIT_CODES[security_tier_from_score(security_score)])
 
 
 @cli.command()

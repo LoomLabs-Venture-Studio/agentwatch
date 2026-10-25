@@ -151,7 +151,8 @@ class TestSecurityStatusThemeWiring:
         theme = get_theme("agent")
         assert security_status_from_score(100) == theme.level_0
         assert security_status_from_score(75) == theme.level_1
-        assert security_status_from_score(50) == theme.level_3
+        assert security_status_from_score(50) == theme.level_1
+        assert security_status_from_score(49) == theme.level_3
         assert security_status_from_score(0) == theme.level_3
 
     @pytest.mark.parametrize("theme_name", [n for n in THEMES if n != "ascii"])

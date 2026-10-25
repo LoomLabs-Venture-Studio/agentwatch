@@ -52,7 +52,7 @@ class TestSecurityLabel:
     @pytest.mark.parametrize(
         ("score", "label"),
         [(100, "SECURE"), (75, "AT RISK"), (51, "AT RISK"),
-         (50, "COMPROMISED"), (0, "COMPROMISED")],
+         (50, "AT RISK"), (49, "COMPROMISED"), (0, "COMPROMISED")],
     )
     def test_label_thresholds_match_security_status(self, score, label):
         assert security_label_from_score(score) == label
@@ -94,6 +94,45 @@ class TestSecurityScanHeadline:
 
         assert result.exit_code == 0
         assert _headline(result.output) == f"{get_theme().emoji_0} SECURE (100%)"
+
+    @pytest.mark.parametrize(
+        ("score", "label", "exit_code"),
+        [
+            (100, "SECURE", 0),
+            (51, "AT RISK", 1),
+            (50, "AT RISK", 1),
+            (49, "COMPROMISED", 2),
+            (0, "COMPROMISED", 2),
+        ],
+    )
+    def test_label_and_exit_code_share_one_threshold(
+        self, tmp_path, monkeypatch, score, label, exit_code
+    ):
+        """COMPROMISED <=> exit 2, AT RISK <=> exit 1, SECURE <=> exit 0."""
+        from agentwatch import cli as cli_module
+
+        monkeypatch.setattr(cli_module, "calculate_security_score", lambda warnings: score)
+        log = tmp_path / "clean.jsonl"
+        _write_log(log, ["ls -la"])
+
+        result = CliRunner().invoke(cli, ["security-scan", "--log", str(log)])
+
+        assert result.exit_code == exit_code
+        assert _headline(result.output).endswith(f"{label} ({score}%)")
+
+    @pytest.mark.parametrize(
+        ("score", "status"), [(100, "secure"), (50, "at_risk"), (49, "compromised")]
+    )
+    def test_json_status_uses_the_same_tiers(self, tmp_path, monkeypatch, score, status):
+        from agentwatch import cli as cli_module
+
+        monkeypatch.setattr(cli_module, "calculate_security_score", lambda warnings: score)
+        log = tmp_path / "clean.jsonl"
+        _write_log(log, ["ls -la"])
+
+        result = CliRunner().invoke(cli, ["security-scan", "--json", "--log", str(log)])
+
+        assert json.loads(result.output)["status"] == status
 
     def test_ascii_theme_headline_is_text_only(self, tmp_path):
         log = tmp_path / "secrets.jsonl"

@@ -346,47 +346,50 @@ def get_status_colors() -> dict[str, str]:
 # `SecurityStatus` right next to it in the same file was not).
 
 
+# The one security threshold. Every verdict surface (headline, label, JSON
+# status, exit code, dashboard widget) derives from security_tier_from_score():
+#   score == 100  -> "secure"      (exit 0)
+#   50 <= score   -> "at_risk"     (exit 1)
+#   score < 50    -> "compromised" (exit 2)
+SECURITY_TIER_LABELS = {"secure": "SECURE", "at_risk": "AT RISK", "compromised": "COMPROMISED"}
+SECURITY_TIER_EXIT_CODES = {"secure": 0, "at_risk": 1, "compromised": 2}
+
+
+def security_tier_from_score(score: float) -> str:
+    """Security tier for a 0-100 security score: "secure", "at_risk" or "compromised"."""
+    if score >= 100:
+        return "secure"
+    if score >= 50:
+        return "at_risk"
+    return "compromised"
+
+
 def security_status_from_score(score: float) -> str:
-    """Map a security score (0-100) onto a theme status label using the
-    SECURE / AT-RISK / COMPROMISED 3-way threshold (score == 100 / > 50 /
-    else) shared by ``ui/app.py``'s ``SecurityStatus`` widget and
-    ``cli.py``'s ``security-scan`` command.
+    """Map a security score (0-100) onto a theme status label, for the
+    colour and emoji of the SECURE / AT RISK / COMPROMISED tiers.
 
     Deliberately does NOT reuse ``StatusTheme.status_from_score()``'s 4-way
-    80/60/40 banding: the security panel's "100 == fully secure, anything
-    else is already degraded" semantics are a stricter, pre-existing
-    threshold specific to this 3-way widget, not a general health-score
-    band, and quietly changing it would be a behavior change disguised as a
-    refactor.
+    80/60/40 banding: the security verdict is its own 3-way threshold, not a
+    general health-score band.
 
     Maps onto 3 of the theme's 4 levels -- level_0 (secure), level_1 (at
     risk), level_3 (compromised) -- intentionally skipping level_2, so the
-    at-risk/compromised colors line up with the yellow/red (not orange)
-    this widget has always used.
+    at-risk/compromised colors line up with the yellow/red (not orange).
     """
     theme = get_theme()
-    return (theme.level_0, theme.level_1, theme.level_3)[_security_tier(score)]
-
-
-# Security wording for the same three tiers. The theme levels above are
-# health words ("stuck", "healthy"...), so anything shown as a security
-# verdict takes its text from here and only its emoji and colour from the theme.
-SECURITY_TIER_LABELS = ("SECURE", "AT RISK", "COMPROMISED")
-
-
-def _security_tier(score: float) -> int:
-    """0 = secure (score == 100), 1 = at risk (> 50), 2 = compromised."""
-    if score == 100:
-        return 0
-    elif score > 50:
-        return 1
-    return 2
+    level = {
+        "secure": theme.level_0,
+        "at_risk": theme.level_1,
+        "compromised": theme.level_3,
+    }[security_tier_from_score(score)]
+    return level
 
 
 def security_label_from_score(score: float) -> str:
     """Security verdict text for a 0-100 security score: SECURE / AT RISK /
-    COMPROMISED, with the same thresholds as security_status_from_score()."""
-    return SECURITY_TIER_LABELS[_security_tier(score)]
+    COMPROMISED. The theme levels are health words, so this text never comes
+    from the theme."""
+    return SECURITY_TIER_LABELS[security_tier_from_score(score)]
 
 
 def ascii_safe(default_glyph: str, ascii_fallback: str) -> str:
