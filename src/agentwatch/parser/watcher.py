@@ -697,6 +697,9 @@ class MultiLogWatcher:
         self.base_paths = paths
         self.poll_interval = poll_interval
         self.watchers: dict[Path, Watcher] = {}
+        # The task running each entry of self.watchers, so reap_stopped() can
+        # stop it: at most one live watcher per log, nothing emitted twice.
+        self._tasks: dict[Path, asyncio.Task] = {}
         self._active_files: set[Path] = set()
         self._process_meta: dict[Path, AgentProcess] = {}  # log_path -> process info
         self._stopped_at: dict[Path, float] = {}  # log_path -> monotonic time when first stopped
@@ -788,9 +791,16 @@ class MultiLogWatcher:
         for path in expired:
             self._stopped_at.pop(path, None)
             self._active_files.discard(path)
-            self.watchers.pop(path, None)
+            self._stop_watcher(path)
             # Keep path in _process_meta so refresh_processes won't re-add it
         return expired
+
+    def _stop_watcher(self, path: Path) -> None:
+        """Forget *path*'s watcher and cancel its task."""
+        self.watchers.pop(path, None)
+        task = self._tasks.pop(path, None)
+        if task is not None:
+            task.cancel()
 
     def get_process_meta(self, log_path: Path) -> AgentProcess | None:
         """Get process metadata for a given log file path."""
@@ -846,9 +856,7 @@ class MultiLogWatcher:
 
         async def fill_queue(watcher: Watcher, key: Path):
             async for action in watcher.watch():
-                await queue.put(("action", (action, key)))
-
-        tasks: dict[Path, asyncio.Task] = {}
+                await queue.put((watcher, key, action))
 
         try:
             while True:
@@ -869,15 +877,22 @@ class MultiLogWatcher:
                                 "make_watcher failed for %s", log_meta, exc_info=True
                             )
                             continue
+                        self._stop_watcher(log_meta)  # never two watchers on one log
                         self.watchers[log_meta] = watcher
-                        tasks[log_meta] = asyncio.create_task(fill_queue(watcher, log_meta))
+                        self._tasks[log_meta] = asyncio.create_task(
+                            fill_queue(watcher, log_meta)
+                        )
                         yield ("agent_added", log_meta)
 
-                # Check queue for actions
+                # Check queue for actions. A watcher stopped since it queued
+                # an action (reaped or replaced) no longer speaks for its log.
                 while not queue.empty():
-                    yield await queue.get()
+                    source, key, action = queue.get_nowait()
+                    if self.watchers.get(key) is source:
+                        yield ("action", (action, key))
 
                 await asyncio.sleep(self.poll_interval)
         finally:
-            for task in tasks.values():
+            for task in self._tasks.values():
                 task.cancel()
+            self._tasks.clear()
