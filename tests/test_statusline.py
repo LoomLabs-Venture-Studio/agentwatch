@@ -158,6 +158,7 @@ def _real_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "local"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))  # undone above too
 
 
 def test_pointer_from_the_hook_beats_a_planted_plugin_dir(tmp_path, monkeypatch):

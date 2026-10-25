@@ -8,6 +8,25 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- `watch-all`: the header shows `today $X · week $Y ▲Z%` from the history
+  store (`history sync` runs in a separate process at startup and every 5
+  minutes; logs written in the last minute wait), and `w` shows the weekly
+  report (spend, waste, top 3 costliest findings, per agent and project,
+  trend). If history is unavailable the figures are hidden, with one
+  `history unavailable` Events line. `+N unmonitored AI` counts programs
+  using AI that agentwatch has no adapter for (`agentwatch detect`, on a
+  background thread every 30 s); `d` lists them and the Events panel says
+  `new unmonitored AI program: <name>` once per new one. The detail view's
+  Network tab shows what `agentwatch net` shows for the session's process:
+  endpoints with first/last seen, host names (looked up off the UI thread),
+  `AI-PROVIDER` flags and listening sockets (`EXPOSED` when reachable from
+  other machines); `n/a (no process)` with `--all-logs`. None of this runs
+  with `--headless`.
+- `watch-all` header: the cost is always `spent $X` (it adds up every
+  loaded session, also folded or filtered ones; it said "on screen" on wide
+  terminals); with `--budget` the clock shows when it fits and the budget
+  goes before the line is cut. The help screen fits narrow terminals (wrapped
+  descriptions stay under their column) and its footer says `esc Close`.
 - `watch-all` fits small terminals: under 100 columns the AGENT and CTX
   columns and the Selected strip are hidden and TOP SIGNAL takes the rest of
   the width (no sideways scrolling); under 30 rows the Events panel is 3

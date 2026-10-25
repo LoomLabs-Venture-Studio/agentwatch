@@ -1287,6 +1287,7 @@ def watch_all(
             llm=llm,
             llm_model=llm_model,
             alerter=alerter,
+            machine_checks=not headless,
             since=None if since == "all" else since or ALL_LOGS_SINCE_S,
         )
     else:
@@ -1303,6 +1304,7 @@ def watch_all(
             llm=llm,
             llm_model=llm_model,
             alerter=alerter,
+            machine_checks=not headless,
         )
 
     if headless:
