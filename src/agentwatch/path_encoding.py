@@ -43,7 +43,7 @@ def _base36(n: int) -> str:
 def encode_path_for_claude(path: Path) -> str:
     """Encode a filesystem path to Claude Code's project directory format.
 
-    e.g., /Users/zaid/my_project -> -Users-zaid-my-project
+    e.g., /Users/alice/my_project -> -Users-alice-my-project
     e.g., C:\\Users\\alice\\my project -> C--Users-alice-my-project
     """
     # ponytail: one "-" per code point; JS emits two for chars outside the

@@ -8,7 +8,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psutil
@@ -160,12 +160,29 @@ class DiscoveryCache:
 
     cwd_by_pid: dict[int, Path] = field(default_factory=dict)
     log_by_pid: dict[int, tuple[Path | None, str | None]] = field(default_factory=dict)
+    # Claude Code: the session id in the process's live-session record when its
+    # log was resolved (None: no record). A different id on a later scan means
+    # the session changed inside the process (/clear, /resume): re-resolve.
+    claude_session_by_pid: dict[int, str | None] = field(default_factory=dict)
+    # Process start time per pid: a pid the OS hands to a new process must not
+    # inherit the old process's cached cwd and log.
+    started_by_pid: dict[int, float] = field(default_factory=dict)
+
+    def forget(self, pid: int) -> None:
+        """Drop every cache entry for *pid*."""
+        for entries in (
+            self.cwd_by_pid, self.log_by_pid, self.claude_session_by_pid, self.started_by_pid
+        ):
+            entries.pop(pid, None)
 
     def prune(self, live_pids: set[int]) -> None:
         """Drop cache entries for PIDs that are no longer running."""
-        for pid in self.cwd_by_pid.keys() - live_pids:
-            self.cwd_by_pid.pop(pid, None)
-            self.log_by_pid.pop(pid, None)
+        known = (
+            self.cwd_by_pid.keys() | self.log_by_pid.keys()
+            | self.claude_session_by_pid.keys() | self.started_by_pid.keys()
+        )
+        for pid in known - live_pids:
+            self.forget(pid)
 
 
 def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProcess]:
@@ -207,6 +224,10 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
     # Second pass: find agent processes
     agents: list[AgentProcess] = []
     seen_pids: set[int] = set()
+    # Claude Code processes seen this scan: start time, and whether each has a
+    # live-session record (for _assign_claude_logs).
+    claude_started: dict[int, float | None] = {}
+    claude_registered: set[int] = set()
 
     for proc in procs:
         try:
@@ -234,6 +255,10 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
             # DiscoveryCache is provided — avoids re-resolving cwd for
             # every already-known PID on each poll tick).
             if cache is not None:
+                if create_time:
+                    if cache.started_by_pid.get(pid, create_time) != create_time:
+                        cache.forget(pid)  # pid reused by a new process
+                    cache.started_by_pid[pid] = create_time
                 cwd = cache.cwd_by_pid.get(pid) or _get_process_cwd(pid)
                 if pid not in cache.cwd_by_pid and cwd is not None:
                     cache.cwd_by_pid[pid] = cwd
@@ -248,11 +273,27 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
             log_file = None
             session_id = None
             cache_hit = False
+            # A Claude Code session can change inside a running process
+            # (/clear, /resume). The live-session record is a small JSON file,
+            # so it is read on every scan to check the cached log still holds.
+            claude_record = None
+            if agent_type == "claude-code":
+                claude_record = _read_claude_session_record(pid, create_time)
+                claude_started[pid] = create_time
+                if claude_record is not None:
+                    claude_registered.add(pid)
             # An app-server's open threads change between scans: always re-resolve (#105).
             app_server = agent_type == "codex" and "app-server" in cmdline[1:]
             if cache is not None and pid in cache.log_by_pid and not app_server:
                 cached_log, cached_session = cache.log_by_pid[pid]
-                if cached_log is not None and cached_log.exists():
+                if (
+                    cached_log is not None
+                    and cached_log.exists()
+                    and (
+                        agent_type != "claude-code"
+                        or _claude_cache_current(cache, pid, claude_record)
+                    )
+                ):
                     log_file, session_id = cached_log, cached_session
                     cache_hit = True
 
@@ -272,6 +313,10 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
                 if cache is not None:
                     cache.log_by_pid[pid] = (log_file, session_id)
                     cache.cwd_by_pid[pid] = cwd
+                    if agent_type == "claude-code":
+                        cache.claude_session_by_pid[pid] = (
+                            claude_record.session_id if claude_record else None
+                        )
 
             # Without a rollout cwd, the app-server's cwd is its own bin\<hash>
             # dir: no project (#94). The cache keeps that cwd for resolve_log.
@@ -295,6 +340,8 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
             )
             if app_server and log_file is not None:
                 agents[-1:] = _codex_app_server_threads(agents[-1])
+
+    _assign_claude_logs(agents, claude_started, claude_registered)
 
     # Post-process: resolve parent-child relationships between agents
     agent_pids = {a.pid for a in agents}
@@ -506,39 +553,172 @@ def _find_open_jsonl(pid: int, project_dir: Path) -> Path | None:
     return None
 
 
-def _resolve_claude_code_log(
-    cwd: Path, pid: int | None = None
-) -> tuple[Path | None, str | None]:
-    """Resolve the active Claude Code session log for a working directory.
+def _claude_home() -> Path:
+    return Path.home() / ".claude"
 
-    When *pid* is provided, uses ``lsof`` to find the exact ``.jsonl``
-    file that process has open — this avoids cross-contamination when
-    multiple agents share the same project directory.  Falls back to
-    most-recently-modified when ``lsof`` can't determine the file.
+
+def _claude_project_dir(cwd: Path) -> Path:
+    """Where Claude Code keeps the transcripts of sessions started in *cwd*."""
+    return _claude_home() / "projects" / encode_path_for_claude(cwd)
+
+
+@dataclass(frozen=True)
+class _ClaudeSessionRecord:
+    """A live Claude Code process's entry in ``~/.claude/sessions/<pid>.json``."""
+
+    session_id: str | None  # None: the record exists but names no readable session
+    cwd: Path | None = None
+
+
+# Claude Code's own reader of these records stops at 256 KiB.
+_SESSION_RECORD_MAX_BYTES = 256 * 1024
+_SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+# `ps -o lstart` has one-second resolution.
+_LSTART_TOLERANCE_S = 2.0
+# startedAt is the wall clock when the record was written, a little after the
+# process started; allow for clock steps between the two readings.
+_STARTED_AT_SLACK_S = 30.0
+_MONTHS = {
+    m: i for i, m in enumerate(
+        ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1
+    )
+}
+
+
+def _parse_lstart(value: object) -> float | None:
+    """Epoch seconds from ``LC_ALL=C TZ=UTC ps -o lstart=`` text, e.g.
+    ``"Sat Oct 24 00:32:05 2026"``. Parsed by hand: ``strptime``'s ``%a``/``%b``
+    follow the current locale, the text does not."""
+    if not isinstance(value, str):
+        return None
+    parts = value.split()
+    if len(parts) != 5:
+        return None
+    _, month, day, hms, year = parts
+    try:
+        hour, minute, second = (int(x) for x in hms.split(":"))
+        return datetime(
+            int(year), _MONTHS[month], int(day), hour, minute, second, tzinfo=timezone.utc
+        ).timestamp()
+    except (KeyError, ValueError):
+        return None
+
+
+def _record_started_with(record: dict, create_time: float) -> bool:
+    """Whether a session record was written by the process started at *create_time*.
+
+    Records are deleted on exit, but one left by a crash can name a pid the OS
+    has since given to another process. ``procStart`` is the process's own
+    start time (POSIX); Windows records have only ``startedAt``, written just
+    after start, so a record older than the process belongs to an earlier one.
     """
-    encoded = encode_path_for_claude(cwd)
-    project_dir = Path.home() / ".claude" / "projects" / encoded
+    started = _parse_lstart(record.get("procStart"))
+    if started is not None:
+        return abs(started - create_time) <= _LSTART_TOLERANCE_S
+    started_at = record.get("startedAt")
+    if isinstance(started_at, (int, float)) and not isinstance(started_at, bool):
+        return started_at > 0 and started_at / 1000 >= create_time - _STARTED_AT_SLACK_S
+    return False
 
-    if not project_dir.is_dir():
-        return None, None
 
-    jsonl_files = list(project_dir.glob("*.jsonl"))
-    if not jsonl_files:
-        return None, None
+def _read_claude_session_record(
+    pid: int, create_time: float | None
+) -> _ClaudeSessionRecord | None:
+    """The live-session record Claude Code keeps for *pid*, or ``None``.
 
-    # Prefer lsof-based resolution for the specific PID
-    log_file: Path | None = None
-    if pid is not None:
-        log_file = _find_open_jsonl(pid, project_dir)
+    Claude Code (2.1.x) writes ``~/.claude/sessions/<pid>.json`` when a
+    session starts (``pid``, ``sessionId``, ``cwd``, ``startedAt``,
+    ``procStart`` and more), rewrites ``sessionId`` in place when the
+    conversation changes (/clear, /resume) and deletes the file on exit.
+    ``None`` means the process has no record of its own: none on disk, or a
+    stale one from an earlier process with the same pid. A record that is
+    present but unreadable (caught mid-rewrite) comes back with
+    ``session_id=None``. Only these few fields are read.
+    """
+    path = _claude_home() / "sessions" / f"{pid}.json"
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(_SESSION_RECORD_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return _ClaudeSessionRecord(session_id=None)
+    try:
+        record = json.loads(raw) if len(raw) <= _SESSION_RECORD_MAX_BYTES else None
+    except ValueError:
+        record = None
+    if not isinstance(record, dict):
+        return _ClaudeSessionRecord(session_id=None)
+    if record.get("pid", pid) != pid:
+        return None
+    if create_time is not None and not _record_started_with(record, create_time):
+        return None
+    session_id = record.get("sessionId")
+    if not isinstance(session_id, str) or not _SAFE_SESSION_ID.fullmatch(session_id):
+        session_id = None
+    cwd = record.get("cwd")
+    return _ClaudeSessionRecord(
+        session_id=session_id,
+        cwd=Path(cwd) if isinstance(cwd, str) and cwd not in ("", "?") else None,
+    )
 
-    # Fallback: most recently modified file
-    if log_file is None:
-        log_file = max(jsonl_files, key=lambda f: f.stat().st_mtime)
 
+def _claude_cache_current(
+    cache: DiscoveryCache, pid: int, record: _ClaudeSessionRecord | None
+) -> bool:
+    """Whether a Claude Code pid's cached log was resolved for its current session."""
+    if record is not None and record.session_id is None:
+        return True  # unreadable this scan: keep what we had
+    current = record.session_id if record is not None else None
+    return cache.claude_session_by_pid.get(pid) == current
+
+
+def _process_create_time(pid: int) -> float | None:
+    try:
+        return psutil.Process(pid).create_time()
+    except psutil.Error:
+        return None
+
+
+def _find_claude_transcript(session_id: str, project_dirs: list[Path]) -> Path | None:
+    """The ``<session_id>.jsonl`` transcript, looked for in *project_dirs* first."""
+    for project_dir in project_dirs:
+        path = project_dir / f"{session_id}.jsonl"
+        if path.is_file():
+            return path
+    # A resumed session keeps writing to the project dir it began in, which
+    # need not match the process's cwd. session_id has no glob characters.
+    projects = _claude_home() / "projects"
+    return next((p for p in projects.glob(f"*/{session_id}.jsonl") if p.is_file()), None)
+
+
+def _newest_claude_log(
+    project_dir: Path,
+    claimed: set[Path] | frozenset[Path] = frozenset(),
+    claimed_sessions: set[str] | frozenset[str] = frozenset(),
+    since: float | None = None,
+) -> Path | None:
+    """The most recently modified transcript in *project_dir*, skipping
+    *claimed* paths and session ids, and any last written before *since*."""
+    newest, newest_mtime = None, 0.0
+    for path in project_dir.glob("*.jsonl"):
+        if path in claimed or path.stem in claimed_sessions:
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if since is not None and mtime < since:
+            continue
+        if newest is None or mtime > newest_mtime:
+            newest, newest_mtime = path, mtime
+    return newest
+
+
+def _claude_session_id(log_file: Path) -> str:
+    """Session id of a transcript: its file name, unless sessions-index.json maps it."""
     session_id = log_file.stem
-
-    # Try to get session metadata from sessions-index.json
-    index_file = project_dir / "sessions-index.json"
+    index_file = log_file.parent / "sessions-index.json"
     if index_file.exists():
         try:
             with open(index_file, "r") as f:
@@ -550,8 +730,109 @@ def _resolve_claude_code_log(
                     session_id = session_meta["id"]
         except (json.JSONDecodeError, OSError):
             pass
+    return session_id
 
-    return log_file, session_id
+
+def _resolve_claude_code_log(
+    cwd: Path, pid: int | None = None
+) -> tuple[Path | None, str | None]:
+    """Resolve the Claude Code session log of process *pid* running in *cwd*.
+
+    With *pid*, only signals that name that process's own session count:
+
+    1. the ``.jsonl`` the process holds open (``_find_open_jsonl``). Claude
+       Code appends to its transcript without keeping it open, so this
+       rarely matches, but it is exact when it does;
+    2. its live-session record (``_read_claude_session_record``), whose
+       ``sessionId`` names the transcript.
+
+    No match gives no log, never another session's: several processes can
+    share one project dir. ``find_running_agents()`` (``_assign_claude_logs``)
+    decides whether a process with no record can still take the newest
+    unclaimed log. Without *pid* there is no process to match, so this is
+    the most recently modified log in the project dir.
+    """
+    project_dir = _claude_project_dir(cwd)
+
+    if pid is None:
+        log_file = _newest_claude_log(project_dir)
+        return (log_file, _claude_session_id(log_file)) if log_file else (None, None)
+
+    if project_dir.is_dir():
+        log_file = _find_open_jsonl(pid, project_dir)
+        if log_file is not None:
+            return log_file, _claude_session_id(log_file)
+
+    record = _read_claude_session_record(pid, _process_create_time(pid))
+    if record is None or record.session_id is None:
+        return None, None
+    project_dirs = [project_dir]
+    if record.cwd is not None:
+        project_dirs.append(_claude_project_dir(record.cwd))
+    return _find_claude_transcript(record.session_id, project_dirs), record.session_id
+
+
+def _assign_claude_logs(
+    agents: list[AgentProcess],
+    started: dict[int, float | None],
+    registered: set[int],
+) -> None:
+    """Make the Claude Code process -> session log mapping one-to-one.
+
+    *started* holds the start time of every Claude Code process in *agents*;
+    *registered* the pids with a live-session record.
+
+    1. Two processes resolved to the same session (both records name it, as
+       when one takes a session over from another) never share it: the
+       newest process keeps it, the other is left unresolved.
+    2. A process with no record and no open log (older Claude Code, or a mode
+       that does not write one) gets the newest log in its project dir only
+       if nothing else can own it: no other process claims it, it was written
+       after this process started, and no other such process shares the dir.
+       Otherwise it stays unresolved.
+    """
+    claude = [a for a in agents if a.agent_type == "claude-code" and a.pid in started]
+
+    seen_logs: set[Path] = set()
+    seen_sessions: set[str] = set()
+    displaced: set[int] = set()
+    for agent in sorted(claude, key=lambda a: (started[a.pid] or 0.0, a.pid), reverse=True):
+        if (agent.log_file is not None and agent.log_file in seen_logs) or (
+            agent.session_id is not None and agent.session_id in seen_sessions
+        ):
+            agent.log_file = agent.session_id = None
+            displaced.add(agent.pid)
+            continue
+        if agent.log_file is not None:
+            seen_logs.add(agent.log_file)
+        if agent.session_id is not None:
+            seen_sessions.add(agent.session_id)
+
+    unmatched: dict[Path, list[AgentProcess]] = {}
+    for agent in claude:
+        if (
+            agent.log_file is None
+            and agent.pid not in registered
+            and agent.pid not in displaced
+            and agent.working_directory is not None
+        ):
+            unmatched.setdefault(_claude_project_dir(agent.working_directory), []).append(agent)
+
+    claimed = {a.log_file for a in agents if a.log_file is not None}
+    for project_dir, group in unmatched.items():
+        if len(group) != 1:
+            continue  # cannot tell whose log is whose
+        agent = group[0]
+        since = started[agent.pid]
+        log_file = _newest_claude_log(
+            project_dir,
+            claimed=claimed,
+            claimed_sessions=seen_sessions,
+            since=since - _LSTART_TOLERANCE_S if since else None,
+        )
+        if log_file is not None:
+            agent.log_file, agent.session_id = log_file, _claude_session_id(log_file)
+            claimed.add(log_file)
 
 
 def _resolve_aider_log(cwd: Path) -> tuple[Path | None, str | None]:
