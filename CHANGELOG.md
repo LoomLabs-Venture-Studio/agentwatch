@@ -50,6 +50,10 @@ Everything on `develop` since `v0.1.6` (2026-03-10).
 - `agentwatch detect`: machine-wide detection of AI use. It attributes
   connections to AI providers and local model ports to processes
   (#79, PR #80).
+- `agentwatch detect` names version-named binaries by their adapter, so
+  Claude Code shows as `claude-code` instead of `2.1.310`. Without an
+  adapter it uses the nearest meaningful parent folder. `detect --json` has
+  a new `display_name` field, and `name` is unchanged (PR #172).
 - `agentwatch check` reports session efficiency in text and JSON output
   (#40, PR #51).
 - Cursor support: `check`, `security-scan` and `watch-all` read Cursor
