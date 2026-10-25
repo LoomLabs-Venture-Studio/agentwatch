@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -11,6 +12,12 @@ from agentwatch.parser.models import ToolType
 
 FIXTURE = Path(__file__).parent / "fixtures" / "copilot_vscode" / "session.jsonl"
 SESSION_ID = "b4d87730-a8da-47a4-8a80-c39642ea196f"
+
+# Home-dir paths: /Users/<x>, /home/<x>, C:\Users\<x> and JSON-escaped
+# C:\\Users\\<x>. The captured segment must be a placeholder user name.
+_HOME_DIR = re.compile(r"(?:/Users/|/home/|[A-Za-z]:\\{1,2}Users\\{1,2})([^/\\\"\s]+)")
+_PLACEHOLDER_USERS = {"dev", "alice", "user", "<user>"}
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 def _lines() -> list[str]:
@@ -112,7 +119,11 @@ class TestReplay:
 class TestFixture:
     def test_scrubbed(self):
         text = FIXTURE.read_text(encoding="utf-8")
-        assert "zaid" not in text.lower() and "akroush" not in text.lower()
+        users = {m.group(1) for m in _HOME_DIR.finditer(text)}
+        assert users, "expected home-dir paths in the fixture"
+        extra = users - _PLACEHOLDER_USERS
+        assert not extra, f"non-placeholder home users: {extra}"
+        assert not _EMAIL.search(text), "fixture contains an email address"
         assert len(_lines()) == 23
 
     def test_full_session(self):

@@ -13,7 +13,7 @@ One commit per task, format `type(scope): description [#87]`.
 
 - `tests/fixtures/copilot_vscode/session.jsonl`: copy of the real session
   `%APPDATA%/Code/User/workspaceStorage/2a87d79baf715713d5dc1aab5d2c3647/chatSessions/b4d87730-a8da-47a4-8a80-c39642ea196f.jsonl`.
-- Scrub: `zaid-akroush` -> `dev`, `Zaid` -> `dev` (paths and URIs). Trim
+- Scrub: `<name>` -> `dev`, `<name>` -> `dev` (paths and URIs). Trim
   `result.metadata.renderedUserMessage` text (line 13) to a short stub.
   Mutation structure unchanged: 23 lines, same kinds/keys/`i`.
 - Commit: `test(copilot-vscode): add scrubbed real session fixture [#87]`.
@@ -36,7 +36,7 @@ One commit per task, format `type(scope): description [#87]`.
   terminal call without `isConfirmed` not emitted, then emitted once with
   `exitCode` (replay fixture prefix lines 0..9 vs 0..12); assistant_message
   withheld until `modelState` 1/2/3 and carries 588/20603; partial last line;
-  fixture has no `Zaid`/`zaid-akroush`. Full fixture -> 5 tool actions
+  fixture has no `<name>`. Full fixture -> 5 tool actions
   (`copilot_readFile` READ, `copilot_memory` UNKNOWN, `copilot_applyPatch`
   EDIT, `run_in_terminal` x2 BASH: `python hello.py` ok, `nonexistent-cmd`
   failed) + 1 assistant_message.

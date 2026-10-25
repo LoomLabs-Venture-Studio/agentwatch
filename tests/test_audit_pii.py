@@ -66,4 +66,5 @@ def test_pii_redact_removes_it_and_keeps_bak(tmp_path, monkeypatch):
     assert res.exit_code == 0
     assert json.loads(res.stdout)["redacted"] == 1
     assert EMAIL not in log.read_text()
-    assert EMAIL in log.with_name("sess1.jsonl.bak").read_text()
+    (backup,) = log.parent.glob("sess1.jsonl.bak.*")
+    assert EMAIL in backup.read_text()

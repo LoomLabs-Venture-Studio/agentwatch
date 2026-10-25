@@ -51,7 +51,7 @@ type: fix | feat | refactor | test | docs | chore
 **Priority:** Unblocks all future sprints (no committed baseline, no CI gate,
 no accurate docs existed before this)
 **PRD Status:** not needed (recon-driven; see
-`C:\Users\Zaid\.claude\plans\what-do-you-recommend-unified-tulip.md` for the
+`C:\Users\<user>\.claude\plans\what-do-you-recommend-unified-tulip.md` for the
 full plan)
 **Harness:** PLAYBOOK standalone (`.loom/config.yml` shows no GSD/Ruflo
 signal)
@@ -124,7 +124,7 @@ follow-up (not yet assigned).
 today (POSIX-only `ps`/`lsof` shell-outs + POSIX-only path encoding fail
 silently instead of erroring)
 **PRD Status:** full implementation plan approved; see
-`C:\Users\Zaid\.claude\plans\whats-the-plans-glittery-forest.md`
+`C:\Users\<user>\.claude\plans\whats-the-plans-glittery-forest.md`
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
 
 ### Acceptance Criteria
@@ -132,8 +132,8 @@ silently instead of erroring)
 - [x] New `src/agentwatch/path_encoding.py` with `encode_path_for_claude()`
       (unconditional regex-replace of `/`, `\`, `:`, ` ` with `-`),
       unit-tested including the empirically-confirmed case
-      (`C:\Users\Zaid\Desktop\claude work\...` ->
-      `C--Users-Zaid-Desktop-claude-work-...`)
+      (`C:\Users\<user>\Desktop\claude work\...` ->
+      `C--Users-<user>-Desktop-claude-work-...`)
 - [x] `discovery.py::_encode_path_for_claude` removed, replaced by the
       shared function; `cc_stats.py::cwd_to_project_dir` wired to the same
       shared function
@@ -182,7 +182,7 @@ silently instead of erroring)
 
 ### Implementation Plan
 See full file-by-file plan at
-`C:\Users\Zaid\.claude\plans\whats-the-plans-glittery-forest.md`.
+`C:\Users\<user>\.claude\plans\whats-the-plans-glittery-forest.md`.
 Landed as: (1) `pyproject.toml` psutil dep, (2) new `path_encoding.py` +
 tests, (3) `cc_stats.py` wired to shared encoder + test fix, (4)
 `discovery.py` full psutil rewrite (including `_find_open_jsonl`, a
@@ -197,7 +197,7 @@ UTF-8 stdio fix found via the manual smoke test. Status: done.
   installed on this machine, so this is web/source research against
   Aider's real GitHub repo and live sample files, not a local capture).
   **PRD written** (2026-07-10):
-  `C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md` — full file-by-file
+  `C:\Users\<user>\.claude\plans\aider-log-parser-prd.md` — full file-by-file
   design (new `parser/aider.py`, ordinal turn-pairing between the Markdown
   and opt-in analytics JSONL, dual diff-marker regex support), 6 open
   questions flagged for live-install confirmation. Ready for sprint
@@ -245,7 +245,7 @@ UTF-8 stdio fix found via the manual smoke test. Status: done.
   github.com/openai/codex): researched + independently verified
   2026-07-10 (not installed on this machine — web/source research
   against the real GitHub repo, issues, and docs). **PRD written**
-  (2026-07-10): `C:\Users\Zaid\.claude\plans\codex-cli-support-prd.md` —
+  (2026-07-10): `C:\Users\<user>\.claude\plans\codex-cli-support-prd.md` —
   new `_resolve_codex_log()` + dedicated `parser/codex.py` with
   `call_id`-based buffering and explicit era-detection, 7-item
   live-install-gated open-questions list, acceptance criteria that block
@@ -300,7 +300,7 @@ UTF-8 stdio fix found via the manual smoke test. Status: done.
   resolution). Researched 2026-07-10 against this machine's real Cursor
   install — findings below correct and supersede the earlier note (which
   pointed at the wrong file). **Architecture review written** (2026-07-10):
-  `C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md` —
+  `C:\Users\<user>\.claude\plans\cursor-sqlite-architecture-review.md` —
   weighs polling-strategy and watcher-abstraction alternatives (recommends
   a two-tier `composerHeaders`-then-`composerData` poll and a new
   `CursorWatcher` class rather than generalizing `LogWatcher`), recommends
@@ -428,9 +428,9 @@ reviewed — per the architecture review's own Delegation section, this is
 a harder gate than the usual "board approval to merge": it's board
 approval to even start writing Phase 1.
 **PRD Status:** architecture review exists (not a PRD) at
-`C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md`; this
+`C:\Users\<user>\.claude\plans\cursor-sqlite-architecture-review.md`; this
 sprint's own scoping plan is at
-`C:\Users\Zaid\.claude\plans\whats-next-serialized-elephant.md`
+`C:\Users\<user>\.claude\plans\whats-next-serialized-elephant.md`
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
 
 **Why Cursor over Aider/Codex CLI:** board reviewed a comparison of all
@@ -636,7 +636,7 @@ resolves their log path (`discovery.py::_resolve_aider_log`), but
 today — `parse_file()` is JSONL-only and every Markdown line fails
 `json.loads()`.
 **PRD Status:** full implementation plan approved, includes ready-to-use
-code:  `C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md`
+code:  `C:\Users\<user>\.claude\plans\aider-log-parser-prd.md`
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
 **Board decision (2026-07-11):** started in parallel with the blocked
 Cursor Phase 0 spike (Sprint 2) and the devops pre-push hook fix below —
@@ -747,7 +747,7 @@ branches on `"claude-code"`/`"aider"` — Codex processes always get
 `log_file=None`, so `agentwatch check`/`watch` can never parse a Codex
 session even though the process is visible in `agentwatch ps`.
 **PRD Status:** full implementation plan exists:
-`C:\Users\Zaid\.claude\plans\codex-cli-support-prd.md` — written entirely
+`C:\Users\<user>\.claude\plans\codex-cli-support-prd.md` — written entirely
 from source/issue-tracker research (real `openai/codex` repo,
 `codex-rs/protocol/src/protocol.rs`, issues #4963/#13463/#21660,
 `PixelPaw-Labs/codex-trace`), **no live Codex CLI install was available to
@@ -880,7 +880,7 @@ round (1-3) was blocked on "no populated conversation exists to inspect";
 round 4 (2026-07-12) closed that gap with real, three-way-corroborated
 content.
 **PRD Status:** architecture review + 4 rounds of investigation exist at
-`C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md`. No
+`C:\Users\<user>\.claude\plans\cursor-sqlite-architecture-review.md`. No
 separate PRD document — this section's acceptance criteria serve that role,
 derived directly from round 4's confirmed findings.
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
@@ -1068,7 +1068,7 @@ verbatim into a PR body whenever this branch is actually opened for review.
 shipped — several materially affect correctness for real aider sessions
 (resumed sessions, long-lived analytics files) even though none blocked
 the original PR
-**PRD Status:** original PRD (`C:\Users\Zaid\.claude\plans\
+**PRD Status:** original PRD (`C:\Users\<user>\.claude\plans\
 aider-log-parser-prd.md`) Open Questions section is the source for this
 sprint's scope
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
@@ -1334,8 +1334,8 @@ platform-clean (pure `Path` / `watchfiles`).
    - Verified against this machine's real `~/.claude/projects/`: Claude
      Code's actual Windows encoding replaces `\`, `:`, **and spaces**
      with `-`, e.g.
-     `C:\Users\Zaid\Desktop\claude work\agentwatch\agentwatch-main` ->
-     `C--Users-Zaid-Desktop-claude-work-agentwatch-agentwatch-main`.
+     `C:\Users\<user>\Desktop\claude work\agentwatch\agentwatch-main` ->
+     `C--Users-<user>-Desktop-claude-work-agentwatch-agentwatch-main`.
    - This is the root cause of the known-failing test
      `test_cc_stats.py::TestCwdMapping::test_cwd_to_project_dir_existing`.
 
@@ -1742,7 +1742,7 @@ Markdown, and `MultiLogWatcher._find_all_logs()` hardcoded a `.jsonl`-only
 filter that excluded `.aider.chat.history.md` from process-mode discovery
 entirely.
 **PRD Status:** no separate PRD; scope is exactly Sprint 6 item 6's own
-description (`C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md`'s
+description (`C:\Users\<user>\.claude\plans\aider-log-parser-prd.md`'s
 lineage).
 **Board decision:** same continuous-pass authorization as Sprint 7's Cursor
 half above.
@@ -4771,7 +4771,7 @@ Board decisions (2026-10-24):
   8. Net/detect/weekly report.
   9. `watch` uses the same app.
 
-### PR 1: crash fixes (fix/watch-markup-crashes) -- DONE
+### PR 1: crash fixes (fix/watch-markup-crashes) -- DONE (superseded by #166 on develop)
 - [x] Claude Code `system/api_error` logs `error` as a dict: the parser
   (`parser.logs.error_text`) keeps its `message`, else compact JSON. Also
   used by the flat Claude Code, Moltbot, Antigravity and Copilot CLI
@@ -4875,3 +4875,69 @@ Board decisions (2026-10-24):
   down (flaky NoMatches in a detail test); module bars that round to empty
   are left out; warning/tip lines wrap with a hanging indent
   (`ui.app.hang`), long Process values continue indented.
+
+
+---
+
+### Sprint 37 -- 0.2.0 release hardening (2026-10-24)
+**Type:** bug fix. Run by the CTO agent as an engineer -> CTO review -> QA -> fix loop (board directive 2026-10-24).
+**Goal:** make `develop` safe to release as `agentwatch-monitor` 0.2.0 for a social relaunch.
+Source: CTO + 3-way QA review of `develop` (2026-10-22) and PR #157's crash findings.
+
+### Board decisions (2026-10-24)
+1. Scope A: release 0.2.0 from `develop`; `develop-overdrive` features ship later as 0.3.0.
+2. Fix `scrub` / `audit --redact` data safety (no "experimental" label).
+3. The board approves every PR.
+4. Package name stays `agentwatch-monitor` (PyPI `agentwatch` upload was rejected with 400; `agent-watch` exists).
+5. Pick the model by task complexity to keep cost down.
+6. RESOLVED 2026-10-25: the "never merge into main" rule means merges into `main` need a board-reviewed PR; it is not a ban (see CLAUDE.md Git Rules). 0.2.0 ships through a `develop` -> `main` promotion PR, then a `v0.2.0` tag on `main`.
+
+### Acceptance Criteria
+- [x] F1 `watch` / `watch-all` no longer exit on dict `error` fields or on `[...]` text in logs; log text never renders as markup, links or actions (port of #157)
+- [x] F2 two Claude Code sessions in one project dir map to their own logs; a cached mapping is re-checked; a stopped agent's watcher task is cancelled (no double emission)
+- [x] F3 redact never loses appended lines; a second redact keeps a real backup or refuses; symlinks are refused or resolved; a placeholder word inside a secret does not skip redaction; password-like values show no tail
+- [x] F4 Cursor lists only recently active composers; state.vscdb reads set a timeout; a nested agent's endpoints are not also charged to its parent; the HTML-comment injection pattern is linear; non-loopback `OLLAMA_HOST` is refused or warned
+- [x] F5 `test_aider_watcher` passes on macOS 3.12 or the macOS gap is root-caused and documented
+- [x] F6 release prep: no personal paths in tracked files, repo-root clutter removed, CHANGELOG dated, `publish.yml` runs tests and checks tag == version
+- [x] All existing tests pass on 3.11/3.12 (CI) and `ruff check .` is clean
+- [ ] Integrated QA on `develop` after all merges (pre-merge integration run done 2026-10-24: all 7 branches merge cleanly, 2007 passed on 3.12 and 3.14, ruff clean; post-merge live macOS check still to do), incl. live `ps` / `watch-all` / `audit --all` / `net --once` on macOS
+- [x] No new security issues
+
+### Implementation Plan
+| Task | Branch | Model | QA model |
+|---|---|---|---|
+| F1 crash + markup fixes (port #157) | `fix/watch-crashes` | sonnet | sonnet |
+| F2 Claude session mapping, cache, watcher leak | `fix/claude-session-mapping` | opus | sonnet |
+| F3 redact / scrub data safety | `fix/redact-data-safety` | sonnet | sonnet |
+| F4 small fixes batch | `fix/release-small-fixes` | haiku | haiku |
+| F5 macOS Aider watcher | `fix/aider-watcher-macos` | sonnet | haiku |
+| F6 release prep (after F1-F5 merge) | `chore/release-0.2.0-prep` | haiku | haiku |
+
+Rules for every task: branch from `origin/develop`, draft PR to `develop`, never touch `CHANGELOG.md` except in F6, push with `--no-verify` (board-approved 2026-09-30).
+
+### Result (pre-merge, 2026-10-24)
+Every PR went through engineer, then CTO diff review, then QA, then fixes. QA findings were fixed rather than deferred (board: everything on develop is QA'd and fixed).
+- F1 #166: ported #157. Also added a per-line `except` in LogWatcher (one bad line can no longer kill `watch`) and five codex `error_text` sites. QA PASS.
+- F5 #165: Aider and the JSONL LogWatcher only read `Change.modified`. macOS FSEvents reports appends as `Change.added`, so on macOS `watch` never live-tailed any agent. Fixed with a read on any event, resolved paths, a 1 s tick gated by a stat signature, and a prefix fingerprint for truncate and rewrite. Also fixed QA-found shrink-then-append drops. QA PASS x2, CTO verified the final commit.
+- F2 #169: Claude Code never holds its transcript open. The authoritative pid-to-session map is `~/.claude/sessions/<pid>.json` (sessionId, cwd, procStart), rewritten on /clear and /resume and deleted on exit. The mapping is now one-to-one, the cache is re-validated each scan, and reaped watcher tasks are cancelled. Live: 6/6 sessions resolved (develop: 5/6). QA PASS.
+- F4 #167: the injection HTML-comment check is now a linear `str.find` scan with whole-word keywords. The old regex never finished on a 50k flood. False positives on 20k local docs went from ~450 to 53 files. Also: Cursor 30-min window, db timeout, nested net attribution, local-only OLLAMA_HOST (0.0.0.0 counts as local). QA PASS, CTO verified.
+- F3 #168: redact data safety, plus `audit` now really scans user prompts and tool results (it never did). Real-machine audit: 2.2 GB in 19.8 s, 69 of 86 findings in the new channels. QA PASS (20x race runs, no loss), CTO verified the follow-ups.
+- F6 #171: personal paths removed, root ADRs moved to docs/adr/, `graphify-out/` gitignored, publish.yml gated on tests plus tag==version, CHANGELOG entries.
+
+### Open (documented, not fixed)
+- Session record `~/.claude/sessions/<pid>.json` is a Claude Code internal. If it changes, discovery falls back to leaving the process unresolved.
+- `CLAUDE_CONFIG_DIR` not honoured (pre-existing).
+- Redact: a writer that holds an append fd across the replace still loses its later writes (documented in the `--force` warning).
+- CI runs Linux only. The macOS-only watcher bug went unseen for months. Recommend a macos-latest job (board decision: CI minutes cost).
+- `ruff format --check` fails on ~48 files repo-wide (pre-existing, not enforced by CI).
+
+### PR Log
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
+| 2026-10-24 | #164 | docs/sprint-37-release-hardening | docs | ready for board approval | -- |
+| 2026-10-24 | #166 | fix/watch-crashes | fix | ready (CTO review, QA PASS, CI green) | -- |
+| 2026-10-24 | #165 | fix/aider-watcher-macos | fix | ready (CTO review, QA PASS x2, CTO verified final commit, CI green) | -- |
+| 2026-10-24 | #169 | fix/claude-session-mapping | fix | ready (CTO review, QA PASS, CI green) | -- |
+| 2026-10-24 | #167 | fix/release-small-fixes | fix | ready (CTO review x3, QA PASS, CTO verified final commit, CI green) | -- |
+| 2026-10-24 | #168 | fix/redact-data-safety | fix | ready (CTO review, QA PASS, CTO verified follow-ups, CI green) | -- |
+| 2026-10-24 | #171 | chore/release-0.2.0-prep | chore | ready (CTO review x2) | -- |

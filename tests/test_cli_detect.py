@@ -36,7 +36,7 @@ def test_json_schema(monkeypatch):
     assert data["usages"][0] == {
         "pid": 10, "name": "Orca.exe", "exe": r"C:\Orca.exe",
         "providers": ["anthropic"], "connections": 2,
-        "local_runtime": None, "adapter": None,
+        "local_runtime": None, "adapter": None, "display_name": "Orca.exe",
     }
 
 
@@ -73,3 +73,23 @@ def test_nothing_found(monkeypatch):
     result = CliRunner().invoke(cli, ["detect"])
     assert result.exit_code == 0
     assert "No programs using AI found." in result.output
+
+
+def test_table_program_column_uses_display_name(monkeypatch):
+    patch(monkeypatch, DetectResult(usages=[
+        AiUsage(42, "2.1.310", "/x/claude/versions/2.1.310", {"anthropic"}, 3,
+                adapter="claude-code"),
+    ]))
+    out = CliRunner().invoke(cli, ["detect"]).output
+    assert "claude-code" in out
+    assert "2.1.310" not in out
+
+
+def test_json_keeps_name_and_adds_display_name(monkeypatch):
+    patch(monkeypatch, DetectResult(usages=[
+        AiUsage(42, "2.1.310", "/x/claude/versions/2.1.310", {"anthropic"}, 3,
+                adapter="claude-code"),
+    ]))
+    [row] = json.loads(CliRunner().invoke(cli, ["detect", "--json"]).output)["usages"]
+    assert row["name"] == "2.1.310"
+    assert row["display_name"] == "claude-code"
