@@ -19,7 +19,8 @@ from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import normalize_error
 from agentwatch.parser.logs import error_text, parse_claude_code_entry, parse_moltbot_entry
 from agentwatch.parser.models import ActionBuffer
-from agentwatch.ui.app import AgentWatchApp, WarningsList
+from agentwatch.ui.app import WarningsList
+from agentwatch.ui.detail import DetailScreen
 from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
 COMMAND = 'grep "[a-z]+" a[i]'
@@ -118,7 +119,12 @@ def test_normalize_error_accepts_non_strings(value):
 
 
 async def _wait_for_warnings(app, pilot) -> WarningsList:
-    widget = app.query_one("#warnings-list", WarningsList)
+    """watch: the detail view's warnings once they show up."""
+    for _ in range(80):
+        await pilot.pause(0.05)
+        if isinstance(app.screen, DetailScreen) and app.screen.ready:
+            break
+    widget = app.screen.query_one("#d-warnings", WarningsList)
     for _ in range(80):
         await pilot.pause(0.05)
         if widget._warnings:
@@ -129,7 +135,7 @@ async def _wait_for_warnings(app, pilot) -> WarningsList:
 async def test_watch_renders_log_text_literally(tmp_path):
     log = tmp_path / "session.jsonl"
     _write_log(log)
-    app = AgentWatchApp(log_path=log)
+    app = MultiAgentWatchApp(session=log)
     async with app.run_test() as pilot:
         widget = await _wait_for_warnings(app, pilot)
         assert app.is_running
@@ -160,25 +166,22 @@ async def test_watch_all_renders_log_text_literally(tmp_path):
 
 @pytest.mark.parametrize(
     "make",
-    [lambda d: AgentWatchApp(log_path=d / "session.jsonl"),
+    [lambda d: MultiAgentWatchApp(session=d / "session.jsonl"),
      lambda d: MultiAgentWatchApp(watch_paths=[d])],
 )
 async def test_markup_only_log_renders_literally(tmp_path, make):
     _write_markup_only_log(tmp_path / "session.jsonl")
     app = make(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        if isinstance(app, MultiAgentWatchApp):  # the strip shows the error, not the command
+        if app.session is None:  # the strip shows the error, not the command
             _assert_plain(await _wait_for_selected(app, pilot), ERROR, "Repeated action")
         else:
             _assert_plain(await _wait_for_warnings(app, pilot), ERROR, COMMAND)
         assert app.is_running
 
 
-@pytest.mark.parametrize(
-    "make", [lambda p: AgentWatchApp(log_path=p), lambda p: MultiAgentWatchApp()]
-)
-async def test_notify_defaults_to_plain_text(tmp_path, make):
-    app = make(tmp_path / "none.jsonl")
+async def test_notify_defaults_to_plain_text():
+    app = MultiAgentWatchApp()
     async with app.run_test() as pilot:
         app.notify(f"[proj] {ERROR}", title="t")
         await pilot.pause()

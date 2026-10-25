@@ -295,8 +295,6 @@ def test_budget_alone_enables_notify(monkeypatch, tmp_path):
     monkeypatch.setattr("agentwatch.cli.find_running_agents", lambda *a: [])
     monkeypatch.setattr("agentwatch.ui.multi_app.MultiAgentWatchApp.run",
                         lambda self, **kw: seen.update(alerter=self.alerter))
-    monkeypatch.setattr("agentwatch.ui.app.AgentWatchApp.run",
-                        lambda self, **kw: seen.update(alerter=self.alerter))
     res = CliRunner().invoke(cli, ["watch-all", "--headless", "--budget", "5"])
     assert res.exit_code == 0, res.output
     assert seen["alerter"].notify and seen["alerter"].budget == 5.0

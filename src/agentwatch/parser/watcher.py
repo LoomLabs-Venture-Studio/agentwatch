@@ -838,7 +838,7 @@ class MultiLogWatcher:
 
         logs = []
         for p in self.base_paths:
-            if p.is_file() and p.suffix == ".jsonl":
+            if p.is_file():  # named outright (`watch`): any format an adapter reads
                 logs.append(p)
             elif p.is_dir():
                 logs.extend(p.rglob("*.jsonl"))

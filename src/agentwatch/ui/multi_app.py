@@ -377,6 +377,8 @@ class MultiAgentWatchApp(App):
         alerter: Alerter | None = None,
         since: float | None = None,
         machine_checks: bool = True,
+        session: Path | None = None,
+        session_proc: AgentProcess | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -396,7 +398,8 @@ class MultiAgentWatchApp(App):
         self._discovery_cache = DiscoveryCache()
         self.selected_path: Path | None = None
         self._alerted_signals: set[str] = set()
-        self._process_mode = agent_processes is not None
+        # `watch` (session=) is process mode too, scoped to its one log
+        self._process_mode = agent_processes is not None or session is not None
         self._net_sampler = NetSampler()
         self.sort_mode = SORTS[0]
         self._cells: dict[str, dict[str, tuple[str, str]]] = {}  # row key -> shown cells
@@ -447,8 +450,16 @@ class MultiAgentWatchApp(App):
         self._syncing = False
         self._sync_proc: asyncio.subprocess.Process | None = None
         self.sync_seconds: float | None = None  # the last sync's duration
+        # `watch`: the one log followed, opened in the detail view when it
+        # appears; session_proc is its running agent, if one was found.
+        self.session = session
 
-        if agent_processes is not None:
+        if session is not None:
+            self._initial_processes = []
+            self.watcher = MultiLogWatcher([session])
+            if session_proc is not None:  # its pid, project, Cursor composer
+                self.watcher._process_meta[session] = session_proc
+        elif agent_processes is not None:
             self._initial_processes = agent_processes
             self.watcher = MultiLogWatcher.from_processes(agent_processes)
         else:
@@ -556,6 +567,8 @@ class MultiAgentWatchApp(App):
             self._team_by_pid[item.pid] = item.team_id
         if self.selected_path is None:
             self.selected_path = log_path
+        if log_path == self.session:
+            self.push_screen(DetailScreen(log_path))
         if self._loaded_until is None:
             name = who(item.agent_type or state.get("agent_name"), item.project_name)
             self._event(f"{ascii_safe('▶', '>')} {name} started")
@@ -1141,7 +1154,7 @@ class MultiAgentWatchApp(App):
             hits = [p for p in members if self._matches(rows[str(p)])]
             asleep = sum(p not in awake for p in hits)
             idle += asleep
-            if asleep and not self._show_idle:
+            if asleep and not self._show_idle and self.session is None:  # `watch` never folds
                 hits = [p for p in hits if p in awake]
             keep: set[Path] = set()  # the hits and their parents (a subagent never alone)
             for path in hits:
@@ -1156,7 +1169,7 @@ class MultiAgentWatchApp(App):
                 rows[key] = self._team_cells(self.teams[team_id])
                 order.append(key)
             order.extend(str(p) for p in members)
-        if idle:
+        if idle and self.session is None:
             rows[FOLD_KEY] = self._fold_cells(idle)
             order.append(FOLD_KEY)
 
@@ -1902,6 +1915,8 @@ class MultiAgentWatchApp(App):
             processes = await asyncio.to_thread(find_running_agents, self._discovery_cache)
         finally:
             self._scanning = False
+        if self.session is not None:  # `watch`: only its own agent, never others
+            processes = [p for p in processes if p.log_file == self.session]
 
         new_agents = self.watcher.refresh_processes(processes)
         scanned = {t.team_id: t for t in build_teams(processes) if t.member_count > 1}
@@ -1924,7 +1939,8 @@ class MultiAgentWatchApp(App):
                     self._event(f"{ascii_safe('■', '#')} {name} stopped", "dim")
 
         # Remove agents that have been stopped for over 60 seconds
-        expired = self.watcher.reap_stopped(timeout=60.0)
+        # `watch` keeps its one session after the agent stops
+        expired = [] if self.session is not None else self.watcher.reap_stopped(timeout=60.0)
         for log_path in expired:
             agent_data = self.agents.pop(log_path, None)
             if agent_data:
