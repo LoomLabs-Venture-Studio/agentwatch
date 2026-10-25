@@ -1942,6 +1942,10 @@ def audit(
     \b
     By default scans the current project. Use --all for all projects.
     Use --redact to replace found secrets with [REDACTED] in the log files.
+
+    \b
+    Exit codes: 0 = no high or critical findings, 1 = at least one high,
+    2 = at least one critical. Medium, low and --pii findings never fail.
     """
     from agentwatch.cc_stats import (
         cwd_to_project_dir,
