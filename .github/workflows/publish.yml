@@ -5,7 +5,26 @@ on:
     types: [published]
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install package with dev dependencies
+      run: pip install -e ".[dev,siem,llm]"
+    - name: Lint with ruff
+      run: ruff check .
+    - name: Run tests
+      run: python -m pytest tests/
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -16,6 +35,38 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
+    - name: Verify release tag matches package version
+      env:
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
+      run: |
+        python - <<'EOF'
+        import os
+        import re
+        import sys
+        import tomllib
+
+        tag = os.environ["RELEASE_TAG"]
+        expected = tag[1:] if tag.startswith("v") else tag
+
+        with open("pyproject.toml", "rb") as f:
+            project_version = tomllib.load(f)["project"]["version"]
+
+        with open("src/agentwatch/__init__.py", encoding="utf-8") as f:
+            match = re.search(r'^__version__\s*=\s*"([^"]+)"', f.read(), re.MULTILINE)
+        module_version = match.group(1) if match else None
+
+        errors = []
+        if project_version != expected:
+            errors.append(f"pyproject.toml project.version={project_version!r}")
+        if module_version != expected:
+            errors.append(f"agentwatch.__version__={module_version!r}")
+        if errors:
+            print(f"Release tag {tag!r} (expected version {expected!r}) does not match:")
+            for line in errors:
+                print(f"  - {line}")
+            sys.exit(1)
+        print(f"Release tag {tag!r} matches version {expected!r}.")
+        EOF
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip

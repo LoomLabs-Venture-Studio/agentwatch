@@ -170,3 +170,101 @@ class TestAiderLogWatcherAsync:
             assert third.incoming_message == "add a test"
         finally:
             await gen.aclose()
+
+    async def test_watch_picks_up_append_made_before_watch_is_armed(self, md_path):
+        """Regression (macOS): an append landing between the initial read and
+        the OS watch being armed, or reported as Change.added by FSEvents, must
+        still be emitted (via any-event reparse plus the fallback tick)."""
+        md_path.write_text(SESSION_1, encoding="utf-8")
+        watcher = AiderLogWatcher(md_path)
+        gen = watcher.watch()
+        try:
+            await asyncio.wait_for(gen.__anext__(), timeout=2)
+            await asyncio.wait_for(gen.__anext__(), timeout=2)
+            # Append synchronously, before the generator resumes and arms awatch.
+            with open(md_path, "a", encoding="utf-8") as f:
+                f.write(TURN_2)
+            third = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            assert third.incoming_message == "add a test"
+        finally:
+            await gen.aclose()
+
+    async def test_idle_ticks_do_not_reparse_unchanged_file(self, md_path, monkeypatch):
+        import agentwatch.parser.watcher as w
+
+        md_path.write_text(SESSION_1, encoding="utf-8")
+        watcher = AiderLogWatcher(md_path)
+        watcher._POLL_TICK_MS = 50
+        calls = 0
+        real = w.parse_aider_sessions
+
+        def counting(path):
+            nonlocal calls
+            calls += 1
+            return real(path)
+
+        monkeypatch.setattr(w, "parse_aider_sessions", counting)
+        gen = watcher.watch()
+        try:
+            await asyncio.wait_for(gen.__anext__(), timeout=2)
+            await asyncio.wait_for(gen.__anext__(), timeout=2)
+            assert calls == 1
+            # Let several idle ticks elapse with no emission.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(gen.__anext__(), timeout=0.5)
+            assert calls == 1
+        finally:
+            await gen.aclose()
+
+    def test_tick_reparses_on_same_size_rewrite_and_replacement(self, md_path):
+        md_path.write_text(SESSION_1, encoding="utf-8")
+        watcher = AiderLogWatcher(md_path)
+        assert watcher._read_new_actions(only_if_changed=True)
+        assert watcher._read_new_actions(only_if_changed=True) == []
+        sig = watcher._last_sig
+        # Same-size rewrite with a new mtime must be seen as changed.
+        data = md_path.read_bytes()
+        md_path.write_bytes(data)
+        import os
+
+        st = md_path.stat()
+        os.utime(md_path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+        assert watcher._stat_sig() != sig
+        watcher._read_new_actions(only_if_changed=True)
+        assert watcher._last_sig == watcher._stat_sig()
+        # Replacement (new inode) and disappearance.
+        tmp = md_path.with_name("new.md")
+        tmp.write_bytes(data)
+        tmp.replace(md_path)
+        assert watcher._stat_sig() != watcher._last_sig
+        md_path.unlink()
+        assert watcher._read_new_actions(only_if_changed=True) == []
+        assert watcher._last_sig is None
+
+
+class TestAiderCursorShrink:
+    def test_shrink_then_append_still_emits(self, md_path):
+        turn_3 = TURN_2.replace("add a test", "t3")
+        md_path.write_text(SESSION_1 + TURN_2 + turn_3, encoding="utf-8")
+        watcher = AiderLogWatcher(md_path)
+        assert len(watcher._read_new_actions()) == 4
+        # Rewrite to a single turn: nothing re-emitted.
+        md_path.write_text(SESSION_1, encoding="utf-8")
+        assert watcher._read_new_actions() == []
+        # A new append after the shrink must be emitted.
+        with open(md_path, "a", encoding="utf-8") as f:
+            f.write(TURN_2)
+        new = watcher._read_new_actions()
+        assert [a.incoming_message for a in new if a.tool_name == "aider_prompt"] == ["add a test"]
+
+    def test_session_disappears_and_returns_smaller(self, md_path):
+        md_path.write_text(SESSION_1 + TURN_2, encoding="utf-8")
+        watcher = AiderLogWatcher(md_path)
+        assert len(watcher._read_new_actions()) == 3
+        md_path.write_text("", encoding="utf-8")
+        assert watcher._read_new_actions() == []
+        md_path.write_text(SESSION_1, encoding="utf-8")
+        assert watcher._read_new_actions() == []
+        with open(md_path, "a", encoding="utf-8") as f:
+            f.write(TURN_2)
+        assert len(watcher._read_new_actions()) == 1

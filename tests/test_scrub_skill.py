@@ -31,3 +31,12 @@ def test_scrubbed_session_log_moved_out_of_projects():
     section = text[text.index("## 3. Claude Code session logs") : text.index("## 4.")]
     assert "mv <log>.scrubbed.jsonl" in section
     assert "out of ~/.claude/projects" in section
+
+
+def test_skill_does_not_claim_audit_skips_prompts_or_tool_results():
+    # audit scans every channel (extract_scannable_content), prompts and tool
+    # results included; the skill must not tell users otherwise.
+    text = " ".join(SKILL.read_text(encoding="utf-8").split())
+    assert "does NOT look at user prompts or tool results" not in text
+    assert "scans every channel" in text
+    assert "user_message" in text and "tool_output" in text

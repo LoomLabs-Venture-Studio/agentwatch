@@ -634,7 +634,7 @@ def project_dir_to_name(project_dir: Path, log: Path | None = None) -> str:
         name = project_name(recorded_cwd(jsonl))
         if name:
             return name
-    name = project_dir.name  # e.g. -Users-zaid-Projects-agentwatch
+    name = project_dir.name  # e.g. -Users-alice-Projects-agentwatch
     try:
         if name == encode_path_for_claude(Path.home()):
             return "~"

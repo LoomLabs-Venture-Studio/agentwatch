@@ -95,7 +95,7 @@ Components
 5. `watch` TUI
    - Add a "Network" panel showing the last N hosts contacted, live.
 
-Open Decisions (need Zaid's input before/while building)
+Open Decisions (need maintainer input before/while building)
 ----------------------------------------------------------
 - Multi-agent support: each agent gets its own mitmdump instance/port for
   isolation (recommended -- avoids cross-contamination in watch-all mode).
