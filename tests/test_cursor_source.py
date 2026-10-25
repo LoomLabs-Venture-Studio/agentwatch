@@ -178,6 +178,23 @@ class TestOpenReadonly:
         finally:
             conn.close()
 
+    def test_connect_sets_lock_timeout(self, fixture_db, monkeypatch):
+        """Cursor holds state.vscdb open for writes; without a busy timeout a
+        locked read fails immediately instead of waiting briefly."""
+        import agentwatch.parser.cursor_source as cursor_source
+
+        seen: dict = {}
+        real_connect = sqlite3.connect
+
+        def spy_connect(*args, **kwargs):
+            seen.update(kwargs)
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(cursor_source.sqlite3, "connect", spy_connect)
+        conn = open_readonly(fixture_db)
+        conn.close()
+        assert seen.get("timeout") == 1.0
+
 
 # ---------------------------------------------------------------------------
 # fetch_composer_headers

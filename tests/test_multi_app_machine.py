@@ -5,7 +5,9 @@ and show in the header, the `d`/`w` overlays and one feed line each."""
 
 from __future__ import annotations
 
+import asyncio
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -95,6 +97,8 @@ SPANS = {4242: [
     Endpoint("160.79.104.10", 443, NOW - 120, NOW - 60),
     Endpoint("203.0.113.9", 8443, NOW - 30, NOW - 5),
     Endpoint("160.79.104.10", 443, NOW - 20, NOW - 1),  # the same endpoint again: one row
+    Endpoint("127.0.0.53", 53, NOW - 20, NOW - 1),  # local DNS: hidden, as by `agentwatch net`
+    Endpoint("fe80::1", 5353, NOW - 20, NOW - 1),  # link-local: hidden too
 ]}
 LISTENERS = [("0.0.0.0", 3000, "all interfaces", True), ("127.0.0.1", 9229, "loopback", False)]
 
@@ -109,8 +113,8 @@ async def test_network_tab_names_endpoints_flags_providers_and_lists_listeners(
                     and "EXPOSED" in _screen(app))
         text = str(app.screen.query_one("#d-net").render())
         assert "Outgoing: pid 4242 and its children, last 30 min" in text
-        rows = [line for line in text.replace("\n      AI-", " AI-").splitlines()
-                if ":443" in line]  # 80 columns: the flag continues indented
+        # 80 columns: the flag goes on its own line, under ENDPOINT
+        rows = [line for line in re.sub(r"\n +AI-", " AI-", text).splitlines() if ":443" in line]
         assert len(rows) == 1 and "api.anthropic.com [known]" in rows[0]
         assert "AI-PROVIDER anthropic" in rows[0]
         assert datetime.fromtimestamp(NOW - 120).strftime("%H:%M:%S") in rows[0]  # first
@@ -119,6 +123,11 @@ async def test_network_tab_names_endpoints_flags_providers_and_lists_listeners(
         assert "0.0.0.0:3000    EXPOSED (all interfaces)" in text
         assert "127.0.0.1:9229  loopback" in text
         assert "2 endpoint(s), 1 to AI providers; 1 listener(s) reachable" in text
+        assert "127.0.0.53" not in text and "fe80::1" not in text
+        lines = text.splitlines()
+        header = next(line for line in lines if "ENDPOINT" in line)
+        flag = next(line for line in lines if "AI-PROVIDER" in line)
+        assert flag.index("AI-PROVIDER") >= header.index("ENDPOINT")  # never under HOST
         print(f"\n--- Network tab {size[0]}x{size[1]} ---\n{_screen(app)}")
 
 
@@ -197,7 +206,7 @@ async def test_unmonitored_ai_header_overlay_and_one_feed_line_per_new_program(
         await _wait(pilot, lambda: isinstance(app.screen, HelpScreen))
         text = _overlay(app)
         assert "Checked every 0s" in text and "(agentwatch detect)" in text
-        assert "[b]py[/b]thon" in text and "claude-code" in text
+        assert "[b]py[/b]thon" in text and "claude-code" in text and "SUPPORTED" in text
         assert "3 program(s) using AI (2 not monitored by agentwatch)" in text
         assert "Could not resolve: api.x.ai" in text
         await pilot.press("enter")  # main keys are off under it
@@ -364,3 +373,77 @@ async def test_header_order_when_tight():
             assert "+2 unmonitored AI" in header and "need you" in header, (width, header)
             if width == 99:  # under 100: today/week go, the counts stay
                 assert header.startswith("12 sessions · 12 active"), header
+
+
+# QA B1: a sync's pool workers never outlive watch-all ------------------------
+
+# A stand-in for the sync: its own pool workers (sleeping), like history.sync's.
+_POOL = ("import time\n"
+         "from concurrent.futures import ProcessPoolExecutor\n"
+         "pool = ProcessPoolExecutor(2)\n"
+         "futures = [pool.submit(time.sleep, 60) for _ in range(2)]\n"
+         "time.sleep(60)\n")
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="process groups")
+
+
+def _tree(pid: int, n: int = 3, timeout: float = 15.0) -> list:
+    """*pid* and its descendants, once there are at least *n* processes."""
+    import psutil
+
+    proc, procs = psutil.Process(pid), []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        procs = [proc, *proc.children(recursive=True)]
+        if len(procs) >= n:
+            return procs
+        time.sleep(0.05)
+    raise AssertionError(f"sync tree never reached {n} processes: {procs}")
+
+
+def _all_gone(procs: list, timeout: float = 5.0) -> list:
+    """The processes still running after *timeout* (zombies count as gone)."""
+    import psutil
+
+    deadline = time.monotonic() + timeout
+    alive = procs
+    while alive and time.monotonic() < deadline:
+        alive = [p for p in alive if p.is_running() and p.status() != psutil.STATUS_ZOMBIE]
+        time.sleep(0.05)
+    for p in alive:  # never leave them behind, even on failure
+        p.kill()
+    return alive
+
+
+@posix_only
+async def test_quit_mid_sync_leaves_no_pool_workers(monkeypatch, history_on):
+    monkeypatch.setattr(machine, "SYNC_ARGS", (sys.executable, "-c", _POOL))
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait(pilot, lambda: app._sync_proc is not None)
+        procs = await asyncio.to_thread(_tree, app._sync_proc.pid)
+        await pilot.press("q")
+    assert _all_gone(procs) == []
+
+
+@posix_only
+def test_sync_exits_when_watch_all_is_killed(tmp_path):
+    """watch-all SIGKILLed mid-sync: the sync and its workers follow."""
+    import signal
+    import subprocess
+
+    child = ("from agentwatch.ui.machine import exit_with_parent\n"
+             "exit_with_parent()\n" + _POOL)
+    parent = subprocess.Popen(
+        [sys.executable, "-c",
+         "import subprocess, sys, time\n"
+         f"p = subprocess.Popen([sys.executable, '-c', {child!r}], start_new_session=True)\n"
+         "print(p.pid, flush=True)\n"
+         "time.sleep(60)\n"],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        sync_pid = int(parent.stdout.readline())
+        procs = _tree(sync_pid)
+    finally:
+        parent.send_signal(signal.SIGKILL)
+        parent.wait()
+    assert _all_gone(procs) == [], "sync tree outlived its parent"

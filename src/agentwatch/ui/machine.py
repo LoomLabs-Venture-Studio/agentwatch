@@ -10,8 +10,13 @@ rest only format text, shown literally (never markup).
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 import sys
 import textwrap
+import threading
+import time
 from datetime import datetime
 
 from agentwatch.alerts import _usd
@@ -20,8 +25,58 @@ from agentwatch.themes import ascii_safe
 SYNC_DAYS = 14  # the week and the week before it (`agentwatch report` syncs 2x its days)
 # `history.sync` runs in its own process: its parse pool must not fork this
 # (threaded) one, and its parsing stays off the UI process.
-SYNC_ARGS = (sys.executable, "-c",
-             f"from agentwatch.history import connect, sync; sync(connect(), days={SYNC_DAYS})")
+# It runs in its own process group (see kill_group) and exits with its parent.
+SYNC_ARGS = (sys.executable, "-c", "from agentwatch.ui.machine import sync_main; sync_main()")
+# start the sync in a new group, so one kill reaches its pool workers too
+GROUP_KWARGS = (
+    {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32"
+    else {"start_new_session": True}
+)
+
+
+def exit_with_parent() -> None:
+    """If this process's parent dies (SIGKILL, crash), kill this process
+    within a second: its whole group (pool workers included) when it leads
+    one, else only itself. POSIX only."""
+    if sys.platform == "win32":
+        return
+    parent = os.getppid()
+
+    def watchdog() -> None:
+        while os.getppid() == parent:
+            time.sleep(1)
+        if os.getpgid(0) == os.getpid():
+            os.killpg(0, signal.SIGKILL)
+        os.kill(os.getpid(), signal.SIGKILL)
+
+    threading.Thread(target=watchdog, daemon=True).start()
+
+
+def sync_main() -> None:
+    """The sync subprocess: `history.sync`, gone with watch-all."""
+    from agentwatch.history import connect, sync
+
+    exit_with_parent()
+    sync(connect(), days=SYNC_DAYS)
+
+
+def kill_group(pid: int, grace: float = 0.5) -> None:
+    """Stop the sync process *pid* and its pool workers: SIGTERM its process
+    group, SIGKILL whatever is left after *grace* seconds. Windows: taskkill
+    the tree. Never raises."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                           capture_output=True, timeout=5, check=False)
+            return
+        os.killpg(pid, signal.SIGTERM)
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            os.killpg(pid, 0)  # ProcessLookupError once the group is gone
+            time.sleep(0.05)
+        os.killpg(pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass  # already gone (ProcessLookupError), or nothing more we can do
 
 
 def _clock(epoch: float) -> str:
@@ -58,6 +113,23 @@ def listeners_of(pid: int) -> list[tuple[str, int, str, bool]]:
             for ip, port in sorted(found) for scope in (listener_scope(ip),)]
 
 
+def _endpoint_table(rows: list[tuple[str, ...]], width: int) -> list[str]:
+    """The Outgoing table. Too wide for *width*: each AI-PROVIDER flag goes on
+    its own line under the ENDPOINT column, then FIRST SEEN goes if needed."""
+    table = _table(rows)
+    if width <= 20 or max(map(len, table)) < width:
+        return table
+    for keep in ((0, 1, 2, 3), (0, 1, 3)):
+        table = _table([tuple(r[i] for i in keep) for r in rows])
+        if max(map(len, table)) < width:
+            break
+    hang = " " * (4 + max(len(r[0]) for r in rows) + 2)
+    out = []
+    for line, row in zip(table, rows):
+        out += [line, hang + row[4]] if row[4] else [line]
+    return out
+
+
 def net_text(pid: int, spans, names: dict, listeners, seen_in_actions: str,
              width: int = 0) -> str:
     """The Network tab: *spans* (NetSampler.spans) by endpoint, named from
@@ -79,7 +151,7 @@ def net_text(pid: int, spans, names: dict, listeners, seen_in_actions: str,
             providers += provider is not None
             rows.append((f"{host} [{source}]", _hostport(ip, port), _clock(first), _clock(last),
                          f"AI-PROVIDER {provider}" if provider else ""))
-        lines += _table(rows)
+        lines += _endpoint_table(rows, width)
     lines += ["", "  Listening now"]
     exposed = 0
     if listeners is None:
@@ -123,7 +195,7 @@ def detect_text(result, at: float | None, every_s: float) -> str:
     if not result.usages:
         lines = ["No programs using AI found."]
     else:
-        rows = [("PID", "PROGRAM", "PROVIDERS", "CONNS", "LOCAL", "MONITORED")]
+        rows = [("PID", "PROGRAM", "PROVIDERS", "CONNS", "LOCAL", "SUPPORTED")]  # as `detect`
         rows += [(str(u.pid), _printable(u.name), ",".join(sorted(u.providers)) or "-",
                   str(u.connections), u.local_runtime or "-", u.adapter or "no")
                  for u in result.usages]

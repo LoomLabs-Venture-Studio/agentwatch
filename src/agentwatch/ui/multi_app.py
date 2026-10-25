@@ -24,6 +24,7 @@ from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
 from agentwatch.coach import state_path
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Severity, format_usd, warning_dedup_key
+from agentwatch.detectors.security.network import _flaggable
 from agentwatch.discovery import (
     AgentProcess,
     AgentTeam,
@@ -1498,7 +1499,8 @@ class MultiAgentWatchApp(App):
             start = time.monotonic()
             self._sync_proc = proc = await asyncio.create_subprocess_exec(
                 *machine.SYNC_ARGS, stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                **machine.GROUP_KWARGS)
             if await proc.wait():
                 raise OSError(f"history sync exited {proc.returncode}")
             self.sync_seconds = time.monotonic() - start
@@ -1506,6 +1508,9 @@ class MultiAgentWatchApp(App):
         except Exception:
             figures = None
         finally:
+            if self._sync_proc is not None and self._sync_proc.returncode is None:
+                # cancelled (the app is quitting; it runs before on_unmount)
+                machine.kill_group(self._sync_proc.pid)
             self._syncing, self._sync_proc = False, None
         if figures is None:
             if not self._history_failed:
@@ -1684,7 +1689,8 @@ class MultiAgentWatchApp(App):
         if not data.get("net_sampled"):
             return f"  {NOT_ATTRIBUTABLE}"
         pid = data["pid"]
-        spans = self._net_sampler.spans(pid) or []
+        # what `agentwatch net` shows: no loopback, link-local, multicast (local DNS)
+        spans = [e for e in self._net_sampler.spans(pid) or [] if _flaggable(e.ip)]
         now = time.monotonic()
         if tab == "network" and not self._naming and now >= self._name_next:
             self._name_next = now + NAME_EVERY_S
@@ -1841,7 +1847,8 @@ class MultiAgentWatchApp(App):
         and stop the net sampler."""
         self._net_sampler.stop()
         if self._sync_proc is not None and self._sync_proc.returncode is None:
-            self._sync_proc.kill()  # the next start's sync redoes its logs
+            # its pool workers too; the next start's sync redoes its logs
+            machine.kill_group(self._sync_proc.pid)
         for data in self.agents.values():
             siem_exporter: LiveSiemExporter | None = data.get("siem_exporter")
             if siem_exporter is not None:

@@ -309,7 +309,12 @@ async def test_real_hook_block_shows_in_watch_all(tmp_path, monkeypatch):
     synthetic transcript (CLAUDE_PLUGIN_DATA in a temp dir); watch-all shows it."""
     from test_loop_breaker import CMD, _transcript
 
-    monkeypatch.undo()  # this test reads the real coach dirs, from the env below
+    from agentwatch import statusline
+
+    # the real coach dirs (from the env below), not the `state` fixture's one;
+    # conftest's isolation stays (no monkeypatch.undo(): QA found it reached
+    # the real history DB)
+    monkeypatch.setattr(multi_app, "state_dirs", statusline.state_dirs)
     env = {**os.environ, "CLAUDE_PLUGIN_DATA": str(tmp_path / "plugin"),
            "XDG_CACHE_HOME": str(tmp_path / "cache")}
     env.pop("AGENTWATCH_LOOP_BREAKER", None)

@@ -94,7 +94,7 @@ Header
   +N unmonitored AI  programs using AI that agentwatch cannot
               monitor (checked every 30s; d lists them)
 
-Main flags (agentwatch watch-all --help lists them all)
+Main flags (watch-all --help lists them all)
   --all-logs          every log in the known log dirs (not running
                       processes)
   --since Nh|Nd|all   with --all-logs: the window (default 24h)
@@ -185,9 +185,10 @@ class HelpScreen(ModalScreen):
         yield Footer(show_command_palette=False)  # "esc Close", over the table's
 
     def _wrapped(self, width: int) -> str:
-        """Wrapped to the box (border and padding: 4 cells), hanging indents."""
+        """Wrapped to the box (border and padding: 4 cells; a scrollbar when it
+        scrolls: 2 more), hanging indents."""
         text = help_text() if self._text is None else self._text
-        return hang(text, min(self._width, width) - 4, unwrap=self._text is None)
+        return hang(text, min(self._width, width) - 6, unwrap=self._text is None)
 
     def on_resize(self, event) -> None:
         show(self.query_one("#help-text", Static), self._wrapped(event.size.width))
