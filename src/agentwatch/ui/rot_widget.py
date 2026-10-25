@@ -22,7 +22,9 @@ class ContextHealthWidget(Static):
     """Displays the composite rot score, state, per-module bars, and top reasons."""
 
     def __init__(self, **kwargs):
-        super().__init__("  Context Health: loading" + ascii_safe("…", "..."), **kwargs)
+        super().__init__(
+            "  Context Health: loading" + ascii_safe("…", "..."), markup=False, **kwargs
+        )
         self._report: RotReport | None = None
         self._peak_context_tokens: int | None = None
 

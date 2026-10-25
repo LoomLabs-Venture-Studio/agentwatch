@@ -35,6 +35,10 @@ from .vscode_paths import default_user_dir
 
 _CURSOR_PROCESS_RE = re.compile(r"^cursor(\.exe)?$", re.IGNORECASE)
 
+# Same window as claude_desktop_discovery.ACTIVITY_WINDOW_SECONDS. Defined
+# locally because claude_desktop_discovery imports from this module.
+ACTIVITY_WINDOW_SECONDS = 1800
+
 
 def is_cursor_running() -> bool:
     """Check whether any Cursor process is currently running.
@@ -183,8 +187,9 @@ def find_cursor_agents(
     *require_running* is explicitly disabled -- only tests supplying a
     fixture DB without a live Cursor process should do that. Only
     non-archived, ``unifiedMode == "agent"`` composers that have actually
-    been messaged (``lastUpdatedAt`` not ``None``) and whose workspace
-    resolves to a real path are surfaced; everything else is silently
+    been messaged (``lastUpdatedAt`` not ``None``), messaged within
+    ``ACTIVITY_WINDOW_SECONDS``, and whose workspace resolves to a real path
+    are surfaced; everything else is silently
     skipped, matching the existing "no cwd -> continue" convention used by
     every other agent type in ``discovery.py::find_running_agents``.
 
@@ -216,6 +221,7 @@ def find_cursor_agents(
         conn.close()
 
     agents: list[AgentProcess] = []
+    now = time.time()
     for composer_id, header in headers.items():
         if header.get("isArchived"):
             continue
@@ -232,6 +238,13 @@ def find_cursor_agents(
         last_updated = header.get("lastUpdatedAt")
         if last_updated is None:
             continue  # composer exists but was never actually messaged
+        # lastUpdatedAt is epoch milliseconds (same unit as createdAt below).
+        # Past conversations stay in the DB forever; only recently active
+        # composers count as running agents.
+        if not isinstance(last_updated, (int, float)):
+            continue
+        if now - last_updated / 1000.0 > ACTIVITY_WINDOW_SECONDS:
+            continue
 
         workspace_id = header.get("workspaceId")
         working_directory = workspace_map.get(workspace_id) if workspace_id else None
