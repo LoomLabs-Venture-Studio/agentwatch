@@ -20,7 +20,12 @@ from agentwatch.net_sampler import (
     attributable,
     endpoint_summary,
 )
-from agentwatch.themes import ascii_safe, get_theme, security_status_from_score
+from agentwatch.themes import (
+    ascii_safe,
+    get_theme,
+    security_label_from_score,
+    security_status_from_score,
+)
 from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
 
 if TYPE_CHECKING:
@@ -37,7 +42,7 @@ class HealthBar(Static):
     status = reactive("")
 
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(markup=False, **kwargs)
         # Initialize status with theme's best status
         self.status = get_theme().level_0
 
@@ -61,6 +66,9 @@ class SecurityStatus(Static):
     score = reactive(100)
     alert_count = reactive(0)
 
+    def __init__(self, **kwargs):
+        super().__init__(markup=False, **kwargs)
+
     def render(self) -> str:
         # Theme-driven, following the same pattern HealthBar (above) already
         # uses correctly -- see security_status_from_score()'s docstring for
@@ -69,10 +77,11 @@ class SecurityStatus(Static):
         theme = get_theme()
         status = security_status_from_score(self.score)
         emoji = theme.emoji_for(status)
+        label = security_label_from_score(self.score)
 
         return f"""
   Security Score: {self.score}%
-  Status: {emoji} {status.upper()}
+  Status: {emoji} {label}
   Active Alerts: {self.alert_count}
 """
 
@@ -85,6 +94,7 @@ class EfficiencyBar(Static):
         super().__init__(
             f"  Efficiency: [████████████████████] 100%  Status: {theme.level_0.upper()}\n"
             f"  Session is {theme.level_0}",
+            markup=False,
             **kwargs,
         )
         self._report: EfficiencyReport | None = None
@@ -147,7 +157,7 @@ class WarningsList(Static):
     """Widget showing list of active warnings."""
 
     def __init__(self, **kwargs):
-        super().__init__("  No active warnings", **kwargs)
+        super().__init__("  No active warnings", markup=False, **kwargs)
         self._warnings: list[Warning] = []
         self._goal_alignment: dict | None = None
 
@@ -320,7 +330,7 @@ class StatsPanel(Static):
     """Widget showing session statistics."""
 
     def __init__(self, **kwargs):
-        super().__init__("  Actions: 0  Errors: 0  Duration: 0m", **kwargs)
+        super().__init__("  Actions: 0  Errors: 0  Duration: 0m", markup=False, **kwargs)
         self._action_count = 0
         self._error_count = 0
         self._duration = 0.0
@@ -363,8 +373,16 @@ def select_single_agent_watcher(log_path: Path, cursor_composer_id: str | None):
     return adapter.make_watcher(log_path, session)
 
 
+def plain_notify(app: App, message: str, **kwargs) -> None:
+    """`App.notify` defaults to markup; toasts here carry log-derived text."""
+    kwargs.setdefault("markup", False)
+    App.notify(app, message, **kwargs)
+
+
 class AgentWatchApp(App):
     """Main TUI application for AgentWatch."""
+
+    notify = plain_notify
 
     CSS = """
     Screen {

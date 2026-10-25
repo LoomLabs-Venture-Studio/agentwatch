@@ -66,4 +66,12 @@ def test_pii_redact_removes_it_and_keeps_bak(tmp_path, monkeypatch):
     assert res.exit_code == 0
     assert json.loads(res.stdout)["redacted"] == 1
     assert EMAIL not in log.read_text()
-    assert EMAIL in log.with_name("sess1.jsonl.bak").read_text()
+    (backup,) = log.parent.glob("sess1.jsonl.bak.*")
+    assert EMAIL in backup.read_text()
+
+
+def test_audit_help_documents_exit_codes():
+    res = CliRunner().invoke(cli, ["audit", "--help"])
+    assert res.exit_code == 0
+    assert "Exit codes" in res.output
+    assert "2 = at least one critical" in res.output

@@ -41,6 +41,18 @@ def _denied(kind):
     raise psutil.AccessDenied()
 
 
+def _own_pids(root: int, trees: dict[int, list]) -> set[int]:
+    """Pids whose sockets are charged to *root*: its whole tree minus the
+    subtrees of any other tracked root nested inside it. A nested tracked
+    root (and its descendants) is attributed to that root alone, so traffic
+    is never counted under both the parent and the child."""
+    own = {p.pid for p in trees[root]}
+    for other in trees:
+        if other != root and other in own:
+            own -= {other} | {p.pid for p in trees[other]}
+    return own
+
+
 class NetSampler:
     def __init__(
         self,
@@ -107,7 +119,8 @@ class NetSampler:
             for root, tree in trees.items():
                 if root not in self._started:
                     continue  # untracked while polling
-                seen = set().union(*(seen_by_pid.get(p.pid, ()) for p in tree))
+                own = _own_pids(root, trees)
+                seen = set().union(*(seen_by_pid.get(pid, ()) for pid in own))
                 live, spans = self._live[root], self._spans[root]
                 fresh = {}
                 for ip, port in seen:

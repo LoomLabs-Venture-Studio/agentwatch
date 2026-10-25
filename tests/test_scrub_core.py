@@ -73,7 +73,9 @@ def test_unterminated_pem_header_redacted_and_fast():
     text = "-----BEGIN RSA PRIVATE KEY-----\n" + "A" * 1_000_000
     t0 = time.perf_counter()
     new, count = _redact_text(text)
-    assert time.perf_counter() - t0 < 2.0
+    # ~1s normally; the loose bound avoids flakes under load and still
+    # catches a catastrophic (quadratic) regex, which takes minutes on 1 MB.
+    assert time.perf_counter() - t0 < 10.0
     assert count == 1
     assert "BEGIN RSA PRIVATE KEY" not in new
 

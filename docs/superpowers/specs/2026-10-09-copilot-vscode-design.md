@@ -201,7 +201,7 @@ route it.
   - a terminal call without `isConfirmed` (waiting for the user) is not
     emitted; once rewritten with `exitCode` it is emitted once, with the
     real result (the real session's lines 9 and 12);
-  - fixture has no `Zaid` / `zaid-akroush` left;
+  - fixture has no `<name>` left;
   - emit-once: append lines, replay again, no duplicates;
   - partial last line skipped;
   - `assistant_message` withheld until the request is finished, then
