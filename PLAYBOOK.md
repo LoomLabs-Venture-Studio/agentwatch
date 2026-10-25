@@ -5040,7 +5040,7 @@ Source: CTO + 3-way QA review of `develop` (2026-10-22) and PR #157's crash find
 - [x] F5 `test_aider_watcher` passes on macOS 3.12 or the macOS gap is root-caused and documented
 - [x] F6 release prep: no personal paths in tracked files, repo-root clutter removed, CHANGELOG dated, `publish.yml` runs tests and checks tag == version
 - [x] All existing tests pass on 3.11/3.12 (CI) and `ruff check .` is clean
-- [ ] Integrated QA on `develop` after all merges (pre-merge integration run done 2026-10-24: all 7 branches merge cleanly, 2007 passed on 3.12 and 3.14, ruff clean; post-merge live macOS check still to do), incl. live `ps` / `watch-all` / `audit --all` / `net --once` on macOS
+- [x] Integrated QA on `develop` after all merges (pre-merge integration run done 2026-10-24: all 7 branches merge cleanly, 2007 passed on 3.12 and 3.14, ruff clean; post-merge run 2026-10-25 on b3d8fc2: 2021 passed / 25 skipped on 3.12 and 3.14, ruff clean; live macOS `ps` / `ps --json` / `net --once` / `audit --all` / `watch-all` / `detect --json` all pass, metadata-only; QA note fixed: `audit` exit codes documented)
 - [x] No new security issues
 
 ### Implementation Plan
