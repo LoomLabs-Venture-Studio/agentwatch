@@ -113,6 +113,23 @@ def listeners_of(pid: int) -> list[tuple[str, int, str, bool]]:
             for ip, port in sorted(found) for scope in (listener_scope(ip),)]
 
 
+def _endpoint_table(rows: list[tuple[str, ...]], width: int) -> list[str]:
+    """The Outgoing table. Too wide for *width*: each AI-PROVIDER flag goes on
+    its own line under the ENDPOINT column, then FIRST SEEN goes if needed."""
+    table = _table(rows)
+    if width <= 20 or max(map(len, table)) < width:
+        return table
+    for keep in ((0, 1, 2, 3), (0, 1, 3)):
+        table = _table([tuple(r[i] for i in keep) for r in rows])
+        if max(map(len, table)) < width:
+            break
+    hang = " " * (4 + max(len(r[0]) for r in rows) + 2)
+    out = []
+    for line, row in zip(table, rows):
+        out += [line, hang + row[4]] if row[4] else [line]
+    return out
+
+
 def net_text(pid: int, spans, names: dict, listeners, seen_in_actions: str,
              width: int = 0) -> str:
     """The Network tab: *spans* (NetSampler.spans) by endpoint, named from
@@ -134,7 +151,7 @@ def net_text(pid: int, spans, names: dict, listeners, seen_in_actions: str,
             providers += provider is not None
             rows.append((f"{host} [{source}]", _hostport(ip, port), _clock(first), _clock(last),
                          f"AI-PROVIDER {provider}" if provider else ""))
-        lines += _table(rows)
+        lines += _endpoint_table(rows, width)
     lines += ["", "  Listening now"]
     exposed = 0
     if listeners is None:
@@ -178,7 +195,7 @@ def detect_text(result, at: float | None, every_s: float) -> str:
     if not result.usages:
         lines = ["No programs using AI found."]
     else:
-        rows = [("PID", "PROGRAM", "PROVIDERS", "CONNS", "LOCAL", "MONITORED")]
+        rows = [("PID", "PROGRAM", "PROVIDERS", "CONNS", "LOCAL", "SUPPORTED")]  # as `detect`
         rows += [(str(u.pid), _printable(u.name), ",".join(sorted(u.providers)) or "-",
                   str(u.connections), u.local_runtime or "-", u.adapter or "no")
                  for u in result.usages]

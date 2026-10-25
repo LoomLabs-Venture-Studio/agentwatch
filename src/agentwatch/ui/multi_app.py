@@ -24,6 +24,7 @@ from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
 from agentwatch.coach import state_path
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Severity, format_usd, warning_dedup_key
+from agentwatch.detectors.security.network import _flaggable
 from agentwatch.discovery import (
     AgentProcess,
     AgentTeam,
@@ -1491,7 +1492,8 @@ class MultiAgentWatchApp(App):
         if not data.get("net_sampled"):
             return f"  {NOT_ATTRIBUTABLE}"
         pid = data["pid"]
-        spans = self._net_sampler.spans(pid) or []
+        # what `agentwatch net` shows: no loopback, link-local, multicast (local DNS)
+        spans = [e for e in self._net_sampler.spans(pid) or [] if _flaggable(e.ip)]
         now = time.monotonic()
         if tab == "network" and not self._naming and now >= self._name_next:
             self._name_next = now + NAME_EVERY_S

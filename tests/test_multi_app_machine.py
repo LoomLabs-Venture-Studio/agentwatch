@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -96,6 +97,8 @@ SPANS = {4242: [
     Endpoint("160.79.104.10", 443, NOW - 120, NOW - 60),
     Endpoint("203.0.113.9", 8443, NOW - 30, NOW - 5),
     Endpoint("160.79.104.10", 443, NOW - 20, NOW - 1),  # the same endpoint again: one row
+    Endpoint("127.0.0.53", 53, NOW - 20, NOW - 1),  # local DNS: hidden, as by `agentwatch net`
+    Endpoint("fe80::1", 5353, NOW - 20, NOW - 1),  # link-local: hidden too
 ]}
 LISTENERS = [("0.0.0.0", 3000, "all interfaces", True), ("127.0.0.1", 9229, "loopback", False)]
 
@@ -110,8 +113,8 @@ async def test_network_tab_names_endpoints_flags_providers_and_lists_listeners(
                     and "EXPOSED" in _screen(app))
         text = str(app.screen.query_one("#d-net").render())
         assert "Outgoing: pid 4242 and its children, last 30 min" in text
-        rows = [line for line in text.replace("\n      AI-", " AI-").splitlines()
-                if ":443" in line]  # 80 columns: the flag continues indented
+        # 80 columns: the flag goes on its own line, under ENDPOINT
+        rows = [line for line in re.sub(r"\n +AI-", " AI-", text).splitlines() if ":443" in line]
         assert len(rows) == 1 and "api.anthropic.com [known]" in rows[0]
         assert "AI-PROVIDER anthropic" in rows[0]
         assert datetime.fromtimestamp(NOW - 120).strftime("%H:%M:%S") in rows[0]  # first
@@ -120,6 +123,11 @@ async def test_network_tab_names_endpoints_flags_providers_and_lists_listeners(
         assert "0.0.0.0:3000    EXPOSED (all interfaces)" in text
         assert "127.0.0.1:9229  loopback" in text
         assert "2 endpoint(s), 1 to AI providers; 1 listener(s) reachable" in text
+        assert "127.0.0.53" not in text and "fe80::1" not in text
+        lines = text.splitlines()
+        header = next(line for line in lines if "ENDPOINT" in line)
+        flag = next(line for line in lines if "AI-PROVIDER" in line)
+        assert flag.index("AI-PROVIDER") >= header.index("ENDPOINT")  # never under HOST
         print(f"\n--- Network tab {size[0]}x{size[1]} ---\n{_screen(app)}")
 
 
@@ -198,7 +206,7 @@ async def test_unmonitored_ai_header_overlay_and_one_feed_line_per_new_program(
         await _wait(pilot, lambda: isinstance(app.screen, HelpScreen))
         text = _overlay(app)
         assert "Checked every 0s" in text and "(agentwatch detect)" in text
-        assert "[b]py[/b]thon" in text and "claude-code" in text
+        assert "[b]py[/b]thon" in text and "claude-code" in text and "SUPPORTED" in text
         assert "3 program(s) using AI (2 not monitored by agentwatch)" in text
         assert "Could not resolve: api.x.ai" in text
         await pilot.press("enter")  # main keys are off under it

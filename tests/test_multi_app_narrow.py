@@ -283,3 +283,20 @@ async def test_header_with_budget_shows_the_clock_or_drops_the_budget(width, clo
         assert (header[-8:].count(":") == 2) == clock, header
         assert ("budget $5.00/session" in header) == budget, header
         assert ascii_safe("…", "...") not in header and len(header) <= width - 2, header
+
+
+
+async def test_overlay_fits_beside_its_scrollbar():
+    """80x24: an overlay that scrolls is wrapped to the width left of its
+    scrollbar, so Textual never re-wraps a line (QA: a stray "n/a," line in
+    the `w` report)."""
+    long = "  " + "x" * 60 + " n/a, then"  # 72: fits the box, not beside the scrollbar
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        app.push_screen(HelpScreen("\n".join([long] * 40), title="Weekly report"))
+        await _wait(pilot, lambda: isinstance(app.screen, HelpScreen))
+        await pilot.pause()
+        box = app.screen.query_one("#help")
+        assert box.show_vertical_scrollbar
+        text = str(app.screen.query_one("#help Static").render())
+        assert max(len(line) for line in text.splitlines()) <= box.scrollable_content_region.width

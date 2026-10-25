@@ -5007,6 +5007,14 @@ Board decisions (2026-10-24):
   folded and filtered ones too); help: "need you" = Critical, HIGH+ or
   loop-blocked, not stopped; "Main flags"; the box fits the terminal (max
   76) and wraps with hanging indents (`help.hang`).
+- [x] PR 8 QA fixes: quitting mid-sync no longer orphans the sync's pool
+  workers (own process group, killed from the cancelled worker and
+  `on_unmount`; the sync dies with its parent); a test's
+  `monkeypatch.undo()` no longer reaches the real history DB (conftest
+  fails any test left pointing at it); the Network tab hides loopback,
+  link-local and multicast endpoints like `agentwatch net`, and at 80
+  columns puts AI-PROVIDER under ENDPOINT (then drops FIRST SEEN); overlays
+  wrap beside their scrollbar; `d` says SUPPORTED like `detect`.
 
 
 ---
