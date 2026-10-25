@@ -5102,12 +5102,16 @@ Board decisions (2026-10-24):
   `test_app_on_action_regression`, `test_live_wiring_end_to_end`,
   `test_cursor_single_agent_tui`; the multi app's own tests cover SIEM/LLM/
   goal alignment). Ported: net wiring, markup, registry dispatch, CLI flags.
-- [x] Not carried over: the Process tab's CPU/MEM are a start-time snapshot
-  (no rescan, which would add other agents); an agent started after `watch`
-  is not picked up (the log is still followed).
+- [x] Process mode, scoped: the 5s rescan keeps only the agent writing
+  this log (never adds others), so CPU/MEM/status update and an agent
+  started after `watch` is picked up; the session is never reaped.
 - [x] Tests: `tests/test_watch_session.py` (CLI passes the session and every
   flag; real watcher -> detail view opens by itself -> SIEM line, Esc shows
   one row; Aider `.md` followed; Cursor composer pick and clear exit).
+- [x] PR 9 QA fixes: the Network and Process tabs were empty although the
+  pid was found (`_process_mode` was off for `session=`, so four checks
+  ignored `session_proc`); Esc on an idle or stopped session showed only the
+  "N idle (a to show)" row (`watch` never folds its one session).
 
 
 ---

@@ -398,7 +398,8 @@ class MultiAgentWatchApp(App):
         self._discovery_cache = DiscoveryCache()
         self.selected_path: Path | None = None
         self._alerted_signals: set[str] = set()
-        self._process_mode = agent_processes is not None
+        # `watch` (session=) is process mode too, scoped to its one log
+        self._process_mode = agent_processes is not None or session is not None
         self._net_sampler = NetSampler()
         self.sort_mode = SORTS[0]
         self._cells: dict[str, dict[str, tuple[str, str]]] = {}  # row key -> shown cells
@@ -613,7 +614,7 @@ class MultiAgentWatchApp(App):
         self.set_interval(1.0, self.refresh_ui)
 
         # Periodic process re-scan if in process mode
-        if self._process_mode or self.session is not None:
+        if self._process_mode:
             self._net_sampler.start()  # --all-logs has no pids: no sampling
             self.set_interval(5.0, self._refresh_processes)
 
@@ -1153,7 +1154,7 @@ class MultiAgentWatchApp(App):
             hits = [p for p in members if self._matches(rows[str(p)])]
             asleep = sum(p not in awake for p in hits)
             idle += asleep
-            if asleep and not self._show_idle:
+            if asleep and not self._show_idle and self.session is None:  # `watch` never folds
                 hits = [p for p in hits if p in awake]
             keep: set[Path] = set()  # the hits and their parents (a subagent never alone)
             for path in hits:
@@ -1168,7 +1169,7 @@ class MultiAgentWatchApp(App):
                 rows[key] = self._team_cells(self.teams[team_id])
                 order.append(key)
             order.extend(str(p) for p in members)
-        if idle:
+        if idle and self.session is None:
             rows[FOLD_KEY] = self._fold_cells(idle)
             order.append(FOLD_KEY)
 
@@ -1914,6 +1915,8 @@ class MultiAgentWatchApp(App):
             processes = await asyncio.to_thread(find_running_agents, self._discovery_cache)
         finally:
             self._scanning = False
+        if self.session is not None:  # `watch`: only its own agent, never others
+            processes = [p for p in processes if p.log_file == self.session]
 
         new_agents = self.watcher.refresh_processes(processes)
         scanned = {t.team_id: t for t in build_teams(processes) if t.member_count > 1}
@@ -1936,7 +1939,8 @@ class MultiAgentWatchApp(App):
                     self._event(f"{ascii_safe('■', '#')} {name} stopped", "dim")
 
         # Remove agents that have been stopped for over 60 seconds
-        expired = self.watcher.reap_stopped(timeout=60.0)
+        # `watch` keeps its one session after the agent stops
+        expired = [] if self.session is not None else self.watcher.reap_stopped(timeout=60.0)
         for log_path in expired:
             agent_data = self.agents.pop(log_path, None)
             if agent_data:

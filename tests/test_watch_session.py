@@ -46,7 +46,7 @@ def test_cli_passes_session_and_every_flag(tmp_path, monkeypatch):
     assert seen["llm"] and seen["llm_model"] == "mistral"
     alerter = seen["alerter"]
     assert alerter.webhook == "https://example.com/h" and alerter.budget == 3.0
-    assert seen["watch_paths"] == [] and not seen["_process_mode"]
+    assert seen["watch_paths"] == [] and seen["_process_mode"]
 
 
 @pytest.mark.usefixtures("needs_siem")
@@ -100,3 +100,45 @@ def test_watch_cursor_without_agent_composer_exits_clearly(tmp_path, make):
     res = CliRunner().invoke(cli, ["watch", "--log", str(db)])
     assert res.exit_code == 1
     assert "No Cursor agent-mode conversation found" in res.output
+
+
+async def test_session_proc_feeds_network_process_tabs_and_scan_stays_scoped(
+        tmp_path, monkeypatch):
+    """QA #179: the found agent drives the Network/Process tabs; a rescan
+    refreshes only it (never adds other agents)."""
+    from agentwatch.discovery import AgentProcess
+
+    log, other = tmp_path / "s.jsonl", tmp_path / "other.jsonl"
+    _env_read_log(log)
+    other.write_text(log.read_text(encoding="utf-8"), encoding="utf-8")
+    proc = AgentProcess(pid=4242, agent_type="claude-code", command="claude",
+                        working_directory=tmp_path, log_file=log)
+    stranger = AgentProcess(pid=4343, agent_type="claude-code", command="claude",
+                            working_directory=tmp_path, log_file=other)
+    monkeypatch.setattr("agentwatch.ui.multi_app.find_running_agents",
+                        lambda cache=None: [proc, stranger])
+    app = MultiAgentWatchApp(session=log, session_proc=proc)
+    assert app._process_mode
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait(pilot, lambda: log in app.agents)
+        data = app.agents[log]
+        assert data["pid"] == 4242 and data["net_sampled"]
+        assert "no process" not in app._net_text(data, "network")
+        await app._refresh_processes()
+        assert list(app.agents) == [log]
+
+
+async def test_idle_session_is_never_folded(tmp_path):
+    """QA #179: an idle/stopped session is still the one row after Esc,
+    not an "N idle (a to show)" fold row."""
+    log = tmp_path / "s.jsonl"
+    _env_read_log(log)
+    app = MultiAgentWatchApp(session=log)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait(pilot, lambda: isinstance(app.screen, DetailScreen) and app.screen.ready)
+        app.agents[log]["item"].process_status = "stopped"  # folds like 15+ min idle
+        await pilot.press("escape")
+        await pilot.pause()
+        app.refresh_ui()
+        await pilot.pause()
+        assert [k.value for k in app.query_one("#sessions").rows] == [str(log)]
