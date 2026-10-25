@@ -165,6 +165,17 @@ _PROC_ERRORS = (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess,
 
 
 _VERSION_NAME = re.compile(r"^\d+(\.\d+)+([-+.\w]*)?$")
+# Folder names that describe a install layout, not the program: never shown as a label.
+_GENERIC_FOLDERS = frozenset({
+    "bin", "sbin", "versions", "macos", "contents", "resources", "lib", "app",
+})
+
+
+def _usable_folder(part: str) -> bool:
+    """True for a directory name that can stand in for the program's name."""
+    if not part or part.endswith(":") or _VERSION_NAME.match(part):
+        return False
+    return part.lower() not in _GENERIC_FOLDERS
 
 
 @dataclass
@@ -186,10 +197,12 @@ class AiUsage:
             return self.name
         if self.adapter:
             return self.adapter
+        # Walk up at most 3 directories from the binary, skipping folders that
+        # name a layout rather than a program (bin/, versions/, Contents/...).
         parts = re.split(r"[/\\]", self.exe or "")
-        parent = parts[-2] if len(parts) >= 2 else ""
-        if parent and not _VERSION_NAME.match(parent):
-            return parent
+        for part in reversed(parts[-4:-1]):
+            if _usable_folder(part):
+                return part
         return self.name
 
 

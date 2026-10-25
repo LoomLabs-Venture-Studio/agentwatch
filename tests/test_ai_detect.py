@@ -372,9 +372,15 @@ def test_version_named_binary_shows_adapter_display_name():
 @pytest.mark.parametrize(
     ("name", "exe", "adapter", "expected"),
     [
-        ("2.1.310", "/opt/acme/bin/2.1.310", None, "bin"),  # no adapter: exe's parent dir
+        ("2.1.310", "/opt/acme/2.1.310", None, "acme"),  # no adapter: exe's parent dir
         ("2.1.310", "/opt/acme/2.1.310", "acme-agent", "acme-agent"),  # adapter wins
-        ("2.1.310", "/opt/1.0/2.1.310", None, "2.1.310"),  # parent is a version too
+        ("2.1.310", "/opt/acme/bin/2.1.310", None, "acme"),  # generic bin skipped
+        ("2.1.310", "/opt/1.0/2.1.310", None, "opt"),  # version-like parent skipped
+        ("2.1.310", "/x/app/2.1.310", None, "x"),  # generic app skipped
+        ("2.1.310", "/Applications/Acme.app/Contents/MacOS/2.1.310", None, "Acme.app"),
+        ("2.1.310", "/srv/tools/lib/versions/2.1.310", None, "tools"),  # 3 levels up
+        ("2.1.310", "/lib/bin/versions/2.1.310", None, "2.1.310"),  # all generic: raw
+        ("2.1.310", "C:\\bin\\2.1.310", None, "2.1.310"),  # drive letter is not a name
         ("2.1.310", None, None, "2.1.310"),  # no exe and no adapter: keep the name
         ("Orca.exe", "/apps/Orca/Orca.exe", None, "Orca.exe"),  # not version-like
         ("claude", "/x/claude", "claude-code", "claude"),  # not version-like
