@@ -362,8 +362,8 @@ agentwatch watch --security     # manual smoke test (live TUI)
   dc5d03d) that revert PRs #2, #3 and #4, which `develop` still contains. A
   plain merge conflicts and silently drops their code. Cut a branch from
   `develop`, run `git merge -s ours origin/main`, PR it into `main` and merge
-  with a merge commit, not a squash. Needed only until `main` is an ancestor
-  of `develop`.
+  with a merge commit, not a squash. Needed only for the first promotion;
+  after that lands, a plain `develop` -> `main` PR merges cleanly.
 - `develop` is the integration line (v0.2.0+). Branch `feature/`, `fix/`,
   `chore/` or `docs/` **from `develop`**; PRs target `develop`.
 - One commit per logical change
