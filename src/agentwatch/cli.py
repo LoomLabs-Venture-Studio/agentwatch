@@ -587,54 +587,30 @@ def ps(json_output: bool):
     has_subagents = any(a.depth > 0 for a in agents)
 
     if json_output:
-        if has_subagents:
-            team_list = build_teams(agents)
-            output = []
-            for t in team_list:
-                output.append({
-                    "team_id": t.team_id,
-                    "team_name": t.name,
-                    "member_count": t.member_count,
-                    "subagent_count": t.subagent_count,
-                    "max_depth": t.max_depth,
-                    "members": [
-                        {
-                            "pid": a.pid,
-                            "parent_pid": a.parent_pid,
-                            "parent_agent_pid": a.parent_agent_pid,
-                            "depth": a.depth,
-                            "team_id": a.team_id,
-                            "agent_type": a.agent_type,
-                            "project": a.project_name,
-                            "working_directory": (
-                                str(a.working_directory) if a.working_directory else None
-                            ),
-                            "log_file": str(a.log_file) if a.log_file else None,
-                            "session_id": a.session_id,
-                            "cpu_percent": a.cpu_percent,
-                            "memory_mb": round(a.memory_mb, 1),
-                            "uptime": a.uptime,
-                        }
-                        for a in t.members
-                    ],
-                })
-            click.echo(json.dumps(output, indent=2))
-        else:
-            output = []
-            for a in agents:
-                output.append({
-                    "pid": a.pid,
-                    "parent_pid": a.parent_pid,
-                    "agent_type": a.agent_type,
-                    "project": a.project_name,
-                    "working_directory": str(a.working_directory) if a.working_directory else None,
-                    "log_file": str(a.log_file) if a.log_file else None,
-                    "session_id": a.session_id,
-                    "cpu_percent": a.cpu_percent,
-                    "memory_mb": round(a.memory_mb, 1),
-                    "uptime": a.uptime,
-                })
-            click.echo(json.dumps(output, indent=2))
+        # Always a flat list of agent objects, with or without sub-agents, so
+        # scripts can rely on one shape. Rebuild the tree from parent_agent_pid,
+        # depth and team_id.
+        team_names = {t.team_id: t.name for t in build_teams(agents)}
+        output = [
+            {
+                "pid": a.pid,
+                "parent_pid": a.parent_pid,
+                "parent_agent_pid": a.parent_agent_pid,
+                "team_id": a.team_id,
+                "team_name": team_names.get(a.team_id),
+                "depth": a.depth,
+                "agent_type": a.agent_type,
+                "project": a.project_name,
+                "working_directory": str(a.working_directory) if a.working_directory else None,
+                "log_file": str(a.log_file) if a.log_file else None,
+                "session_id": a.session_id,
+                "cpu_percent": a.cpu_percent,
+                "memory_mb": round(a.memory_mb, 1),
+                "uptime": a.uptime,
+            }
+            for a in agents
+        ]
+        click.echo(json.dumps(output, indent=2))
         return
 
     click.echo()
