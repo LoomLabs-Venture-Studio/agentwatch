@@ -268,3 +268,26 @@ async def test_ascii_theme_renders_no_unicode_blocks(ascii_theme, size):
         assert "[########..] 82%" in text
         assert not BLOCKS.findall(text.split("Health [")[0]), text  # the graphs; the bars below
         # are the single-agent widgets' own (unchanged)
+
+
+async def test_selected_strip_is_rebuilt_only_when_it_changes():
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        a = _seed(app, "a")
+        app.refresh_ui()
+        await pilot.pause()
+        built = []
+        real = app._graph_rows
+        app._graph_rows = lambda *a, **k: built.append(1) or real(*a, **k)
+        for _ in range(5):
+            app.refresh_ui()  # nothing changed
+        assert built == []
+        data = app.agents[a]
+        data["registry"].check_all = lambda buffer: [_warning(Severity.HIGH, "new_sig")]
+        data["buffer"].add(_action(0, 1))
+        app.refresh_ui()
+        await pilot.pause()
+        assert built == [1]
+        assert "new_sig warning" in str(app.query_one("#selected").render())
+        app.refresh_ui()
+        assert built == [1]

@@ -217,3 +217,30 @@ async def test_wrapped_detail_lines_keep_their_indent():
         text = await _shows(pilot, app, "xxxxx.jsonl")
         log = text[text.index("Log      /very"):].splitlines()[:2]
         assert log[1].startswith(" " * 11 + "x"), log
+
+
+@pytest.mark.parametrize("size", SIZES)
+@pytest.mark.parametrize("fold", ("above", "below", "selected_parentless"))
+async def test_back_from_detail_after_a_fold_keeps_the_cursor_on_the_session(size, fold):
+    """Sessions fold (or the order changes) while the detail view is open:
+    Esc puts the cursor back on the selected session, never on the fold row."""
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=size) as pilot:
+        paths = await _open(app, pilot, "a", "b", "c", select=1)
+        assert app.screen.path == paths[1]
+        stop = {"above": [paths[0]], "below": [paths[2]],
+                "selected_parentless": [paths[0], paths[2]]}[fold]
+        for path in stop:
+            app.agents[path]["item"].process_status = "stopped"
+        app.refresh_ui()
+        await pilot.pause()
+        app.refresh_ui()
+        await pilot.press("escape")
+        await _wait(pilot, lambda: not isinstance(app.screen, DetailScreen))
+        await pilot.pause()
+        assert "fold" in app.query_one("#sessions").rows
+        assert app.selected_path == paths[1]
+        assert _cursor_key(app) == str(paths[1])
+        app.refresh_ui()
+        await pilot.pause()
+        assert _cursor_key(app) == str(paths[1])

@@ -415,6 +415,7 @@ class MultiAgentWatchApp(App):
         self._held_alerts = 0
         self._holding = False  # at startup, an Alerter pass for a session in its window
         self._header_text = ""
+        self._selected_sig: tuple = ()  # what the Selected strip shows (_update_selected)
         self._blocks = 0  # loop-breaker blocks seen this run (incl. already at startup)
         self._held_blocks = 0  # ... of those, seen in the startup window
         self._coach_next = 0.0  # monotonic time of the next coach state pass
@@ -1569,9 +1570,21 @@ class MultiAgentWatchApp(App):
     def _update_selected(self, data: dict, report: "HealthReport") -> None:
         """Title; health / cost / ctx graphs (efficiency, security and net
         after health, $/min after cost); the top signal, coloured by
-        severity, and the next warning (or the Tier-2 goal). Six lines."""
+        severity, and the next warning (or the Tier-2 goal). Six lines.
+        Rebuilt only when what it shows changed (like the table's cells)."""
         buffer: ActionBuffer = data["buffer"]
         stats = buffer.stats
+        assessor: LiveLlmAssessor | None = data.get("llm_assessor")
+        goal = assessor.stamp_goal_alignment() if assessor else None
+        # report: rescored on new actions (or `s`); samples/arrows: graphs;
+        # coach state, Tier-2 verdicts and goal, the title's pid/uptime/status
+        sig = (self.selected_path, id(report), self.security_mode, stats.action_count,
+               data.get("_samples"), tuple(data.get("_arrows", {}).values()),
+               self._title(data), data.get("_blocked_id"), id(data.get("_armed")),
+               data.get("net_sampled"), assessor and len(assessor._assessments), repr(goal))
+        if sig == self._selected_sig:
+            return
+        self._selected_sig = sig
         cost = stats.estimated_cost
         security = str(len(report.security_warnings)) if self.security_mode else "off"
         net = endpoint_summary(buffer.actions) if data.get("net_sampled") else NOT_ATTRIBUTABLE
@@ -1585,8 +1598,6 @@ class MultiAgentWatchApp(App):
         blocked = self._blocked_signal(data, report.warnings)
         if blocked:
             lines.append(Text(*blocked))
-        assessor: LiveLlmAssessor | None = data.get("llm_assessor")
-        goal = assessor.stamp_goal_alignment() if assessor else None
         arrow = ascii_safe("→", "->")
         for w in _top_warnings(report.warnings, 6 - len(lines) - (goal is not None)):
             detail = WarningsList._format_details(w)

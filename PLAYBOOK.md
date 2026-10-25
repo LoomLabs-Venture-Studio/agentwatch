@@ -5048,8 +5048,17 @@ Board decisions (2026-10-24):
   -> 2.3-3.5% / 1.32ms (one 2.96ms run with a 34ms outlier tick);
   `--all-logs` 24h (18 sessions) 3.7-4.3% / 1.23-1.58ms -> 3.8-4.2% /
   2.16-2.24ms; process mode (1 agent) 11.3-12.6% / 0.59-0.62ms -> 11.2-12.3%
-  / 0.65-0.72ms. Idle CPU flat; the ~0.7ms is the strip's Text (~0.4ms,
-  every tick for the selected session) and per-row colour lookups.
+  / 0.65-0.72ms. Idle CPU flat; the ~0.7ms was mostly the strip's Text
+  (~0.4ms a tick). Follow-up: the strip is rebuilt only when its signature
+  (report, sample count, arrows, title, coach state, Tier-2 verdicts/goal,
+  security mode) changes: `--all-logs` (16 sessions) 1.12-1.80ms ->
+  1.16-1.46ms, synthetic 0.98ms.
+- [x] The one-off `test_enter_opens_detail_tabs...[120x40]` failure (cursor
+  on the fold row) was a laptop suspend mid-run: the wall clock jumped ~9h,
+  the seeded sessions became idle 15+ min and folded, the selected one too,
+  so the fold row was the right place. Not an app race; a test now folds
+  sessions while the detail view is open and checks Esc keeps the cursor on
+  the selected session (30x green).
 - [x] Tests: `tests/test_multi_app_graphs.py` (history cap/sampling/
   reference, arrows, sparkline scaling, gauge thresholds, ascii, TREND vs
   sort, narrow rule, no recompute without a sample, colours on screen,
