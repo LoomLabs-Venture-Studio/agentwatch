@@ -14,12 +14,13 @@ import json
 from pathlib import Path
 
 import pytest
-from textual.app import App, ComposeResult
-from textual.widgets import ListView
 
+from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import normalize_error
 from agentwatch.parser.logs import error_text, parse_claude_code_entry, parse_moltbot_entry
-from agentwatch.ui.app import AgentWatchApp, WarningsList
+from agentwatch.parser.models import ActionBuffer
+from agentwatch.ui.app import WarningsList
+from agentwatch.ui.detail import DetailScreen
 from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
 COMMAND = 'grep "[a-z]+" a[i]'
@@ -81,7 +82,7 @@ def _write_markup_only_log(path: Path) -> None:
 
 def _assert_plain(widget, *literals: str) -> None:
     content = widget.render()
-    text = str(content)
+    text = " ".join(str(content).split())  # lines may be pre-wrapped (hanging indent)
     for literal in literals:
         assert literal in text, (literal, text)
     styles = " ".join(str(span.style) for span in getattr(content, "spans", []))
@@ -118,7 +119,12 @@ def test_normalize_error_accepts_non_strings(value):
 
 
 async def _wait_for_warnings(app, pilot) -> WarningsList:
-    widget = app.query_one("#warnings-list", WarningsList)
+    """watch: the detail view's warnings once they show up."""
+    for _ in range(80):
+        await pilot.pause(0.05)
+        if isinstance(app.screen, DetailScreen) and app.screen.ready:
+            break
+    widget = app.screen.query_one("#d-warnings", WarningsList)
     for _ in range(80):
         await pilot.pause(0.05)
         if widget._warnings:
@@ -129,41 +135,53 @@ async def _wait_for_warnings(app, pilot) -> WarningsList:
 async def test_watch_renders_log_text_literally(tmp_path):
     log = tmp_path / "session.jsonl"
     _write_log(log)
-    app = AgentWatchApp(log_path=log)
+    app = MultiAgentWatchApp(session=log)
     async with app.run_test() as pilot:
         widget = await _wait_for_warnings(app, pilot)
         assert app.is_running
         _assert_plain(widget, ERROR, COMMAND, "[loop")
+
+
+async def _wait_for_selected(app, pilot):
+    """watch-all: the Selected strip once it shows the loop warning."""
+    widget = app.query_one("#selected")
+    for _ in range(80):
+        await pilot.pause(0.05)
+        if "loop" in str(widget.render()):
+            break
+    return widget
 
 
 async def test_watch_all_renders_log_text_literally(tmp_path):
     _write_log(tmp_path / "session.jsonl")
     app = MultiAgentWatchApp(watch_paths=[tmp_path])
-    async with app.run_test() as pilot:
-        widget = await _wait_for_warnings(app, pilot)
+    app._show_idle = True  # the log's actions are old
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_selected(app, pilot)
         assert app.is_running
-        _assert_plain(widget, ERROR, COMMAND, "[loop")
+        _assert_plain(app.query_one("#selected"), ERROR, "Repeated action: Bash")
+        signal = app.query_one("#sessions").get_cell(str(tmp_path / "session.jsonl"), "signal")
+        assert "loop: Bash" in signal.plain
 
 
 @pytest.mark.parametrize(
     "make",
-    [lambda d: AgentWatchApp(log_path=d / "session.jsonl"),
+    [lambda d: MultiAgentWatchApp(session=d / "session.jsonl"),
      lambda d: MultiAgentWatchApp(watch_paths=[d])],
 )
 async def test_markup_only_log_renders_literally(tmp_path, make):
     _write_markup_only_log(tmp_path / "session.jsonl")
     app = make(tmp_path)
-    async with app.run_test() as pilot:
-        widget = await _wait_for_warnings(app, pilot)
+    async with app.run_test(size=(120, 40)) as pilot:
+        if app.session is None:  # the strip shows the error, not the command
+            _assert_plain(await _wait_for_selected(app, pilot), ERROR, "Repeated action")
+        else:
+            _assert_plain(await _wait_for_warnings(app, pilot), ERROR, COMMAND)
         assert app.is_running
-        _assert_plain(widget, ERROR, COMMAND)
 
 
-@pytest.mark.parametrize(
-    "make", [lambda p: AgentWatchApp(log_path=p), lambda p: MultiAgentWatchApp()]
-)
-async def test_notify_defaults_to_plain_text(tmp_path, make):
-    app = make(tmp_path / "none.jsonl")
+async def test_notify_defaults_to_plain_text():
+    app = MultiAgentWatchApp()
     async with app.run_test() as pilot:
         app.notify(f"[proj] {ERROR}", title="t")
         await pilot.pause()
@@ -171,15 +189,18 @@ async def test_notify_defaults_to_plain_text(tmp_path, make):
         assert [n.markup for n in app._notifications] == [False]
 
 
-async def test_agent_labels_render_literally():
-    item = AgentItem(Path("a.jsonl"), agent_type="claude-code", project_name="p[/]", pid=1)
-
-    class Host(App):
-        def compose(self) -> ComposeResult:
-            yield ListView(item)
-
-    async with Host().run_test() as pilot:
-        item.update_status(90, "healthy")
+async def test_table_cells_render_literally():
+    """Table cells are rich Text: a project or tool named like markup shows as is."""
+    path = Path("a.jsonl")
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        item = AgentItem(path, agent_type="[b]x[/b]", project_name="p[/]", pid=1)
+        app.agents[path] = app._new_agent_state(
+            buffer=ActionBuffer(), registry=create_registry(mode="health"), item=item,
+            pid=1, team_id=None, log_path=path, agent_type=item.agent_type,
+        )
+        app.selected_path = path
+        app.refresh_ui()
         await pilot.pause()
-        _assert_plain(item.query_one("#agent-name-label"), "[claude-code] p[/]")
-        _assert_plain(item.query_one("#health-label"), "[root]")
+        screen = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
+        assert "p[/]" in screen and "[b]x[/b]" in screen

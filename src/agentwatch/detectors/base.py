@@ -6,10 +6,15 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from agentwatch.parser.models import ActionBuffer
-from agentwatch.themes import get_current_theme_name
+from agentwatch.parser.models import ActionBuffer, calls_of, calls_usage
+from agentwatch.themes import ascii_safe, get_current_theme_name
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from agentwatch.parser.models import Action
 
 
 class Category(Enum):
@@ -109,6 +114,12 @@ class Warning:
     suggestion: str | None = None  # Actionable recommendation
     details: dict[str, Any] = field(default_factory=dict)
     timestamp: str | None = None
+    # Spend on the API calls behind the actions this finding covers (see
+    # with_cost). None = no token data / no price: absent, never 0 or a guess.
+    tokens: int | None = None
+    cost_usd: float | None = None
+    # Those calls, so a session total can count a call shared by two findings once.
+    calls: dict[Any, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def emoji(self) -> str:
@@ -149,7 +160,72 @@ class Warning:
         }
         if self.suggestion:
             d["suggestion"] = self.suggestion
+        if self.tokens is not None:
+            d["tokens"] = self.tokens
+        if self.cost_usd is not None:
+            d["cost_usd"] = round(self.cost_usd, 4)
         return d
+
+    def with_cost(self, actions: "Iterable[Action]", buffer: ActionBuffer) -> "Warning":
+        """Set tokens/cost_usd from the calls behind *actions*; returns self."""
+        self.calls = calls_of(actions, buffer)
+        self.tokens, self.cost_usd = calls_usage(self.calls.values())
+        return self
+
+    @property
+    def cost_label(self) -> str | None:
+        """'~$1.40 · 210k tok', '210k tok' without a price, None without tokens."""
+        return format_cost(self.cost_usd, self.tokens)
+
+
+def format_tokens(tokens: int) -> str:
+    """210000 -> '210k', 1_234_567 -> '1.2M'."""
+    if tokens >= 1_000_000:
+        return f"{tokens / 1_000_000:.1f}M"
+    if tokens >= 1_000:
+        return f"{tokens / 1_000:.0f}k"
+    return str(tokens)
+
+
+def format_usd(cost: float) -> str:
+    return "<$0.01" if cost < 0.005 else f"~${cost:,.2f}"
+
+
+def findings_spend(warnings: "Iterable[Warning]") -> tuple[int, int | None, float | None]:
+    """(findings with token data, tokens, usd) over the union of their calls:
+    a call two findings share (a loop that is also an error spiral) counts once."""
+    spent = [w for w in warnings if w.tokens is not None]
+    calls: dict[Any, Any] = {}
+    for w in spent:
+        calls.update(w.calls)
+    tokens, cost = calls_usage(calls.values())
+    return len(spent), tokens, cost
+
+
+def waste_summary(warnings: "Iterable[Warning]", stats: Any) -> dict[str, Any] | None:
+    """Spend on the calls behind the findings vs the session's (*stats*, a
+    SessionStats), or None when no finding has token data. A call shared by
+    two findings counts once. `check`'s waste line and `agentwatch history`."""
+    findings, tokens, cost = findings_spend(warnings)
+    if not findings:
+        return None
+    return {
+        "findings": findings,
+        "tokens": tokens,
+        "cost_usd": None if cost is None else round(cost, 4),
+        "session_tokens": stats.billed_tokens,
+        "session_cost_usd": None if stats.billed_cost is None else round(stats.billed_cost, 4),
+    }
+
+
+def format_cost(cost: float | None, tokens: int | None) -> str | None:
+    """Shared cost text for check, the TUIs and the waste line."""
+    if tokens is None:
+        return None
+    tok = f"{format_tokens(tokens)} tok"
+    if cost is None:
+        return tok
+    return f"{format_usd(cost)} {ascii_safe('·', '|')} {tok}"
 
 
 # "Identity-ish" detail keys, checked in this order, used to disambiguate

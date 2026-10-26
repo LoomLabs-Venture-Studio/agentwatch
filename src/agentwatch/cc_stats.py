@@ -6,10 +6,15 @@ token usage breakdowns by tool type and bash command category.
 
 from __future__ import annotations
 
+import fileinput
 import json
+import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
+from functools import lru_cache
+from itertools import islice
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 from agentwatch.path_encoding import encode_path_for_claude
 
@@ -43,21 +48,97 @@ class BashCategory(Enum):
     Other = "Other"
 
 
-# Pricing per million tokens: (input, output, cache_write, cache_read)
-_PRICING = {
-    "opus": (15.0, 75.0, 18.75, 1.50),
-    "sonnet": (3.0, 15.0, 3.75, 0.30),
-    "haiku": (1.0, 5.0, 1.25, 0.10),
+# The one price table: `stats`, the session cost and per-finding cost all
+# read it. USD per million tokens:
+#   (input, output, 5m cache write, cache read, 1h cache write)
+# Source: Anthropic API pricing, https://platform.claude.com/docs/en/about-claude/pricing
+# (first-party rates, fetched 2026-10-17). Bedrock/Vertex bill differently.
+# Keyed by model id; a dated snapshot ("-20250514") matches its base id. A
+# model not listed here has no price: callers show no cost, never a guess.
+PRICING: dict[str, tuple[float, float, float, float, float]] = {
+    "claude-fable-5-1": (10.0, 50.0, 12.50, 0.25, 20.0),
+    "claude-mythos-5-1": (10.0, 50.0, 12.50, 0.25, 20.0),
+    "claude-fable-5": (10.0, 50.0, 12.50, 1.00, 20.0),
+    "claude-mythos-5": (10.0, 50.0, 12.50, 1.00, 20.0),
+    "claude-opus-5-5": (4.0, 20.0, 5.00, 0.20, 8.0),
+    "claude-opus-5": (5.0, 25.0, 6.25, 0.50, 10.0),
+    "claude-opus-4-8": (5.0, 25.0, 6.25, 0.50, 10.0),
+    "claude-opus-4-7": (5.0, 25.0, 6.25, 0.50, 10.0),
+    "claude-opus-4-6": (5.0, 25.0, 6.25, 0.50, 10.0),
+    "claude-opus-4-5": (5.0, 25.0, 6.25, 0.50, 10.0),
+    "claude-opus-4-1": (15.0, 75.0, 18.75, 1.50, 30.0),
+    "claude-opus-4": (15.0, 75.0, 18.75, 1.50, 30.0),
+    "claude-sonnet-5-5": (2.0, 10.0, 2.50, 0.10, 4.0),
+    "claude-sonnet-5": (2.0, 10.0, 2.50, 0.20, 4.0),
+    "claude-sonnet-4-6": (3.0, 15.0, 3.75, 0.30, 6.0),
+    "claude-sonnet-4-5": (3.0, 15.0, 3.75, 0.30, 6.0),
+    "claude-sonnet-4": (3.0, 15.0, 3.75, 0.30, 6.0),
+    "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.01, 0.20),  # prompt <= 100k tokens
+    "claude-haiku-4-5": (1.0, 5.0, 1.25, 0.10, 2.0),
+    "claude-3-5-haiku": (0.80, 4.0, 1.00, 0.08, 1.60),
 }
+# Haiku 5.5 bills a request whose prompt (input + cache) is over 100k at these.
+_HAIKU_5_5_LONG = (0.50, 2.50, 0.625, 0.05, 1.0)
+# ponytail: Sonnet 4.5/4 long-context (>200k prompt) surcharge not modelled;
+# they bill at the base rate here.
+
+# What may follow a table id: a date snapshot, a Bedrock version, a "[1m]" tag.
+_ID_SUFFIX = re.compile(r"(?:[-@]\d{8})?(?:-v\d+(?::\d+)?)?(?:\[[^\]]*\])?")
+_KEYS_LONGEST_FIRST = sorted(PRICING, key=len, reverse=True)
 
 
-def _get_pricing(model: str) -> tuple[float, float, float, float]:
-    """Get per-million-token pricing for a model string."""
-    model = model.lower()
-    for key, rates in _PRICING.items():
-        if key in model:
-            return rates
-    return _PRICING["sonnet"]  # default
+@lru_cache(maxsize=256)
+def price_for(model: str | None) -> tuple[float, float, float, float, float] | None:
+    """Rates for *model*, or None when it is not in ``PRICING``.
+
+    Provider prefixes ("us.anthropic.", "anthropic/") are ignored. Only a date
+    or version may follow the table id, so "claude-opus-4-9" is unknown rather
+    than priced as "claude-opus-4".
+    """
+    if not model:
+        return None
+    m = model.lower()
+    start = m.find("claude-")
+    if start < 0:
+        return None
+    m = m[start:]
+    for key in _KEYS_LONGEST_FIRST:
+        if m.startswith(key) and _ID_SUFFIX.fullmatch(m[len(key):]):
+            return PRICING[key]
+    return None
+
+
+def usage_cost_usd(
+    model: str | None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_write_1h_tokens: int = 0,
+) -> float | None:
+    """USD for one API call's usage, or None for an unpriced model.
+
+    *cache_write_tokens* is all cache writes; *cache_write_1h_tokens* is the
+    part written with the 1-hour TTL (billed at the 1h rate).
+    """
+    rates = price_for(model)
+    if rates is None:
+        return None
+    prompt = input_tokens + cache_write_tokens + cache_read_tokens
+    if rates is PRICING["claude-haiku-5-5"] and prompt > 100_000:
+        rates = _HAIKU_5_5_LONG
+    write_1h = min(cache_write_1h_tokens, cache_write_tokens)
+    return (
+        input_tokens * rates[0]
+        + output_tokens * rates[1]
+        + (cache_write_tokens - write_1h) * rates[2]
+        + cache_read_tokens * rates[3]
+        + write_1h * rates[4]
+    ) / 1_000_000
+
+
+def _usd(cost: float | None) -> float | None:
+    return None if cost is None else round(cost, 2)
 
 
 @dataclass
@@ -66,7 +147,7 @@ class TrivialCall:
 
     command: str
     total_tokens: int
-    estimated_cost_usd: float
+    estimated_cost_usd: float | None
     session_id: str = ""
     user_prompt: str = ""
 
@@ -80,6 +161,13 @@ class TokenBucket:
     cache_write_tokens: int = 0
     cache_read_tokens: int = 0
     call_count: int = 0
+    # Sum of each call's own price (its model, 1h/5m writes split): the same
+    # usage_cost_usd() `check` bills with. None once a call with tokens had
+    # no listed price -- no partial sum, no guess.
+    cost_usd: float | None = 0.0
+
+    def add_cost(self, cost: float | None) -> None:
+        self.cost_usd = None if self.cost_usd is None or cost is None else self.cost_usd + cost
 
     @property
     def total_tokens(self) -> int:
@@ -90,14 +178,9 @@ class TokenBucket:
             + self.cache_read_tokens
         )
 
-    def estimated_cost_usd(self, model: str = "sonnet") -> float:
-        r = _get_pricing(model)
-        return (
-            self.input_tokens * r[0]
-            + self.output_tokens * r[1]
-            + self.cache_write_tokens * r[2]
-            + self.cache_read_tokens * r[3]
-        ) / 1_000_000
+    def estimated_cost_usd(self) -> float | None:
+        """USD of the calls added to this bucket; None if any was unpriced."""
+        return self.cost_usd
 
     def merge(self, other: TokenBucket) -> None:
         self.input_tokens += other.input_tokens
@@ -105,6 +188,7 @@ class TokenBucket:
         self.cache_write_tokens += other.cache_write_tokens
         self.cache_read_tokens += other.cache_read_tokens
         self.call_count += other.call_count
+        self.add_cost(other.cost_usd)
 
 
 @dataclass
@@ -168,8 +252,8 @@ class StatsReport:
                 "cache_write_tokens": self.totals.cache_write_tokens,
                 "cache_read_tokens": self.totals.cache_read_tokens,
                 "total_tokens": self.totals.total_tokens,
-                "estimated_cost_usd": round(
-                    self.totals.estimated_cost_usd(self.model), 2
+                "estimated_cost_usd": _usd(
+                    self.totals.estimated_cost_usd()
                 ),
                 "cache_hit_ratio": round(self.cache_hit_ratio, 4),
             },
@@ -177,8 +261,8 @@ class StatsReport:
                 cat.value: {
                     "call_count": bucket.call_count,
                     "total_tokens": bucket.total_tokens,
-                    "estimated_cost_usd": round(
-                        bucket.estimated_cost_usd(self.model), 2
+                    "estimated_cost_usd": _usd(
+                        bucket.estimated_cost_usd()
                     ),
                 }
                 for cat, bucket in sorted(
@@ -201,13 +285,13 @@ class StatsReport:
             "efficiency": {
                 "trivial_calls": self.trivial.call_count,
                 "trivial_tokens": self.trivial.total_tokens,
-                "trivial_cost_usd": round(
-                    self.trivial.estimated_cost_usd(self.model), 2
+                "trivial_cost_usd": _usd(
+                    self.trivial.estimated_cost_usd()
                 ),
                 "substantive_calls": self.substantive.call_count,
                 "substantive_tokens": self.substantive.total_tokens,
-                "substantive_cost_usd": round(
-                    self.substantive.estimated_cost_usd(self.model), 2
+                "substantive_cost_usd": _usd(
+                    self.substantive.estimated_cost_usd()
                 ),
                 "trivial_pct": round(
                     self.trivial.total_tokens
@@ -456,7 +540,17 @@ def classify_bash_command(cmd: str) -> BashCategory:
 # Project directory mapping
 # ---------------------------------------------------------------------------
 
-CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+def __getattr__(name: str):
+    # CLAUDE_PROJECTS_DIR is lazy: Path.home() raises without a home dir, and
+    # that must not break `import agentwatch.cc_stats` (the coach hook needs it).
+    if name == "CLAUDE_PROJECTS_DIR":
+        return Path.home() / ".claude" / "projects"
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _projects_dir() -> Path:
+    """CLAUDE_PROJECTS_DIR, honouring a monkeypatched/assigned value."""
+    return globals().get("CLAUDE_PROJECTS_DIR") or __getattr__("CLAUDE_PROJECTS_DIR")
 
 
 def cwd_to_project_dir(cwd: Path | None = None) -> Path | None:
@@ -469,7 +563,7 @@ def cwd_to_project_dir(cwd: Path | None = None) -> Path | None:
         cwd = Path.cwd()
     cwd = cwd.resolve()
     dir_name = encode_path_for_claude(cwd)
-    project_dir = CLAUDE_PROJECTS_DIR / dir_name
+    project_dir = _projects_dir() / dir_name
     if project_dir.is_dir():
         return project_dir
     return None
@@ -477,15 +571,75 @@ def cwd_to_project_dir(cwd: Path | None = None) -> Path | None:
 
 def find_all_project_dirs() -> list[Path]:
     """Find all Claude Code project directories."""
-    if not CLAUDE_PROJECTS_DIR.is_dir():
+    projects = _projects_dir()
+    if not projects.is_dir():
         return []
-    return [p for p in CLAUDE_PROJECTS_DIR.iterdir() if p.is_dir()]
+    return [p for p in projects.iterdir() if p.is_dir()]
 
 
-def project_dir_to_name(project_dir: Path) -> str:
-    """Extract a readable project name from a project directory path."""
+_WORKTREE = re.compile(r"[\\/]\.claude[\\/]worktrees(?:[\\/]|$)")
+_WINDOWS_PATH = re.compile(r"^[A-Za-z]:|\\")
+_ROOT = re.compile(r"/|[a-z]:\\")  # a lowercased POSIX root or drive anchor
+
+
+def _recorded_path(path: str) -> PurePath:
+    """A path a log recorded, parsed by its own OS's rules (whatever this one
+    is): a drive letter or a backslash means Windows."""
+    return PureWindowsPath(path) if _WINDOWS_PATH.search(path) else PurePosixPath(path)
+
+
+def project_name(cwd: str | Path | None) -> str | None:
+    """Project name of a working directory: its last component, or "~" for
+    the home dir (never the user name). None when unknown. A Claude Code
+    worktree (``<project>/.claude/worktrees/agent-<id>``) is its project."""
+    if not cwd:
+        return None
+    path = _recorded_path(_WORKTREE.split(str(cwd), maxsplit=1)[0])
+    parts = [p.lower() for p in path.parts]
+    # Any OS's home layout (C:\Users\<name>, /home/<name>, /Users/<name>), so a
+    # log recorded on another OS can't store a user name either.
+    if len(parts) == 3 and parts[1] in ("users", "home") and _ROOT.fullmatch(parts[0]):
+        return "~"
+    try:
+        home = os.path.normcase(os.path.abspath(Path.home()))
+        if os.path.normcase(os.path.abspath(str(path))) == home:
+            return "~"
+    except (RuntimeError, OSError, ValueError):
+        pass  # no home dir
+    return path.name or None
+
+
+def recorded_cwd(jsonl: Path, max_lines: int = 50) -> str | None:
+    """The first ``cwd`` a Claude Code transcript records in its first lines."""
+    try:
+        with open(jsonl, encoding="utf-8", errors="ignore") as f:
+            for line in islice(f, max_lines):
+                try:
+                    cwd = json.loads(line).get("cwd")
+                except (ValueError, AttributeError):
+                    continue
+                if isinstance(cwd, str) and cwd:
+                    return cwd
+    except OSError:
+        pass
+    return None
+
+
+def project_dir_to_name(project_dir: Path, log: Path | None = None) -> str:
+    """Readable project name of a Claude Code project dir: the last component
+    of the cwd its transcripts record (*log* first), else decoded from the
+    dir name, which can't tell "-" from "/" ("agentwatch-main" reads "main").
+    "~" for the home dir."""
+    for jsonl in ([log] if log else []) + sorted(project_dir.glob("*.jsonl"))[:3]:
+        name = project_name(recorded_cwd(jsonl))
+        if name:
+            return name
     name = project_dir.name  # e.g. -Users-alice-Projects-agentwatch
-    # Take the last component as the project name
+    try:
+        if name == encode_path_for_claude(Path.home()):
+            return "~"
+    except (RuntimeError, OSError):
+        pass
     parts = name.strip("-").split("-")
     return parts[-1] if parts else name
 
@@ -529,7 +683,10 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
     user_messages: dict[str, str] = {}  # uuid -> content snippet
     parent_map: dict[str, str] = {}  # assistant first_uuid -> parentUuid
 
-    with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as f:
+    # A session's subagents log to <session>/subagents/*.jsonl; their calls are
+    # billed too. One pass over all files, so a message.id seen twice counts once.
+    files = [jsonl_path, *sorted(jsonl_path.with_suffix("").glob("subagents/*.jsonl"))]
+    with fileinput.input(files, encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -578,6 +735,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
                     "input_tokens": 0,
                     "output_tokens": 0,
                     "cache_write": 0,
+                    "cache_write_1h": 0,
                     "cache_read": 0,
                     "tool_blocks": {},  # block_id -> (tool_name, tool_input)
                     "has_thinking": False,
@@ -602,6 +760,11 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             md["cache_read"] = max(
                 md["cache_read"], usage.get("cache_read_input_tokens", 0)
             )
+            split = usage.get("cache_creation")
+            if isinstance(split, dict):
+                md["cache_write_1h"] = max(
+                    md["cache_write_1h"], split.get("ephemeral_1h_input_tokens") or 0
+                )
             if msg.get("model"):
                 md["model"] = msg["model"]
 
@@ -658,6 +821,15 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             ]
 
         n = len(categories)
+        # Each call priced on its own model and usage, then split evenly.
+        tokens = (
+            md["input_tokens"] + md["output_tokens"] + md["cache_write"] + md["cache_read"]
+        )
+        call_cost = usage_cost_usd(
+            md["model"], md["input_tokens"], md["output_tokens"],
+            md["cache_write"], md["cache_read"], md["cache_write_1h"],
+        ) if tokens else 0.0
+        share = None if call_cost is None else call_cost / n
         per_input = md["input_tokens"] // n
         per_output = md["output_tokens"] // n
         per_cw = md["cache_write"] // n
@@ -680,6 +852,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
                 md["cache_read"] - per_cr * n if extra else 0
             )
             bucket.call_count += 1
+            bucket.add_cost(share)
 
         # Bash sub-categories
         bash_cmds_by_idx = dict(bash_commands)
@@ -691,6 +864,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             sub.cache_write_tokens += per_cw
             sub.cache_read_tokens += per_cr
             sub.call_count += 1
+            sub.add_cost(share)
 
         # Trivial vs substantive classification
         # Resolve user prompt for this message (walk parentUuid)
@@ -713,12 +887,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
                     tc = TrivialCall(
                         command=cmd,
                         total_tokens=call_tokens,
-                        estimated_cost_usd=TokenBucket(
-                            input_tokens=per_input,
-                            output_tokens=per_output,
-                            cache_write_tokens=per_cw,
-                            cache_read_tokens=per_cr,
-                        ).estimated_cost_usd(md.get("model", "sonnet")),
+                        estimated_cost_usd=share,
                         session_id=session_id,
                     )
                     # Lazily resolve user prompt once per message
@@ -735,6 +904,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
             target.cache_write_tokens += per_cw
             target.cache_read_tokens += per_cr
             target.call_count += 1
+            target.add_cost(share)
 
         # Totals (full amount, not split)
         report.totals.input_tokens += md["input_tokens"]
@@ -742,6 +912,7 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
         report.totals.cache_write_tokens += md["cache_write"]
         report.totals.cache_read_tokens += md["cache_read"]
         report.totals.call_count += 1
+        report.totals.add_cost(call_cost)
 
     # Dominant model
     if model_counts:

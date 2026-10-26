@@ -52,6 +52,9 @@ agentwatch watch --security
 # Monitor all running agents
 agentwatch watch-all
 
+# No dashboard: log new warnings, desktop-notify on critical ones
+agentwatch watch-all --headless --notify
+
 # List running agent processes
 agentwatch ps
 
@@ -64,6 +67,9 @@ agentwatch net
 # Token usage stats
 agentwatch stats
 agentwatch stats --burn
+
+# What your agents cost you this week (spend, waste, trend)
+agentwatch report
 ```
 
 ## Scoring System
@@ -307,10 +313,145 @@ agentwatch watch --security
 agentwatch watch-all
 ```
 
+`watch-all` shows one row per session: status (`●` active, `○` idle 5+
+minutes; stopped rows are grey), agent, project, health (`▲`/`▼` while it is
+5+ points off its value a minute ago), estimated cost (`n/a` when the model has no known
+price), context window fill, time since the last action, and the top
+warning (`ok` when none). With `--budget`, the cost column is `COST / BUDGET`:
+`$4.12 / $5.00 ▮▮▮▯` (a 4-cell bar; amber from 80%, red once hit; `n/a` with
+no known price; under 100 columns `$4.12 ▮▮▮▯`). When the Claude Code
+plugin's loop breaker has blocked a call in a session, its top warning reads
+`⛔ loop blocked: Bash (7x) $1.40` (the command itself is never shown).
+Rows sort by attention: Critical and loop-blocked sessions first, then HIGH
+warnings, other warnings, active sessions by recency, idle and stopped last.
+Subagents are listed under their parent (`└ sub`), and a team's sessions
+under its `TEAM` row (the team sorts by its most urgent member). Sessions with
+no action for 15+ minutes, and stopped ones, fold into one `○ … N idle (a to
+show)` row at the bottom (a parent stays shown while one of its subagents is);
+`a` shows them, `a` again folds them. `/` opens a filter line at the bottom:
+rows whose project, agent or top warning contain the text (any case) are
+shown as you type (a matching subagent with its parent); Enter keeps the filter (`filter: xyz` next to the sort),
+Esc clears it.
+
+Graphs, gauges and colour: each session keeps a short history in memory
+(nothing is written to disk): a sample of its health, cost and context fill
+when one of them changed, at most every 15 seconds (a 5+ point move in health
+or context at once), the last 60 kept (15+ minutes). The `TREND H` column is
+a sparkline of its last 8 health samples (`▁` 0% to `█` 100%, each point in
+its health colour); under the cost sort it is `TREND $`, the cost from its
+lowest to its highest. Below the table, the Selected strip shows the
+session's health, cost and context as a value, a 16-sample sparkline, an
+arrow against a minute ago (health `▲` green `▼` red, cost and context `▲`
+amber) and a gauge (`▮▮▮▮▮▮▮▮▯▯`; health in its colour, context green, amber
+from 80%, red at 100%; with `--budget` the cost row has `budget ▮▮▮▮▮▮▮▮▯▯
+82%`), then efficiency, security findings, network endpoints, cost per
+minute, the top signal in its severity colour (a loop breaker block first)
+and the next warning. The detail view's Health tab has the same rows with
+every sample. Agent names have one colour per agent type; warnings are red
+(Critical), orange (HIGH), yellow (MEDIUM) or dim (LOW). With `--theme ascii`
+sparklines use `_.:-=+*#`, gauges `[########..] 82%` and arrows `^`/`v`; the
+arrows and numbers carry the meaning without colour in every theme.
+
+`watch-all --all-logs` reads every log under the known log directories
+instead of discovering running processes. By default only logs modified in
+the last 24 hours are loaded (older ones are not read at all, and one shows up
+once it is written to again); `--since 6h`, `--since 2d` or `--since all`
+changes that. The Events panel says how many were loaded
+(`23 sessions loaded (last 24h of 118 logs)`). Each session is shown by its
+project name: for Claude Code the last part of the working directory its
+transcript records (a `.claude/worktrees/...` worktree counts as its project,
+the home directory is `~`), else its `~/.claude/projects` folder; other agents
+as `agentwatch history` names them. Claude Code subagent logs sit under their
+session. The log file is on the detail view's Process tab.
+
+The header line counts sessions, active ones and those that need you (Critical,
+a HIGH or worse warning, or a loop breaker block; stopped sessions never
+count), the estimated cost of every session loaded in this run (`spent $X`,
+folded and filtered ones too; not your history: `agentwatch report` has
+that), alerts this run (sent to
+`--notify`/`--webhook`; without those, new HIGH or worse findings), loop
+breaker blocks this run (`blocks N`, including sessions already blocked at
+startup), the per-session `--budget` limit when set (`budget $5.00/session`),
+and the time. When the line does not fit, the clock goes first, then the
+`agentwatch` title, then `N active`, then the budget (the cost column shows
+it), and only then is the line cut.
+
+It also shows `today $9.80 · week $61.00 ▲12%`: your spend today and in the
+last 7 days, and the change against the 7 days before, from the history
+store (`agentwatch report`). watch-all runs `history sync` (in a separate
+process) at startup and every 5 minutes, so the figures lag: logs written in
+the last minute (sessions still running) wait for a later sync. `w` shows
+the report: spend, waste, the 3 costliest findings, per agent and per
+project, security findings and the trend. If the history DB can't be synced
+or read, the figures are hidden and the Events panel says
+`history unavailable` once. "spent" stays next to them: it is live and adds
+up the sessions loaded in this run, which the history does not have yet.
+
+`+2 unmonitored AI` counts programs using AI right now that agentwatch has no
+adapter for (what `agentwatch detect` lists as not monitored); the check runs
+on a background thread every 30 seconds. `d` lists every program using AI
+(pid, providers, connections, local runtime, monitored or not), and the
+Events panel says `new unmonitored AI program: <name>` the first time one
+appears after startup. Under 100 columns the today/week figures are the
+first thing the header drops; at 100+ columns `N active` goes before them.
+
+The layout follows the terminal size (recomputed only on a resize). Under 100
+columns the AGENT and CTX columns and the Selected strip are hidden (Enter
+shows them; the filter still matches the agent), PROJECT is shorter and TOP
+SIGNAL takes the rest of the width. TREND goes when it would leave TOP SIGNAL
+under 25 columns (so 80 columns have no TREND, 120 columns have it, also with
+`--budget`). Under 30 rows the Events panel shows 3
+lines; under 20 rows it is hidden and `e` shows it in place of the table (`e`
+or Esc goes back). An 80x24 terminal shows 13 session rows.
+
+The Events panel at the bottom lists, newest first: sessions started
+and stopped, each new warning (one line per finding) and when it clears,
+alerts sent, a loop breaker block (`⛔ proj loop breaker blocked a repeated
+call (~$1.40)`), `s` (`security on: N findings` / `security off`, one line,
+not one per finding), and with `--budget` a session reaching 80% and 100% of it.
+Warnings and blocks a session already has when it is first seen are not
+listed (one "N sessions loaded; M loop blocks so far" line at startup
+instead). Loop breaker state is the coach's per-session state file, read
+only: its modification time is checked every 2 seconds and the file is read
+only when it changed. watch-all finds that file through the plugin's data dir
+(`~/.claude/plugins/data/agentwatch-*/coach`) or the pointer the hook leaves
+in the per-user cache (`$XDG_CACHE_HOME/agentwatch/coach`); if the hook and
+watch-all run with different `XDG_CACHE_HOME` values and the plugin data is
+outside `~/.claude/plugins/data`, it can't.
+
+Enter opens the selected session full screen, in four tabs: Health (overall
+health and its status, efficiency, context health, actions/errors/duration
+and every warning with its suggestion and cost; plus a `Loop breaker:` line:
+`armed (Nx)`, `blocked once`, `not armed`, or
+`off in this shell (AGENTWATCH_LOOP_BREAKER=off)`: the variable is read
+from watch-all's environment, not the hook's), Security (findings, or how
+to turn security mode on, plus raw counts of credential file accesses,
+privilege commands, network actions and injection-like messages), Network
+(what `agentwatch net` shows for the session's process: each remote endpoint
+the socket sampler saw in the last 30 minutes with its first and last time,
+its host name (DNS cache, a known AI or agent host, or reverse DNS, looked up
+on a background thread; the bare IP until then), `AI-PROVIDER <name>` when it
+belongs to a cloud AI provider, and the process tree's listening sockets,
+`EXPOSED` when reachable from other machines; `Network: n/a (no process)` with
+`--all-logs`) and Process (pid, type,
+uptime, working directory, CPU, memory, team, session id; `n/a` with
+`--all-logs`). It updates every second. A session is rescored only when it
+has new actions (or after `s`), the same for every session.
+
+Keys: arrows select a session, Enter opens it, `o` cycles the sort
+(attention, cost, recent), `a` shows/folds idle sessions, `/` filters,
+`e` focuses the Events panel to scroll it (`e` or
+Esc goes back), `s` toggles security detectors, `d` lists other AI on this
+machine, `w` shows the weekly report, `?` shows a help screen (the
+keys, what the columns and icons mean, and the main flags; Esc, `?` or `q`
+closes it), `q` quits. The footer lists the most used keys first. In the detail
+view: Tab/Shift+Tab or `1`-`4` switch tabs, arrows and PgUp/PgDn scroll, Esc,
+Backspace or `q` go back to the table.
+
 While `watch` / `watch-all` run, AgentWatch polls each agent process's
 sockets (and its child processes') about once a second, unprivileged, and
 records which remote endpoints (IP, port) were open during each action. The
-stats line shows `Net: N endpoints`. With `--security`, the
+stats line (in `watch-all`, the selected session's strip) shows `Net: N endpoints`. With `--security`, the
 `undeclared_egress` detector warns when the agent connects to an address
 that no action declared (a WebFetch host) and that is not a known LLM
 provider (the `detect` list) or agent vendor host (Claude Code telemetry
@@ -330,6 +471,112 @@ an OpenCode/Kilo database finds no process (`Net: no live process`); use
 `watch-all`. One-shot `check` / `security-scan` never sample. Claude Code,
 Codex and Gemini log a tool call when it starts, so a Bash command's
 connection may be reported on the next action.
+
+### Alerts
+
+Agents run unattended, so AgentWatch can tell you when a session goes bad
+without a dashboard on screen.
+
+```bash
+# No dashboard: one line per new warning on stdout; Ctrl+C to stop
+agentwatch watch-all --headless
+
+# Desktop notification on a Critical session or a new CRITICAL finding
+agentwatch watch-all --notify
+agentwatch watch --notify --security
+
+# Also alert on HIGH findings
+agentwatch watch-all --headless --notify --notify-min high
+
+# Post alerts to a Slack (or Discord/Teams-style) incoming webhook
+agentwatch watch-all --headless --webhook https://hooks.slack.com/services/...
+export AGENTWATCH_WEBHOOK=https://hooks.slack.com/services/...   # same, from the environment (--webhook wins if both are set)
+```
+
+Headless output looks like:
+
+```
+14:02:11 HIGH     Claude Code · myproj [loop] Repeated action: Bash (8x)  ~$1.40 · 210k tok
+```
+
+An alert reads `agentwatch: Claude Code · myproj — loop ~$1.40`, followed
+by the warning's own message with secrets redacted; no other transcript
+content is sent. You get one alert per finding per session (it alerts again
+if the finding clears and comes back) and at most one "critical" alert per
+session every 10 minutes. `--notify-min` (`critical` by default, or `high`)
+applies to `--notify` and `--webhook`; the headless log shows every new
+warning.
+
+Findings a session already has when AgentWatch first sees it (its log's
+history, at startup or when a session is discovered later) are a silent
+baseline, so opening `watch-all` over old sessions does not fire a burst of
+alerts; only findings that appear afterwards, and a session turning
+Critical afterwards, alert. Add `--notify-existing` to alert on those too.
+The headless log still prints them.
+
+- **Windows:** a toast from Windows PowerShell (`powershell -NoProfile`,
+  shown under "Windows PowerShell" in the notification center). If the toast
+  fails, AgentWatch beeps and warns once.
+- **macOS:** `osascript` (`display notification`). Allow notifications for
+  Script Editor / your terminal in System Settings if nothing appears.
+- **Linux:** `notify-send`, if it is on `PATH` (package `libnotify-bin` or
+  `libnotify`).
+- No notifier: one warning on stderr, then monitoring continues.
+
+The webhook gets `POST` JSON `{"text": "..."}` (5 s timeout, sent in the
+background). The URL is a secret: AgentWatch never prints it (errors show
+`https://hooks.slack.com/***`), and a failing webhook is reported once and
+never stops monitoring. `AGENTWATCH_WEBHOOK` is only read, never written; if both it and
+`--webhook` are set, the flag wins.
+Redirects are not followed (a 3xx counts as a failure), `& < >` are escaped
+so a path or repo name cannot ping `<!channel>` or post a disguised link, and
+a plain `http://` URL gets a startup warning (alert text would travel
+unencrypted).
+
+Alert text is one line per field: control characters (terminal escapes,
+bells, newlines) become spaces and long names are cut, so a crafted project
+name cannot clear your terminal, write your clipboard or fake a log line.
+Alerts are delivered one at a time; if more than three pile up, they arrive
+as one summary (`agentwatch: 12 new alerts`).
+
+Run headless in the background:
+
+```bash
+# macOS / Linux
+nohup agentwatch watch-all --headless --notify > ~/agentwatch-alerts.log 2>&1 &
+```
+
+```powershell
+# Windows (PowerShell)
+Start-Process agentwatch -ArgumentList "watch-all","--headless","--notify" `
+  -WindowStyle Hidden -RedirectStandardOutput "$env:USERPROFILE\agentwatch-alerts.log"
+```
+
+A hidden window has no Ctrl+C; stop it with `Stop-Process -Name agentwatch`.
+
+`--headless` runs the same engine as the `watch-all` dashboard (process
+discovery every 5 s, per-agent scoring); it only skips drawing it.
+
+#### Budget alert
+
+```bash
+# One alert per session when its estimated cost reaches $5
+agentwatch watch-all --budget 5
+agentwatch watch-all --headless --budget 5 --webhook https://hooks.slack.com/services/...
+```
+
+The alert reads `agentwatch: Claude Code · myproj — budget $5.00 hit` with
+`session cost $5.12` as its body (headless also prints one `BUDGET` line).
+Each session alerts once, the first time its cost reaches or passes the
+limit; it does not repeat as the cost keeps rising. A session already over
+budget when AgentWatch first sees it alerts at startup (the budget alert is
+not part of the silent baseline). `--budget` alone turns on `--notify`, so
+the regular Critical/finding desktop alerts are on too; add `--webhook`
+instead to get only the webhook (add `--notify` for both). The amount must
+be a positive number of USD.
+
+Agents whose cost AgentWatch cannot price (Codex, Gemini, Copilot VS Code)
+can never trigger it, and `agentwatch statusline` does not show the budget.
 
 ### Process Discovery
 
@@ -532,6 +779,90 @@ agentwatch stats --burn
 agentwatch stats --json
 ```
 
+### Weekly Report
+
+What your agents cost you, across every agent and project, from a local
+history of your sessions.
+
+```bash
+# Last 7 days: spend, waste, costliest findings, per agent/project, trend
+agentwatch report
+
+# Other period, one agent or project, JSON
+agentwatch report --days 30
+agentwatch report --agent claude-code --project web
+agentwatch report --json
+
+# The history behind it
+agentwatch history sync              # only new or changed logs are read
+agentwatch history sync --days 14    # only logs written in the last 14 days
+agentwatch history prune --older-than 90d
+agentwatch history path
+```
+
+```
+agentwatch report: last 7 days (2026-10-11 to 2026-10-18)
+
+  Sessions 83   Spend ~$222.11   Tokens 380.4M
+  Waste: ~$10.72 (5%) on stalls, loops, rereads and repeated errors
+  vs previous 7 days: spend +$103.57, waste +$10.52  (43 sessions, ~$118.54)
+  Note: 1 session without a price (no token data or an unlisted model): n/a, left out of spend and %.
+
+  Costliest findings
+    exploration_stall      web                        ~$3.87  2026-10-18
+    ...
+```
+
+- `report` syncs first (this period and the one before; `--no-sync` skips
+  it). A session counts in the period of its last action. Logs written in
+  the last 60 s are still being written and wait for the next sync
+  (`history sync --include-active` takes them).
+- Spend is each API call once, priced like `check`. Waste is `check`'s waste
+  figure (the calls behind health findings, a call shared by two findings
+  once) summed over sessions. A session with no token data or an unlisted
+  model is n/a: counted, but left out of spend and the waste %, never
+  guessed.
+- Security counts findings, not secrets: leak findings (credential
+  category; one secret can raise more than one, e.g. `secret_leak` and
+  `secret_in_command`), egress (network, exfiltration), injection and other
+  (privilege, supply chain). Dates are UTC.
+- Sources: Claude Code (subagent transcripts too), Codex, Copilot CLI,
+  Gemini CLI, Antigravity, Copilot in VS Code and Cline, one session per log
+  file. Not yet: Cursor, OpenCode and Kilo (one database holds every session)
+  and Aider (no fixed log location).
+
+**What is stored.** One SQLite file, `history path` (`%LOCALAPPDATA%\agentwatch\history.db`
+on Windows, `$XDG_DATA_HOME/agentwatch/history.db` or
+`~/.local/share/agentwatch/history.db` elsewhere; the folder is 0700 on
+POSIX). Per session: agent, session id, project folder name (the last part of
+the path only, `~` for the home folder), a hash of the log path, first/last action time, action count,
+tokens, USD (empty when unknown), the waste figure, health score and status,
+the log's size and mtime. Per finding: a hash of its identity, signal,
+severity, category, tokens, USD, first seen, and for health findings a short
+message (one line, at most 120 chars, secrets redacted, paths cut to the file
+name). No transcript text, prompts, commands, tool output or full paths.
+With the Microsoft Store Python the file is redirected like the coach state
+(see the Claude Code plugin section): `history path` prints the path
+agentwatch uses, the bytes live under `...\Packages\PythonSoftwareFoundation.Python.3.X_<id>\LocalCache\Local\agentwatch`.
+Nothing leaves the machine. Kept until `history prune` (no limit by default);
+a sync without `--days` re-reads pruned sessions whose logs are still on disk.
+
+`report --json` (schema 1, fields only added, never renamed):
+
+| Key | Content |
+|-----|---------|
+| `schema` | `1` |
+| `period` | `days`, `start`, `end` (ISO 8601 UTC) |
+| `filters` | `agent`, `project` (null when not given) |
+| `totals` | `sessions`, `unpriced_sessions`, `cost_usd`, `tokens`, `waste_usd`, `waste_pct`, `waste_findings` |
+| `previous` | the same as `totals`, for the period before |
+| `trend` | `cost_usd`, `waste_usd`: this period minus the previous one |
+| `top_findings` | up to 3: `signal`, `severity`, `agent`, `project`, `cost_usd`, `tokens`, `date` (UTC), `message` |
+| `by_agent`, `by_project` | `totals` fields plus `agent` / `project`, costliest first |
+| `security` | finding counts: `total`, `leaks`, `egress`, `injection`, `other` |
+
+USD values are null when unknown (no priced session, or no previous period).
+
 ### Scrub Secrets and Personal Info
 
 ```bash
@@ -606,14 +937,151 @@ dry-runs first and never prints the raw values. For one session log it uses
 `scrub` (a clean copy that also covers prompts and tool results); for
 in-place redaction across many logs it uses `audit --redact --pii`, which
 skips prompts and tool results. It moves a scrubbed session log out of
-`~/.claude/projects/` so it is not counted as another session. Install it by copying the
+`~/.claude/projects/` so it is not counted as another session. It ships in the
+[Claude Code plugin](#claude-code-plugin-coach), or install it alone by copying the
 folder:
 
 ```bash
-cp -r skills/agentwatch-scrub ~/.claude/skills/agentwatch-scrub
+cp -r plugin/skills/agentwatch-scrub ~/.claude/skills/agentwatch-scrub
 ```
 
 Claude Code only.
+
+## Claude Code plugin (coach)
+
+The `agentwatch` plugin coaches Claude Code while it works. After every tool
+call a hook runs agentwatch's health detectors on the live session. When a
+new HIGH or CRITICAL loop, thrash, error spiral or stuck pattern shows up, it
+adds a short note to Claude's context (what is wrong, the evidence, what to
+try). It reports each problem once per session, again only if it clears
+and comes back. Context-size estimates are not coached. The plugin also
+includes the scrub skill.
+
+**Loop breaker.** When the same action has run 6 or more times in the last
+10 tool calls (a HIGH loop), the plugin's PreToolUse hook blocks the next
+identical call once and tells Claude why: "agentwatch blocked this call: the
+same action ran 6 times in the last 10 calls (~$0.42 so far). Change
+approach: read the last error and fix its cause, or ask the user." A retry
+right after the block is allowed (one block per loop); once the loop is no
+longer HIGH it is forgotten, so a new loop blocks again. Bash commands that
+repeat on purpose are never blocked (the warning still fires): `sleep`,
+`gh run watch`, `gh pr checks`, `git status`, `git log`, `git diff`,
+`pytest`, `python -m pytest`, `python3 -m pytest`, `uv run pytest`,
+`npm test`, `npm run test`, `pnpm test`, `pnpm run test`, `yarn test`,
+`yarn run test`, `bun test`, `npx jest`, `npx vitest`, `cargo test`,
+`go test`, `make test`, `./gradlew test`, `mvn test`. They match as whole
+words, after any leading `cd <path> &&` and `VAR=value` prefixes (so
+`cd app && pytest` is allowed, `sleepy` is not). It reads only the coach's
+state file (no transcript parsing); the armed loop entry holds only a hash of
+the action, its count and cost, never the command or path. Any error lets the
+call through. Set
+`AGENTWATCH_LOOP_BREAKER=off` (board approved; default on) to turn it off.
+Claude Code only: other agents have no PreToolUse hook and keep getting
+warnings in `watch`/`watch-all` and alerts.
+
+The plugin needs agentwatch **0.2.0 or later** on your PATH (`agentwatch hook`
+is not in 0.1.x, the current PyPI release). Until 0.2.0 is on PyPI, install
+from git:
+
+```bash
+pipx install git+https://github.com/LoomLabs-Venture-Studio/agentwatch@develop-overdrive
+```
+
+Then add the plugin. `/plugin marketplace add owner/repo` reads the default
+branch, which has no `plugin/` yet, so pin the branch with `#ref` for now:
+
+```
+/plugin marketplace add LoomLabs-Venture-Studio/agentwatch#develop-overdrive
+/plugin install agentwatch@agentwatch
+```
+
+Once `plugin/` is on the default branch, drop the `#develop-overdrive`. On
+Claude Code 2.1.275+ one step also works:
+`/plugin install agentwatch --marketplace LoomLabs-Venture-Studio/agentwatch#develop-overdrive`.
+To try it from a checkout without installing: `claude --plugin-dir ./plugin`.
+
+If `agentwatch` is not on PATH the hook does nothing. Any error, bad input or
+missing transcript also exits 0 silently. Subagents are coached from their
+own transcript. The note quotes tool output as evidence (with `<`/`>`
+removed); its advice line is fixed text. Dedup state is a small JSON file per
+session in the plugin's data dir (`$CLAUDE_PLUGIN_DATA/coach`), or else
+`%LOCALAPPDATA%\agentwatch\coach` on Windows and `~/.cache/agentwatch/coach`
+elsewhere (`0700`, never the shared temp dir). If the plugin's data dir
+cannot be written, the per-user dir is used instead. It also holds that
+session's latest health warnings; files older than 7 days are deleted.
+
+With the Microsoft Store Python on Windows, writes to `%LOCALAPPDATA%` are
+redirected into the app's private folder, so the state is really under
+`%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.X_<id>\LocalCache\Local\agentwatch\coach`.
+agentwatch itself sees the same redirect, so this only matters when you look
+for the files by hand. This also applies to a pipx/venv install built on the
+Store Python; a python.org Python has no redirect.
+
+### Status line
+
+`agentwatch statusline` puts one short word in Claude Code's status line when
+the session is unhealthy, and prints nothing when it is healthy:
+
+```
+⚠ loop ~$1.40
+```
+
+The word is the most severe current HIGH/CRITICAL coach finding: `loop`,
+`thrash`, `errors` or `stuck` (yellow for HIGH, red for CRITICAL), plus the
+cost of the API calls behind it when that is known. It reads only the
+coach's state file for the session, never the transcript, so it needs the
+plugin's hook (above) and runs in about 150 ms on Windows, most of it Python
+startup. It prints nothing when there is no state for the session yet (no
+tool call so far, or no coach), when the state is older than 10 minutes, or
+on any error, and always exits 0. `--ok` prints a dim `✓ agentwatch` when
+the coach's last check was healthy. `NO_COLOR` turns colors off.
+
+Plugins cannot set the main status line (a plugin's settings only apply
+`agent` and `subagentStatusLine`), so this is a one-line manual setup in
+`~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "agentwatch statusline"
+  }
+}
+```
+
+Use `"agentwatch statusline --ok"` to see the check mark when all is well.
+On Windows, Claude Code runs the command through Git Bash (or PowerShell
+without Git Bash); if you give a full path to `agentwatch`, write it with
+forward slashes.
+
+**Already have a status line script?** Call `agentwatch statusline` from
+inside it with the same stdin and append what it prints:
+
+```bash
+#!/usr/bin/env bash
+input=$(cat)
+model=$(printf '%s' "$input" | jq -r '.model.display_name')
+aw=$(printf '%s' "$input" | agentwatch statusline)
+echo "[$model] ${aw}"
+```
+
+In a PowerShell script use `$aw = $json | agentwatch statusline`. If the `⚠`
+comes out garbled, the console code page is not UTF-8: set
+`[Console]::OutputEncoding = [Text.Encoding]::UTF8` first. (A BOM that
+PowerShell adds to piped stdin is ignored.)
+
+**[ccstatusline](https://github.com/sirmalloc/ccstatusline):** its Custom
+Command widget passes the same Claude Code JSON on stdin (plus
+`terminal_width`). Add a Custom Command widget with the command
+`agentwatch statusline` and turn on "preserve colors" (otherwise
+ccstatusline strips the colors and applies its own). In
+`~/.config/ccstatusline/settings.json` the widget is:
+
+```json
+{ "id": "agentwatch", "type": "custom-command", "commandPath": "agentwatch statusline", "preserveColors": true }
+```
+
+The widget's default timeout (1000 ms) is plenty.
 
 ## Configuration
 

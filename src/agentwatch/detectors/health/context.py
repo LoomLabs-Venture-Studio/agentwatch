@@ -128,6 +128,7 @@ class RediscoveryDetector(Detector):
         # Track file read positions
         file_first_read: dict[str, int] = {}
         file_reread_gaps: dict[str, list[int]] = {}
+        rereads: dict[str, list] = {}  # path -> the reads after a long gap
 
         for i, action in enumerate(actions):
             if action.is_file_read and action.file_path:
@@ -138,6 +139,7 @@ class RediscoveryDetector(Detector):
                         if path not in file_reread_gaps:
                             file_reread_gaps[path] = []
                         file_reread_gaps[path].append(gap)
+                        rereads.setdefault(path, []).append(action)
                     # Always update to measure next gap from this read
                     file_first_read[path] = i
                 else:
@@ -161,6 +163,6 @@ class RediscoveryDetector(Detector):
                     "file": worst_file,
                     "rediscovery_count": worst_count,
                 },
-            )
+            ).with_cost(rereads[worst_file], buffer)
 
         return None

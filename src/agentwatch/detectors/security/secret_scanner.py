@@ -656,6 +656,18 @@ def redact_truncate(text: str, limit: int) -> str:
     return _redact_window(text[: limit + _REDACT_WINDOW_MARGIN])[:limit]
 
 
+def one_line(text: object, limit: int) -> str:
+    """*text* as one safe display line of at most *limit* chars, for text that
+    leaves agentwatch (coach notes, alerts, headless log lines): every
+    non-printable char (ESC, BEL, CR/LF, C1 controls, bidi overrides, ...)
+    becomes a space, whitespace collapses, secrets are redacted."""
+    # ponytail: only the first 8*limit (+ margin) chars are scanned; a longer
+    # run of whitespace can leave the line shorter than limit.
+    s = str(text)[: 8 * limit + _REDACT_WINDOW_MARGIN]
+    s = " ".join("".join(c if c.isprintable() else " " for c in s).split())
+    return redact_truncate(s, limit)
+
+
 @lru_cache(maxsize=4096)
 def _redact_window(window: str) -> str:
     """Memoized ``redact_secrets`` for bounded windows: detectors re-redact

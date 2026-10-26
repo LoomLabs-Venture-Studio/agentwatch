@@ -7,7 +7,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from itertools import islice
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+from agentwatch.cc_stats import usage_cost_usd
 
 from .security_patterns import (
     is_credential_like_path,
@@ -71,6 +76,11 @@ class Action:
     cache_read_tokens: int = 0
     context_window: int = 0  # model's window when the log reports it
     unpriced: bool = False  # no known price for this model: don't estimate cost
+    model: str | None = None  # model id of the API call, for pricing
+    # API call this action came from. Copies of one call (Claude Code writes a
+    # line per content block, each with the full usage) share it.
+    message_id: str | None = None
+    cache_creation_1h_tokens: int = 0  # part of cache_creation_tokens on the 1h TTL
 
     # Security-relevant fields
     incoming_message: str | None = None  # For prompt injection detection
@@ -132,6 +142,9 @@ class SessionStats:
     active_seconds: float = 0.0  # span covered by actions, idle gaps capped
     error_count: int = 0
     files_touched: set[str] = field(default_factory=set)
+    # Usage per API call, each call once (copies share Action.message_id).
+    billed_tokens: int = 0
+    billed_cost: float | None = 0.0  # None once a call with tokens had no price
 
     # Security stats -- DESIGN DECISION (Sprint 14, resolved not guessed):
     # these are RAW per-action pattern-match counts, not "how many times a
@@ -182,23 +195,87 @@ class SessionStats:
 
     @property
     def estimated_cost(self) -> float | None:
-        # Prefer real cost accumulated from log entries
+        # Each API call once, priced by its own model (or the agent's own
+        # cost). None when any call with tokens has no price: never a guess.
+        if self.billed_tokens:
+            return self.billed_cost
         if self.total_cost > 0:
-            return self.total_cost
-        if self.unpriced:
-            return None  # e.g. Codex: no price for its models here (#82)
-        # Estimate from token breakdown using Sonnet-class pricing:
-        #   Input: $3/MTok, Output: $15/MTok,
-        #   Cache write: $3.75/MTok, Cache read: $0.30/MTok
-        if self.total_cache_creation or self.total_cache_read:
-            return (
-                self.total_input_tokens * 3.0
-                + self.total_output_tokens * 15.0
-                + self.total_cache_creation * 3.75
-                + self.total_cache_read * 0.30
-            ) / 1_000_000
-        # Fallback: blended rate when no breakdown is available
-        return (self.total_tokens / 1_000_000) * 5
+            return self.total_cost  # cost logged without token counts
+        return None if self.unpriced else 0.0
+
+
+def call_tokens(action: Action) -> int:
+    """All tokens of the API call *action* carries usage for (0 = none)."""
+    return (
+        action.tokens_in
+        + action.tokens_out
+        + action.cache_creation_tokens
+        + action.cache_read_tokens
+    )
+
+
+def call_cost(action: Action) -> float | None:
+    """USD of the call *action* carries usage for: the agent's own reported
+    cost, else the model's listed rates; None when neither is known."""
+    if action.cost_usd > 0:
+        return action.cost_usd
+    if action.unpriced:
+        return None
+    return usage_cost_usd(
+        action.model,
+        action.tokens_in,
+        action.tokens_out,
+        action.cache_creation_tokens,
+        action.cache_read_tokens,
+        action.cache_creation_1h_tokens,
+    )
+
+
+def calls_of(actions: Iterable[Action], buffer: "ActionBuffer") -> dict[Any, Action]:
+    """The API calls behind *actions*, as {call key: action carrying its usage}.
+
+    An action is charged to the call it came from: its ``message_id``, or for
+    a Claude Code error result (no usage of its own) the call that issued the
+    ``tool_use`` it answers. Actions of one call count once. Actions with no
+    usage and no link to a call are left out.
+    """
+    usage: dict[str, Action] = {}  # message_id -> copy with the most tokens
+    tool_call: dict[str, str] = {}  # tool_use id -> message_id
+    for b in buffer.actions:
+        if b.message_id is None:
+            continue
+        best = usage.get(b.message_id)
+        if best is None or call_tokens(b) > call_tokens(best):
+            usage[b.message_id] = b
+        raw = b.raw if isinstance(b.raw, dict) else {}
+        if raw.get("type") == "tool_use" and raw.get("id"):
+            tool_call[raw["id"]] = b.message_id
+    calls: dict[Any, Action] = {}
+    for a in actions:
+        raw = a.raw if isinstance(a.raw, dict) else {}
+        mid = a.message_id or tool_call.get(raw.get("tool_use_id"))
+        if mid is not None:
+            if mid in usage:
+                calls[mid] = usage[mid]
+        elif call_tokens(a):
+            calls[id(a)] = a
+    return calls
+
+
+def calls_usage(calls: Iterable[Action]) -> tuple[int | None, float | None]:
+    """(tokens, usd) of *calls*. Tokens None when none carry usage; usd None
+    when any call with tokens has no price -- never a partial sum or a guess."""
+    tokens, cost = 0, 0.0
+    for c in calls:
+        t = call_tokens(c)
+        if not t:
+            continue
+        tokens += t
+        c_cost = call_cost(c)
+        cost = None if cost is None or c_cost is None else cost + c_cost
+    if not tokens:
+        return None, None
+    return tokens, cost
 
 
 class ActionBuffer:
@@ -210,6 +287,8 @@ class ActionBuffer:
         self._file_access_counts: dict[str, int] = {}
         self._error_messages: list[str] = []
         self._stats = SessionStats()
+        # message_id -> (tokens, cost) already counted for that call
+        self._billed: dict[str, tuple[int, float]] = {}
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -231,6 +310,20 @@ class ActionBuffer:
         self._stats.total_cost += action.cost_usd
         self._stats.total_cache_creation += action.cache_creation_tokens
         self._stats.total_cache_read += action.cache_read_tokens
+        # Each call once; a later copy with more tokens (streamed output)
+        # replaces the earlier count, as calls_of keeps the largest copy.
+        tokens = call_tokens(action)
+        counted = self._billed.get(action.message_id) if action.message_id else None
+        if tokens and (counted is None or tokens > counted[0]):
+            cost = call_cost(action)
+            old_tokens, old_cost = counted or (0, 0.0)
+            self._stats.billed_tokens += tokens - old_tokens
+            if cost is None:
+                self._stats.billed_cost = None
+            elif self._stats.billed_cost is not None:
+                self._stats.billed_cost += cost - old_cost
+            if action.message_id:
+                self._billed[action.message_id] = (tokens, cost or 0.0)
         # Track high-water mark of per-action context size (survives compaction)
         action_context = action.tokens_in + action.cache_creation_tokens + action.cache_read_tokens
         if action_context > self._stats.peak_context_tokens:

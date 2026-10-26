@@ -6,6 +6,194 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Added
+
+- `watch-all` graphs, gauges and colour: a `TREND H` column (a sparkline of
+  each session's last 8 health samples; `TREND $`, cost, under the cost
+  sort), and the Selected strip and the detail Health tab show health, cost
+  and context as sparklines with an arrow against a minute ago and gauges
+  (context fill, health, `budget ▮▮▮▮▮▮▮▮▯▯ 82%` with `--budget`). The
+  history is in memory only: a sample on change, at most every 15 s, the
+  last 60. Agent names have one colour per agent type; warnings are coloured
+  by severity (HIGH is now orange, not red). `--theme ascii` uses
+  `_.:-=+*#` sparklines and `[####....]` gauges. TREND is hidden when it
+  would leave TOP SIGNAL under 25 columns (80-column terminals). `?` lists
+  the graphs, gauges and colours.
+- `watch-all`: the header shows `today $X · week $Y ▲Z%` from the history
+  store (`history sync` runs in a separate process at startup and every 5
+  minutes; logs written in the last minute wait), and `w` shows the weekly
+  report (spend, waste, top 3 costliest findings, per agent and project,
+  trend). If history is unavailable the figures are hidden, with one
+  `history unavailable` Events line. `+N unmonitored AI` counts programs
+  using AI that agentwatch has no adapter for (`agentwatch detect`, on a
+  background thread every 30 s); `d` lists them and the Events panel says
+  `new unmonitored AI program: <name>` once per new one. The detail view's
+  Network tab shows what `agentwatch net` shows for the session's process:
+  endpoints with first/last seen, host names (looked up off the UI thread),
+  `AI-PROVIDER` flags and listening sockets (`EXPOSED` when reachable from
+  other machines); `n/a (no process)` with `--all-logs`. None of this runs
+  with `--headless`.
+- `watch-all` header: the cost is always `spent $X` (it adds up every
+  loaded session, also folded or filtered ones; it said "on screen" on wide
+  terminals); with `--budget` the clock shows when it fits and the budget
+  goes before the line is cut. The help screen fits narrow terminals (wrapped
+  descriptions stay under their column) and its footer says `esc Close`.
+- `watch-all` fits small terminals: under 100 columns the AGENT and CTX
+  columns and the Selected strip are hidden and TOP SIGNAL takes the rest of
+  the width (no sideways scrolling); under 30 rows the Events panel is 3
+  lines, under 20 it is hidden (`e` shows it). The layout changes on a
+  resize, keeping the selected session and the filter. The header drops the
+  clock first when it does not fit. The detail view's `Loop breaker:` line
+  wraps instead of being cut.
+- `watch-all`: `?` opens a help screen with every key, what the columns and
+  icons mean, and the main flags. The footer lists the most used keys first
+  (`s` is now labelled "Security").
+- `watch-all --all-logs` loads only logs modified in the last 24 hours by
+  default (older logs are not read; one appears once it is written to
+  again). `--since Nh|Nd|all` changes the window. Sessions show their project
+  name (from the cwd a Claude Code transcript records, worktrees as their
+  project, `~` for home) instead of the log file name; Claude Code subagent
+  logs sit under their session.
+- `watch-all`: sessions with no action for 15+ minutes, and stopped ones,
+  fold into one `… N idle` row (`a` shows them). `/` filters rows by
+  project, agent or top warning as you type (Enter keeps, Esc clears).
+- `watch-all` shows the Claude Code loop breaker: a blocked session's top
+  warning is `⛔ loop blocked: <tool> (Nx) $X` and it sorts with Critical
+  sessions; one Events line per block; `blocks N` in the header; a
+  `Loop breaker:` line on the detail view's Health tab. The coach's state
+  file is read only, and only when its modification time changes.
+- `watch-all --budget`: the cost column becomes `COST / BUDGET` with a
+  4-cell bar (amber from 80%, red once hit) and the header shows the budget.
+- `watch-all`: `s` adds one Events line (`security on: N findings` /
+  `security off`) instead of one line per finding the rescoring adds or clears.
+
+- Loop circuit breaker in the Claude Code plugin: a PreToolUse hook denies,
+  once, the next call that repeats a HIGH loop (6+ identical actions in the
+  last 10 calls), with a fixed reason shown to Claude. Retries are allowed,
+  common polling/test commands are never blocked, and any error lets the call
+  through. `AGENTWATCH_LOOP_BREAKER=off` turns it off. Claude Code only.
+- `--budget USD` on `watch` and `watch-all`: one alert per session when its
+  estimated cost first reaches the limit, through the same desktop/webhook/
+  headless sinks. A session already over budget when first seen alerts at
+  startup; `--budget` alone turns on `--notify` (so the regular Critical/
+  finding desktop alerts are on too; add `--webhook` instead to get only the
+  webhook). Sessions with an unknown cost (Codex, Gemini, Copilot VS Code) never alert.
+- Alerts for unattended sessions. `watch-all --headless` runs the watch-all
+  engine without the dashboard and prints one line per new warning (and
+  waits for agents if none are running yet). `--notify` on `watch` and
+  `watch-all` shows a desktop notification (Windows toast, macOS
+  `osascript`, Linux `notify-send`; no new dependencies) when a session turns
+  Critical or a new finding at `--notify-min` (`critical` by default, or
+  `high`) appears. `--webhook URL` (or `AGENTWATCH_WEBHOOK`) posts the same
+  alerts as Slack-compatible JSON `{"text": ...}`. One alert per finding per
+  session, a Critical session at most once per 10 minutes; text is the
+  agent, project, label, cost and the redacted warning message only.
+  Findings a session already has when first seen are a silent baseline
+  (`--notify-existing` alerts on them too).
+
+- `agentwatch report`: what your agents cost you over the last 7 days (or
+  `--days N`), across agents and projects: sessions, spend, tokens, waste
+  (`check`'s waste figure summed over sessions, with its % of spend), the 3
+  costliest findings, a per-agent and per-project breakdown, security
+  finding counts and the change against the previous period. Sessions with
+  no price show as n/a and are left out of spend and %. `--agent`,
+  `--project`, `--json` (schema 1, documented in the README), `--no-sync`.
+- `agentwatch history sync|prune|path`: a local SQLite history of sessions
+  and findings behind the report (`%LOCALAPPDATA%\agentwatch\history.db`, or
+  `~/.local/share/agentwatch/`). Only new or changed logs are read; logs
+  still being written wait unless `--include-active`. No transcript text,
+  prompts, commands or full paths are stored. Kept until `history prune
+  --older-than 90d`.
+- Claude Code plugin (`plugin/`) with a health coach: a PostToolUse hook runs
+  `agentwatch hook`, which checks the live session with the health detectors
+  and adds a short note (problem, evidence, what to try) to Claude's context
+  for each new HIGH/CRITICAL loop, thrash, error spiral or stuck pattern,
+  once per session. It never blocks a tool call (PR #139).
+- Dollar cost per health finding: each health warning carries the tokens
+  and USD of the API calls behind the actions it covers (`~$1.40 · 210k tok`)
+  in `check` text and `--json`, the `watch`/`watch-all` TUIs and the SIEM
+  export (`tokens`, `cost_usd`). `check` adds a `Waste: ~$X on N findings
+  (Y% of session cost)` line and a `waste` JSON object. Fields are absent,
+  never 0 or estimated, when the agent logs no tokens or the model has no
+  listed price.
+
+### Fixed
+
+- `watch-all`: sessions with health 40-59 had no colour in the table (the
+  theme's `orange` is not a colour Rich knows; it now shows orange).
+- `watch-all --budget`: the cost column switches between its wide and
+  narrow form when the terminal is resized across 100 columns; the narrow
+  header says `spent $X` and the limit reads `budget $X/session`.
+- `watch-all` team rows: teams that form after startup get their header,
+  members sit under it in tree order, and the header goes when the team's
+  sessions are gone.
+- `stats` now counts subagent transcripts (`<session>/subagents/*.jsonl`),
+  also under `--session <id>`; usage was about 2.5x too low. A message id
+  seen in both files counts once.
+- `--log`, `--analytics-log`, `--siem-log` and `--audit-log` given a
+  directory (`check`, `security-scan`, `watch`, `watch-all`, `agentguard`) is
+  a one-line usage error instead of an `IsADirectoryError` traceback.
+- `watch-all`: after `s`, every session is rescored on the next tick (idle
+  sessions kept their old report). The selected session is no longer
+  rescored every second without new actions, which moved its context health
+  and state on its own; every session is now rescored only on new actions.
+
+### Security
+
+- Coach notes, alerts and headless lines replace control characters
+  (terminal escapes, BEL, newlines, bidi overrides) with spaces through one
+  shared helper (`secret_scanner.one_line`); the coach note previously kept
+  ESC sequences.
+
+### Changed
+
+- `watch` opens the `watch-all` dashboard on its one session, straight into
+  its detail view (Esc shows that one row, `q` quits); every `watch` flag
+  works as before. The old single-session screen is removed. A log named
+  with `--log` may be any format an adapter reads (Aider `.md`, Cline
+  `.json`, Cursor `.vscdb`); Cursor with no agent conversation now exits
+  with a message.
+- `watch-all` shows a sessions table instead of the agent sidebar: one row
+  per session with status dot, agent, project, health (with ▲/▼ after a move
+  of 5 points or more), cost, context %, time since the last action and the
+  top warning. Rows sort by attention (Critical, then HIGH, then other
+  warnings, then active by recency, idle or stopped last); `o` switches to
+  cost or recent order and the cursor stays on its session. Subagents sit
+  under their parent. A strip under the table shows the selected session's
+  numbers and top 3 warnings; the full panels return in a detail view. Each
+  tick updates only the cells that changed. The `c` (clear Python cache) key
+  is gone. HEALTH's ▲/▼ compares with the score a minute ago; AGENT shows
+  display names (Claude Code, OpenCode, Kilo Code; alert text too); stopped
+  sessions are grey.
+- `watch-all`'s title bar is a one-line header: sessions, active, need you
+  (Critical or a HIGH+ warning), on-screen cost, alerts this run and the
+  time. An Events panel lists sessions started/stopped, new and cleared
+  warnings, alerts sent and `--budget` 80%/100% crossings, newest first;
+  `e` focuses it to scroll, Esc returns to the table. Stopped sessions are
+  not counted as needing you. Sessions already over `--budget` when loaded
+  give one "N sessions over budget; N alerts sent" line instead of two lines
+  each (the alerts themselves are still sent).
+- `watch-all`: Enter opens a session full screen with Health, Security,
+  Network and Process tabs (Tab/Shift+Tab or 1-4; Esc, Backspace or `q`
+  back to the same row). The health panels are shorter in `watch` too: one
+  status word (on the overall health bar), no raw 0.00-1.00 numbers next to
+  bars, context modules at 0 left out, durations in hours and minutes, all
+  warnings and full suggestions in the detail view. The security panel reads
+  "Security: clean" or "N findings" instead of reusing health words.
+- `stats` and `audit` name a Claude Code project after the `cwd` its
+  transcripts record, so `agentwatch-main` is no longer shown as `main`
+  (the old name decoded the project dir, which can't tell `-` from `/`).
+  A session run in the home folder is named `~`, not the user name.
+- Pricing: one table in `cc_stats.PRICING` (Anthropic's price page,
+  2026-10-17) keyed by model id. `stats` priced every "opus" at $15/$75,
+  overstating current Opus (Opus 5.5 is $4/$20, Opus 4.5-5 $5/$25). `stats`
+  and the session cost now price each API call by its own model, with 1h
+  cache writes at the 1h rate, through the same `usage_cost_usd()`; `stats`
+  used the report's dominant model and the 5m rate for every call. Session
+  cost counts each Claude Code call once (every content-block line repeats
+  its usage). An unlisted model makes the cost "n/a" instead of a Sonnet-rate
+  guess.
+
 ## [0.2.0] - 2026-10-25
 
 Everything on `develop` since `v0.1.6` (2026-03-10).

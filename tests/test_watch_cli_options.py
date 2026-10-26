@@ -3,11 +3,12 @@
 commands previously had neither option at all, unlike `check`/
 `security-scan`).
 
-These stub out `AgentWatchApp`/`MultiAgentWatchApp` entirely (real TUI apps
+These stub out `MultiAgentWatchApp` entirely (real TUI apps
 call `.run()`, which takes over the terminal -- not something to drive via
 `CliRunner`) and just assert the CLI passes the parsed option values
 through to the app constructor unchanged. The apps' own handling of those
-values is covered by `test_app_live_wiring.py` / `test_multi_app_live_wiring.py`.
+values is covered by `test_multi_app_live_wiring.py`; `watch` itself by
+`test_watch_session.py`.
 """
 
 from __future__ import annotations
@@ -42,9 +43,10 @@ def _write_fixture_log(path: Path) -> None:
 
 class TestWatchSiemLlmOptions:
     def test_watch_passes_siem_log_and_llm_options_through(self, tmp_path, monkeypatch):
-        import agentwatch.ui.app as app_mod
+        import agentwatch.ui.multi_app as multi_app_mod
 
-        monkeypatch.setattr(app_mod, "AgentWatchApp", _FakeApp)
+        monkeypatch.setattr(multi_app_mod, "MultiAgentWatchApp", _FakeApp)
+        monkeypatch.setattr("agentwatch.cli.find_running_agents", lambda: [])
 
         log_path = tmp_path / "session.jsonl"
         _write_fixture_log(log_path)
@@ -67,9 +69,10 @@ class TestWatchSiemLlmOptions:
         assert _FakeApp.last_kwargs["llm_model"] == "mistral"
 
     def test_watch_defaults_to_no_siem_no_llm(self, tmp_path, monkeypatch):
-        import agentwatch.ui.app as app_mod
+        import agentwatch.ui.multi_app as multi_app_mod
 
-        monkeypatch.setattr(app_mod, "AgentWatchApp", _FakeApp)
+        monkeypatch.setattr(multi_app_mod, "MultiAgentWatchApp", _FakeApp)
+        monkeypatch.setattr("agentwatch.cli.find_running_agents", lambda: [])
 
         log_path = tmp_path / "session.jsonl"
         _write_fixture_log(log_path)

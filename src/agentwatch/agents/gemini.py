@@ -9,11 +9,15 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .base import BaseAdapter, Watcher, sniff_jsonl_format, source_path
+from .base import BaseAdapter, Watcher, folder_name, sniff_jsonl_format, source_path
 
 if TYPE_CHECKING:
     from agentwatch.discovery import AgentProcess
     from agentwatch.parser.models import Action
+
+
+def _gemini_dir() -> Path:
+    return Path(os.environ.get("GEMINI_CLI_HOME") or Path.home()) / ".gemini"
 
 
 def resolve_gemini_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, str | None]:
@@ -26,7 +30,7 @@ def resolve_gemini_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, 
     The session file records no pid, so the newest one is taken.
     """
     # ponytail: newest-by-mtime; two live sessions in one project pick the same file.
-    gemini_dir = Path(os.environ.get("GEMINI_CLI_HOME") or Path.home()) / ".gemini"
+    gemini_dir = _gemini_dir()
     try:
         projects = json.loads((gemini_dir / "projects.json").read_text(encoding="utf-8"))
         key = os.path.abspath(cwd)  # node's path.resolve(): no symlink resolution
@@ -63,3 +67,16 @@ class GeminiAdapter(BaseAdapter):
         from agentwatch.parser.logs import _parse_jsonl
 
         return _parse_jsonl(path, session_id)
+
+    def history_logs(self) -> Iterator[Path]:
+        return (_gemini_dir() / "tmp").glob("*/chats/session-*.jsonl")
+
+    def history_meta(self, path: Path) -> tuple[str, str | None]:
+        # projects.json maps <abs cwd> -> <short id>, the dir above chats/.
+        try:
+            projects = json.loads((_gemini_dir() / "projects.json").read_text(encoding="utf-8"))
+            short_id = path.parent.parent.name
+            cwd = next(k for k, v in projects["projects"].items() if str(v) == short_id)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration):
+            cwd = None
+        return path.stem, folder_name(cwd)

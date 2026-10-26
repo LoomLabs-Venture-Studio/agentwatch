@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-SKILL = Path(__file__).resolve().parents[1] / "skills" / "agentwatch-scrub" / "SKILL.md"
+SKILL = Path(__file__).resolve().parents[1] / "plugin" / "skills" / "agentwatch-scrub" / "SKILL.md"
 
 
 def test_skill_frontmatter_and_length():

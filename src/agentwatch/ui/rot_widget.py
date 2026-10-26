@@ -43,7 +43,9 @@ class ContextHealthWidget(Static):
         """
         self._report = report
         self._peak_context_tokens = peak_context_tokens
-        self.update(self._build_content())
+        content = self._build_content()
+        if content != self.content:  # an update re-lays out
+            self.update(content)
 
     def _build_content(self) -> str:
         r = self._report
@@ -55,13 +57,11 @@ class ContextHealthWidget(Static):
         emoji = theme.emoji_for(state_label)
         score_pct = int(round((1.0 - r.smoothed_score) * 100))
 
-        lines: list[str] = []
+        # No state word: HealthBar has the one status. Empty module bars are left out.
         mini_bar = _mini_bar(1.0 - r.smoothed_score, 20)
-        lines.append(f"  {emoji} Context Health: [{mini_bar}] {score_pct}%")
-        lines.append(f"  State: {state_label.upper()}")
+        lines = [f"  {emoji} Context Health [{mini_bar}] {score_pct}%"]
         if self._peak_context_tokens:
             lines.append(f"  Peak context: {self._peak_context_tokens:,} tokens (single action)")
-        lines.append("")
 
         # Per-module mini bars
         module_labels = {
@@ -73,13 +73,12 @@ class ContextHealthWidget(Static):
         }
         for key, label in module_labels.items():
             m = r.modules.get(key)
-            if m is not None:
-                bar = _mini_bar(m.value)
-                lines.append(f"    {label:12s} [{bar}] {m.value:.2f}")
+            bar = _mini_bar(m.value) if m is not None else ""
+            if "█" in bar:  # an empty bar (rounds to 0) is left out
+                lines.append(f"    {label:12s} [{bar}]")
 
         # Top 3 reasons
         if r.top_reasons:
-            lines.append("")
             lines.append("  Top signals:")
             bullet = ascii_safe("•", "*")
             for reason in r.top_reasons[:3]:

@@ -59,9 +59,23 @@ __all__ = [
     "SENSITIVE_PATH_REGEX",
 ]
 
-# Re-export discovery module for convenience
-from agentwatch.cursor_discovery import find_cursor_agents
-from agentwatch.discovery import AgentProcess, find_running_agents
+# Discovery re-exports, for convenience. Lazy (PEP 562): cursor_discovery
+# imports parser.cursor_source, so an eager import here is circular whenever
+# cursor_discovery is imported before the parser.
+_DISCOVERY = {
+    "AgentProcess": "agentwatch.discovery",
+    "find_running_agents": "agentwatch.discovery",
+    "find_cursor_agents": "agentwatch.cursor_discovery",
+}
+
+
+def __getattr__(name: str):
+    if name not in _DISCOVERY:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+
+    return getattr(importlib.import_module(_DISCOVERY[name]), name)
+
 
 __all__ += [
     "AgentProcess",

@@ -19,7 +19,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from textual.widgets import ListView
 
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Category, Severity, Warning
@@ -81,9 +80,6 @@ class _FakeOllamaClient:
 async def _seed_agent(app: MultiAgentWatchApp, pilot, path: Path, pid: int) -> None:
     buffer = ActionBuffer(max_size=2000)
     item = AgentItem(path, pid=pid, team_id=pid)
-    agent_list = app.query_one("#agent-list", ListView)
-    agent_list.append(item)
-    await pilot.pause()
 
     app.agents[path] = app._new_agent_state(
         buffer=buffer,
@@ -196,6 +192,7 @@ class TestPerAgentLlmThrottle:
             assert call_count["n"] == 1  # still within the throttle window
 
             clock["t"] += LLM_ASSESSMENT_INTERVAL_SECONDS
+            app.agents[path]["buffer"].add(_make_action(1))  # rescored only on new actions
             app.refresh_ui()
             await pilot.pause()
             assert call_count["n"] == 2

@@ -5,16 +5,13 @@ Fake sampler, fake watcher and fake discovery: no live sockets, no psutil scans.
 
 from __future__ import annotations
 
-import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agentwatch.discovery import AgentProcess
 from agentwatch.parser.models import Action, ToolType
-from agentwatch.ui.app import AgentWatchApp, StatsPanel
 from agentwatch.ui.multi_app import MultiAgentWatchApp
 
-_REAL_FIND_OWN = AgentWatchApp._find_own_process  # conftest stubs it per test
 T0 = datetime(2026, 10, 15, 12, 0, 0)  # naive = UTC
 EP = ("1.2.3.4", 443)
 
@@ -88,7 +85,8 @@ async def _until(pilot, cond):
 
 
 def _stats_line(app) -> str:
-    return app.query_one("#stats-display", StatsPanel)._build_content()
+    """The numbers line of the Selected strip."""
+    return str(app.query_one("#selected").render()).splitlines()[1]
 
 
 class TestWatchAll:
@@ -106,7 +104,7 @@ class TestWatchAll:
             ],
             procs={good: _proc(100, good), cursor: _proc(200, cursor, "cursor")},
         )
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(120, 40)) as pilot:
             await _until(pilot, lambda: cursor in app.agents and len(app.agents[cursor]["buffer"]))
             assert sampler.started
             assert sampler.tracked == {100}  # cursor is editor-hosted: not tracked
@@ -183,62 +181,42 @@ class TestWatchAll:
 
 
 class TestWatch:
-    def _run(self, tmp_path, monkeypatch, procs):
+    """`watch`: the session's own agent (found by log path, cli._session_proc)
+    is sampled; none found or not attributable, nothing is."""
+
+    def _app(self, tmp_path, monkeypatch, procs):
+        from agentwatch.cli import _session_proc
+
         log = tmp_path / "session.jsonl"
         log.write_text("", encoding="utf-8")
-        seen = {}
-
-        def fake_find(cache=None):
-            seen["thread"] = threading.get_ident()
-            return procs(log)
-
-        monkeypatch.setattr("agentwatch.discovery.find_running_agents", fake_find)
-        monkeypatch.setattr(AgentWatchApp, "_find_own_process", _REAL_FIND_OWN)
-        app = AgentWatchApp(log_path=log)
+        monkeypatch.setattr("agentwatch.cli.find_running_agents", lambda: procs(log))
+        app = MultiAgentWatchApp(session=log, session_proc=_session_proc(log))
         app._net_sampler = sampler = FakeSampler()
-        return app, sampler, seen
+        return app, sampler, log
 
-    async def test_pid_resolved_by_log_path_off_ui_thread(self, tmp_path, monkeypatch):
-        app, sampler, seen = self._run(
+    async def test_pid_resolved_by_log_path(self, tmp_path, monkeypatch):
+        app, sampler, log = self._app(
             tmp_path, monkeypatch,
             lambda log: [_proc(7, tmp_path / "other.jsonl"),
                          _proc(42, tmp_path / "x" / ".." / log.name)],
         )
         async with app.run_test() as pilot:
-            await _until(pilot, lambda: app._net_pid is not None)
-            assert seen["thread"] != threading.get_ident()
-            assert app._net_pid == 42 and sampler.tracked == {42} and sampler.started
-            action = _action(T0, duration_ms=1000)
-            app._on_action(action)
-            assert action.observed_endpoints == [EP]
-            assert sampler.calls == [(42, _epoch(T0) - 1, _epoch(T0))]
-            app.refresh_display()
-            assert _stats_line(app).endswith("  Net: 1 endpoints")
+            await _until(pilot, lambda: log in app.agents)
+            assert app.agents[log]["pid"] == 42 and sampler.tracked == {42} and sampler.started
         assert sampler.stopped
 
     async def test_no_matching_process_leaves_none(self, tmp_path, monkeypatch):
-        app, sampler, seen = self._run(
+        app, sampler, log = self._app(
             tmp_path, monkeypatch, lambda log: [_proc(7, tmp_path / "other.jsonl")]
         )
         async with app.run_test() as pilot:
-            await _until(pilot, lambda: "thread" in seen)
-            await pilot.pause()
-            action = _action(T0)
-            app._on_action(action)
-            assert action.observed_endpoints is None
-            assert not sampler.tracked and not sampler.started
-            app.refresh_display()
-            assert _stats_line(app).endswith("  Net: no live process")
-        assert sampler.stopped
+            await _until(pilot, lambda: log in app.agents)
+            assert app.agents[log]["pid"] is None and not sampler.tracked
 
     async def test_non_attributable_match_not_tracked(self, tmp_path, monkeypatch):
-        app, sampler, seen = self._run(
+        app, sampler, log = self._app(
             tmp_path, monkeypatch, lambda log: [_proc(9, log, "cursor")]
         )
         async with app.run_test() as pilot:
-            await _until(pilot, lambda: "thread" in seen)
-            await pilot.pause()
-            assert not sampler.tracked and app._net_pid is None
-            app.refresh_display()
-            assert _stats_line(app).endswith("  Net: n/a (not attributable)")
-
+            await _until(pilot, lambda: log in app.agents)
+            assert app.agents[log]["pid"] == 9 and not sampler.tracked

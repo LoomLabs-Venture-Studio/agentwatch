@@ -690,12 +690,25 @@ def _has_live_log(proc: AgentProcess) -> bool:
     return proc.log_file is not None and proc.log_file.exists()
 
 
+def _modified_since(path: Path, cutoff: float) -> bool:
+    try:
+        return path.stat().st_mtime >= cutoff
+    except OSError:
+        return False
+
+
 class MultiLogWatcher:
     """Watches multiple log files and directories for new logs."""
 
-    def __init__(self, paths: list[Path], poll_interval: float = 0.5):
+    def __init__(
+        self, paths: list[Path], poll_interval: float = 0.5, since: float | None = None
+    ):
         self.base_paths = paths
         self.poll_interval = poll_interval
+        # Directory scan only: watch logs modified in the last *since* seconds
+        # (None: all). An older log is picked up once it is written to again.
+        self.since = since
+        self.total_logs = 0  # logs the last directory scan found, any age
         self.watchers: dict[Path, Watcher] = {}
         # The task running each entry of self.watchers, so reap_stopped() can
         # stop it: at most one live watcher per log, nothing emitted twice.
@@ -825,11 +838,15 @@ class MultiLogWatcher:
 
         logs = []
         for p in self.base_paths:
-            if p.is_file() and p.suffix == ".jsonl":
+            if p.is_file():  # named outright (`watch`): any format an adapter reads
                 logs.append(p)
             elif p.is_dir():
                 logs.extend(p.rglob("*.jsonl"))
-        return logs
+        self.total_logs = len(logs)
+        if self.since is None:
+            return logs
+        cutoff = time.time() - self.since
+        return [p for p in logs if p in self._active_files or _modified_since(p, cutoff)]
 
     def _make_watcher(self, log_meta: Path) -> Watcher:
         """Build the watcher for one tracked entry via its agent's adapter.

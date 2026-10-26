@@ -115,7 +115,7 @@ class LoopDetector(Detector):
                     # Exported, so a hash: the key can hold a raw command.
                     "loop_id": hashlib.sha1(most_common.encode()).hexdigest()[:12],
                 },
-            )
+            ).with_cost(matching, buffer)
 
         return None
 
@@ -157,6 +157,8 @@ class RereadDetector(Detector):
                         "the agent is losing context."
                     ),
                     details={"path": path, "count": count},
+                ).with_cost(
+                    [a for a in recent if a.is_file_read and a.file_path == path], buffer
                 )
 
         return None
@@ -181,6 +183,7 @@ class ThrashDetector(Detector):
 
         # Track edit→bash→fail patterns per file
         file_thrash_counts: dict[str, int] = {}
+        cycle_actions: dict[str, list] = {}  # path -> its edits and failed runs
 
         i = 0
         while i < len(recent) - 2:
@@ -193,6 +196,7 @@ class ThrashDetector(Detector):
                     if recent[j].is_bash and not recent[j].success:
                         path = action.file_path
                         file_thrash_counts[path] = file_thrash_counts.get(path, 0) + 1
+                        cycle_actions.setdefault(path, []).extend((action, recent[j]))
                         break
 
             i += 1
@@ -216,7 +220,7 @@ class ThrashDetector(Detector):
                     + (f"Last error: \"{last_err}\". " if last_err else "")
                     + "Stop editing and re-examine the approach.",
                     details={"path": path, "count": count, "last_error": last_err},
-                )
+                ).with_cost(cycle_actions[path], buffer)
 
         return None
 
@@ -264,6 +268,6 @@ class StallDetector(Detector):
                     "successful_bash": successful_bash,
                     "files_being_read": stalled_files,
                 },
-            )
+            ).with_cost(recent, buffer)
 
         return None
