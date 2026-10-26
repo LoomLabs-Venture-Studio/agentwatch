@@ -21,7 +21,7 @@ Features:
     - JSON output for CI/CD integration
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 # Public names load on first access (PEP 562), so `import agentwatch._entry`
 # (the hook and the status line, run on every tool call / UI update) does not
