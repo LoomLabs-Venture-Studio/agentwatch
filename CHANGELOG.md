@@ -147,6 +147,12 @@ numbers refer to the GitHub repository.
 
 ### Changed
 
+- `watch` opens the `watch-all` dashboard on its one session, straight into
+  its detail view (Esc shows that one row, `q` quits); every `watch` flag
+  works as before. The old single-session screen is removed. A log named
+  with `--log` may be any format an adapter reads (Aider `.md`, Cline
+  `.json`, Cursor `.vscdb`); Cursor with no agent conversation now exits
+  with a message.
 - `watch-all` shows a sessions table instead of the agent sidebar: one row
   per session with status dot, agent, project, health (with ▲/▼ after a move
   of 5 points or more), cost, context %, time since the last action and the
