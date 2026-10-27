@@ -5187,13 +5187,18 @@ Every PR went through engineer, then CTO diff review, then QA, then fixes. QA fi
 **Source:** Codex review of v0.2.0 (a2c0fab), 2026-10-26. It reproduced each bug with synthetic logs. The CTO confirmed each one in the code on `develop` 68b28ff (after #181/#182). Already fixed in 0.2.0: dashboard first-action drop, full-session `security-scan`, JSON-safe redaction, Python 3.11 syntax.
 
 ### Acceptance Criteria
-- [ ] A `check --security` exits non-zero when there is any security finding. It uses the `security-scan` thresholds: score 100 -> 0, 50-99 -> 1, under 50 -> 2 (a CRITICAL finding scores 0). The exit code is the worse of the health and security codes. `check` without `--security` is unchanged. Exit codes are in `check --help` and the README.
-- [ ] B The Claude parser matches each `tool_result` to its `tool_use` by `tool_use_id`. A failed result marks its call failed, with no separate "successful" call plus a failure action. Successful result content and user text are kept for detectors. Six consecutive failed calls trigger error-spiral and high-error-rate.
-- [ ] C Findings persist. A security finding stays active after its action leaves the detector window and across dashboard refreshes. Secret-scanner dedup suppresses repeat notifications only, never the finding. In the live dashboard, a dangerous command followed by 60 harmless actions still shows.
-- [ ] D Token usage counts once per message, not once per tool call: a 150-token message with two tool calls counts 150.
-- [ ] Each fix has an integration test that starts from a JSONL fixture and goes through the parser (and the dashboard, for C). The test fails before the fix.
-- [ ] All tests pass on 3.11/3.12 (CI) and `ruff check .` is clean.
-- [ ] Integrated QA on `develop` after all merges.
+- [x] A `check --security` exits non-zero when there is any security finding. It uses the `security-scan` thresholds: score 100 -> 0, 50-99 -> 1, under 50 -> 2 (a CRITICAL finding scores 0). The exit code is the worse of the health and security codes. `check` without `--security` is unchanged. Exit codes are in `check --help` and the README. (#184)
+- [x] B The Claude parser matches each `tool_result` to its `tool_use` by `tool_use_id`. A failed result marks its call failed, with no separate "successful" call plus a failure action. Successful result content is kept for detectors. Six consecutive failed calls trigger error-spiral and high-error-rate. (#186) User text blocks are deferred; see Known limitations.
+- [x] C Findings persist. A security finding stays active after its action leaves the detector window and across dashboard refreshes. Secret-scanner dedup suppresses repeat notifications only, never the finding. In the live dashboard, a dangerous command followed by 60 harmless actions still shows. (#185)
+- [x] D Token usage counts once per message, not once per tool call: a 150-token message with two tool calls counts 150. A message streamed over several lines counts its largest usage. (#186)
+- [x] Each fix has an integration test that starts from a JSONL fixture and goes through the parser (and the dashboard, for C). The test fails before the fix.
+- [x] All tests pass on 3.11/3.12 (CI) and `ruff check .` is clean. (develop caa2687: 2567 passed / 1 skipped locally on macOS 3.12, CI green)
+- [x] Integrated QA on `develop` after all merges. QA (sonnet) on caa2687, 2026-10-27, verdict PASS: no regressions, release recommended.
+  - Tests: 2567 passed / 1 skipped on macOS 3.12 and 3.14; ruff clean.
+  - Packaging: build and twine check pass. The wheel in a fresh venv reports 0.2.1 for both entry points, and all 15 commands' `--help` exit 0.
+  - Synthetic CLI checks: exit codes, loop and error detection, usage counted once, an EOF hidden instruction, and a secret in a failed result all behave as expected.
+  - Headless dashboard: findings persist, survive a toggle, and late results get rescored, with no exceptions.
+  - Live checks, metadata only: `ps --json`, `detect --json` and `net --once` all exit 0.
 
 ### Implementation Plan
 | Task | Branch | Model | QA model |
@@ -5205,19 +5210,62 @@ Every PR went through engineer, then CTO diff review, then QA, then fixes. QA fi
 B and D are one task: both need Claude parser state across log lines (`tool_use_id` -> call, and seen `message.id`), and they change the same function.
 
 C design (CTO, 2026-10-26):
-- A per-session scan object in `detectors/registry.py` feeds each action into the buffer and runs the security detectors right away. It keeps each finding by `warning_dedup_key`.
+- A per-session scan object (`SessionScan` in `detectors/registry.py`) feeds each action into the buffer and runs the security detectors right away. It keeps each finding by `warning_dedup_key`.
 - Reported warnings = health detectors on the current buffer, plus all kept security findings.
 - `registry.scan()` (the CLI) and the dashboard's ingestion and `_score()` both use it, so the CLI and dashboard score the same way.
 - The secret scanner stops suppressing repeat findings. Notification dedup stays where it already is: the UI's `_alerted_signals`, the SIEM exporter, and `_feed_findings`.
 
-Loop per task (board, 2026-10-26): engineer -> CTO review -> QA -> Codex review (`codex exec review --base origin/develop`, at most 3 rounds, stop early on diminishing returns) -> fixes -> board approval to merge.
+Loop per task (board, 2026-10-26): engineer -> CTO review -> QA -> Codex review (at most 3 rounds, stop early on diminishing returns) -> fixes -> merge. The board allows squash-merging fully reviewed PRs into `develop` without asking; `main`, tags and PyPI still need its go.
+- Codex command: `codex exec review -c sandbox_mode='"workspace-write"' -o <file> "<instructions>"`. It rejects `--base` together with custom instructions, so put "diff against origin/develop" in the instructions.
+- Run Codex and QA in a separate detached review worktree, so an engineer's late commits can't change code under review.
 
-Rules for every task: branch from `origin/develop`, draft PR to `develop`, add one `CHANGELOG.md` bullet (fix A: under `[0.2.1]` / Fixed; B-D: under `[Unreleased]`), push with `--no-verify`.
+Rules for every task: branch from `origin/develop`, draft PR to `develop`, add one `CHANGELOG.md` bullet under `[0.2.1]` / Fixed, push with `--no-verify`.
 
-### Board decisions (2026-10-26)
-1. Hold #183 (0.2.1 promotion, Sprint 35) until fix A merges, so 0.2.1 never ships a `check --security` that passes on critical findings. #183's source branch is `develop` itself, so fix A rides along once merged. B-D are not holding #183; they go in the next release (0.2.2 unless the board says otherwise).
+### Board decisions (2026-10-26/27)
+1. Hold #183 (0.2.1 promotion, Sprint 35) until fix A merges (2026-10-26). Updated the same day: **hold #183 until all four fixes are done**, so 0.2.1 ships A, B, C and D. #183's source branch is `develop` itself, so every merged fix rides along.
+2. Squash-merge fully reviewed PRs into `develop` without asking. Merges into `main`, tags, GitHub Releases and PyPI still need an explicit go.
+3. **Ship tool-result scanning for prompt injection in 0.2.1** (2026-10-27, option 1). Claude Code tool-result text reaches the prompt-injection detector and `injection_attempts`, as Codex, Cline, Copilot and agy output already did. A high-confidence match is CRITICAL, so security can score 0 when an agent reads a file that only discusses injection (docs, tests). Reducing those false positives is a follow-up.
+4. CTO, accepted: `security-scan` is about 2.9x slower than develop on a 5,000-action synthetic log (1.65 s vs 0.57 s). The extra time is new work: the secret scanner now scans successful Claude Code tool results.
+
+### Result (2026-10-27)
+- **#184 (fix A)** passed CTO review, QA (haiku), and Codex round 1 ("ship", no findings). Merged as 8882a27. QA added at-risk and clean-path tests.
+- **#185 (fix C)** passed CTO review and QA (sonnet). Codex took 3 rounds (5, then 3, then 2 findings), all fixed. Merged as 902b1bf. The Codex rounds found:
+  - findings lost on a security toggle;
+  - per-action scanning blocking the UI on history bursts (6.75 s, now 70 ms) and on toggle replays (3.9 s, now 32 ms; 23 sessions: 636 ms, now 207 ms);
+  - overlapping secret patterns (Neon URL, PEM header plus block) counted twice;
+  - pending-DNS egress checks never retried;
+  - replay losing buffer context.
+
+  Also fixed the macOS-only `test_team_header_updates_from_grouped_reports`. It was a timezone bug in the tests: they used local `datetime.now()` and the code assumes UTC.
+- **#186 (fixes B+D)** passed CTO review and QA (sonnet). Codex took 3 rounds (5, then 3, then 2 findings), all fixed. Merged as caa2687.
+  - The detector warm-up gates use `ActionBuffer.history_len`, which counts a merged failure twice, so loops are detected as early as on develop.
+  - `ActionBuffer.revision` is the dashboard cache key, so a result-only update rescores.
+  - Failed results keep their full text. Successful results are capped at 2,000 characters.
+  - Content detectors are memoized per `(action, result_revision)` and rescan actions whose result landed outside their window.
+  - Results carry `completed_at` for session time.
+
+  The CTO's mid-task design messages crossed with the engineer's commits, so D flipped between two designs over 4 commits before settling on the buffer-side one. The lesson: message engineers only when idle, with a target SHA.
+
+### Known limitations (0.2.1)
+- Claude Code user text blocks are not emitted yet. First, scoring has to ignore `user_message` sentinels (#46 dropped them on purpose).
+- Two different secrets of the same type in the same channel and file count as one finding. Telling them apart needs a secret fingerprint in the dedup key.
+- A security-mode toggle recovers actions that arrived while security was off only from the live buffer (2,000 actions). Context older than the buffer can't be recovered.
+- A toggle's own `refresh_ui` rescores every session synchronously (about 200 ms with 23 sessions), as on develop.
+- `--audit-log` runs once, after the scan, on the final buffer. It now records every secret in that window.
+
+### Follow-ups (next sprint)
+- Fewer prompt-injection false positives from local files that only discuss injection (docs, tests).
+- A literal-prefix pre-check in the secret scanner, to win back `security-scan` speed.
+- The secret scanner labels tool-result text with channel `user_message`; give it its own channel.
+- Emit Claude Code user text blocks (after scoring ignores `user_message`).
+- A secret fingerprint in the dedup key.
+- The SIEM, audit and notification consumers serialise a call when it is added, before its result lands. Check each one.
+- `security-scan` prints "Analyzed N actions" and sets `action_count` from `len(buffer)` (`cli.py` ~1554). That is the buffer size, for example 500, not the number of actions scanned. Predates Sprint 38; found by integrated QA.
+- The `error_spiral` message reports its threshold ("5 consecutive failures"), not the actual count. Found by integrated QA.
 
 ### PR Log
 | Date | PR | Branch | Type | Status | Rejection Reason |
 |---|---|---|---|---|---|
-| 2026-10-26 | #184 | fix/check-security-exit | fix | CTO review, QA PASS (haiku), CI green; QA test gaps being added | -- |
+| 2026-10-26 | #184 | fix/check-security-exit | fix | merged 8882a27 (CTO review, QA PASS haiku, Codex r1 ship, CI green) | -- |
+| 2026-10-27 | #185 | fix/persistent-findings | fix | merged 902b1bf (CTO review, QA PASS WITH NOTES sonnet, Codex 3 rounds fixed, CI green) | -- |
+| 2026-10-27 | #186 | fix/claude-parser-state | fix | merged caa2687 (CTO review, QA PASS WITH NOTES sonnet, Codex 3 rounds fixed, CI green) | -- |
