@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
+import re
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -10,7 +13,8 @@ import click
 
 from agentwatch import __version__
 from agentwatch.detectors import create_registry
-from agentwatch.detectors.base import Warning
+from agentwatch.detectors.base import Warning, format_tokens, format_usd
+from agentwatch.detectors.base import waste_summary as _waste
 from agentwatch.discovery import (
     AgentProcess,
     build_agent_tree,
@@ -43,6 +47,12 @@ from agentwatch.themes import (
     security_tier_from_score,
     set_theme,
 )
+
+# Every --log/--analytics-log names one file: a directory is a clean usage
+# error here, not an IsADirectoryError traceback from the parser.
+_LOG_FILE = click.Path(exists=True, dir_okay=False, path_type=Path)
+# --siem-log/--audit-log are appended to and may not exist yet; same rule.
+_OUT_FILE = click.Path(dir_okay=False, path_type=Path)
 
 
 def _export_siem_log(
@@ -237,6 +247,32 @@ def _default_log() -> tuple[Path | None, str | None]:
     return log, f"No session for {Path.cwd()}; using newest session from {project}"
 
 
+def _security_exit_code(security_score: int) -> int:
+    """Exit code for a security score: 0 secure, 1 at risk, 2 compromised.
+
+    Shared by `security-scan` and `check --security`.
+    """
+    return SECURITY_TIER_EXIT_CODES[security_tier_from_score(security_score)]
+
+
+def _waste_line(waste: dict) -> str:
+    """'Waste: ~$X on N findings (Y% of session cost)'; tokens when unpriced."""
+    def pct(part: float, whole: float) -> str:
+        share = part / whole * 100
+        return "<1%" if share < 0.5 else f"{share:.0f}%"
+
+    n = waste["findings"]
+    cost, session_cost = waste["cost_usd"], waste["session_cost_usd"]
+    if cost is not None:
+        amount = format_usd(cost)
+        share = f" ({pct(cost, session_cost)} of session cost)" if session_cost else ""
+    else:
+        amount = f"{format_tokens(waste['tokens'])} tok"
+        session = waste["session_tokens"]
+        share = f" ({pct(waste['tokens'], session)} of session tokens)" if session else ""
+    return f"  Waste: {amount} on {n} finding{'s' if n != 1 else ''}{share}"
+
+
 def print_health_report(
     report,
     security_mode: bool = False,
@@ -290,7 +326,10 @@ def print_health_report(
         )
     if stats is not None and stats.peak_context_tokens:
         click.echo(f"  Peak context: {stats.peak_context_tokens:,} tokens (single action)")
-    if efficiency is not None or (stats is not None and stats.peak_context_tokens):
+    waste = _waste(report.warnings, stats) if stats is not None else None
+    if waste:
+        click.echo(click.style(_waste_line(waste), bold=True))
+    if efficiency is not None or (stats is not None and stats.peak_context_tokens) or waste:
         click.echo()
 
     # Warnings
@@ -308,6 +347,7 @@ def print_health_report(
                 f"     {w.emoji} "
                 + click.style(f"[{w.signal}]", fg=severity_color[w.severity.value])
                 + f" {w.message}"
+                + (click.style(f"  {w.cost_label}", bold=True) if w.cost_label else "")
             )
             # Show key details
             if w.details:
@@ -385,13 +425,13 @@ def cli(theme: str):
 @cli.command()
 @click.option(
     "--log", "-l",
-    type=click.Path(exists=True, path_type=Path),
+    type=_LOG_FILE,
     help="Path to agent log file (JSONL, Aider Markdown chat history, or "
          "Cursor's state.vscdb); auto-detects if not specified",
 )
 @click.option(
     "--analytics-log",
-    type=click.Path(exists=True, path_type=Path),
+    type=_LOG_FILE,
     default=None,
     help="Path to an Aider --analytics-log JSONL sidecar (optional, "
          "backfills tokens/cost onto an Aider Markdown --log)",
@@ -408,7 +448,7 @@ def cli(theme: str):
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion "
          "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
@@ -435,7 +475,13 @@ def check(
     llm: bool,
     llm_model: str,
 ):
-    """Run a one-time health check on agent logs."""
+    """Run a one-time health check on agent logs.
+
+    \b
+    Exit codes: 0 = healthy or degraded, 1 = warning, 2 = critical.
+    With --security, the exit code is the worse of that and the security
+    result: 1 = at risk (score 50-99), 2 = compromised (score below 50).
+    """
     # Find log file
     note = None
     if log is None:
@@ -481,6 +527,7 @@ def check(
         output["session_fallback"] = note
         output["efficiency"] = efficiency.to_dict()
         output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
+        output["waste"] = _waste(warnings, buffer.stats)
         click.echo(json.dumps(output, indent=2))
     else:
         print_health_report(
@@ -503,17 +550,101 @@ def check(
     # < 40 = level_3 (critical/stuck) -> exit 2
     # < 60 = level_2 (warning/spinning) -> exit 1
     # >= 60 = level_0/level_1 (healthy/productive or degraded/struggling) -> exit 0
-    if report.overall_score < 40:
-        sys.exit(2)
-    elif report.overall_score < 60:
-        sys.exit(1)
-    sys.exit(0)
+    exit_code = 2 if report.overall_score < 40 else 1 if report.overall_score < 60 else 0
+    if security:
+        # The averaged health score can hide a CRITICAL finding, so the
+        # security tier also decides the exit code (the worse one wins).
+        exit_code = max(exit_code, _security_exit_code(calculate_security_score(warnings)))
+    sys.exit(exit_code)
+
+
+def _check_webhook(ctx, param, value: str | None) -> str | None:
+    """http(s) only. The URL is a secret: never echoed, even when invalid."""
+    if value is None:
+        return None
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(value)
+        ok = parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:  # e.g. "http://[::1/x"
+        ok = False
+    if not ok:
+        raise click.BadParameter("must be an http:// or https:// URL (value not shown)")
+    if parts.scheme == "http":
+        from agentwatch.alerts import mask_url
+
+        click.echo(f"agentwatch: warning: webhook {mask_url(value)} is plain http; "
+                   "alert text is sent unencrypted", err=True)
+    return value
+
+
+def _check_budget(ctx, param, value: float | None) -> float | None:
+    # FloatRange would let nan through.
+    if value is not None and not (math.isfinite(value) and value > 0):
+        raise click.BadParameter("must be a positive amount in USD")
+    return value
+
+
+def _alert_options(f):
+    """--notify / --notify-min / --webhook / --budget, shared by watch and watch-all."""
+    f = click.option(
+        "--budget",
+        type=float,
+        callback=_check_budget,
+        default=None,
+        metavar="USD",
+        help="Alert once per session when its estimated cost reaches USD "
+             "(turns on --notify unless --webhook is given)",
+    )(f)
+    f = click.option(
+        "--webhook",
+        envvar="AGENTWATCH_WEBHOOK",
+        show_envvar=True,
+        callback=_check_webhook,
+        default=None,
+        metavar="URL",
+        help='POST each alert as JSON {"text": ...} (Slack-compatible) to URL. '
+             "The URL is treated as a secret and never printed",
+    )(f)
+    f = click.option(
+        "--notify-existing",
+        is_flag=True,
+        help="Also alert on findings a session already has when it is first "
+             "seen (default: those are a silent baseline)",
+    )(f)
+    f = click.option(
+        "--notify-min",
+        type=click.Choice(["high", "critical"]),
+        default="critical",
+        show_default=True,
+        help="Lowest finding severity that alerts (--notify and --webhook)",
+    )(f)
+    return click.option(
+        "--notify",
+        is_flag=True,
+        help="Desktop notification when a session turns Critical or a new "
+             "finding at --notify-min or above appears",
+    )(f)
+
+
+def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook: str | None,
+                  budget: float | None = None, headless: bool = False):
+    if budget is not None and not webhook:
+        notify = True  # --budget alone needs a sink: desktop (board decision)
+    if not (notify or webhook or headless):
+        return None
+    from agentwatch.alerts import Alerter, print_line
+
+    return Alerter(notify=notify, notify_min=notify_min, webhook=webhook,
+                   log=print_line if headless else None, notify_existing=notify_existing,
+                   budget=budget)
 
 
 @cli.command()
 @click.option(
     "--log", "-l",
-    type=click.Path(exists=True, path_type=Path),
+    type=_LOG_FILE,
     help="Path to agent log file (JSONL, Aider Markdown chat history, or "
          "Cursor's state.vscdb); auto-detects if not specified",
 )
@@ -524,7 +655,7 @@ def check(
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion, "
          "as new warnings appear (requires the 'siem' extra: pip install "
@@ -543,16 +674,23 @@ def check(
     show_default=True,
     help="Local Ollama model to use for --llm",
 )
+@_alert_options
 def watch(
     log: Path | None,
     security: bool,
     siem_log: Path | None,
     llm: bool,
     llm_model: str,
+    notify: bool,
+    notify_min: str,
+    notify_existing: bool,
+    webhook: str | None,
+    budget: float | None,
 ):
-    """Watch agent logs in real-time with a TUI dashboard."""
+    """Watch one agent session in real-time (the watch-all dashboard, opened
+    on that session)."""
     # Import here to avoid slow startup for non-watch commands
-    from agentwatch.ui.app import AgentWatchApp
+    from agentwatch.ui.multi_app import MultiAgentWatchApp
 
     # Find log file
     if log is None:
@@ -566,14 +704,57 @@ def watch(
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    app = AgentWatchApp(
-        log_path=log,
+    app = MultiAgentWatchApp(
+        session=log,
+        session_proc=_session_proc(log),
         security_mode=security,
         siem_log=siem_log,
         llm=llm,
         llm_model=llm_model,
+        alerter=_make_alerter(notify, notify_min, notify_existing, webhook, budget),
     )
     app.run()
+
+
+def _session_proc(log: Path):
+    """The running agent writing *log* (its pid feeds the Net and Process
+    tabs), or None. For Cursor's shared state.vscdb, the newest agent-mode
+    composer, as `check` picks it; exits when there is none."""
+    if log.suffix == ".vscdb":
+        from agentwatch.parser.cursor_source import (
+            fetch_composer_headers,
+            open_readonly,
+            select_latest_agent_composer,
+        )
+
+        try:
+            conn = open_readonly(log)
+            try:
+                composer = select_latest_agent_composer(fetch_composer_headers(conn))
+            finally:
+                conn.close()
+        except Exception:
+            composer = None
+        if composer is None:
+            click.echo(f"No Cursor agent-mode conversation found in {log}", err=True)
+            sys.exit(1)
+        from agentwatch.cursor_discovery import _synthetic_pid
+
+        return AgentProcess(pid=_synthetic_pid(composer), agent_type="cursor",
+                            working_directory=None, log_file=log, session_id=composer,
+                            cursor_db_path=log)
+
+    def resolved(p: Path) -> Path:
+        try:
+            return p.resolve()
+        except OSError:
+            return p
+
+    # ponytail: resolved once at start; an agent started after `watch` is not
+    # picked up (the log is still followed, only the pid is missing).
+    target = resolved(log)
+    return next((p for p in find_running_agents()
+                 if p.log_file and resolved(p.log_file) == target), None)
 
 
 @cli.command()
@@ -1063,6 +1244,22 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
     click.echo()
 
 
+ALL_LOGS_SINCE_S = 86400  # watch-all --all-logs: logs modified in the last 24h
+
+
+def _parse_since(value: str | None) -> float | str | None:
+    """--since: 'Nh' / 'Nd' as seconds, 'all', or None when not given."""
+    if value is None:
+        return None
+    value = value.strip().lower()
+    if value == "all":
+        return value
+    match = re.fullmatch(r"([1-9]\d*)([hd])", value)
+    if not match:
+        raise click.BadParameter("use Nh, Nd or all (e.g. 24h, 2d)", param_hint="--since")
+    return int(match[1]) * (3600 if match[2] == "h" else 86400)
+
+
 @cli.command()
 @click.option(
     "--security", "-s",
@@ -1075,8 +1272,15 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
     help="Scan all log directories instead of using process-based discovery",
 )
 @click.option(
+    "--since",
+    callback=lambda ctx, param, value: _parse_since(value),
+    metavar="Nh|Nd|all",
+    help="With --all-logs: only logs modified in this window (default 24h; "
+         "`all` for every log). Older logs appear once they are written to",
+)
+@click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion, "
          "as new warnings appear, per agent (requires the 'siem' extra: "
@@ -1096,18 +1300,35 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
     show_default=True,
     help="Local Ollama model to use for --llm",
 )
+@click.option(
+    "--headless",
+    is_flag=True,
+    help="No dashboard: print one line per new warning to stdout (for "
+         "background runs). Waits for agents if none are running yet",
+)
+@_alert_options
 def watch_all(
     security: bool,
     all_logs: bool,
+    since: float | str | None,
     siem_log: Path | None,
     llm: bool,
     llm_model: str,
+    headless: bool,
+    notify: bool,
+    notify_min: str,
+    notify_existing: bool,
+    webhook: str | None,
+    budget: float | None,
 ):
     """Watch agent logs in real-time with a multi-agent dashboard.
 
     By default, auto-discovers active agent processes and monitors only their
     log files. Use --all-logs to scan all known log directories instead.
     """
+    if since is not None and not all_logs:
+        raise click.UsageError("--since applies to --all-logs only")
+    alerter = _make_alerter(notify, notify_min, notify_existing, webhook, budget, headless)
     from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
     from agentwatch.ui.multi_app import MultiAgentWatchApp
 
@@ -1123,11 +1344,14 @@ def watch_all(
             siem_log=siem_log,
             llm=llm,
             llm_model=llm_model,
+            alerter=alerter,
+            machine_checks=not headless,
+            since=None if since == "all" else since or ALL_LOGS_SINCE_S,
         )
     else:
         # Process-based discovery
         agents = build_agent_tree(find_running_agents())
-        if not agents:
+        if not agents and not headless:
             click.echo("No running agent processes found.", err=True)
             click.echo("Use --all-logs to scan all log directories instead.", err=True)
             sys.exit(1)
@@ -1137,8 +1361,16 @@ def watch_all(
             siem_log=siem_log,
             llm=llm,
             llm_model=llm_model,
+            alerter=alerter,
+            machine_checks=not headless,
         )
 
+    if headless:
+        # Same engine, Textual's headless driver: no screen I/O; Ctrl+C exits
+        # through the app's normal shutdown (on_unmount closes SIEM logs).
+        click.echo("agentwatch: watching headless (Ctrl+C to stop)", err=True)
+        app.run(headless=True)
+        return
     app.run()
 
 
@@ -1174,13 +1406,13 @@ def list_detectors(security: bool):
 @cli.command()
 @click.option(
     "--log", "-l",
-    type=click.Path(exists=True, path_type=Path),
+    type=_LOG_FILE,
     help="Path to agent log file (JSONL, Aider Markdown chat history, or "
          "Cursor's state.vscdb)",
 )
 @click.option(
     "--analytics-log",
-    type=click.Path(exists=True, path_type=Path),
+    type=_LOG_FILE,
     default=None,
     help="Path to an Aider --analytics-log JSONL sidecar (optional, "
          "backfills tokens/cost onto an Aider Markdown --log)",
@@ -1192,14 +1424,14 @@ def list_detectors(security: bool):
 )
 @click.option(
     "--siem-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append findings as JSON-lines to this file for SIEM ingestion "
          "(requires the 'siem' extra: pip install \"agentwatch-monitor[siem]\")",
 )
 @click.option(
     "--audit-log",
-    type=click.Path(path_type=Path),
+    type=_OUT_FILE,
     default=None,
     help="Append one JSON-lines entry per security detector's run (triggered "
          "or not) to this file -- a 'prove you checked' compliance trail, "
@@ -1337,7 +1569,7 @@ def security_scan(
             _print_llm_assessments(warnings)
             _print_goal_alignment(goal_alignment)
 
-    sys.exit(SECURITY_TIER_EXIT_CODES[security_tier_from_score(security_score)])
+    sys.exit(_security_exit_code(security_score))
 
 
 @cli.command()
@@ -1457,6 +1689,11 @@ def _fmt_tokens(n: int) -> str:
     return f"{n:,}"
 
 
+def _usd(cost: float | None) -> str:
+    """Dollar amount for `stats`; "n/a" when the model has no listed price."""
+    return "n/a" if cost is None else f"${cost:,.2f}"
+
+
 def _print_stats_report(report) -> None:
     """Print a formatted token usage report."""
     from agentwatch.cc_stats import ToolCategory
@@ -1477,7 +1714,7 @@ def _print_stats_report(report) -> None:
     click.echo()
 
     # Totals
-    est_cost = report.totals.estimated_cost_usd(report.model)
+    est_cost = report.totals.estimated_cost_usd()
     click.echo("  TOTALS")
     click.echo("  " + "\u2500" * 50)
     click.echo(
@@ -1490,7 +1727,7 @@ def _print_stats_report(report) -> None:
     )
     click.echo(
         f"  Total:   {_fmt_tokens(report.totals.total_tokens):>12}"
-        f"    Est. cost:   {click.style(f'${est_cost:>10,.2f}', bold=True)}"
+        f"    Est. cost:   {click.style(f'{_usd(est_cost):>11}', bold=True)}"
     )
     click.echo()
 
@@ -1508,7 +1745,7 @@ def _print_stats_report(report) -> None:
 
         for cat, bucket in sorted_tools:
             pct = bucket.total_tokens / total * 100
-            cost = bucket.estimated_cost_usd(report.model)
+            cost = bucket.estimated_cost_usd()
             count_str = (
                 f"{bucket.call_count:>5}"
                 if cat != ToolCategory.Thinking
@@ -1518,7 +1755,7 @@ def _print_stats_report(report) -> None:
                 f"  {cat.value:<14} {count_str}"
                 f" {_fmt_tokens(bucket.total_tokens):>12}"
                 f" {pct:>5.1f}%"
-                f"   ${cost:>6,.2f}"
+                f"   {_usd(cost):>7}"
             )
             click.echo(f"    {_make_bar(pct / 100)}")
 
@@ -1578,8 +1815,8 @@ def _print_burn_report(report) -> None:
 
     triv_pct = triv.total_tokens / total * 100
     sub_pct = sub.total_tokens / total * 100
-    triv_cost = triv.estimated_cost_usd(report.model)
-    sub_cost = sub.estimated_cost_usd(report.model)
+    triv_cost = triv.estimated_cost_usd()
+    sub_cost = sub.estimated_cost_usd()
 
     # Trivial
     click.echo(
@@ -1594,7 +1831,7 @@ def _print_burn_report(report) -> None:
         f"    {triv_pct:>5.1f}%"
     )
     click.echo(
-        f"  Est. cost: {click.style(f'${triv_cost:,.2f}', fg='yellow', bold=True)}"
+        f"  Est. cost: {click.style(_usd(triv_cost), fg='yellow', bold=True)}"
     )
     click.echo(f"    {_make_bar(triv_pct / 100)}")
     click.echo()
@@ -1625,7 +1862,7 @@ def _print_burn_report(report) -> None:
         f"    {sub_pct:>5.1f}%"
     )
     click.echo(
-        f"  Est. cost: {click.style(f'${sub_cost:,.2f}', fg='green', bold=True)}"
+        f"  Est. cost: {click.style(_usd(sub_cost), fg='green', bold=True)}"
     )
     click.echo(f"    {_make_bar(sub_pct / 100)}")
     click.echo()
@@ -1643,7 +1880,7 @@ def _print_burn_report(report) -> None:
             )
         )
         click.echo(
-            f"  You could save ~${triv_cost:,.2f} by running simple commands yourself."
+            f"  You could save ~{_usd(triv_cost)} by running simple commands yourself."
         )
     elif triv_pct > 15:
         click.echo(
@@ -1688,7 +1925,7 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
         click.echo(
             f"  $ {click.style(cmd_display, bold=True)}"
             f"   {_fmt_tokens(tc.total_tokens):>10} tok"
-            f"   ${tc.estimated_cost_usd:,.2f}"
+            f"   {_usd(tc.estimated_cost_usd)}"
         )
         if show_prompts and tc.user_prompt:
             prompt = tc.user_prompt.strip().replace("\n", " ")
@@ -1699,11 +1936,12 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
             )
 
     click.echo()
-    total_cost = sum(tc.estimated_cost_usd for tc in calls)
+    costs = [tc.estimated_cost_usd for tc in calls]
+    total_cost = None if None in costs else sum(costs)
     click.echo(
         f"  {len(calls)} trivial calls"
         f" | {_fmt_tokens(sum(tc.total_tokens for tc in calls))} tokens"
-        f" | ${total_cost:,.2f} est. cost"
+        f" | {_usd(total_cost)} est. cost"
     )
     click.echo()
 
@@ -1977,6 +2215,128 @@ def audit(
     sys.exit(0)
 
 
+def _history_db():
+    from agentwatch.history import connect
+
+    try:
+        return connect()
+    except (OSError, RuntimeError, sqlite3.Error) as e:
+        click.echo(f"Error: history DB: {e}", err=True)
+        sys.exit(1)
+
+
+def _sync_line(counts: dict, seconds: float) -> str:
+    scanned = counts["new"] + counts["updated"]
+    line = (f"Synced {scanned} log(s) ({counts['new']} new, {counts['updated']} updated), "
+            f"{counts['unchanged']} unchanged in {seconds:.1f}s")
+    if counts["active"]:
+        line += f"; {counts['active']} still being written (--include-active)"
+    return line
+
+
+@cli.group()
+def history():
+    """Local session history behind `agentwatch report`.
+
+    Stores per session: agent, session id, project folder name, times,
+    actions, tokens, cost, health score and findings (signal, severity, cost,
+    a short redacted message). No transcript text, prompts, commands or full
+    paths. Kept until `history prune`.
+    """
+
+
+@history.command("sync")
+@click.option("--days", type=click.FloatRange(min=0, min_open=True), default=None,
+              help="Only logs written in the last N days")
+@click.option("--include-active", is_flag=True,
+              help="Also logs written in the last 60 s (sessions still running)")
+def history_sync(days: float | None, include_active: bool):
+    """Record every agent's sessions (only new or changed logs are read)."""
+    import time
+
+    from agentwatch.history import sync
+
+    t = time.perf_counter()
+    counts = sync(_history_db(), days=days, include_active=include_active)
+    click.echo(_sync_line(counts, time.perf_counter() - t))
+
+
+@history.command("prune")
+@click.option("--older-than", "older_than", required=True, metavar="Nd",
+              help="Delete sessions last active more than N days ago, e.g. 90d")
+def history_prune(older_than: str):
+    """Delete old sessions. A later sync without --days reads their logs
+    again if they are still on disk."""
+    import re
+
+    from agentwatch.history import prune
+
+    m = re.fullmatch(r"(\d+)d?", older_than.strip())
+    if not m:
+        raise click.BadParameter("use a number of days, e.g. 90d", param_hint="--older-than")
+    n = prune(_history_db(), int(m.group(1)))
+    click.echo(f"Removed {n} session(s) last active more than {m.group(1)} days ago")
+
+
+@history.command("path")
+def history_path():
+    """Print the history DB location."""
+    from agentwatch.history import db_path
+
+    click.echo(str(db_path()))
+
+
+@cli.command()
+@click.option("--days", type=click.IntRange(min=1), default=7, show_default=True,
+              help="Report period")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON (stable schema)")
+@click.option("--agent", default=None, help="Only this agent (e.g. claude-code)")
+@click.option("--project", default=None, help="Only this project folder name")
+@click.option("--no-sync", is_flag=True, help="Use the history DB as is")
+def report(days: int, json_output: bool, agent: str | None, project: str | None,
+           no_sync: bool):
+    """What your agents cost you: spend, waste, costliest findings, trend.
+
+    Syncs the history first (this period and the one before), then reports
+    on sessions whose last action is in the last N days.
+    """
+    from agentwatch.history import sync
+    from agentwatch.report import build, render
+
+    conn = _history_db()
+    if not no_sync:
+        counts = sync(conn, days=2 * days)
+        if counts["new"] + counts["updated"] and not json_output:
+            click.echo(f"(synced {counts['new'] + counts['updated']} log(s))", err=True)
+    rep = build(conn, days=days, agent=agent, project=project)
+    if json_output:
+        click.echo(json.dumps(rep, indent=2))
+    else:
+        click.echo("\n".join(render(rep)))
+
+
+@cli.command(hidden=True)
+def hook():
+    """Claude Code coach hook: reads hook JSON on stdin (see plugin/)."""
+    from agentwatch.coach import main as coach_main
+
+    coach_main()
+
+
+@cli.command()
+@click.option("--ok", is_flag=True, help="When healthy, print a dim check mark and 'agentwatch'")
+def statusline(ok: bool):
+    """Claude Code status line: a short warning (loop ~$1.40) when unhealthy.
+
+    Reads the status line JSON on stdin and the coach's state for that
+    session (needs the agentwatch plugin's hook). Prints nothing when healthy,
+    with no recent state, or on any error. See the README for settings.json.
+    """
+    from agentwatch.statusline import main as statusline_main
+
+    statusline_main(ok)
+
+
 @cli.command()
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--secrets-only", is_flag=True, help="Hide secrets only, not personal info")
@@ -2166,7 +2526,7 @@ def _build_guard_cli():
         pass
 
     @guard_cli.command(name="scan")
-    @click.option("--log", "-l", type=click.Path(exists=True, path_type=Path))
+    @click.option("--log", "-l", type=_LOG_FILE)
     @click.option("--json", "json_output", is_flag=True)
     def guard_scan(log, json_output):
         """Run security scan."""
@@ -2174,14 +2534,14 @@ def _build_guard_cli():
         ctx.invoke(security_scan, log=log, json_output=json_output)
 
     @guard_cli.command(name="watch")
-    @click.option("--log", "-l", type=click.Path(exists=True, path_type=Path))
+    @click.option("--log", "-l", type=_LOG_FILE)
     def guard_watch(log):
         """Watch for security issues in real-time."""
         ctx = click.Context(watch)
         ctx.invoke(watch, log=log, security=True)
 
     @guard_cli.command(name="check")
-    @click.option("--log", "-l", type=click.Path(exists=True, path_type=Path))
+    @click.option("--log", "-l", type=_LOG_FILE)
     @click.option("--json", "json_output", is_flag=True)
     def guard_check(log, json_output):
         """Run full check with security enabled."""

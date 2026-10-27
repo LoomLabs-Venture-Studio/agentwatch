@@ -329,8 +329,10 @@ class UndeclaredEgressDetector(SecurityDetector):
     def __init__(self, resolve=socket.getaddrinfo, spawn=_daemon):
         self._resolve = resolve
         self._spawn = spawn
+        self.pending = False  # last check waited on DNS: re-run it next refresh
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
+        self.pending = False
         seen = [
             (ip, port) for a in buffer.last(20) for ip, port in a.observed_endpoints or ()
             if _flaggable(ip)
@@ -351,6 +353,7 @@ class UndeclaredEgressDetector(SecurityDetector):
             pending |= ips is None
             allowed |= ips or set()
         if pending:
+            self.pending = True
             return None  # warm-up: the next tick decides
         undeclared = list(dict.fromkeys(  # most recent first
             f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"

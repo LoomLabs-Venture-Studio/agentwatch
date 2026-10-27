@@ -45,6 +45,20 @@ ADAPTERS: list[AgentAdapter] = [
 ]
 
 
+# Names as shown to people (table, alerts). Unknown ids are shown as they are.
+DISPLAY_NAMES = {
+    "claude-code": "Claude Code", "claude-desktop": "Claude Desktop", "codex": "Codex",
+    "cursor": "Cursor", "copilot": "Copilot", "copilot-vscode": "Copilot VS Code",
+    "gemini": "Gemini", "aider": "Aider", "cline": "Cline", "kilo-code": "Kilo Code",
+    "opencode": "OpenCode", "moltbot": "Moltbot", "agy": "Antigravity",
+}
+
+
+def display_name(agent: str) -> str:
+    """'claude-code' -> 'Claude Code'."""
+    return DISPLAY_NAMES.get(agent, agent)
+
+
 def get(name: str | None) -> AgentAdapter | None:
     for adapter in ADAPTERS:
         if adapter.name == name:
@@ -80,6 +94,7 @@ __all__ = [
     "BaseAdapter",
     "Watcher",
     "adapter_for",
+    "display_name",
     "editor_adapters",
     "get",
     "process_adapters",

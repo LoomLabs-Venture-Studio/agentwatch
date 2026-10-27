@@ -64,13 +64,14 @@ class SameOutcomeDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
 
         # Find edit→bash(fail) pairs and classify the errors
         error_classes_after_edits: list[tuple[str, str]] = []  # (error_class, error_msg)
+        pairs: list[tuple] = []  # (edit, failed run), parallel to the list above
         edits_seen = 0
 
         for i, action in enumerate(recent):
@@ -81,6 +82,7 @@ class SameOutcomeDetector(Detector):
                     if recent[j].is_bash and not recent[j].success and recent[j].error_message:
                         ec = _classify_error(recent[j].error_message)
                         error_classes_after_edits.append((ec, recent[j].error_message))
+                        pairs.append((action, recent[j]))
                         break
 
         if len(error_classes_after_edits) < self.threshold:
@@ -115,6 +117,10 @@ class SameOutcomeDetector(Detector):
                 "total_edits": edits_seen,
                 "last_error": example_msg,
             },
+        ).with_cost(
+            [a for (ec, _), pair in zip(error_classes_after_edits, pairs)
+             if ec == most_common_class for a in pair],
+            buffer,
         )
 
 
@@ -134,20 +140,24 @@ class FileChurnDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
 
         # Track per-file: edits since last successful bash
         file_edit_runs: dict[str, int] = {}  # file -> consecutive edits without success
+        churn: list = []  # actions since the last successful run
 
         for action in recent:
             if action.is_bash and action.success:
                 # Reset all counters — a successful run clears churn
                 file_edit_runs.clear()
-            elif action.is_file_edit and action.file_path:
-                file_edit_runs[action.file_path] = file_edit_runs.get(action.file_path, 0) + 1
+                churn.clear()
+            else:
+                churn.append(action)
+                if action.is_file_edit and action.file_path:
+                    file_edit_runs[action.file_path] = file_edit_runs.get(action.file_path, 0) + 1
 
         if not file_edit_runs:
             return None
@@ -185,6 +195,8 @@ class FileChurnDetector(Detector):
                     if c >= self.threshold and f != worst_file
                 },
             },
+        ).with_cost(
+            [a for a in churn if a.is_file_edit and a.file_path == worst_file], buffer
         )
 
 
@@ -205,7 +217,7 @@ class ExplorationStallDetector(Detector):
         self.min_actions = min_actions
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.min_actions:
+        if buffer.history_len < self.min_actions:
             return None
 
         all_actions = list(buffer.actions)
@@ -262,7 +274,7 @@ class ExplorationStallDetector(Detector):
                 "recent_errors": recent_errors,
                 "total_known_files": len(earlier_files),
             },
-        )
+        ).with_cost(recent, buffer)
 
 
 class ErrorClassPersistenceDetector(Detector):
@@ -283,13 +295,14 @@ class ErrorClassPersistenceDetector(Detector):
         self.min_edits_between = min_edits_between
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
 
         # Collect all bash failures with their error classes
         failures: list[tuple[str, str]] = []  # (error_class, raw_message)
+        failed: list = []  # the failing actions, parallel to failures
         edits_since_last_failure = 0
 
         for action in recent:
@@ -298,6 +311,7 @@ class ErrorClassPersistenceDetector(Detector):
             elif action.is_bash and not action.success and action.error_message:
                 ec = _classify_error(action.error_message)
                 failures.append((ec, action.error_message))
+                failed.append(action)
                 edits_since_last_failure = 0
 
         if len(failures) < self.threshold:
@@ -343,4 +357,6 @@ class ErrorClassPersistenceDetector(Detector):
                 "sample_errors": unique_messages,
                 "all_error_classes": dict(class_counts),
             },
+        ).with_cost(
+            [a for (ec, _), a in zip(failures, failed) if ec == most_common_class], buffer
         )

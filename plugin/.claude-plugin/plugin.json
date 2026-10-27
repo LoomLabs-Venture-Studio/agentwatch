@@ -1,0 +1,10 @@
+{
+  "name": "agentwatch",
+  "version": "0.2.1",
+  "description": "Coach: tells Claude when it is looping, thrashing, stuck or in an error spiral, using agentwatch's health detectors. Plus the agentwatch-scrub skill. Needs `agentwatch` on PATH (pipx install agentwatch-monitor).",
+  "author": { "name": "LoomLabs" },
+  "homepage": "https://github.com/LoomLabs-Venture-Studio/agentwatch",
+  "repository": "https://github.com/LoomLabs-Venture-Studio/agentwatch",
+  "license": "MIT",
+  "keywords": ["monitoring", "health", "agents", "coach"]
+}

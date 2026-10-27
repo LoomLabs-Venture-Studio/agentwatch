@@ -1,37 +1,48 @@
-"""Textual TUI application for real-time monitoring."""
+"""Widgets and helpers shared by the dashboard (multi_app) and its detail view."""
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
+import textwrap
 from typing import TYPE_CHECKING
 
-from textual.app import App, ComposeResult
-from textual.containers import Container
+from rich.cells import cell_len
+from textual.app import App
 from textual.reactive import reactive
-from textual.widgets import Footer, Header, Static
+from textual.widgets import Static
 
 from agentwatch.health.score import MIN_RATE_MINUTES
-from agentwatch.llm import DEFAULT_OLLAMA_MODEL
-from agentwatch.net_sampler import (
-    NOT_ATTRIBUTABLE,
-    NetSampler,
-    attach,
-    attributable,
-    endpoint_summary,
-)
 from agentwatch.themes import (
     ascii_safe,
     get_theme,
     security_label_from_score,
     security_status_from_score,
 )
-from agentwatch.ui.rot_widget import ContextHealthWidget, _mini_bar
+from agentwatch.ui.rot_widget import _mini_bar
 
 if TYPE_CHECKING:
     from agentwatch.detectors.base import Warning
     from agentwatch.health.score import EfficiencyReport
-    from agentwatch.parser.models import Action
+
+
+def hang(line: str, width: int, indent: int) -> str:
+    """*line* wrapped to *width* with continuation lines indented *indent*
+    (a widget's own wrap starts them at column 0). One cell of slack: an
+    emoji is two cells but one character."""
+    if width <= indent + 10 or len(line) < width:
+        return line
+    return textwrap.fill(line, width - 1, subsequent_indent=" " * indent)
+
+
+def show(widget: Static, content: str) -> None:
+    """`Static.update` only when the text changed (an update re-lays out)."""
+    if content != widget.content:
+        widget.update(content)
+
+
+def _hm(minutes: float) -> str:
+    """A duration as "2h 05m" / "45m"."""
+    h, m = divmod(int(minutes), 60)
+    return f"{h}h {m:02d}m" if h else f"{m}m"
 
 
 class HealthBar(Static):
@@ -53,14 +64,12 @@ class HealthBar(Static):
         theme = get_theme()
         emoji = theme.emoji_for(self.status)
 
-        return f"""
-  {emoji} Overall Health: [{bar}] {self.score}%
-  Status: {self.status.upper()}
-"""
+        return f"  {emoji} Health [{bar}] {self.score}%  {self.status.upper()}"
 
 
 class SecurityStatus(Static):
-    """Widget showing security status."""
+    """Widget showing security status (no health words: those are for
+    HealthBar)."""
 
     score = reactive(100)
     alert_count = reactive(0)
@@ -78,21 +87,17 @@ class SecurityStatus(Static):
         emoji = theme.emoji_for(status)
         label = security_label_from_score(self.score)
 
-        return f"""
-  Security Score: {self.score}%
-  Status: {emoji} {label}
-  Active Alerts: {self.alert_count}
-"""
+        n = self.alert_count
+        found = f"{n} finding{'s' * (n != 1)}" if n else "clean"
+        return f"  {emoji} Security: {found}  {label} (score {self.score}%)"
 
 
 class EfficiencyBar(Static):
     """Widget showing session efficiency as a progress bar with category breakdown."""
 
     def __init__(self, **kwargs):
-        theme = get_theme()
         super().__init__(
-            f"  Efficiency: [████████████████████] 100%  Status: {theme.level_0.upper()}\n"
-            f"  Session is {theme.level_0}",
+            "  Efficiency: waiting for data" + ascii_safe("…", "..."),
             markup=False,
             **kwargs,
         )
@@ -100,7 +105,7 @@ class EfficiencyBar(Static):
 
     def update_efficiency(self, report: "EfficiencyReport") -> None:
         self._report = report
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def _build_content(self) -> str:
         r = self._report
@@ -110,14 +115,8 @@ class EfficiencyBar(Static):
         filled = int(r.score / 5)  # 20 chars total
         bar = "█" * filled + "░" * (20 - filled)
 
-        theme = get_theme()
-        emoji = theme.emoji_for(r.status)
-        lines: list[str] = []
-        lines.append(
-            f"  {emoji} Efficiency: [{bar}] {r.score}%  "
-            f"Status: {r.status.upper()}"
-        )
-        lines.append("")
+        # No status word or recommendation: HealthBar has the one status.
+        lines = [f"  {get_theme().emoji_for(r.status)} Efficiency [{bar}] {r.score}%"]
 
         # Per-category mini bars with detail
         # Rates over a near-zero duration are meaningless (#45).
@@ -134,20 +133,17 @@ class EfficiencyBar(Static):
             (
                 "Pacing",
                 r.penalty_pacing,
-                f"{r.duration_minutes:.0f}min, {r.actions_per_turn:.1f} act/turn",
+                f"{_hm(r.duration_minutes)}, {r.actions_per_turn:.1f} act/turn",
             ),
         ]
         for label, penalty, detail in categories:
             mini = _mini_bar(penalty)
-            lines.append(f"    {label:12s} [{mini}] {penalty:.2f}   {detail}")
-
-        lines.append("")
+            lines.append(f"    {label:12s} [{mini}]  {detail}")
         # Cost is informational — not scored (no log-reported cost data yet)
         if r.cost_total is None:
             lines.append("  Est. cost: n/a (no price for this model)")
         else:
             lines.append(f"  Est. cost: ${r.cost_total:.2f} ({cost_rate}/min)")
-        lines.append(f"  {r.recommendation}")
 
         return "\n".join(lines)
 
@@ -155,17 +151,22 @@ class EfficiencyBar(Static):
 class WarningsList(Static):
     """Widget showing list of active warnings."""
 
+    limit: int | None = 8  # warnings shown; None: all (the scrollable detail view)
+
     def __init__(self, **kwargs):
         super().__init__("  No active warnings", markup=False, **kwargs)
         self._warnings: list[Warning] = []
         self._goal_alignment: dict | None = None
 
     def on_mount(self) -> None:
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def update_warnings(self, warnings: list["Warning"]) -> None:
         self._warnings = warnings
-        self.update(self._build_content())
+        show(self, self._build_content())
+
+    def on_resize(self) -> None:
+        show(self, self._build_content())
 
     def update_goal_alignment(self, assessment: dict | None) -> None:
         """Update the Tier-2 goal-alignment advisory block (`llm.py`'s
@@ -185,7 +186,7 @@ class WarningsList(Static):
         even by accident.
         """
         self._goal_alignment = assessment
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def _build_content(self) -> str:
         lines: list[str] = list(self._build_goal_alignment_block())
@@ -196,21 +197,20 @@ class WarningsList(Static):
 
         lines.append("  Active Warnings:")
         lines.append("")
-        for w in self._warnings[:8]:
-            lines.append(f"  {w.emoji} [{w.signal:20}] {w.message}")
+        for w in self._warnings[: self.limit]:
+            cost = f"  {w.cost_label}" if w.cost_label else ""
+            width = self.size.width
+            lines.append(hang(f"  {w.emoji} [{w.signal:20}] {w.message}{cost}", width, 5))
 
             # Show key details inline
             detail_line = self._format_details(w)
             if detail_line:
-                lines.append(f"     {ascii_safe('→', '->')} {detail_line}")
+                lines.append(hang(f"     {ascii_safe('→', '->')} {detail_line}", width, 8))
 
             # Show suggestion
-            if w.suggestion:
-                # Wrap long suggestions
-                suggestion = w.suggestion
-                if len(suggestion) > 90:
-                    suggestion = suggestion[:87] + "..."
-                lines.append(f"     {ascii_safe('💡', '[TIP]')} {suggestion}")
+            if w.suggestion:  # wrapped (hanging indent), not cut
+                tip = ascii_safe("💡", "[TIP]")
+                lines.append(hang(f"     {tip} {w.suggestion}", width, 5 + cell_len(tip) + 1))
 
             # Show Tier-2 LLM triage, if --llm assessed this warning
             # (LiveLlmAssessor.stamp() attaches it before we get here)
@@ -230,8 +230,8 @@ class WarningsList(Static):
 
             lines.append("")  # Blank line between warnings
 
-        if len(self._warnings) > 8:
-            lines.append(f"  ... and {len(self._warnings) - 8} more")
+        if self.limit is not None and len(self._warnings) > self.limit:
+            lines.append(f"  ... and {len(self._warnings) - self.limit} more")
 
         return "\n".join(lines)
 
@@ -335,7 +335,7 @@ class StatsPanel(Static):
         self._network = ""
 
     def on_mount(self) -> None:
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def update_stats(
         self, action_count: int, error_count: int, duration: float, network: str = ""
@@ -344,518 +344,17 @@ class StatsPanel(Static):
         self._error_count = error_count
         self._duration = duration
         self._network = network
-        self.update(self._build_content())
+        show(self, self._build_content())
 
     def _build_content(self) -> str:
         line = (
             f"  Actions: {self._action_count}  Errors: {self._error_count}  "
-            f"Duration: {int(self._duration)}m"
+            f"Duration: {_hm(self._duration)}"
         )
         return f"{line}  {self._network}" if self._network else line
-
-
-def select_single_agent_watcher(log_path: Path, cursor_composer_id: str | None):
-    """Pick the live watcher for ``agentwatch watch --log <path>``.
-
-    Delegates to the adapter that claims *log_path*; unclaimed paths get a
-    plain LogWatcher (historical default: JSONL with format auto-detection).
-    For Cursor, *cursor_composer_id* is the composer to follow.
-    """
-    from agentwatch.agents import adapter_for
-    from agentwatch.parser import LogWatcher
-
-    adapter = adapter_for(log_path)
-    if adapter is None:
-        return LogWatcher(log_path)
-    session = cursor_composer_id if adapter.name == "cursor" else None
-    return adapter.make_watcher(log_path, session)
 
 
 def plain_notify(app: App, message: str, **kwargs) -> None:
     """`App.notify` defaults to markup; toasts here carry log-derived text."""
     kwargs.setdefault("markup", False)
     App.notify(app, message, **kwargs)
-
-
-class AgentWatchApp(App):
-    """Main TUI application for AgentWatch."""
-
-    notify = plain_notify
-
-    CSS = """
-    Screen {
-        layout: grid;
-        grid-size: 2 3;
-        grid-rows: auto 1fr auto;
-    }
-
-    #health-panel {
-        column-span: 1;
-        border: solid green;
-        padding: 1;
-    }
-
-    #security-panel {
-        column-span: 1;
-        border: solid yellow;
-        padding: 1;
-    }
-
-    #efficiency-panel {
-        column-span: 2;
-        border: solid cyan;
-        padding: 1;
-    }
-
-    #context-health-panel {
-        column-span: 2;
-        border: solid magenta;
-        padding: 1;
-    }
-
-    #warnings-panel {
-        column-span: 2;
-        border: solid red;
-        padding: 1;
-    }
-
-    #stats-panel {
-        column-span: 2;
-        border: solid blue;
-        padding: 1;
-    }
-
-    .hidden {
-        display: none;
-    }
-    """
-
-    BINDINGS = [
-        ("q", "quit", "Quit"),
-        ("r", "refresh", "Refresh"),
-        ("s", "toggle_security", "Toggle Security"),
-    ]
-
-    def __init__(
-        self,
-        log_path: Path,
-        security_mode: bool = False,
-        siem_log: Path | None = None,
-        llm: bool = False,
-        llm_model: str = DEFAULT_OLLAMA_MODEL,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.log_path = log_path
-        self.security_mode = security_mode
-        self.siem_log = siem_log
-        self.llm = llm
-        self.llm_model = llm_model
-        self._buffer = None
-        self._detector_registry = None
-        self._rot_scorer = None
-        self._refreshing = False
-        self._alerted_signals: set[str] = set()
-        self._siem_exporter = None
-        self._llm_assessor = None
-        self._net_sampler = NetSampler()
-        self._net_pid: int | None = None
-        self._net_prev_end: float | None = None
-        self._net_status = "Net: no live process"
-
-    def compose(self) -> ComposeResult:
-        yield Header()
-
-        yield Container(
-            HealthBar(id="health-bar"),
-            id="health-panel",
-        )
-
-        yield Container(
-            SecurityStatus(id="security-status"),
-            id="security-panel",
-            classes="" if self.security_mode else "hidden",
-        )
-
-        yield Container(
-            EfficiencyBar(id="efficiency-bar"),
-            id="efficiency-panel",
-        )
-
-        yield Container(
-            ContextHealthWidget(id="context-health"),
-            id="context-health-panel",
-        )
-
-        yield Container(
-            WarningsList(id="warnings-list"),
-            id="warnings-panel",
-        )
-
-        yield Container(
-            StatsPanel(id="stats-display"),
-            id="stats-panel",
-        )
-
-        yield Footer()
-
-    def on_mount(self) -> None:
-        """Called when app starts."""
-        self.title = f"AgentWatch - {self.log_path.name}"
-        if self.security_mode:
-            self.title += " [SECURITY]"
-
-        # Initialize components
-        from agentwatch.detectors import create_registry
-        from agentwatch.health.rot import RotScorer
-        from agentwatch.parser import ActionBuffer
-
-        self._buffer = ActionBuffer()
-        mode = "all" if self.security_mode else "health"
-        self._detector_registry = create_registry(mode=mode)
-        self._rot_scorer = RotScorer()
-
-        if self.siem_log is not None or self.llm:
-            from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
-
-            if self.siem_log is not None:
-                self._siem_exporter = LiveSiemExporter(
-                    self.siem_log, source_log=str(self.log_path)
-                )
-            if self.llm:
-                self._llm_assessor = LiveLlmAssessor(self.llm_model)
-
-        # Set up log watcher. Selection is delegated to the agent adapter
-        # registry (agentwatch.agents): the adapter that claims the path builds
-        # the watcher (.md Aider chat history, .vscdb Cursor state store,
-        # otherwise JSONL via LogWatcher's own format auto-detection).
-        # .vscdb is still named here because the composer-resolution toast is
-        # UI behaviour specific to the single-agent Cursor case (intentional,
-        # documented exception).
-        self.watcher = None
-        composer_id = None
-        if self.log_path.suffix == ".vscdb":
-            composer_id = self._resolve_cursor_composer_id()
-            if composer_id is None:
-                # No crash: mirrors how LogWatcher/AiderLogWatcher degrade to
-                # an empty, idle dashboard (0 actions, default 100% health)
-                # when their target file is missing/unreadable -- surfaced
-                # here via a toast since a Cursor DB with no matching
-                # composer wouldn't otherwise produce any visible signal.
-                self.notify(
-                    "No active Cursor agent-mode conversation found in this "
-                    "state.vscdb (Cursor may not be running, or the DB has "
-                    "no agent-mode composer yet) -- showing an idle "
-                    "dashboard.",
-                    title="Cursor",
-                    severity="warning",
-                    timeout=10,
-                )
-        if self.log_path.suffix != ".vscdb" or composer_id is not None:
-            self.watcher = select_single_agent_watcher(self.log_path, composer_id)
-
-        # Start watching in background (skipped entirely for the "no
-        # matching Cursor composer" case above -- self.watcher stays None
-        # and the dashboard just renders its idle/default state).
-        if self.watcher is not None:
-            self.watcher.on_action(self._on_action)
-            self.run_worker(self.watcher.watch_with_callbacks())
-
-        self.run_worker(self._resolve_net_pid(), exit_on_error=False)
-
-        self.refresh_display()
-
-        # Set up periodic refresh as backup (1s for responsive feel)
-        self.set_interval(1.0, self.refresh_display)
-
-    def _resolve_cursor_composer_id(self) -> str | None:
-        """Auto-pick the most-recently-active agent-mode composer for a
-        single-agent Cursor ``--log <state.vscdb>`` watch.
-
-        Mirrors ``cursor_source.parse_cursor_session()``'s auto-detect
-        convention (which ``parser/logs.py::parse_file()``'s ``.vscdb``
-        dispatch already uses for the one-shot ``check``/``security-scan``
-        path) rather than reinventing selection logic:
-        ``select_latest_agent_composer()`` picks the newest non-archived,
-        non-draft, ``unifiedMode == "agent"`` composer.
-
-        Returns ``None`` (never raises) for every failure mode -- DB file
-        missing/unreadable (e.g. an explicit path that doesn't actually
-        exist, or a genuinely corrupt file), or no qualifying composer in
-        an otherwise-readable DB -- so ``on_mount`` can degrade to an idle
-        dashboard instead of crashing the TUI on startup.
-        """
-        from agentwatch.parser.cursor_source import (
-            fetch_composer_headers,
-            open_readonly,
-            select_latest_agent_composer,
-        )
-
-        try:
-            conn = open_readonly(self.log_path)
-        except Exception:
-            return None
-        try:
-            headers = fetch_composer_headers(conn)
-        except Exception:
-            return None
-        finally:
-            conn.close()
-        return select_latest_agent_composer(headers)
-
-    def _find_own_process(self):
-        """The running agent writing self.log_path, or None (blocking psutil)."""
-        from agentwatch.discovery import find_running_agents
-
-        def resolved(p: Path) -> Path:
-            try:
-                return p.resolve()
-            except OSError:
-                return p
-
-        target = resolved(self.log_path)
-        return next(
-            (p for p in find_running_agents() if p.log_file and resolved(p.log_file) == target),
-            None,
-        )
-
-    async def _resolve_net_pid(self) -> None:
-        """Find the agent's pid off the UI thread and start sampling it."""
-        # ponytail: resolved once at mount; an agent started after `watch` is
-        # not picked up (re-run discovery periodically if that matters).
-        proc = await asyncio.to_thread(self._find_own_process)
-        if proc is None:
-            return
-        if not attributable(proc):
-            self._net_status = NOT_ATTRIBUTABLE
-            return
-        self._net_sampler.track(proc.pid)
-        self._net_sampler.start()
-        self._net_pid = proc.pid
-
-    def _on_action(self, action: Action) -> None:
-        """Callback for new actions from watcher."""
-        # NOTE: must be `is not None`, not a bare truthy check. ActionBuffer
-        # defines __len__ but not __bool__, so a freshly-created *empty*
-        # buffer (len 0, but very much initialized -- see on_mount) is
-        # falsy. A bare `if self._buffer:` here silently drops the first
-        # action delivered after on_mount, which means the buffer never
-        # gains any actions, which means it stays empty (and falsy)
-        # forever -- no action is ever recorded.
-        if self._buffer is not None:
-            if self._net_pid is not None:
-                self._net_prev_end = attach(
-                    self._net_sampler, self._net_pid, action, self._net_prev_end
-                )
-            self._buffer.add(action)
-            # The 1s interval timer handles refreshes — don't pile up extra
-            # calls via call_after_refresh, which was causing sporadic updates
-            # when compute time exceeded the interval.
-
-    def refresh_display(self) -> None:
-        """Update all widgets with current data."""
-        # Same ActionBuffer __len__-without-__bool__ pitfall as _on_action
-        # above: this guard means "have _buffer/_detector_registry been
-        # initialized" (they're set together in on_mount), not "is the
-        # buffer non-empty" -- so it must check identity against None
-        # rather than truthiness, or the very first refresh_display() call
-        # in on_mount (before any action has arrived) skips rendering.
-        if self._buffer is None or self._detector_registry is None:
-            return
-        if self._refreshing:
-            return  # prevent overlapping refreshes
-        self._refreshing = True
-        try:
-            self._do_refresh()
-        finally:
-            self._refreshing = False
-
-    def _do_refresh(self) -> None:
-        """Inner refresh logic, guarded by _refreshing flag."""
-
-        from agentwatch.health import (
-            calculate_efficiency,
-            calculate_health,
-            calculate_security_score,
-        )
-
-        # Run detectors
-        warnings = self._detector_registry.check_all(self._buffer)
-
-        # SIEM export (new warnings only, by content-based dedup key -- see
-        # live_integrations module docstring for why) and throttled Tier-2
-        # LLM triage. Both degrade to a one-time notify() rather than
-        # raising -- neither may ever crash this long-running dashboard.
-        if self._siem_exporter is not None:
-            session_id = self._buffer.actions[0].session_id if self._buffer.actions else None
-            siem_error = self._siem_exporter.export_new(warnings, session_id=session_id)
-            if siem_error:
-                self.notify(siem_error, title="SIEM export failed", severity="error", timeout=10)
-
-        # Populated below only when --llm is on; stays None otherwise, which
-        # WarningsList.update_goal_alignment() already treats as "nothing to
-        # show" (see that method's docstring).
-        goal_alignment_for_render = None
-
-        if self._llm_assessor is not None:
-            # Re-attach any previously-cached verdict before this tick's
-            # warnings render -- check_all() built brand new Warning objects,
-            # so nothing survives from a prior tick without this.
-            self._llm_assessor.stamp(warnings)
-            if self._llm_assessor.due():
-                new_warnings = self._llm_assessor.new_warnings(warnings)
-                self._llm_assessor.mark_run()
-                self.run_worker(self._run_llm_batch(new_warnings))
-
-            # Tier-2 goal-alignment advisory (Sprint 15's assess_goal_
-            # alignment(), wired live here). Advisory-only: never touches
-            # warnings/score, has its own throttle window (independent of
-            # the per-warning triage cadence above -- see LiveLlmAssessor's
-            # class docstring for why a single session-level judgment
-            # doesn't reuse the dedup-key machinery), and is likewise
-            # dispatched off the render path via run_worker. Stashed in
-            # goal_alignment_for_render and applied to the widget down by
-            # update_warnings() below, once query_one() has resolved it.
-            goal_alignment_for_render = self._llm_assessor.stamp_goal_alignment()
-            if self._llm_assessor.goal_alignment_due():
-                self._llm_assessor.mark_goal_run()
-                self.run_worker(self._run_goal_alignment_check())
-
-        # Compute efficiency and rot first so they feed into overall health
-        eff = calculate_efficiency(warnings, self._buffer)
-
-        rot_report = None
-        rot_value: float | None = None
-        if self._rot_scorer:
-            rot_report = self._rot_scorer.update(self._buffer)
-            rot_value = rot_report.smoothed_score
-
-        report = calculate_health(
-            warnings,
-            include_security=self.security_mode,
-            efficiency_score=eff.score,
-            rot_score=rot_value,
-        )
-
-        # Update health bar
-        health_bar = self.query_one("#health-bar", HealthBar)
-        health_bar.score = report.overall_score
-        health_bar.status = report.status
-
-        # Update security status if enabled
-        if self.security_mode:
-            security_status = self.query_one("#security-status", SecurityStatus)
-            security_status.score = calculate_security_score(warnings)
-            security_status.alert_count = len(report.security_warnings)
-            self._fire_secret_alerts(warnings)
-
-        # Update efficiency bar
-        self.query_one("#efficiency-bar", EfficiencyBar).update_efficiency(eff)
-
-        # Update context health
-        if rot_report is not None:
-            self.query_one("#context-health", ContextHealthWidget).update_report(
-                rot_report, peak_context_tokens=self._buffer.stats.peak_context_tokens
-            )
-
-        # Update warnings list, plus the Tier-2 goal-alignment advisory
-        # (fetched above, `None` -- render nothing -- when --llm is off or
-        # when there's nothing to show yet). Two small, cheap Static.update()
-        # calls; Textual only actually repaints once per tick either way.
-        warnings_list = self.query_one("#warnings-list", WarningsList)
-        warnings_list.update_goal_alignment(goal_alignment_for_render)
-        warnings_list.update_warnings(warnings)
-
-        # Update stats
-        stats = self.query_one("#stats-display", StatsPanel)
-        stats.update_stats(
-            self._buffer.stats.activity_count,
-            self._buffer.stats.error_count,
-            self._buffer.stats.duration_minutes,
-            endpoint_summary(self._buffer.actions) if self._net_pid is not None
-            else self._net_status,
-        )
-
-    async def _run_llm_batch(self, new_warnings: list["Warning"]) -> None:
-        """Run Tier-2 assessment for *new_warnings* off the render path.
-
-        `LiveLlmAssessor.run_batch` makes real blocking Ollama HTTP calls;
-        `asyncio.to_thread` keeps that off the event loop so a slow/hanging
-        local model can never stall the TUI's render tick.
-        """
-        assessor = self._llm_assessor
-        if assessor is None:
-            return
-        error = await asyncio.to_thread(assessor.run_batch, new_warnings)
-        if error:
-            self.notify(error, title="Tier-2 LLM unavailable", severity="warning", timeout=10)
-
-    async def _run_goal_alignment_check(self) -> None:
-        """Run the Tier-2 goal-alignment advisory off the render path.
-
-        Mirrors `_run_llm_batch` exactly (`asyncio.to_thread` keeps the real
-        blocking Ollama HTTP call off the event loop), but for
-        `LiveLlmAssessor.run_goal_alignment` -- one session-level assessment
-        against the current buffer, not a batch of per-warning triage
-        calls. Shares the same assessor, so an unavailable-Ollama
-        notification here is deduped against `_run_llm_batch`'s own (see
-        `LiveLlmAssessor._ensure_analyzer`) -- this won't double-notify if
-        both features already established Ollama is unreachable.
-        """
-        assessor = self._llm_assessor
-        if assessor is None:
-            return
-        error = await asyncio.to_thread(assessor.run_goal_alignment, self._buffer)
-        if error:
-            self.notify(error, title="Tier-2 LLM unavailable", severity="warning", timeout=10)
-
-    def on_unmount(self) -> None:
-        """Flush and release the SIEM log file handle, stop the net sampler."""
-        self._net_sampler.stop()
-        if self._siem_exporter is not None:
-            self._siem_exporter.close()
-
-    def _fire_secret_alerts(self, warnings: list["Warning"]) -> None:
-        """Fire toast notifications for new secret leak warnings."""
-        for w in warnings:
-            if w.signal != "secret_leak":
-                continue
-            d = w.details
-            key = (
-                f"secret_leak:{d.get('secret_type', '')}:"
-                f"{d.get('channel', '')}:{d.get('file_path', '')}"
-            )
-            if key in self._alerted_signals:
-                continue
-            self._alerted_signals.add(key)
-            msg = f"{d.get('secret_type', 'secret')} in {d.get('channel', 'unknown')}"
-            if d.get("file_path"):
-                msg += f"\n{d['file_path']}"
-            if d.get("remediation"):
-                msg += f"\n{d['remediation']}"
-            self.notify(msg, title="SECURITY ALERT", severity="error", timeout=15)
-            if w.severity.value == "critical":
-                self.bell()
-
-    def action_refresh(self) -> None:
-        """Manual refresh action."""
-        self.refresh_display()
-
-    def action_toggle_security(self) -> None:
-        """Toggle security panel visibility."""
-        self.security_mode = not self.security_mode
-
-        security_panel = self.query_one("#security-panel")
-        if self.security_mode:
-            security_panel.remove_class("hidden")
-            self.title = f"AgentWatch - {self.log_path.name} [SECURITY]"
-        else:
-            security_panel.add_class("hidden")
-            self.title = f"AgentWatch - {self.log_path.name}"
-
-        # Recreate registry with new mode
-        from agentwatch.detectors import create_registry
-        mode = "all" if self.security_mode else "health"
-        self._detector_registry = create_registry(mode=mode)
-
-        self.refresh_display()

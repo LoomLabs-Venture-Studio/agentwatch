@@ -257,12 +257,15 @@ def actions(messages: list, sdk: bool, session_id: str | None = None) -> list[tu
         blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
         if msg.get("role") == "assistant":
             mid = msg.get("id")
+            key = f"m:{mid}" if isinstance(mid, str) else _content_key(msg)
             usage = _usage_action(msg, sdk, ts, session_id)
             if usage is not None:
-                out.append((f"m:{mid}" if isinstance(mid, str) else _content_key(msg), usage))
+                usage.message_id = key
+                out.append((key, usage))
             for b in blocks:
                 if b.get("type") == "tool_use" and isinstance(b.get("id"), str):
                     pending[b["id"]] = _tool_action(b, sdk, ts, session_id)
+                    pending[b["id"]].message_id = key  # charged to this message's usage
         elif msg.get("role") == "user":
             for b in blocks:
                 if b.get("type") != "tool_result":

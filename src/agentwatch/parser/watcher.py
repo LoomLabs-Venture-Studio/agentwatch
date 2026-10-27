@@ -29,9 +29,9 @@ from .cursor_source import (
 )
 from .gemini import GeminiParser
 from .logs import (
+    ClaudeCodeParser,
     FormatSniffer,
     ensure_supported_log,
-    parse_claude_code_entry,
     parse_moltbot_entry,
 )
 from .models import Action
@@ -60,6 +60,7 @@ class LogWatcher:
         self._last_sig: tuple[int, int, int] | None = None
         self._log_format: str | None = None
         self._sniffer = FormatSniffer()
+        self._claude_parser = ClaudeCodeParser()
         self._codex_parser: CodexParser | CopilotParser | AgyParser | GeminiParser | None = None
         self._callbacks: list[Callable[[Action], None]] = []
 
@@ -114,7 +115,7 @@ class LogWatcher:
             # this by unifying with parse_file()'s flush-at-EOF behavior.
             return self._codex_parser.parse_line(entry)
         else:
-            result = parse_claude_code_entry(entry)
+            result = self._claude_parser.parse_entry(entry)
 
         if isinstance(result, list):
             return result
@@ -151,6 +152,7 @@ class LogWatcher:
             # different content is re-read from the start.
             if sig[0] < self._position or self._read_prefix() != self._prefix:
                 self._position = 0
+                self._claude_parser = ClaudeCodeParser()  # re-read: forget the old calls
         self._last_sig = sig
 
         try:
@@ -215,8 +217,7 @@ class LogWatcher:
             # with no message yet is emitted now, not held back. The format
             # stays undecided; take_* drains, so nothing is replayed later.
             for entry in self._sniffer.take_metadata_only():
-                result = parse_claude_code_entry(entry)
-                for a in result if isinstance(result, list) else [result] if result else []:
+                for a in self._claude_parser.parse_entry(entry):
                     if not self.session_id or a.session_id == self.session_id:
                         actions.append(a)
 
@@ -690,12 +691,25 @@ def _has_live_log(proc: AgentProcess) -> bool:
     return proc.log_file is not None and proc.log_file.exists()
 
 
+def _modified_since(path: Path, cutoff: float) -> bool:
+    try:
+        return path.stat().st_mtime >= cutoff
+    except OSError:
+        return False
+
+
 class MultiLogWatcher:
     """Watches multiple log files and directories for new logs."""
 
-    def __init__(self, paths: list[Path], poll_interval: float = 0.5):
+    def __init__(
+        self, paths: list[Path], poll_interval: float = 0.5, since: float | None = None
+    ):
         self.base_paths = paths
         self.poll_interval = poll_interval
+        # Directory scan only: watch logs modified in the last *since* seconds
+        # (None: all). An older log is picked up once it is written to again.
+        self.since = since
+        self.total_logs = 0  # logs the last directory scan found, any age
         self.watchers: dict[Path, Watcher] = {}
         # The task running each entry of self.watchers, so reap_stopped() can
         # stop it: at most one live watcher per log, nothing emitted twice.
@@ -825,11 +839,15 @@ class MultiLogWatcher:
 
         logs = []
         for p in self.base_paths:
-            if p.is_file() and p.suffix == ".jsonl":
+            if p.is_file():  # named outright (`watch`): any format an adapter reads
                 logs.append(p)
             elif p.is_dir():
                 logs.extend(p.rglob("*.jsonl"))
-        return logs
+        self.total_logs = len(logs)
+        if self.since is None:
+            return logs
+        cutoff = time.time() - self.since
+        return [p for p in logs if p in self._active_files or _modified_since(p, cutoff)]
 
     def _make_watcher(self, log_meta: Path) -> Watcher:
         """Build the watcher for one tracked entry via its agent's adapter.

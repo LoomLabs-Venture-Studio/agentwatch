@@ -1,6 +1,6 @@
 [project]
 name = "agentwatch-monitor"
-version = "0.2.0"
+version = "0.2.1"
 description = "Real-time health and security monitoring for AI coding agents"
 readme = "README.md"
 license = { text = "MIT" }
@@ -50,7 +50,7 @@ siem = [
 ]
 
 [project.scripts]
-agentwatch = "agentwatch.cli:main"
+agentwatch = "agentwatch._entry:main"
 agentguard = "agentwatch.cli:security_main"
 
 [build-system]

@@ -66,7 +66,7 @@ want a "fitness tracker + security guard" for those agents.
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
                        detect, net, list-detectors, security-scan, themes, stats,
-                       audit, scrub. `scrub PATH` redacts secrets + PII in one
+                       audit, scrub, report, history sync|prune|path. `scrub PATH` redacts secrets + PII in one
                        file (copy by default, `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
                        (output without `--pii` unchanged)
@@ -85,7 +85,11 @@ src/agentwatch/
                        written in the last 30 min, synthetic pid).
                        Process matching is
                        first-match-wins per PID in that order; adapter_for()
-                       picks the first adapter whose claims() accepts a path
+                       picks the first adapter whose claims() accepts a path.
+                       history_logs()/history_meta(): every on-disk session
+                       log (one session per file) + (session id, project
+                       folder name), from each adapter's own root helper;
+                       none for cursor/opencode/kilo (one DB) and aider
   discovery.py         Finds running agent OS processes by matching each
                        process adapter's pattern against the program
                        (program_path: argv[0], or the script after an
@@ -161,6 +165,108 @@ src/agentwatch/
                        attributable(): process-kind adapters only, minus
                        Codex app-server threads, `kilo serve`/`opencode
                        serve` and Aider (synthetic timestamps)
+  coach.py             `agentwatch hook` (hidden): Claude Code PostToolUse/
+                       PostToolUseFailure hook. Tail (4 MB) of
+                       transcript_path -> parse_claude_code_entry ->
+                       health registry; new HIGH/CRITICAL PROGRESS/ERRORS
+                       warning -> hookSpecificOutput.additionalContext
+                       (<= 3 lines; evidence quoted with </> stripped, the
+                       Try line is fixed text per signal). Subagent
+                       payloads (agent_id) read <transcript>/subagents/
+                       agent-<id>.jsonl. The hook's own call is folded in
+                       when the transcript lags. Dedup by
+                       warning_dedup_key per session[.agent] in
+                       $CLAUDE_PLUGIN_DATA/coach, else %LOCALAPPDATA% or
+                       ~/.cache + agentwatch/coach (0700, owner-checked on
+                       POSIX, mkstemp writes, 7-day prune; plugin dir
+                       unwritable -> user_state_dir(); also the latest
+                       warnings with cost_usd). state_path(dir, key) is the
+                       one file-name rule. Evidence `"` -> `'`. Fails open:
+                       exit 0, no stdout; 5 s watchdog. Loop breaker
+                       (Feature 7): a HIGH `loop` warning is stored as
+                       state["armed"] {loop_id, count, cost_usd, blocked}
+                       (hashes only; dropped once the loop is not HIGH).
+                       PreToolUse reads only that file; call_loop_id() keys
+                       the call via parse_claude_code_entry + loops._loop_key
+                       (same id as LoopDetector) and denies the first match
+                       once (permissionDecision deny, fixed reason).
+                       LOOP_ALLOW Bash prefixes are never denied.
+  statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
+                       command. Stdin session_id -> newest coach state file
+                       across state_dirs(): state_dir, the dir named in
+                       user_state_dir()/state-dir (coach.POINTER, written
+                       by the hook; the status line gets no
+                       CLAUDE_PLUGIN_DATA), else <CLAUDE_CONFIG_DIR or
+                       ~/.claude>/plugins/data/agentwatch-*/coach, and
+                       user_state_dir; worst HIGH/CRITICAL of the mapped
+                       signals -> `⚠ loop|thrash|errors|stuck ~$x` (cost
+                       only if finite, 0 <= x < 10k; < 0.01 -> `<$0.01`;
+                       yellow/red, NO_COLOR). Healthy: nothing, `--ok` dim
+                       `✓ agentwatch`. No state / > 10 min old / any error:
+                       nothing, exit 0. No transcript parsing; imports only
+                       stdlib + coach (~150 ms on Windows)
+  alerts.py            Alerter for `watch`/`watch-all` `--notify`,
+                       `--webhook URL` (env AGENTWATCH_WEBHOOK) and
+                       `watch-all --headless`. observe(session, agent,
+                       project, warnings, report, actions) after each
+                       scoring pass:
+                       headless -> one stdout line per new warning
+                       (print_line: sys.__stdout__, flushed); alerts -> one
+                       per (session, warning_dedup_key) at >= --notify-min
+                       (high|critical, default critical) + overall Critical
+                       (theme level_3) once per episode, <= 1 per session
+                       per 10 min, folded into a finding alert sent the same
+                       pass; cleared keys forgotten. Startup baseline:
+                       for BASELINE_S (5 s) from a session's first pass
+                       with actions, findings/Critical are recorded, not
+                       sent (history loads async, so not one pass);
+                       --notify-existing disables it; headless log not
+                       baselined. Text: `agentwatch:
+                       <Agent> · <project> — <label> ~$x` (_ALERT_LABELS =
+                       statusline _LABELS + security signals; _cost) +
+                       message; agent, project, signal and message all go
+                       through secret_scanner.one_line (non-printables ->
+                       space, collapsed, redacted, bounded).
+                       Desktop: powershell -EncodedCommand fixed toast
+                       script, text as ASCII JSON on stdin (PowerShell's own
+                       AppId); osascript run-handler argv; notify-send --.
+                       Webhook: POST {"text"} Slack-escaped (& < >), 5 s,
+                       opener without redirects (3xx = failure), http(s)
+                       only; plain http warns at startup. One delivery
+                       worker (one notifier process at a time); > 3 queued
+                       -> one "N new alerts" summary. Failure -> warn once
+                       (URL masked), beep on
+                       Windows toast failure; TUIs route warn to a toast
+                       (tui_warn). Headless = MultiAgentWatchApp.run(
+                       headless=True), the same engine
+  _entry.py            Console-script entry: `hook` and `statusline` go
+                       straight to coach.py / statusline.py without
+                       importing cli.py, the rest to cli.main. The package
+                       __init__ (and parser/__init__'s discovery
+                       re-exports) load lazily (PEP 562) so this stays cheap
+  history.py           `agentwatch history`: stdlib sqlite3 at data_dir()/
+                       history.db (%LOCALAPPDATA%\agentwatch, else
+                       $XDG_DATA_HOME or ~/.local/share + agentwatch; dir via
+                       coach._private_dir, 0700). PRAGMA user_version +
+                       _MIGRATIONS (statement lists, IF NOT EXISTS) run
+                       under BEGIN IMMEDIATE, version re-read inside. sessions keyed by log_hash (sha256
+                       of the path, never the path), findings by (log_hash,
+                       sha256 of warning_dedup_key). sync(): every adapter's
+                       history_logs(), skip unchanged (size, mtime_ns),
+                       active (< 60 s) and --days; changed logs re-scanned
+                       whole (registry "all", `check`'s health score and
+                       waste_summary), findings replaced, first_seen kept;
+                       >= 8 logs -> ProcessPoolExecutor (broken pool ->
+                       rest serial; Ctrl+C cancels queued). Health finding
+                       messages via safe_message (one_line; detail paths,
+                       the message's path slot and slash tokens cut to the
+                       last part; secret mask tail dropped; 120); security
+                       messages not stored.
+                       Deleted logs stay; prune(days)
+  report.py            `agentwatch report`: build() (JSON schema 1) over
+                       sessions whose last action is in the period, plus the
+                       previous one for the trend; unpriced sessions counted
+                       but out of spend and waste %; render() text
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
@@ -182,7 +288,10 @@ src/agentwatch/
                        encoding="utf-8", errors="ignore" (matches
                        parser/logs.py's precedent) so a stray non-UTF-8
                        byte skips that line instead of crashing `stats
-                       --all`
+                       --all`. project_dir_to_name(dir, log): basename of
+                       the transcripts' recorded cwd, else the dir-name
+                       decode; project_name(): "~" for the home dir (also
+                       agents.base.folder_name, used by history)
   themes.py             Pluggable status-label/emoji/color themes shared by
                        CLI, health scoring, and the TUI
 
@@ -268,7 +377,8 @@ src/agentwatch/
 
   detectors/
     base.py              Detector / SecurityDetector ABCs, Category,
-                       Severity, Warning dataclass
+                       Severity, Warning dataclass; findings_spend /
+                       waste_summary (`check`'s waste line, history)
     registry.py          DetectorRegistry; create_registry(mode=
                        "health"|"security"|"all") auto-collects detectors
     health/*.py          Health detectors: loops, tool_thrash, stall/stuck,
@@ -276,6 +386,8 @@ src/agentwatch/
                        constraints
     security/*.py        Security detectors: credentials, injection,
                        network, privilege, supply_chain, secret_scanner
+                       (also redact_truncate and one_line, the shared
+                       safe-display-line helper used by coach and alerts)
     security/pii.py      PII patterns + validators (email, phone, US SSN,
                        Luhn-checked card, street address; look-alikes
                        rejected), stdlib only; imported by
@@ -288,6 +400,11 @@ src/agentwatch/
     rot.py               RotScorer — EMA-smoothed "context rot" composite
                        metric + state machine
 
+  (repo root) .claude-plugin/marketplace.json -> plugin/ (the
+                       `agentwatch` Claude Code plugin):
+                       .claude-plugin/plugin.json, hooks/hooks.json
+                       (`agentwatch hook; exit 0`), skills/agentwatch-scrub
+
   ui/
     app.py               Single-agent Textual App (HealthBar,
                        SecurityStatus, EfficiencyBar widgets). Dispatches
@@ -299,7 +416,10 @@ src/agentwatch/
                        helpers, including the Tier-2 goal-alignment advisory
     multi_app.py          Multi-agent Textual App (MultiLogWatcher + team
                        health aggregation); same `--siem-log`/`--llm`/
-                       goal-alignment wiring as app.py, applied per-agent
+                       goal-alignment wiring as app.py, applied per-agent;
+                       `alerter` (alerts.py) fed from both scoring paths.
+                       `watch-all --headless` runs it on Textual's headless
+                       driver (no screen I/O; SIGINT exits cleanly)
     live_integrations.py  Shared live-TUI SIEM export + Tier-2 LLM triage
                        wiring for app.py/multi_app.py's 1s refresh loop:
                        `warning_dedup_key()` (content-based identity so a
@@ -653,3 +773,9 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   _find_own_process` so TUI tests never scan real processes.
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
+
+- `AGENTWATCH_WEBHOOK` (read only, Sprint 35 Feature 4): default for
+  `watch`/`watch-all --webhook URL`. A secret; never printed.
+- `AGENTWATCH_LOOP_BREAKER` (read only, Feature 7, board approved): `off`
+  (case-insensitive) turns off the coach hook's PreToolUse loop breaker.
+  Default on.

@@ -350,7 +350,11 @@ class OllamaAnalyzer:
         """
         # Redacted: the model's reply can echo a secret into --json output.
         stated_messages = [
-            redact_secrets(a.incoming_message) for a in buffer.actions if a.incoming_message
+            redact_secrets(a.incoming_message)
+            for a in buffer.actions
+            # A Claude Code tool_use carries its tool result there, not a user message.
+            if a.incoming_message
+            and not (isinstance(a.raw, dict) and a.raw.get("type") == "tool_use")
         ]
         if not stated_messages:
             return None

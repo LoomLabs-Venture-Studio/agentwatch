@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import psutil
 
-from .base import BaseAdapter, Watcher, source_path
+from .base import BaseAdapter, Watcher, folder_name, source_path
 from .copilot_vscode import _CODE_PROCESS_RE, COPILOT_VSCODE_ACTIVE_WINDOW_S
 
 if TYPE_CHECKING:
@@ -254,3 +254,27 @@ class ClineAdapter(BaseAdapter):
         from agentwatch.parser.cline import parse_cline
 
         yield from parse_cline(path, session_id)
+
+    def history_logs(self) -> Iterator[Path]:
+        from agentwatch.vscode_paths import default_user_dir
+
+        for _, folder, _ in _legacy_editors():
+            root = default_user_dir(folder) / "globalStorage" / LEGACY_EXTENSION_ID
+            yield from (root / "tasks").glob("*/api_conversation_history.json")
+        for log in cline_sessions_dir().glob("*/*.messages.json"):
+            if log.name == f"{log.parent.name}.messages.json":  # root session, as _sdk_agents
+                yield log
+
+    def history_meta(self, path: Path) -> tuple[str, str | None]:
+        sid = path.parent.name
+        if path.name == "api_conversation_history.json":  # legacy: state/taskHistory.json
+            history = _read_json(path.parents[2] / "state" / "taskHistory.json")
+            items = history if isinstance(history, list) else []
+            cwd = next((
+                h.get("cwdOnTaskInitialization") for h in items
+                if isinstance(h, dict) and h.get("id") == sid
+            ), None)
+        else:
+            manifest = _read_json(path.with_name(f"{sid}.json"))
+            cwd = manifest.get("cwd") if isinstance(manifest, dict) else None
+        return sid, folder_name(cwd)

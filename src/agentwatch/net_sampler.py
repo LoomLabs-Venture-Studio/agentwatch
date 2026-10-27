@@ -147,6 +147,14 @@ class NetSampler:
                 (e.ip, e.port) for e in self._spans[pid] if e.first_seen <= hi and e.last_seen >= lo
             })
 
+    def spans(self, pid: int) -> list[Endpoint] | None:
+        """Copies of *pid*'s endpoint spans (the last _RETENTION s), oldest
+        first; None if *pid* is untracked."""
+        with self._lock:
+            if pid not in self._spans:
+                return None
+            return [Endpoint(e.ip, e.port, e.first_seen, e.last_seen) for e in self._spans[pid]]
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return

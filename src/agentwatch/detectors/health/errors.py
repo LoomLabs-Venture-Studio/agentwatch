@@ -34,6 +34,7 @@ class ErrorSpiralDetector(Detector):
                 consecutive_failures += 1
             else:
                 break
+        failed = recent[len(recent) - consecutive_failures:]
 
         if consecutive_failures >= self.threshold:
             # Collect the actual errors
@@ -55,7 +56,7 @@ class ErrorSpiralDetector(Detector):
                     "consecutive_failures": consecutive_failures,
                     "recent_errors": recent_errs,
                 },
-            )
+            ).with_cost(failed, buffer)
 
         return None
 
@@ -81,16 +82,19 @@ class ErrorBlindnessDetector(Detector):
         return redact_truncate(error.strip(), 200)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        # history_len: a failed call is one Action here, two before results were merged.
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
 
         # Collect and normalize errors
         errors = []
+        failed = []
         for action in recent:
             if not action.success and action.error_message:
                 errors.append(self._normalize_error(action.error_message))
+                failed.append(action)
 
         if not errors:
             return None
@@ -113,7 +117,7 @@ class ErrorBlindnessDetector(Detector):
                     "error_pattern": most_common[:100],
                     "count": count,
                 },
-            )
+            ).with_cost([a for a, e in zip(failed, errors) if e == most_common], buffer)
 
         return None
 
@@ -142,7 +146,7 @@ class SyntaxLoopDetector(Detector):
         self._pattern = re.compile("|".join(self.SYNTAX_PATTERNS), re.IGNORECASE)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
@@ -170,6 +174,9 @@ class SyntaxLoopDetector(Detector):
                     f"Errors seen: {'; '.join(samples[:2])}"
                 ),
                 details={"count": syntax_errors, "sample_errors": samples},
+            ).with_cost(
+                [a for a in recent if a.error_message and self._pattern.search(a.error_message)],
+                buffer,
             )
 
         return None
@@ -214,6 +221,6 @@ class HighErrorRateDetector(Detector):
                     "failures": failures,
                     "total": len(recent),
                 },
-            )
+            ).with_cost([a for a in recent if not a.success], buffer)
 
         return None

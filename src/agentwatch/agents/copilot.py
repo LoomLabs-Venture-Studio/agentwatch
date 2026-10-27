@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .base import BaseAdapter, Watcher, sniff_jsonl_format, source_path
+from .base import BaseAdapter, Watcher, folder_name, sniff_jsonl_format, source_path
 
 if TYPE_CHECKING:
     from agentwatch.discovery import AgentProcess
@@ -28,6 +28,10 @@ def _session_start_cwd(path: Path) -> str | None:
     return context.get("cwd") if isinstance(context, dict) else None
 
 
+def _sessions_root() -> Path:
+    return Path(os.environ.get("COPILOT_HOME") or Path.home() / ".copilot") / "session-state"
+
+
 def resolve_copilot_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, str | None]:
     """Resolve the active Copilot CLI ``events.jsonl`` for a working directory.
 
@@ -40,7 +44,7 @@ def resolve_copilot_log(cwd: Path, pid: int | None = None) -> tuple[Path | None,
     lock: the newest session whose ``session.start`` ``context.cwd`` matches,
     then the newest session overall.
     """
-    root = Path(os.environ.get("COPILOT_HOME") or Path.home() / ".copilot") / "session-state"
+    root = _sessions_root()
     if not root.is_dir():
         return None, None
 
@@ -94,3 +98,9 @@ class CopilotAdapter(BaseAdapter):
         from agentwatch.parser.logs import _parse_jsonl
 
         return _parse_jsonl(path, session_id)
+
+    def history_logs(self) -> Iterator[Path]:
+        return _sessions_root().glob("*/events.jsonl")
+
+    def history_meta(self, path: Path) -> tuple[str, str | None]:
+        return path.parent.name, folder_name(_session_start_cwd(path))

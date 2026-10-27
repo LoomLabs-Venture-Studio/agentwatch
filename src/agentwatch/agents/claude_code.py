@@ -58,3 +58,18 @@ class ClaudeCodeAdapter(BaseAdapter):
         from agentwatch.parser.logs import _parse_jsonl
 
         return _parse_jsonl(path, session_id)
+
+    def history_logs(self) -> Iterator[Path]:
+        from agentwatch.cc_stats import find_all_project_dirs
+
+        for project_dir in find_all_project_dirs():
+            yield from project_dir.rglob("*.jsonl")  # subagents/ too: their calls are billed
+
+    def history_meta(self, path: Path) -> tuple[str, str | None]:
+        from agentwatch.cc_stats import _projects_dir, project_dir_to_name
+
+        try:
+            project_dir = _projects_dir() / path.relative_to(_projects_dir()).parts[0]
+        except (ValueError, IndexError):
+            return path.stem, None
+        return path.stem, project_dir_to_name(project_dir, log=path)

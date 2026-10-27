@@ -3,14 +3,41 @@
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
+from collections.abc import Callable
 
-from agentwatch.parser.models import ActionBuffer
+from agentwatch.parser.models import Action, ActionBuffer
 from agentwatch.parser.security_patterns import (
     INJECTION_PATTERNS as _SHARED_INJECTION_PATTERNS,
 )
 from agentwatch.parser.security_patterns import INJECTION_REGEX
 
 from ..base import Category, SecurityDetector, Severity, Warning
+
+
+class _ActionMemo:
+    """Findings of one detector per action, remembered by action identity and
+    ``result_revision`` (bounded). A check re-reads the last 10 actions on every
+    new action; without this each result's text is searched ten times. A tool
+    result merged into an action later bumps its revision, so it is searched
+    again. The action is held so its id cannot be reused while cached."""
+
+    SIZE = 64
+
+    def __init__(self) -> None:
+        self._memo: OrderedDict[int, tuple[Action, int, Warning | None]] = OrderedDict()
+
+    def get(self, action: Action, scan: Callable[[Action], Warning | None]) -> Warning | None:
+        revision = action.result_revision
+        hit = self._memo.get(id(action))
+        if hit is not None and hit[0] is action and hit[1] == revision:
+            self._memo.move_to_end(id(action))
+            return hit[2]
+        found = scan(action)
+        self._memo[id(action)] = (action, revision, found)
+        while len(self._memo) > self.SIZE:
+            self._memo.popitem(last=False)
+        return found
 
 
 class PromptInjectionDetector(SecurityDetector):
@@ -43,46 +70,51 @@ class PromptInjectionDetector(SecurityDetector):
             "|".join(self.HIGH_CONFIDENCE_PATTERNS),
             re.IGNORECASE
         )
+        self._memo = _ActionMemo()
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        recent = buffer.last(10)
+        for action in buffer.last(10):
+            warning = self._memo.get(action, self._scan)
+            if warning is not None:
+                return warning
+        return None
 
-        for action in recent:
-            if not action.incoming_message:
-                continue
+    def _scan(self, action: Action) -> Warning | None:
+        if not action.incoming_message:
+            return None
 
-            message = action.incoming_message
+        message = action.incoming_message
 
-            # Check for high-confidence patterns first
-            if self._high_confidence.search(message):
-                return Warning(
-                    category=self.category,
-                    severity=Severity.CRITICAL,
-                    signal="prompt_injection",
-                    message="High-confidence prompt injection attempt detected",
-                    details={
-                        "source": "incoming_message",
-                        "confidence": "high",
-                    },
-                )
+        # Check for high-confidence patterns first
+        if self._high_confidence.search(message):
+            return Warning(
+                category=self.category,
+                severity=Severity.CRITICAL,
+                signal="prompt_injection",
+                message="High-confidence prompt injection attempt detected",
+                details={
+                    "source": "incoming_message",
+                    "confidence": "high",
+                },
+            )
 
-            # Check for general patterns
-            matches = self._pattern.findall(message)
-            if matches:
-                # Multiple pattern matches = higher confidence
-                severity = Severity.HIGH if len(matches) > 1 else Severity.MEDIUM
+        # Check for general patterns
+        matches = self._pattern.findall(message)
+        if matches:
+            # Multiple pattern matches = higher confidence
+            severity = Severity.HIGH if len(matches) > 1 else Severity.MEDIUM
 
-                return Warning(
-                    category=self.category,
-                    severity=severity,
-                    signal="prompt_injection",
-                    message=f"Possible prompt injection attempt ({len(matches)} pattern match)",
-                    details={
-                        "source": "incoming_message",
-                        "match_count": len(matches),
-                        "confidence": "medium",
-                    },
-                )
+            return Warning(
+                category=self.category,
+                severity=severity,
+                signal="prompt_injection",
+                message=f"Possible prompt injection attempt ({len(matches)} pattern match)",
+                details={
+                    "source": "incoming_message",
+                    "match_count": len(matches),
+                    "confidence": "medium",
+                },
+            )
 
         return None
 
@@ -126,6 +158,7 @@ class HiddenInstructionDetector(SecurityDetector):
             "|".join(self.HIDDEN_PATTERNS),
             re.IGNORECASE
         )
+        self._memo = _ActionMemo()
 
     @staticmethod
     def _has_instruction_comment(text: str) -> bool:
@@ -153,24 +186,27 @@ class HiddenInstructionDetector(SecurityDetector):
             pos = close + 3
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        recent = buffer.last(10)
+        for action in buffer.last(10):
+            warning = self._memo.get(action, self._scan)
+            if warning is not None:
+                return warning
+        return None
 
-        for action in recent:
-            content = action.incoming_message or ""
+    def _scan(self, action: Action) -> Warning | None:
+        content = action.incoming_message or ""
 
-            # Also check raw data for web content
-            if action.raw.get("content"):
-                content += str(action.raw.get("content", ""))
+        # Also check raw data for web content
+        if action.raw.get("content"):
+            content += str(action.raw.get("content", ""))
 
-            if self._pattern.search(content) or self._has_instruction_comment(content):
-                return Warning(
-                    category=self.category,
-                    severity=Severity.HIGH,
-                    signal="hidden_instruction",
-                    message="Hidden or encoded content detected",
-                    details={"source": action.tool_name},
-                )
-
+        if self._pattern.search(content) or self._has_instruction_comment(content):
+            return Warning(
+                category=self.category,
+                severity=Severity.HIGH,
+                signal="hidden_instruction",
+                message="Hidden or encoded content detected",
+                details={"source": action.tool_name},
+            )
         return None
 
 
@@ -195,25 +231,30 @@ class IndirectInjectionDetector(SecurityDetector):
             "|".join(self.INSTRUCTION_PATTERNS),
             re.IGNORECASE
         )
+        self._memo = _ActionMemo()
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        recent = buffer.last(10)
+        for action in buffer.last(10):
+            warning = self._memo.get(action, self._scan)
+            if warning is not None:
+                return warning
+        return None
 
-        for action in recent:
-            # Check content from external sources (web, files, etc.)
-            if action.tool_type.value in ("read", "browser", "mcp"):
-                content = action.raw.get("content") or action.raw.get("output") or ""
+    def _scan(self, action: Action) -> Warning | None:
+        # Check content from external sources (web, files, etc.)
+        if action.tool_type.value not in ("read", "browser", "mcp"):
+            return None
+        content = action.raw.get("content") or action.raw.get("output") or ""
 
-                if isinstance(content, str) and self._pattern.search(content):
-                    return Warning(
-                        category=self.category,
-                        severity=Severity.MEDIUM,
-                        signal="indirect_injection",
-                        message=f"Instruction-like content in external source ({action.tool_name})",
-                        details={
-                            "source_type": action.tool_type.value,
-                            "tool": action.tool_name,
-                        },
-                    )
-
+        if isinstance(content, str) and self._pattern.search(content):
+            return Warning(
+                category=self.category,
+                severity=Severity.MEDIUM,
+                signal="indirect_injection",
+                message=f"Instruction-like content in external source ({action.tool_name})",
+                details={
+                    "source_type": action.tool_type.value,
+                    "tool": action.tool_name,
+                },
+            )
         return None

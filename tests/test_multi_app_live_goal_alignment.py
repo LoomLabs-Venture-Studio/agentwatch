@@ -11,21 +11,18 @@ mount-time "free tick" to rewind here the way the single-agent tests must.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from textual.widgets import ListView
-
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
-from agentwatch.ui.app import WarningsList
 from agentwatch.ui.live_integrations import LLM_ASSESSMENT_INTERVAL_SECONDS
 from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
 
 def _make_action(i: int, incoming_message: str | None = None) -> Action:
     return Action(
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
         tool_name="Read",
         tool_type=ToolType.READ,
         success=True,
@@ -62,9 +59,6 @@ async def _seed_agent(app: MultiAgentWatchApp, pilot, path: Path, pid: int) -> N
 
     buffer = ActionBuffer(max_size=2000)
     item = AgentItem(path, pid=pid, team_id=pid)
-    agent_list = app.query_one("#agent-list", ListView)
-    agent_list.append(item)
-    await pilot.pause()
 
     app.agents[path] = app._new_agent_state(
         buffer=buffer,
@@ -108,11 +102,17 @@ class TestPerAgentGoalAlignmentThrottle:
             assert call_count["n"] == 1
 
             clock["t"] += 5
+            app.agents[path]["buffer"].add(_make_action(1))
             app.refresh_ui()
             await pilot.pause()
             assert call_count["n"] == 1  # still within the throttle window
 
             clock["t"] += LLM_ASSESSMENT_INTERVAL_SECONDS
+            app.refresh_ui()
+            await pilot.pause()
+            assert call_count["n"] == 1  # no new actions: not rescored (PR 4)
+
+            app.agents[path]["buffer"].add(_make_action(2))
             app.refresh_ui()
             await pilot.pause()
             assert call_count["n"] == 2
@@ -165,9 +165,8 @@ class TestPerAgentGoalAlignmentNoStatedTask:
             await pilot.pause()
 
             assert fake.chat_call_count == 0
-            warnings_widget = app.query_one("#warnings-list", WarningsList)
-            rendered = warnings_widget._build_content()
-            assert "GOAL ALIGNMENT" not in rendered
+            rendered = str(app.query_one("#selected").render())
+            assert "Tier-2 goal" not in rendered
 
 
 class TestPerAgentGoalAlignmentNonBlocking:
@@ -177,7 +176,7 @@ class TestPerAgentGoalAlignmentNonBlocking:
 
         app = MultiAgentWatchApp(watch_paths=[], security_mode=False, llm=True)
 
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(120, 40)) as pilot:
             path = Path("agent.jsonl")
             await _seed_agent(app, pilot, path, pid=100)
             app.agents[path]["buffer"].add(_make_action(0, incoming_message="Fix the bug"))
@@ -188,7 +187,5 @@ class TestPerAgentGoalAlignmentNonBlocking:
             assert fake.chat_call_count == 1
 
             app.refresh_ui()
-            warnings_widget = app.query_one("#warnings-list", WarningsList)
-            rendered = warnings_widget._build_content()
-            assert "TIER-2 GOAL ALIGNMENT (advisory, not scored)" in rendered
-            assert "[ALIGNED]" in rendered
+            rendered = str(app.query_one("#selected").render())
+            assert "Tier-2 goal (advisory): [ALIGNED] Still working the stated task." in rendered
