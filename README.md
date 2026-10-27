@@ -986,11 +986,10 @@ Claude Code only: other agents have no PreToolUse hook and keep getting
 warnings in `watch`/`watch-all` and alerts.
 
 The plugin needs agentwatch **0.2.0 or later** on your PATH (`agentwatch hook`
-is not in 0.1.x, the current PyPI release). Until 0.2.0 is on PyPI, install
-from git:
+is not in 0.1.x). Install it from PyPI, or upgrade an older install:
 
 ```bash
-pipx install git+https://github.com/LoomLabs-Venture-Studio/agentwatch@develop-overdrive
+pipx install agentwatch-monitor    # or: pipx upgrade agentwatch-monitor
 ```
 
 Then add the plugin. `/plugin marketplace add owner/repo` reads the default

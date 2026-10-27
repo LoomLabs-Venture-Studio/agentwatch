@@ -5246,6 +5246,13 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 
   The CTO's mid-task design messages crossed with the engineer's commits, so D flipped between two designs over 4 commits before settling on the buffer-side one. The lesson: message engineers only when idle, with a target SHA.
 
+### Release (2026-10-27): 0.2.1 SHIPPED
+- Board go ("go release"), 2026-10-27. #183 (`develop` -> `main`) merged with a merge commit: main 8453e93, its tree identical to develop 1f43192.
+- Annotated tag `v0.2.1` on 8453e93. GitHub Release "agentwatch-monitor 0.2.1" published 13:50 UTC. The notes are the CHANGELOG `[0.2.1]` section.
+- publish.yml: tests on 3.11 and 3.12, the tag/version check and the PyPI upload all passed. PyPI lists 0.2.1 (wheel and sdist, 13:55 UTC).
+- Clean-venv smoke test from PyPI (`pip install agentwatch-monitor==0.2.1`): `agentwatch` and `agentguard --version` print 0.2.1, all 15 commands' `--help` exit 0, and `check --security` on the synthetic fixtures exits 2 (critical), 1 (medium) and 0 (clean).
+- Post-ship docs: #188 (CHANGELOG date moved to 2026-10-27, the README plugin install now uses PyPI, CLAUDE.md architecture and known issues, and this section).
+
 ### Known limitations (0.2.1)
 - Claude Code user text blocks are not emitted yet. First, scoring has to ignore `user_message` sentinels (#46 dropped them on purpose).
 - Two different secrets of the same type in the same channel and file count as one finding. Telling them apart needs a secret fingerprint in the dedup key.
@@ -5269,3 +5276,6 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 | 2026-10-26 | #184 | fix/check-security-exit | fix | merged 8882a27 (CTO review, QA PASS haiku, Codex r1 ship, CI green) | -- |
 | 2026-10-27 | #185 | fix/persistent-findings | fix | merged 902b1bf (CTO review, QA PASS WITH NOTES sonnet, Codex 3 rounds fixed, CI green) | -- |
 | 2026-10-27 | #186 | fix/claude-parser-state | fix | merged caa2687 (CTO review, QA PASS WITH NOTES sonnet, Codex 3 rounds fixed, CI green) | -- |
+| 2026-10-27 | #187 | docs/sprint-38-results | docs | merged 1f43192 | -- |
+| 2026-10-27 | #183 | develop | release | merged into main 8453e93 (merge commit, board go), tag v0.2.1, PyPI 0.2.1 | -- |
+| 2026-10-27 | #188 | docs/post-ship-0.2.1 | docs | post-ship docs for 0.2.1 | -- |
