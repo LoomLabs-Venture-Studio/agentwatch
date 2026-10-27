@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 38, Codex review fixes (2026-10-26), at the end of this file; before it Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
+> **Latest: Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -5279,3 +5279,55 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 | 2026-10-27 | #187 | docs/sprint-38-results | docs | merged 1f43192 | -- |
 | 2026-10-27 | #183 | develop | release | merged into main 8453e93 (merge commit, board go), tag v0.2.1, PyPI 0.2.1 | -- |
 | 2026-10-27 | #188 | docs/post-ship-0.2.1 | docs | post-ship docs for 0.2.1 | -- |
+
+### Sprint 39 -- info site redesign + agentwatch.info (2026-10-27)
+**Type:** docs / site. Branch `docs/site-redesign` from develop 210acb9.
+**Goal:** a reader who is not a developer understands what AgentWatch does, whether it is safe, and how to start, from one visit. The site reads as written by a person, not generated.
+**Board (2026-10-27):** "do option 1 but first the page looks like slop code, fix it ... a user who might not be technical understands it ... run it through your ux skills and show me the final". Option 1: keep GitHub Pages (MkDocs Material, `docs.yml` on push to main) and serve it at a Cloudflare domain. Domain: `agentwatch.info` (Cloudflare zone created 2026-10-27, no records yet).
+**Problems found (CTO, current site):**
+- Jargon on the home page: PPID chains, deterministic detectors, context rot, C2.
+- Generic AI-landing layout: a fake terminal with traffic-light dots, four identical icon cards, and giant detector and weight tables.
+- Wrong facts: `agentwatch scan` doesn't exist (the command is `security-scan`), `check --exit-code` doesn't exist, and the detector counts are inconsistent (15 + 21 vs "36"). The agent list is out of date (no OpenCode, ChatGPT desktop or Claude Desktop) and says nothing about verification status.
+- Internal docs are published as pages (`docs/adr`, `docs/research`, `docs/superpowers`).
+
+### Acceptance Criteria
+- [x] Plain language. The home page needs no developer knowledge. Each technical term is explained where it appears or moved to the reference pages.
+- [x] Accurate. Every command, flag, count, agent and verification status matches 0.2.1 (`--help`, `list-detectors`, README support table). No invented numbers or claims.
+- [x] Pages: Home, Get started (Mac / Windows / Linux), What it checks, Supported agents, Commands (including CI exit codes), FAQ (privacy, cost, AI use, effect on the agent).
+- [x] Real product visuals: a dashboard screenshot rendered from synthetic logs with a reproducible script. No real machine data in it (no process names, paths, usernames or hosts). No fake terminal chrome.
+- [x] Design: light default with a dark toggle. Calm neutral palette with one accent. Status colours always paired with words. One icon set, no emoji icons, no gradients or glow.
+- [x] Accessibility: WCAG AA contrast in both themes, visible focus, ordered headings, alt text, reduced motion respected, no horizontal scroll at 375 px.
+- [x] `mkdocs build --strict` is clean. Internal docs are excluded from the site (they stay in the repo).
+- [x] Domain: `docs/CNAME` = `agentwatch.info`, `site_url` = `https://agentwatch.info/`.
+- [x] The CTO reviews screenshots (desktop and phone, light and dark), QA runs a UX and accuracy audit, and the board sees the final before anything goes live.
+- [ ] Go-live (board go): Cloudflare DNS for `agentwatch.info` and `www` (DNS only) to GitHub Pages, the Pages custom domain set, HTTPS enforced, and develop -> main merged so `docs.yml` deploys. DNS, the Pages custom domain and HTTPS were done 2026-10-27 (see Result); the develop -> main merge is pending.
+
+### Board decisions (2026-10-27)
+1. Option 1: keep GitHub Pages and serve it at a Cloudflare domain. The domain is `agentwatch.info`. loomlabs.io is on GoDaddy DNS, so it was not used.
+2. "approved to set up on cloudflare when ready". The Cloudflare connector is read-only (no `dns.write`). The board added the GitHub org domain-verification TXT record, then imported a BIND file the CTO wrote (`~/Downloads/agentwatch.info-github-pages.txt`, all records DNS only).
+3. The site links back to loomlabs.io: the footer on every page, the Home page, a FAQ question and a footer icon. The links are plain followed links, with no nofollow or UTM tags.
+4. "go live" (2026-10-27): merge #189 into develop, then develop -> main with a merge commit, so `docs.yml` deploys.
+
+### Result (2026-10-27)
+- **#189** (opus engineer). The pages are Home, Get started, What it checks, Supported agents, Commands and FAQ.
+  - The design is calm and neutral, light by default with a dark toggle, and set in Atkinson Hyperlegible.
+  - The dashboard screenshot is a real `watch-all --security` render of 4 made-up sessions, made by `scripts/docs_screenshot.py`. It runs with a temp HOME and with discovery, detect, net and history patched to raise, and it guards against the user name, host or home path appearing in the output.
+  - Material's `privacy` plugin self-hosts the fonts, and the header source partial makes no api.github.com call. Pages make only same-origin requests.
+  - The README plugin install no longer pins `#develop-overdrive`, because the plugin is on main since 0.2.1.
+- **QA (sonnet): PASS WITH NOTES**, with 10 non-blocking items, all fixed in round 1 (e61c5a2).
+  - About 40 facts were checked against 0.2.1. One was wrong: the dashboard shows no security verdict. Several were overconfident: the privacy wording, the history contents and reverse DNS.
+  - Contrast is AA in both themes (the lowest is 4.79). Touch targets are at least 44 px at 375 px, and no page scrolls sideways at 1440, 768 or 375.
+- **Domain.** The Pages cname is `agentwatch.info`. The certificate was approved in 30 s (expires 2027-01-25, auto-renews), and HTTPS is enforced. http, www and github.io all redirect to https://agentwatch.info/.
+  - **Trap:** `docs.yml` runs `mkdocs gh-deploy --force`, which replaces gh-pages. If main has no `docs/CNAME`, a deploy deletes the custom domain. #189 adds `docs/CNAME`.
+- **Found while building the screenshot:** health detectors counted Codex `token_count` usage records as actions (false "loop: token_count"). Fixed in #190 (`fix/codex-usage-loop`). It passed CTO review and QA, and is held out of develop until the site promotion so that main gets docs only.
+
+### Follow-ups
+- `test_flag_gap_linear_on_glued_program_words` (tests/test_secret_leak_sinks.py) is wall-clock sensitive and fails on develop under heavy CPU load. Loosen or retry it.
+- Codex usage records still take ActionBuffer slots, so a Codex session keeps about half as many real actions. The security detectors still use raw windows (#190 known limits).
+- Material 9.8 is the last MkDocs-based Material (critical fixes until 2027-05-05). Plan a move to Zensical or a pinned fork before then.
+
+### PR Log
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
+| 2026-10-27 | #189 | docs/site-redesign | docs | CTO review, QA PASS WITH NOTES (sonnet), round 1 fixed, board "go live" | -- |
+| 2026-10-27 | #190 | fix/codex-usage-loop | fix | CTO review, QA PASS WITH NOTES (sonnet), follow-ups fixed (011af8d); held until after the site promotion | -- |
