@@ -748,6 +748,7 @@ class SecretLeakScanner(SecurityDetector):
             # also a database URL) is reported as the first one only.
             for pattern, secret_type in _SECRET_PATTERNS:
                 m = None
+                spans: list[tuple[int, int]] = []
                 for cand in _iter_matches(pattern, secret_type, text):
                     if _is_redacted_value(cand, secret_type) or _is_placeholder(
                         cand, secret_type, file_path
@@ -756,9 +757,10 @@ class SecretLeakScanner(SecurityDetector):
                     lo, hi = _value_span(cand, secret_type)
                     if any(lo < t_hi and t_lo < hi for t_lo, t_hi in taken):
                         continue
-                    m = cand
-                    taken.append((lo, hi))
-                    break
+                    spans.append((lo, hi))  # every occurrence is explained by this pattern
+                    if m is None:
+                        m = cand  # but one finding per pattern and text
+                taken.extend(spans)
                 if m is None:
                     continue
 

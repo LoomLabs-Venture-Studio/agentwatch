@@ -1977,6 +1977,25 @@ class MultiAgentWatchApp(App):
         self.teams = {tid: team for tid, team in {**self.teams, **scanned}.items()
                       if tid in tracked}
 
+    async def _replay_scan(self, data: dict) -> None:
+        """Check, on the UI loop and in WATCH_SLICE_S slices, what arrived
+        while security was off (everything, the first time it is on). The
+        ledger is shown as it grows; detectors never leave this thread."""
+        scan, buffer = self._session_scan(data), data["buffer"]
+        context, to_check = scan.plan_resume(buffer)
+        slice_start = time.monotonic()
+        seen = scan.version
+        for _ in scan.replay_steps(context, to_check, buffer.max_size):
+            if time.monotonic() - slice_start > WATCH_SLICE_S:
+                if scan.version != seen:  # rescore with what has merged so far
+                    data["_last_count"], seen = -1, scan.version
+                await asyncio.sleep(0)
+                slice_start = time.monotonic()
+        scan.finish_resume()
+        if scan.version != seen:
+            data["_last_count"] = -1
+        data.pop("_replay", None)
+
     def action_toggle_security(self) -> None:
         """Toggle security mode across all agents."""
         self.security_mode = not self.security_mode
@@ -1990,9 +2009,14 @@ class MultiAgentWatchApp(App):
             mode = "all" if self.security_mode else "health"
             data["registry"] = create_registry(mode=mode)
             scan = self._session_scan(data)
+            replay = data.pop("_replay", None)
+            if replay is not None:
+                replay.cancel()  # a half-done replay resumes from the old mark
+            if not self.security_mode:
+                scan.suspend(data["buffer"].stats.action_count)
             scan.rebind(data["registry"])  # the ledger is kept, hidden while off
-            if self.security_mode:  # also recover what the live buffer still holds
-                scan.replay(data["buffer"].actions, data["buffer"].max_size)
+            if self.security_mode:
+                data["_replay"] = self.run_worker(self._replay_scan(data))
             data["_last_count"] = -1
 
         # The rescoring's new/cleared findings are one summary line, not a burst.

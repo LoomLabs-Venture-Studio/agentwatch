@@ -65,6 +65,14 @@ def _ingest(app: MultiAgentWatchApp, path: Path, actions) -> None:
         app._session_scan(state).add(state["buffer"], action)
 
 
+async def _replayed(app) -> None:
+    """Wait for the security-toggle replays (not the never-ending watch loop)."""
+    for data in list(app.agents.values()):
+        worker = data.get("_replay")
+        if worker is not None:
+            await worker.wait()
+
+
 async def test_dashboard_keeps_finding_after_window_passes():
     app = MultiAgentWatchApp(watch_paths=[], security_mode=True)
     async with app.run_test():
@@ -134,8 +142,11 @@ async def test_toggling_security_on_recovers_earlier_findings():
         path = _seed(app)
         state = app.agents[path]
         state["registry"] = create_registry(mode="health")
+        state["scan"] = SessionScan(state["registry"])
         _ingest(app, path, [_bash("sudo rm -rf /tmp/x")] + [_read(i) for i in range(3)])
         app.action_toggle_security()
+        await _replayed(app)
+        app.refresh_ui()
         assert app.agents[path]["_last_report"].security_warnings
 
 
@@ -161,6 +172,8 @@ async def test_toggle_off_on_keeps_finding_that_left_the_buffer():
         app.action_toggle_security()
         assert not app.agents[path]["_last_report"].security_warnings  # hidden while off
         app.action_toggle_security()
+        await _replayed(app)
+        app.refresh_ui()
         assert app.agents[path]["_last_report"].security_warnings
 
 
@@ -288,3 +301,98 @@ def test_audit_records_every_secret_finding():
     entry = next(e for e in audit if e["detector"] == "secret_leak_scanner")
     assert len(entry["warnings"]) == 2
     assert len([w for w in warnings if w.signal == "secret_leak"]) == 2
+
+
+# -- Codex round 2 ----------------------------------------------------------
+
+
+async def test_toggle_on_replay_does_not_block_the_event_loop():
+    import asyncio
+    import time
+
+    app = MultiAgentWatchApp(watch_paths=[], security_mode=False)
+    async with app.run_test():
+        path = _seed(app)
+        state = app.agents[path]
+        state["registry"] = create_registry(mode="health")
+        state["scan"] = SessionScan(state["registry"])
+        blob = "x = compute(value)  # padding line\n" * 60  # ~2 KB of tool output
+        _ingest(app, path, [
+            Action(timestamp=_now(), tool_name="Bash", tool_type=ToolType.BASH, success=True,
+                   command=f"echo {i}", raw={"content": blob + str(i)})
+            for i in range(2000)
+        ] + [_bash("sudo rm -rf /tmp/x")])
+        gaps, done = [], False
+
+        async def ticker():
+            last = time.monotonic()
+            while not done:
+                await asyncio.sleep(0)
+                now = time.monotonic()
+                gaps.append(now - last)
+                last = now
+
+        tick = asyncio.create_task(ticker())
+        await asyncio.sleep(0)
+        app.action_toggle_security()
+        await _replayed(app)
+        done = True
+        await tick
+        assert max(gaps) < 0.25, f"event loop blocked for {max(gaps):.2f}s"
+        app.refresh_ui()
+        assert app.agents[path]["_last_report"].security_warnings
+
+
+async def test_toggle_replay_does_not_recheck_actions_checked_before_the_toggle(monkeypatch):
+    from agentwatch.detectors.security import network
+
+    monkeypatch.setattr(network, "_lookup", lambda host, resolve, spawn: frozenset())
+
+    def fetch(host=None, endpoint=None):
+        return Action(timestamp=_now(), tool_name="WebFetch", tool_type=ToolType.BASH,
+                      success=True, network_host=host, observed_endpoints=endpoint)
+
+    app = MultiAgentWatchApp(watch_paths=[], security_mode=True)
+    async with app.run_test():
+        path = _seed(app)
+        _ingest(app, path, [fetch("198.51.100.7")] + [_read(i) for i in range(9)]
+                + [fetch(endpoint=[("198.51.100.7", 443)])]
+                + [_read(100 + i) for i in range(1991)])
+        app.action_toggle_security()
+        app.action_toggle_security()
+        await _replayed(app)
+        app.refresh_ui()
+        report = app.agents[path]["_last_report"]
+        assert not [w for w in report.warnings if w.signal == "undeclared_egress"]
+
+
+def test_resume_checks_only_what_arrived_while_off():
+    scan = SessionScan(create_registry(mode="all"))
+    buffer = ActionBuffer(max_size=50)
+    for i in range(10):
+        scan.add(buffer, _read(i))
+    scan.suspend(buffer.stats.action_count)
+    scan.rebind(create_registry(mode="health"))
+    for i in range(3):
+        scan.add(buffer, _read(20 + i))
+    scan.rebind(create_registry(mode="all"))
+    context, to_check = scan.plan_resume(buffer)
+    assert (len(context), len(to_check)) == (10, 3)
+
+
+def test_repeated_specific_secret_in_one_action_is_not_also_a_generic_one():
+    url = "postgres://app_user:Zq8vLm3Rt9Wx@ep-cool-sky-123456.us-east-2.aws.neon.tech/db"
+    other = "postgres://svc_user:Hy7nBd4Kp2Qs@db.internal-corp.example.net/orders"
+    scan = SessionScan(create_registry(mode="all"))
+    buffer = ActionBuffer()
+    scan.add(buffer, _bash(f"psql {url} && psql {url}"))
+    types = sorted(w.details["secret_type"] for w in scan.findings.values()
+                   if w.signal == "secret_leak")
+    assert types == ["neondb_connection_string"]
+
+    scan = SessionScan(create_registry(mode="all"))
+    buffer = ActionBuffer()
+    scan.add(buffer, _bash(f"psql {url} && psql {other}"))
+    types = sorted(w.details["secret_type"] for w in scan.findings.values()
+                   if w.signal == "secret_leak")
+    assert types == ["database_connection_string", "neondb_connection_string"]

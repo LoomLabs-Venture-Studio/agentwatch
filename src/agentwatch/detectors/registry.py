@@ -9,7 +9,7 @@ from .health import get_all_health_detectors
 from .security import get_all_security_detectors
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
 
     from agentwatch.parser.models import Action, ActionBuffer
 
@@ -252,16 +252,21 @@ class SessionScan:
     `rebind()` swaps the registry (the dashboard's security toggle) and
     keeps the ledger. While the new registry has no security detectors the
     ledger is hidden, and actions that arrive meanwhile are not scanned: on
-    toggling back on, `replay()` recovers them only from the live buffer.
+    toggling back on (`suspend`, `plan_resume`, `replay_steps`) they are
+    recovered only from the live buffer, with the older actions as context.
     """
 
     def __init__(self, registry: DetectorRegistry) -> None:
         self.findings: dict[str, Warning] = {}
+        self._suspended_at: int | None = None
+        self.version = 0  # counts changes to the ledger
         self.rebind(registry)
 
     def rebind(self, registry: DetectorRegistry) -> None:
         self.registry = registry
         self._has_security = any(d.is_security_detector for d in registry.detectors)
+        if not self._has_security and self._suspended_at is None:
+            self._suspended_at = 0  # security never ran: all of it is still to check
 
     @property
     def pending(self) -> bool:
@@ -277,21 +282,63 @@ class SessionScan:
             kept = self.findings.get(key)
             if kept is None or w.severity.score_impact > kept.severity.score_impact:
                 self.findings[key] = w
+                self.version += 1
 
     def add(self, buffer: "ActionBuffer", action: "Action") -> None:
         buffer.add(action)
         if self._has_security:
             self._keep(self.registry.check_security(buffer))
 
-    def replay(self, actions: "Iterable[Action]", max_size: int = 500) -> None:
-        """Merge into the ledger the findings *actions* would have raised,
-        using a scratch buffer of *max_size* (the live buffer's capacity, so
-        a detector sees the same window as it would live)."""
+    def suspend(self, action_count: int) -> None:
+        """Security is being switched off with *action_count* actions seen.
+        Everything before that point has been checked. Call before `rebind`.
+        A suspend that is still waiting for its resume keeps the older mark."""
+        if self._has_security and self._suspended_at is None:
+            self._suspended_at = action_count
+
+    def plan_resume(self, buffer: "ActionBuffer") -> tuple[list["Action"], list["Action"]]:
+        """(context, to_check) after security is switched back on.
+
+        Actions seen before `suspend` were already checked: they only give
+        the detectors their context (a declared host, say) in the scratch
+        buffer, with no check. Only the actions that arrived while security
+        was off are checked. The first time security is ever on there is no
+        mark, so everything the buffer holds is checked. Context older than
+        the buffer cannot be recovered.
+        """
+        actions = list(buffer.actions)
+        if self._suspended_at is None:
+            return [], actions
+        newer = min(max(buffer.stats.action_count - self._suspended_at, 0), len(actions))
+        return actions[: len(actions) - newer], actions[len(actions) - newer :]
+
+    def finish_resume(self) -> None:
+        self._suspended_at = None
+
+    def replay_steps(
+        self,
+        context: "Iterable[Action]",
+        to_check: "Iterable[Action]",
+        max_size: int = 500,
+    ) -> "Iterator[None]":
+        """Merge into the ledger the findings *to_check* would have raised,
+        in a scratch buffer of *max_size* (the live buffer's capacity, so a
+        detector sees the same window as it would live) that first takes
+        *context* unchecked. Yields after each checked action so the caller
+        can hand control back; the detectors stay on the caller's thread."""
         from agentwatch.parser.models import ActionBuffer
 
         scratch = ActionBuffer(max_size=max_size)
-        for action in actions:
+        for action in context:
+            scratch.add(action)
+        for action in to_check:
             self.add(scratch, action)
+            yield
+
+    def replay(self, actions: "Iterable[Action]", max_size: int = 500) -> None:
+        """`replay_steps` to the end, with no context."""
+        for _ in self.replay_steps((), actions, max_size):
+            pass
 
     def warnings(self, buffer: "ActionBuffer") -> list[Warning]:
         if self._has_security:
