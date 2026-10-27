@@ -305,6 +305,7 @@ class ActionBuffer:
         # Calls added before their result: the parser fills in the outcome on
         # the same Action later, and stats catch up in _sync_results.
         self._awaiting: deque[Action] = deque(maxlen=max_size)
+        self._revision = 0
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -314,6 +315,7 @@ class ActionBuffer:
         # Count finished outcomes first: _awaiting is bounded, and a finished
         # call must not be evicted from it before it is counted.
         self._sync_results()
+        self._revision += 1
         self.actions.append(action)
 
         # Update stats
@@ -416,6 +418,7 @@ class ActionBuffer:
         if not self._awaiting:
             return
         pending: deque[Action] = deque(maxlen=self.max_size)
+        done = 0
         for action in self._awaiting:
             if not action.success and action.error_message:
                 self._stats.error_count += 1
@@ -423,9 +426,19 @@ class ActionBuffer:
             elif action.incoming_message is None:
                 pending.append(action)
                 continue
+            done += 1
             if action.incoming_message and is_injection_like(action.incoming_message):
                 self._stats.injection_attempts += 1
         self._awaiting = pending
+        self._revision += bool(done)
+
+    @property
+    def revision(self) -> int:
+        """Changes whenever the buffer's content does: on every ``add`` and when
+        a tool result lands on an action already added. Unlike ``action_count``
+        it moves for a result-only update, so a cache keyed on it rescored."""
+        self._sync_results()
+        return self._revision
 
     @property
     def history_len(self) -> int:
