@@ -8,6 +8,7 @@ Both run through parse_file() and the live LogWatcher path. Synthetic data only.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ from agentwatch.parser.watcher import LogWatcher
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _via_parse_file(fixture: str) -> tuple[list, ActionBuffer, list]:
+def _via_parse_file(fixture: str | Path) -> tuple[list, ActionBuffer, list]:
     actions = list(parse_file(FIXTURES / fixture))
     buffer = ActionBuffer()
     warnings = create_registry("health").scan(iter(actions), buffer)
@@ -37,7 +38,7 @@ def _via_watcher(fixture: str, tmp_path: Path) -> tuple[list, ActionBuffer, list
     watcher = LogWatcher(log)
     buffer = ActionBuffer()
     seen = []
-    for line in (FIXTURES / fixture).read_text(encoding="utf-8").splitlines(keepends=True):
+    for line in Path(FIXTURES / fixture).read_text(encoding="utf-8").splitlines(keepends=True):
         with open(log, "a", encoding="utf-8") as f:
             f.write(line)
         for action in watcher._read_new_lines():
@@ -49,7 +50,7 @@ def _via_watcher(fixture: str, tmp_path: Path) -> tuple[list, ActionBuffer, list
 PATHS = pytest.mark.parametrize("run", ["parse_file", "watcher"])
 
 
-def _run(run: str, fixture: str, tmp_path: Path):
+def _run(run: str, fixture: str | Path, tmp_path: Path):
     if run == "parse_file":
         return _via_parse_file(fixture)
     return _via_watcher(fixture, tmp_path)
@@ -179,3 +180,28 @@ def test_history_gate_unchanged_for_successful_calls():
     a.success, a.error_message, a.error_merged = True, None, False
     buffer.add(a)
     assert LoopDetector().check(buffer) is not None
+
+
+@PATHS
+def test_streamed_output_tokens_count_at_their_maximum(run, tmp_path):
+    """One message over 3 lines whose output_tokens grow 10, 40, 50: output is
+    counted 50 (cc_stats takes the max per message.id), input once."""
+    fixture = tmp_path / "streamed.jsonl"
+    rows = []
+    for i, out in enumerate((10, 40, 50)):
+        rows.append({
+            "type": "assistant", "sessionId": "s", "timestamp": f"2026-01-01T00:00:0{i}Z",
+            "message": {"role": "assistant", "id": "msg_1", "model": "claude-sonnet-4-5",
+                        "usage": {"input_tokens": 100, "output_tokens": out},
+                        "content": [{"type": "tool_use", "id": f"t{i}", "name": "Bash",
+                                     "input": {"command": f"echo {i}"}}]},
+        })
+    fixture.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    actions, buffer, _ = _run(run, fixture, tmp_path)
+
+    assert [a.tokens_out for a in actions] == [10, 30, 10]
+    assert [a.tokens_in for a in actions] == [100, 0, 0]
+    stats = buffer.stats
+    assert (stats.total_input_tokens, stats.total_output_tokens) == (100, 50)
+    assert stats.billed_tokens == 150
+    assert stats.estimated_cost == pytest.approx((100 * 3 + 50 * 15) / 1_000_000)

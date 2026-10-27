@@ -96,15 +96,16 @@ class ClaudeCodeParser:
       result arrives, that same Action is updated in place (``success``,
       ``error_message``, ``incoming_message``) and no separate Action is made.
     * Claude Code writes one line per content block of an API message, each
-      repeating the message's ``usage``. The first Action of a ``message.id``
-      carries the billing counters; later ones carry 0.
+      repeating the message's ``usage``. Each counter is billed once per
+      ``message.id`` at its largest value: the first line's first Action
+      carries it, a later line's first Action only any increase.
 
     Use one instance per file: ``parse_file`` and ``LogWatcher`` each make one.
     """
 
     def __init__(self) -> None:
         self._calls: OrderedDict[str, Action] = OrderedDict()  # tool_use id -> Action
-        self._billed: OrderedDict[str, None] = OrderedDict()  # message ids already billed
+        self._billed: OrderedDict[str, dict[str, float]] = OrderedDict()  # max usage per message id
 
     def parse_entry(self, entry: dict) -> list[Action]:
         result = _parse_claude_code(entry, self)
@@ -118,16 +119,20 @@ class ClaudeCodeParser:
             if len(self._calls) > _MAX_PENDING_CALLS:
                 self._calls.popitem(last=False)
 
-    def _claim_billing(self, message_id: str | None) -> bool:
-        """True the first time *message_id* is seen (its lines carry the usage)."""
+    def _unbilled(self, message_id: str | None, usage: dict[str, float]) -> dict[str, float]:
+        """The part of *usage* not yet counted for *message_id*: per counter the
+        increase over the largest value seen on its earlier lines (streamed
+        output tokens grow), as cc_stats takes the max across chunks."""
         if message_id is None:
-            return True
-        if message_id in self._billed:
-            return False
-        self._billed[message_id] = None
+            return usage
+        seen = self._billed.setdefault(message_id, dict.fromkeys(usage, 0))
+        self._billed.move_to_end(message_id)
+        delta = {k: max(v - seen[k], 0) for k, v in usage.items()}
+        for k, v in usage.items():
+            seen[k] = max(seen[k], v)
         if len(self._billed) > _MAX_SEEN_MESSAGES:
             self._billed.popitem(last=False)
-        return True
+        return delta
 
 
 def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
@@ -202,18 +207,16 @@ def _parse_claude_code(
             "model": msg.get("model") if isinstance(msg.get("model"), str) else None,
             "message_id": msg.get("id") if isinstance(msg.get("id"), str) else None,
         } if entry_type == "assistant" else {}
-        # Billing counters ride on the first Action of an API message only.
-        billing = {
+        # Billing counters ride on the first Action of this entry, and only the
+        # part not already counted for its message.
+        billing = state._unbilled(call.get("message_id"), {
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
             "cost_usd": cost_usd,
             "cache_creation_tokens": cache_creation_tokens,
             "cache_read_tokens": cache_read_tokens,
             "cache_creation_1h_tokens": cache_1h,
-        }
-        if entry_type == "assistant" and not state._claim_billing(call["message_id"]):
-            billing = dict.fromkeys(billing, 0)
-            billing["cost_usd"] = 0.0
+        }) if entry_type == "assistant" else {}
 
         session_id = entry.get("sessionId")
         context_window = claude_context_window(msg.get("model"))
