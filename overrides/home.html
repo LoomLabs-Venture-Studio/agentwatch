@@ -1,10 +1,11 @@
+{#- Home page: the page's own content only (no auto title, no page actions),
+    in a wider container styled by .aw-home in extra.css. -#}
 {% extends "main.html" %}
 
-{% block tabs %}
-  {% include "partials/hero.html" %}
-  {{ super() }}
-{% endblock %}
-
-{% block content %}
-  {{ super() }}
+{% block container %}
+  <div class="md-content aw-home" data-md-component="content">
+    <article class="md-content__inner md-typeset">
+      {{ page.content }}
+    </article>
+  </div>
 {% endblock %}
