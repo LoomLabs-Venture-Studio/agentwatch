@@ -294,6 +294,7 @@ def _parse_claude_code(
                             text if is_error else text[:_RESULT_TEXT_LIMIT]
                         )
                     call_action.result_revision += 1
+                    call_action.completed_at = timestamp
                     if is_error:
                         call_action.success = False
                         call_action.error_message = error_msg

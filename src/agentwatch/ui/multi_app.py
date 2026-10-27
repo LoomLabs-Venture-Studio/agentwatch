@@ -846,9 +846,8 @@ class MultiAgentWatchApp(App):
         self._export_and_assess(data, warnings)
         eff = calculate_efficiency(warnings, buffer)
         rot_scorer = data.get("rot_scorer")
-        actions_seen = buffer.stats.action_count
-        if rot_scorer and actions_seen != data.get("_rot_count"):
-            data["_rot"], data["_rot_count"] = rot_scorer.update(buffer), actions_seen
+        if rot_scorer and count != data.get("_rot_count"):
+            data["_rot"], data["_rot_count"] = rot_scorer.update(buffer), count
         rot = data.get("_rot")
         report = calculate_health(
             warnings,

@@ -87,6 +87,7 @@ class Action:
     # Counts the tool results merged into this Action after it was emitted, so
     # a scan that cached its findings can tell the Action has changed.
     result_revision: int = 0
+    completed_at: datetime | None = None  # when the merged tool result was logged
 
     # Security-relevant fields
     incoming_message: str | None = None  # For prompt injection detection
@@ -372,22 +373,8 @@ class ActionBuffer:
         if action_context > 0:
             self._stats.last_context_tokens = action_context
 
-        # Extend the covered span at either end. Gaps are capped so a session
-        # resumed hours or days later doesn't count the idle time (#38).
-        ts = action.timestamp
-        cap = IDLE_GAP_CAP.total_seconds()
-        if ts is None:
-            pass  # untimed: still counted and scanned, but adds no duration (#44)
-        elif self._stats.start_time is None:
-            self._stats.start_time = self._stats.last_action_time = ts
-        elif ts > self._stats.last_action_time:
-            gap = (ts - self._stats.last_action_time).total_seconds()
-            self._stats.active_seconds += min(gap, cap)
-            self._stats.last_action_time = ts
-        elif ts < self._stats.start_time:
-            gap = (self._stats.start_time - ts).total_seconds()
-            self._stats.active_seconds += min(gap, cap)
-            self._stats.start_time = ts
+        self._extend_span(action.timestamp)
+        self._extend_span(action.completed_at)
 
         if action.file_path:
             self._file_access_counts[action.file_path] = (
@@ -398,7 +385,7 @@ class ActionBuffer:
         if not action.success and action.error_message:
             self._stats.error_count += 1
             self._error_messages.append(action.error_message)
-        elif _is_tool_use(action) and action.incoming_message is None:
+        elif _is_tool_use(action) and not action.result_revision:
             self._awaiting.append(action)
 
         # Raw per-action security-stat counters -- see the design-decision
@@ -416,6 +403,23 @@ class ActionBuffer:
         if action.incoming_message and is_injection_like(action.incoming_message):
             self._stats.injection_attempts += 1
 
+    def _extend_span(self, ts: datetime | None) -> None:
+        """Extend the covered span at either end. Gaps are capped so a session
+        resumed hours or days later doesn't count the idle time (#38)."""
+        cap = IDLE_GAP_CAP.total_seconds()
+        if ts is None:
+            pass  # untimed: still counted and scanned, but adds no duration (#44)
+        elif self._stats.start_time is None:
+            self._stats.start_time = self._stats.last_action_time = ts
+        elif ts > self._stats.last_action_time:
+            gap = (ts - self._stats.last_action_time).total_seconds()
+            self._stats.active_seconds += min(gap, cap)
+            self._stats.last_action_time = ts
+        elif ts < self._stats.start_time:
+            gap = (self._stats.start_time - ts).total_seconds()
+            self._stats.active_seconds += min(gap, cap)
+            self._stats.start_time = ts
+
     def _sync_results(self) -> None:
         """Count the outcomes the parser recorded on actions already added
         (a Claude Code tool_result arriving on a later line)."""
@@ -424,14 +428,15 @@ class ActionBuffer:
         pending: deque[Action] = deque(maxlen=self.max_size)
         done = 0
         for action in self._awaiting:
+            if not action.result_revision:
+                pending.append(action)
+                continue
             if not action.success and action.error_message:
                 self._stats.error_count += 1
                 self._error_messages.append(action.error_message)
-            elif action.incoming_message is None:
-                pending.append(action)
-                continue
             done += 1
             self._changed.append(action)
+            self._extend_span(action.completed_at)
             if action.incoming_message and is_injection_like(action.incoming_message):
                 self._stats.injection_attempts += 1
         self._awaiting = pending
