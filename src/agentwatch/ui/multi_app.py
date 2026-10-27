@@ -426,6 +426,7 @@ class MultiAgentWatchApp(App):
         self._held_blocks = 0  # ... of those, seen in the startup window
         self._coach_next = 0.0  # monotonic time of the next coach state pass
         self._muted = False  # `s` rescoring: no per-finding feed lines
+        self._replay = None  # the security-toggle replay worker, while it runs
         # (narrow, Events height or 0, table columns): _layout, set on resize
         self._layout_now: tuple = ()
         self._widths: dict[str, int] = {}  # shown column -> width
@@ -1977,24 +1978,27 @@ class MultiAgentWatchApp(App):
         self.teams = {tid: team for tid, team in {**self.teams, **scanned}.items()
                       if tid in tracked}
 
-    async def _replay_scan(self, data: dict) -> None:
-        """Check, on the UI loop and in WATCH_SLICE_S slices, what arrived
-        while security was off (everything, the first time it is on). The
-        ledger is shown as it grows; detectors never leave this thread."""
-        scan, buffer = self._session_scan(data), data["buffer"]
-        context, to_check = scan.plan_resume(buffer)
+    async def _replay_scans(self, sessions: list[dict]) -> None:
+        """Check, on the UI loop and in WATCH_SLICE_S slices shared by all
+        *sessions* (one worker, so N sessions are not N slices per loop
+        turn), what arrived while security was off (everything, the first
+        time it is on). The ledger is shown as it grows; detectors never
+        leave this thread."""
         slice_start = time.monotonic()
-        seen = scan.version
-        for _ in scan.replay_steps(context, to_check, buffer.max_size):
-            if time.monotonic() - slice_start > WATCH_SLICE_S:
-                if scan.version != seen:  # rescore with what has merged so far
-                    data["_last_count"], seen = -1, scan.version
-                await asyncio.sleep(0)
-                slice_start = time.monotonic()
-        scan.finish_resume()
-        if scan.version != seen:
-            data["_last_count"] = -1
-        data.pop("_replay", None)
+        for data in sessions:
+            scan, buffer = self._session_scan(data), data["buffer"]
+            context, to_check = scan.plan_resume(buffer)
+            seen = scan.version
+            for _ in scan.replay_steps(context, to_check, buffer.max_size):
+                if time.monotonic() - slice_start > WATCH_SLICE_S:
+                    if scan.version != seen:  # rescore with what has merged so far
+                        data["_last_count"], seen = -1, scan.version
+                    await asyncio.sleep(0)
+                    slice_start = time.monotonic()
+            scan.finish_resume()
+            if scan.version != seen:
+                data["_last_count"] = -1
+        self._replay = None
 
     def action_toggle_security(self) -> None:
         """Toggle security mode across all agents."""
@@ -2003,21 +2007,22 @@ class MultiAgentWatchApp(App):
         if self.security_mode:
             self.title += " [SECURITY]"
 
+        if self._replay is not None:
+            self._replay.cancel()  # a half-done replay resumes from the old mark
+            self._replay = None
         # New registries, and drop every cached report so each session is
         # rescored on this refresh (RotScorer is not re-fed: no new actions).
         for data in self.agents.values():
             mode = "all" if self.security_mode else "health"
             data["registry"] = create_registry(mode=mode)
             scan = self._session_scan(data)
-            replay = data.pop("_replay", None)
-            if replay is not None:
-                replay.cancel()  # a half-done replay resumes from the old mark
             if not self.security_mode:
                 scan.suspend(data["buffer"].stats.action_count)
             scan.rebind(data["registry"])  # the ledger is kept, hidden while off
-            if self.security_mode:
-                data["_replay"] = self.run_worker(self._replay_scan(data))
             data["_last_count"] = -1
+
+        if self.security_mode and self.agents:
+            self._replay = self.run_worker(self._replay_scans(list(self.agents.values())))
 
         # The rescoring's new/cleared findings are one summary line, not a burst.
         self._muted = True

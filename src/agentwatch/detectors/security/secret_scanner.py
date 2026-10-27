@@ -680,6 +680,10 @@ def _redact_window(window: str) -> str:
 # SecretLeakScanner
 # ---------------------------------------------------------------------------
 
+# Whole key blocks first: they claim the header the header-only patterns match.
+_BLOCKS_FIRST = sorted(_SECRET_PATTERNS, key=lambda p: p[1] != "private_key_block")
+
+
 class SecretLeakScanner(SecurityDetector):
     """Scans all action channels for leaked secrets/credentials in real time."""
 
@@ -746,7 +750,7 @@ class SecretLeakScanner(SecurityDetector):
             # _SECRET_PATTERNS is ordered specific-first ("must be before
             # generic"), so a value matched by two patterns (a Neon URL is
             # also a database URL) is reported as the first one only.
-            for pattern, secret_type in _SECRET_PATTERNS:
+            for pattern, secret_type in _BLOCKS_FIRST:
                 m = None
                 spans: list[tuple[int, int]] = []
                 for cand in _iter_matches(pattern, secret_type, text):
@@ -754,7 +758,12 @@ class SecretLeakScanner(SecurityDetector):
                         cand, secret_type, file_path
                     ):
                         continue
-                    lo, hi = _value_span(cand, secret_type)
+                    # A key block claims header through footer, so the
+                    # header-only pattern inside it is the same key.
+                    lo, hi = (
+                        cand.span() if secret_type == "private_key_block"
+                        else _value_span(cand, secret_type)
+                    )
                     if any(lo < t_hi and t_lo < hi for t_lo, t_hi in taken):
                         continue
                     spans.append((lo, hi))  # every occurrence is explained by this pattern

@@ -66,11 +66,9 @@ def _ingest(app: MultiAgentWatchApp, path: Path, actions) -> None:
 
 
 async def _replayed(app) -> None:
-    """Wait for the security-toggle replays (not the never-ending watch loop)."""
-    for data in list(app.agents.values()):
-        worker = data.get("_replay")
-        if worker is not None:
-            await worker.wait()
+    """Wait for the security-toggle replay (not the never-ending watch loop)."""
+    if app._replay is not None:
+        await app._replay.wait()
 
 
 async def test_dashboard_keeps_finding_after_window_passes():
@@ -396,3 +394,60 @@ def test_repeated_specific_secret_in_one_action_is_not_also_a_generic_one():
     types = sorted(w.details["secret_type"] for w in scan.findings.values()
                    if w.signal == "secret_leak")
     assert types == ["database_connection_string", "neondb_connection_string"]
+
+
+def test_complete_private_key_is_one_finding():
+    header = "-----BEGIN RSA PRIVATE KEY-----"
+    pem = (header + "\n" + "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun\n" * 6
+           + "-----END RSA PRIVATE KEY-----")
+
+    def findings(content, path):
+        action = Action(timestamp=_now(), tool_name="Read", tool_type=ToolType.READ,
+                        success=True, file_path=path, raw={"content": content})
+        scan = SessionScan(create_registry(mode="all"))
+        buffer = ActionBuffer()
+        scan.add(buffer, action)
+        types = sorted(w.details["secret_type"] for w in scan.findings.values()
+                       if w.signal == "secret_leak")
+        return types, calculate_security_score(scan.warnings(buffer))
+
+    assert findings(pem, "/work/deploy.pem") == (["private_key_block"], 55)
+    assert findings(header, "/work/other.pem")[0] == ["private_key"]
+    assert findings(pem + "\n" + header, "/work/two.pem")[0] == [
+        "private_key", "private_key_block"]
+
+
+async def test_toggle_replay_of_many_sessions_does_not_stall_the_loop():
+    import asyncio
+    import time
+
+    app = MultiAgentWatchApp(watch_paths=[], security_mode=False)
+    async with app.run_test(size=(120, 40)):
+        blob = "x = compute(value)  # padding line\n" * 60
+        for k in range(23):
+            path = _seed(app, f"s{k}")
+            state = app.agents[path]
+            state["registry"] = create_registry(mode="health")
+            state["scan"] = SessionScan(state["registry"])
+            _ingest(app, path, [
+                Action(timestamp=_now(), tool_name="Bash", tool_type=ToolType.BASH,
+                       success=True, command=f"echo {i}", raw={"content": blob + str(i)})
+                for i in range(100)
+            ])
+        gaps, done = [], False
+
+        async def ticker():
+            last = time.monotonic()
+            while not done:
+                await asyncio.sleep(0)
+                now = time.monotonic()
+                gaps.append(now - last)
+                last = now
+
+        tick = asyncio.create_task(ticker())
+        await asyncio.sleep(0)
+        app.action_toggle_security()
+        await _replayed(app)
+        done = True
+        await tick
+        assert max(gaps) < 0.45, f"event loop blocked for {max(gaps):.2f}s"
