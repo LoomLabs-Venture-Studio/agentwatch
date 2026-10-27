@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 38, Codex review fixes (2026-10-26), at the end of this file; before it Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
+> **Latest: Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -5279,3 +5279,29 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 | 2026-10-27 | #187 | docs/sprint-38-results | docs | merged 1f43192 | -- |
 | 2026-10-27 | #183 | develop | release | merged into main 8453e93 (merge commit, board go), tag v0.2.1, PyPI 0.2.1 | -- |
 | 2026-10-27 | #188 | docs/post-ship-0.2.1 | docs | post-ship docs for 0.2.1 | -- |
+
+### Sprint 39 -- info site redesign + agentwatch.info (2026-10-27)
+**Type:** docs / site. Branch `docs/site-redesign` from develop 210acb9.
+**Goal:** a reader who is not a developer understands what AgentWatch does, whether it is safe, and how to start, from one visit. The site reads as written by a person, not generated.
+**Board (2026-10-27):** "do option 1 but first the page looks like slop code, fix it ... a user who might not be technical understands it ... run it through your ux skills and show me the final". Option 1: keep GitHub Pages (MkDocs Material, `docs.yml` on push to main) and serve it at a Cloudflare domain. Domain: `agentwatch.info` (Cloudflare zone created 2026-10-27, no records yet).
+**Problems found (CTO, current site):**
+- Jargon on the home page: PPID chains, deterministic detectors, context rot, C2.
+- Generic AI-landing layout: a fake terminal with traffic-light dots, four identical icon cards, and giant detector and weight tables.
+- Wrong facts: `agentwatch scan` doesn't exist (the command is `security-scan`), `check --exit-code` doesn't exist, and the detector counts are inconsistent (15 + 21 vs "36"). The agent list is out of date (no OpenCode, ChatGPT desktop or Claude Desktop) and says nothing about verification status.
+- Internal docs are published as pages (`docs/adr`, `docs/research`, `docs/superpowers`).
+
+### Acceptance Criteria
+- [ ] Plain language. The home page needs no developer knowledge. Each technical term is explained where it appears or moved to the reference pages.
+- [ ] Accurate. Every command, flag, count, agent and verification status matches 0.2.1 (`--help`, `list-detectors`, README support table). No invented numbers or claims.
+- [ ] Pages: Home, Get started (Mac / Windows / Linux), What it checks, Supported agents, Commands (including CI exit codes), FAQ (privacy, cost, AI use, effect on the agent).
+- [ ] Real product visuals: a dashboard screenshot rendered from synthetic logs with a reproducible script. No real machine data in it (no process names, paths, usernames or hosts). No fake terminal chrome.
+- [ ] Design: light default with a dark toggle. Calm neutral palette with one accent. Status colours always paired with words. One icon set, no emoji icons, no gradients or glow.
+- [ ] Accessibility: WCAG AA contrast in both themes, visible focus, ordered headings, alt text, reduced motion respected, no horizontal scroll at 375 px.
+- [ ] `mkdocs build --strict` is clean. Internal docs are excluded from the site (they stay in the repo).
+- [ ] Domain: `docs/CNAME` = `agentwatch.info`, `site_url` = `https://agentwatch.info/`.
+- [ ] The CTO reviews screenshots (desktop and phone, light and dark), QA runs a UX and accuracy audit, and the board sees the final before anything goes live.
+- [ ] Go-live (board go): Cloudflare DNS for `agentwatch.info` and `www` (DNS only) to GitHub Pages, the Pages custom domain set, HTTPS enforced, and develop -> main merged so `docs.yml` deploys.
+
+### PR Log
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
