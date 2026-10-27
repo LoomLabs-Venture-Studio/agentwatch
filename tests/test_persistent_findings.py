@@ -147,3 +147,144 @@ def test_two_secrets_in_one_window_are_both_kept():
     scan.add(buffer, _bash("echo sk-ant-api03-" + "SyntheticKeyForTestingOnly0123456789abcdef"))
     types = {w.details["secret_type"] for w in scan.findings.values() if w.signal == "secret_leak"}
     assert len(types) == 2
+
+
+# -- Codex round 1 -----------------------------------------------------------
+
+
+async def test_toggle_off_on_keeps_finding_that_left_the_buffer():
+    app = MultiAgentWatchApp(watch_paths=[], security_mode=True)
+    async with app.run_test():
+        path = _seed(app)
+        _ingest(app, path, [_bash("sudo rm -rf /tmp/x")] + [_read(i) for i in range(2100)])
+        assert len(app.agents[path]["buffer"].actions) == 2000  # the command is gone
+        app.action_toggle_security()
+        assert not app.agents[path]["_last_report"].security_warnings  # hidden while off
+        app.action_toggle_security()
+        assert app.agents[path]["_last_report"].security_warnings
+
+
+async def test_watch_loop_does_not_block_the_event_loop_during_a_burst():
+    import asyncio
+    import time
+
+    class Burst:
+        def __init__(self, path, actions):
+            self.path, self.actions = path, actions
+
+        async def watch(self):  # never suspends, like a history drain
+            for a in self.actions:
+                yield "action", (a, self.path)
+
+        def get_process_meta(self, path):
+            return None
+
+    app = MultiAgentWatchApp(watch_paths=[], security_mode=True)
+    async with app.run_test():
+        path = _seed(app)
+        blob = "x = compute(value)  # padding line\n" * 60  # ~2 KB of tool output
+        actions = [
+            Action(timestamp=_now(), tool_name="Bash", tool_type=ToolType.BASH, success=True,
+                   command=f"echo {i}", raw={"content": blob + str(i)})
+            for i in range(1000)
+        ]
+        app.watcher = Burst(path, actions)
+        gaps, done = [], False
+
+        async def ticker():
+            last = time.monotonic()
+            while not done:
+                await asyncio.sleep(0)
+                now = time.monotonic()
+                gaps.append(now - last)
+                last = now
+
+        tick = asyncio.create_task(ticker())
+        await app._watch_loop()
+        done = True
+        await tick
+        assert app.agents[path]["buffer"].stats.action_count == 1000
+        assert max(gaps) < 0.25, f"event loop blocked for {max(gaps):.2f}s"
+
+
+def test_secret_scanner_scans_each_action_once():
+    scanner = SecretLeakScanner()
+    calls = []
+    original = scanner._scan_action
+    scanner._scan_action = lambda a: calls.append(a) or original(a)
+    buffer = ActionBuffer()
+    for i in range(20):
+        buffer.add(_read(i))
+        scanner.check_many(buffer)
+    assert len(calls) == 20
+
+
+def test_neon_connection_string_is_one_finding():
+    url = "postgres://app_user:Zq8vLm3Rt9Wx@ep-cool-sky-123456.us-east-2.aws.neon.tech/db"
+    scan = SessionScan(create_registry(mode="all"))
+    buffer = ActionBuffer()
+    scan.add(buffer, _bash(f"psql {url}"))
+    types = [w.details["secret_type"] for w in scan.findings.values() if w.signal == "secret_leak"]
+    assert types == ["neondb_connection_string"]
+
+
+def test_pending_dns_is_retried_on_refresh_without_a_new_action():
+    from agentwatch.detectors.security import network
+    from agentwatch.detectors.security.network import UndeclaredEgressDetector
+
+    network._DNS.clear()
+    network._INFLIGHT.clear()
+
+    def resolve(host, port):
+        return [(0, 0, 0, "", ("93.184.216.34", port))]
+
+    spawned = []
+    detector = UndeclaredEgressDetector(resolve=resolve, spawn=spawned.append)
+    registry = create_registry(mode="all")
+    registry.remove_detector("undeclared_egress")
+    registry.add_detector(detector)
+    scan = SessionScan(registry)
+    buffer = ActionBuffer()
+    scan.add(buffer, Action(
+        timestamp=_now(), tool_name="WebFetch", tool_type=ToolType.BASH, success=True,
+        network_host="docs.example.org", network_port=443,
+        observed_endpoints=[("203.0.113.9", 443)],
+    ))
+    egress = [w for w in scan.warnings(buffer) if w.signal == "undeclared_egress"]
+    assert scan.pending and not egress
+    for job in spawned:
+        job()  # the lookups resolve
+    assert [w for w in scan.warnings(buffer) if w.signal == "undeclared_egress"]
+    assert not scan.pending
+    network._DNS.clear()
+
+
+def test_replay_uses_the_live_buffer_capacity():
+    from agentwatch.detectors.security.network import UndeclaredEgressDetector
+
+    def resolve(host, port):
+        return [(0, 0, 0, "", ("93.184.216.34", port))]
+
+    def fetch(host, endpoint):
+        return Action(timestamp=_now(), tool_name="WebFetch", tool_type=ToolType.BASH,
+                      success=True, network_host=host, observed_endpoints=endpoint)
+
+    actions = [fetch("198.51.100.7", None)] + [_read(i) for i in range(510)]
+    actions.append(fetch(None, [("198.51.100.7", 443)]))
+    registry = create_registry(mode="all")
+    registry.remove_detector("undeclared_egress")
+    registry.add_detector(UndeclaredEgressDetector(resolve=resolve, spawn=lambda f: f()))
+    scan = SessionScan(registry)
+    scan.replay(actions, max_size=2000)
+    assert not [w for w in scan.findings.values() if w.signal == "undeclared_egress"]
+
+
+def test_audit_records_every_secret_finding():
+    registry = create_registry(mode="all")
+    buffer = ActionBuffer()
+    buffer.add(_bash(f"export AWS_ACCESS_KEY_ID={AWS_KEY}"))
+    buffer.add(_bash("echo sk-ant-api03-" + "SyntheticKeyForTestingOnly0123456789abcdef"))
+    warnings, audit = registry.check_security_with_audit(buffer)
+    entry = next(e for e in audit if e["detector"] == "secret_leak_scanner")
+    assert len(entry["warnings"]) == 2
+    assert len([w for w in warnings if w.signal == "secret_leak"]) == 2

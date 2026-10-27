@@ -161,7 +161,12 @@ class DetectorRegistry:
             try:
                 warning, audit_log = detector.check_with_audit(buffer)
                 audit_logs.append(audit_log)
-                if warning:
+                many = getattr(detector, "check_many", None)
+                if many is not None:  # every finding, as check_security() does
+                    found = many(buffer)
+                    audit_log["warnings"] = [w.to_dict() for w in found]
+                    warnings.extend(found)
+                elif warning:
                     warnings.append(warning)
             except Exception:
                 audit_logs.append({
@@ -236,37 +241,63 @@ class SessionScan:
     Security detectors only look at the last 5-50 actions, so a finding
     that is seen once can drop out of the window before the next check.
     `add()` feeds the buffer and runs the security detectors right away,
-    keeping each finding by `warning_dedup_key` (the higher severity wins
-    if a key comes back worse). `warnings()` is the health detectors on the
-    current buffer plus every kept finding. Used by `DetectorRegistry.scan`
-    (CLI) and the live dashboard, so both score the same way.
+    keeping each finding in a ledger by `warning_dedup_key` (the higher
+    severity wins if a key comes back worse). `warnings()` is the health
+    detectors on the current buffer plus the ledger, after one more security
+    pass on the current buffer: a detector that defers (undeclared egress
+    waits for DNS) decides on a later refresh, not only when an action
+    arrives. Used by `DetectorRegistry.scan` (CLI) and the live dashboard,
+    so both score the same way.
+
+    `rebind()` swaps the registry (the dashboard's security toggle) and
+    keeps the ledger. While the new registry has no security detectors the
+    ledger is hidden, and actions that arrive meanwhile are not scanned: on
+    toggling back on, `replay()` recovers them only from the live buffer.
     """
 
     def __init__(self, registry: DetectorRegistry) -> None:
-        self.registry = registry
         self.findings: dict[str, Warning] = {}
+        self.rebind(registry)
+
+    def rebind(self, registry: DetectorRegistry) -> None:
+        self.registry = registry
         self._has_security = any(d.is_security_detector for d in registry.detectors)
 
-    def add(self, buffer: "ActionBuffer", action: "Action") -> None:
-        buffer.add(action)
-        if not self._has_security:
-            return
-        for w in self.registry.check_security(buffer):
+    @property
+    def pending(self) -> bool:
+        """A security detector is waiting on something (DNS) and must be
+        re-run on the next refresh even without new actions."""
+        return self._has_security and any(
+            getattr(d, "pending", False) for d in self.registry.detectors
+        )
+
+    def _keep(self, warnings: list[Warning]) -> None:
+        for w in warnings:
             key = warning_dedup_key(w)
             kept = self.findings.get(key)
             if kept is None or w.severity.score_impact > kept.severity.score_impact:
                 self.findings[key] = w
 
-    def replay(self, actions: "Iterable[Action]") -> None:
-        """Keep the findings *actions* would have raised, using a scratch
-        buffer (the live one already holds them)."""
+    def add(self, buffer: "ActionBuffer", action: "Action") -> None:
+        buffer.add(action)
+        if self._has_security:
+            self._keep(self.registry.check_security(buffer))
+
+    def replay(self, actions: "Iterable[Action]", max_size: int = 500) -> None:
+        """Merge into the ledger the findings *actions* would have raised,
+        using a scratch buffer of *max_size* (the live buffer's capacity, so
+        a detector sees the same window as it would live)."""
         from agentwatch.parser.models import ActionBuffer
 
-        scratch = ActionBuffer()
+        scratch = ActionBuffer(max_size=max_size)
         for action in actions:
             self.add(scratch, action)
 
     def warnings(self, buffer: "ActionBuffer") -> list[Warning]:
-        warnings = self.registry.check_health(buffer) + list(self.findings.values())
+        if self._has_security:
+            self._keep(self.registry.check_security(buffer))
+        warnings = self.registry.check_health(buffer)
+        if self._has_security:
+            warnings += self.findings.values()
         warnings.sort(key=lambda w: _SEVERITY_ORDER.get(w.severity.value, 4))
         return warnings

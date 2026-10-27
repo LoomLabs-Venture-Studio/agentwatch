@@ -10,6 +10,7 @@ import re
 import stat
 import tempfile
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -696,6 +697,15 @@ class SecretLeakScanner(SecurityDetector):
                 best_warning = warning
         return best_warning
 
+    # Actions whose findings are remembered. The window is 5, and a
+    # per-action check re-reads the same last 5 actions every time.
+    _MEMO_SIZE = 32
+
+    def __init__(self) -> None:
+        # id(action) -> (action, its findings); the action is held so its id
+        # cannot be reused while cached.
+        self._memo: OrderedDict[int, tuple[Any, list[Warning]]] = OrderedDict()
+
     def check_many(self, buffer: ActionBuffer) -> list[Warning]:
         """Every distinct (secret type, channel, file) in the last 5 actions.
 
@@ -706,45 +716,71 @@ class SecretLeakScanner(SecurityDetector):
         """
         found: dict[tuple, Warning] = {}
         for action in buffer.last(5):
-            contents = extract_scannable_content(action)
-            for text, channel, file_path in contents:
-                for pattern, secret_type in _SECRET_PATTERNS:
-                    m = _first_live_match(pattern, secret_type, text, file_path)
-                    if m is None:
-                        continue
-
-                    severity = _CHANNEL_SEVERITY.get(channel, Severity.MEDIUM)
-                    tool_name = getattr(action, "tool_name", None) or ""
-
-                    warning = Warning(
-                        category=self.category,
-                        severity=severity,
-                        signal="secret_leak",
-                        message=f"Secret detected ({secret_type}) in {channel}",
-                        suggestion=_REMEDIATION.get(
-                            secret_type,
-                            "Remove from file, use env var, rotate if committed to git",
-                        ),
-                        details={
-                            "secret_type": secret_type,
-                            "channel": channel,
-                            "file_path": file_path,
-                            "tool": tool_name,
-                            "matched_prefix": _mask_match_value(m, secret_type),
-                            "remediation": _REMEDIATION.get(
-                                secret_type,
-                                "Remove from file, use env var, rotate if committed to git",
-                            ),
-                        },
-                    )
-
-                    key = (secret_type, channel, file_path)
-                    if key not in found or severity.score_impact > (
-                        found[key].severity.score_impact
-                    ):
-                        found[key] = warning
-
+            for warning in self._action_findings(action):
+                d = warning.details
+                key = (d["secret_type"], d["channel"], d["file_path"])
+                if key not in found or warning.severity.score_impact > (
+                    found[key].severity.score_impact
+                ):
+                    found[key] = warning
         return list(found.values())
+
+    def _action_findings(self, action: Any) -> list[Warning]:
+        """Findings of one action, remembered by action identity (bounded)."""
+        hit = self._memo.get(id(action))
+        if hit is not None and hit[0] is action:
+            self._memo.move_to_end(id(action))
+            return hit[1]
+        warnings = self._scan_action(action)
+        self._memo[id(action)] = (action, warnings)
+        while len(self._memo) > self._MEMO_SIZE:
+            self._memo.popitem(last=False)
+        return warnings
+
+    def _scan_action(self, action: Any) -> list[Warning]:
+        warnings: list[Warning] = []
+        tool_name = getattr(action, "tool_name", None) or ""
+        for text, channel, file_path in extract_scannable_content(action):
+            severity = _CHANNEL_SEVERITY.get(channel, Severity.MEDIUM)
+            taken: list[tuple[int, int]] = []  # value spans already explained
+            # _SECRET_PATTERNS is ordered specific-first ("must be before
+            # generic"), so a value matched by two patterns (a Neon URL is
+            # also a database URL) is reported as the first one only.
+            for pattern, secret_type in _SECRET_PATTERNS:
+                m = None
+                for cand in _iter_matches(pattern, secret_type, text):
+                    if _is_redacted_value(cand, secret_type) or _is_placeholder(
+                        cand, secret_type, file_path
+                    ):
+                        continue
+                    lo, hi = _value_span(cand, secret_type)
+                    if any(lo < t_hi and t_lo < hi for t_lo, t_hi in taken):
+                        continue
+                    m = cand
+                    taken.append((lo, hi))
+                    break
+                if m is None:
+                    continue
+
+                remediation = _REMEDIATION.get(
+                    secret_type, "Remove from file, use env var, rotate if committed to git"
+                )
+                warnings.append(Warning(
+                    category=self.category,
+                    severity=severity,
+                    signal="secret_leak",
+                    message=f"Secret detected ({secret_type}) in {channel}",
+                    suggestion=remediation,
+                    details={
+                        "secret_type": secret_type,
+                        "channel": channel,
+                        "file_path": file_path,
+                        "tool": tool_name,
+                        "matched_prefix": _mask_match_value(m, secret_type),
+                        "remediation": remediation,
+                    },
+                ))
+        return warnings
 
 
 # ---------------------------------------------------------------------------

@@ -77,6 +77,7 @@ COLUMNS = (
 )
 SORTS = ("attention", "cost", "recent")
 IDLE_AFTER_S = 300  # no action for this long: shown as idle (○), sorted last
+WATCH_SLICE_S = 0.02  # longest the watch loop runs before yielding to the UI
 IDLE_FOLD_S = 900  # no action for this long (or stopped): folded into one row (`a` shows)
 FOLD_KEY = "fold"  # row key of the "N idle sessions" row
 FLASH_S = 2.0  # a row whose data changed is shown bold this long
@@ -628,7 +629,13 @@ class MultiAgentWatchApp(App):
 
     async def _watch_loop(self) -> None:
         """Background loop to process events from the multi-watcher."""
+        slice_start = time.monotonic()
         async for event_type, data in self.watcher.watch():
+            # A history burst arrives without the watcher ever suspending, and
+            # each action is scanned: hand the loop back every WATCH_SLICE_S.
+            if time.monotonic() - slice_start > WATCH_SLICE_S:
+                await asyncio.sleep(0)
+                slice_start = time.monotonic()
             if event_type == "agent_added":
                 if data not in self.agents:
                     self._add_agent(data, self.watcher.get_process_meta(data))
@@ -819,7 +826,7 @@ class MultiAgentWatchApp(App):
     def _session_scan(data: dict) -> SessionScan:
         """The agent's scan object (kept findings), made on first use."""
         scan = data.get("scan")
-        if scan is None or scan.registry is not data["registry"]:
+        if scan is None:
             scan = data["scan"] = SessionScan(data["registry"])
         return scan
 
@@ -830,9 +837,10 @@ class MultiAgentWatchApp(App):
         actions: each update() advances its EMA and state machine."""
         buffer = data["buffer"]
         count = buffer.stats.action_count
-        if count == data["_last_count"] and data["_last_report"] is not None:
+        scan = self._session_scan(data)
+        if count == data["_last_count"] and data["_last_report"] is not None and not scan.pending:
             return data["_last_report"]
-        warnings = self._session_scan(data).warnings(buffer)
+        warnings = scan.warnings(buffer)
         self._export_and_assess(data, warnings)
         eff = calculate_efficiency(warnings, buffer)
         rot_scorer = data.get("rot_scorer")
@@ -1981,8 +1989,10 @@ class MultiAgentWatchApp(App):
         for data in self.agents.values():
             mode = "all" if self.security_mode else "health"
             data["registry"] = create_registry(mode=mode)
-            data["scan"] = scan = SessionScan(data["registry"])
-            scan.replay(data["buffer"].actions)  # findings from before the toggle
+            scan = self._session_scan(data)
+            scan.rebind(data["registry"])  # the ledger is kept, hidden while off
+            if self.security_mode:  # also recover what the live buffer still holds
+                scan.replay(data["buffer"].actions, data["buffer"].max_size)
             data["_last_count"] = -1
 
         # The rescoring's new/cleared findings are one summary line, not a burst.
