@@ -39,3 +39,25 @@ def test_check_help_documents_exit_codes():
     assert "2 = critical" in res.output
     assert "1 = at risk (score 50-99)" in res.output
     assert "2 = compromised (score below 50)" in res.output
+
+
+MEDIUM_FIXTURE = Path(__file__).parent / "fixtures" / "check_security_medium.jsonl"
+CLEAN_FIXTURE = Path(__file__).parent / "fixtures" / "check_security_clean.jsonl"
+
+
+def test_check_security_at_risk_exits_1_for_medium_finding():
+    # A MEDIUM-only finding (data_upload) gives a security score of 85: at risk.
+    res = CliRunner().invoke(cli, ["check", "--log", str(MEDIUM_FIXTURE), "--security"])
+    assert res.exit_code == 1, res.output
+
+
+def test_check_without_security_ignores_medium_finding():
+    res = CliRunner().invoke(cli, ["check", "--log", str(MEDIUM_FIXTURE)])
+    assert res.exit_code == 0, res.output
+
+
+def test_check_security_clean_log_matches_plain_check():
+    plain = CliRunner().invoke(cli, ["check", "--log", str(CLEAN_FIXTURE)])
+    secure = CliRunner().invoke(cli, ["check", "--log", str(CLEAN_FIXTURE), "--security"])
+    assert plain.exit_code == 0, plain.output
+    assert secure.exit_code == plain.exit_code, secure.output
