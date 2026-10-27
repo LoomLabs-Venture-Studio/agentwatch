@@ -35,7 +35,7 @@ def _repeated_tool_calls(buffer: "ActionBuffer", window: int = 20) -> tuple[floa
 
     Returns (score 0..1, evidence list).
     """
-    recent = buffer.last(window)
+    recent = buffer.last(window, activity=True)
     if len(recent) < 4:
         return 0.0, []
 
@@ -67,7 +67,7 @@ def _repeated_tool_calls(buffer: "ActionBuffer", window: int = 20) -> tuple[floa
 
 def _repeated_errors(buffer: "ActionBuffer", window: int = 20) -> tuple[float, list[str]]:
     """Score for repeated normalized error signatures."""
-    recent = buffer.last(window)
+    recent = buffer.last(window, activity=True)
     errors = [normalize_error(a.error_message) for a in recent if a.error_message]
     if not errors:
         return 0.0, []

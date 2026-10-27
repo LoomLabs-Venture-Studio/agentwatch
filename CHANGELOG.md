@@ -6,6 +6,17 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex sessions (Codex CLI and the ChatGPT desktop app) no longer get a
+  false "Repeated action: token_count" loop warning. The `token_count` usage
+  record Codex writes after every turn no longer counts as an agent action in
+  the health detectors: loop, re-read, edit/test/fail thrash (`ThrashDetector`), stall, error spiral, high error rate,
+  error blindness, syntax loop, same outcome, file churn, error class
+  persistence, exploration stall, context rot, rediscovery and the thrash
+  metric no longer tally it, fill windows with it or have a failure streak
+  broken by it. Tokens, cost and the action count still include it.
+
 ## [0.2.1] - 2026-10-27
 
 Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.
