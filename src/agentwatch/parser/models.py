@@ -57,6 +57,18 @@ NON_TOOL_ROLE_LABELS = frozenset({
 USAGE_RECORD = "token_count"
 
 
+def is_usage_record(action: "Action") -> bool:
+    """True for a token-usage-only record (not something the agent did)."""
+    return action.tool_name == USAGE_RECORD
+
+
+def is_tool_call(action: "Action") -> bool:
+    """True when *action* is an agent tool invocation: not a role label
+    (``NON_TOOL_ROLE_LABELS``) and not a usage record. Repetition, window and
+    streak checks in the health detectors count only these."""
+    return action.tool_name not in NON_TOOL_ROLE_LABELS and action.tool_name != USAGE_RECORD
+
+
 @dataclass
 class Action:
     """Represents a single agent action parsed from logs."""
@@ -465,14 +477,33 @@ class ActionBuffer:
         on this so merging results does not delay their first warning."""
         return len(self.actions) + sum(a.error_merged for a in self.actions)
 
-    def last(self, n: int) -> list[Action]:
-        """Get the last n actions (chronological order)."""
+    @property
+    def activity_len(self) -> int:
+        """``len(self)`` without usage records."""
+        return len(self.actions) - sum(is_usage_record(a) for a in self.actions)
+
+    @property
+    def activity_history_len(self) -> int:
+        """``history_len`` without usage records, so a detector's "enough
+        history" gate counts only what the agent did (Codex writes a
+        ``token_count`` after every turn)."""
+        return self.history_len - sum(is_usage_record(a) for a in self.actions)
+
+    def last(self, n: int, *, activity: bool = False) -> list[Action]:
+        """Get the last n actions (chronological order). ``activity=True``
+        skips usage records, so they take no window slots."""
         if n <= 0:
             return []
-        return list(reversed(list(islice(reversed(self.actions), n))))
+        source = (
+            (a for a in reversed(self.actions) if not is_usage_record(a))
+            if activity else reversed(self.actions)
+        )
+        return list(reversed(list(islice(source, n))))
 
-    def first(self, n: int) -> list[Action]:
-        """Get the first n actions."""
+    def first(self, n: int, *, activity: bool = False) -> list[Action]:
+        """Get the first n actions (``activity=True``: without usage records)."""
+        if activity:
+            return [a for a in self.actions if not is_usage_record(a)][:n]
         return list(self.actions)[:n]
 
     @property
@@ -484,9 +515,9 @@ class ActionBuffer:
         """How many times a file has been accessed."""
         return self._file_access_counts.get(path, 0)
 
-    def files_in_window(self, n: int) -> set[str]:
+    def files_in_window(self, n: int, *, activity: bool = False) -> set[str]:
         """Get unique files accessed in last n actions."""
-        return {a.file_path for a in self.last(n) if a.file_path}
+        return {a.file_path for a in self.last(n, activity=activity) if a.file_path}
 
     def early_files(self, n: int) -> set[str]:
         """Get unique files from first n actions."""

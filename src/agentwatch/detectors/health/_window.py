@@ -18,14 +18,14 @@ def scaled_action_window(
 ) -> int:
     """Return an action-count window that grows with buffer size.
 
-    Formula: max(base, min(cap, int(len(buffer) * fraction)))
+    Formula: max(base, min(cap, int(buffer.activity_len * fraction)))
 
     For a 20-action session this returns 20 (the base).
     For a 200-action session this returns 30.
     For a 500-action session this returns 75.
     For a 700+ action session this returns 100 (the cap).
     """
-    return max(base, min(cap, int(len(buffer) * fraction)))
+    return max(base, min(cap, int(buffer.activity_len * fraction)))
 
 
 def scaled_turn_window(
