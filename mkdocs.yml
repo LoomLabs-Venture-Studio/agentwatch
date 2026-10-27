@@ -58,6 +58,9 @@ theme:
 
 plugins:
   - search
+  # Downloads the Google Fonts at build time and serves them from the site,
+  # so pages make no third-party requests.
+  - privacy
 
 markdown_extensions:
   - admonition

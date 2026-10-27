@@ -13,6 +13,7 @@ venv/
 .claude/
 *.jsonl
 site/
+.cache/
 .loom/local.yml
 .loom/handoff.md
 .loom/.handoff-consumed
