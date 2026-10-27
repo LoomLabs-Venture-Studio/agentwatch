@@ -78,20 +78,13 @@ class DetectorRegistry:
 
         Security detectors only look at the last 5-50 actions, so for a
         one-shot scan they run after every add, like the live TUI, and each
-        distinct finding is kept once (#35). Health detectors describe the
-        current state, so they run once at the end.
+        distinct finding is kept once (#35), via `SessionScan`. Health
+        detectors describe the current state, so they run once at the end.
         """
-        seen: dict[str, Warning] = {}
-        has_security = any(d.is_security_detector for d in self.detectors)
+        session = SessionScan(self)
         for action in actions:
-            buffer.add(action)
-            if has_security:
-                for w in self.check_security(buffer):
-                    seen.setdefault(warning_dedup_key(w), w)
-        warnings = self.check_health(buffer) + list(seen.values())
-        order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        warnings.sort(key=lambda w: order.get(w.severity.value, 4))
-        return warnings
+            session.add(buffer, action)
+        return session.warnings(buffer)
 
     def check_health(self, buffer: "ActionBuffer") -> list[Warning]:
         """Run only health detectors."""
@@ -109,12 +102,17 @@ class DetectorRegistry:
         return warnings
 
     def check_security(self, buffer: "ActionBuffer") -> list[Warning]:
-        """Run only security detectors."""
+        """Run only security detectors. A detector with a `check_many()`
+        (the secret scanner) reports every distinct finding in its window."""
         warnings = []
 
         for detector in self.detectors:
             if detector.is_security_detector:
                 try:
+                    many = getattr(detector, "check_many", None)
+                    if many is not None:
+                        warnings.extend(many(buffer))
+                        continue
                     warning = detector.check(buffer)
                     if warning:
                         warnings.append(warning)
@@ -227,3 +225,48 @@ def create_registry(
             registry.add_detector(detector)
 
     return registry
+
+
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+class SessionScan:
+    """One session's security findings, kept for the whole session.
+
+    Security detectors only look at the last 5-50 actions, so a finding
+    that is seen once can drop out of the window before the next check.
+    `add()` feeds the buffer and runs the security detectors right away,
+    keeping each finding by `warning_dedup_key` (the higher severity wins
+    if a key comes back worse). `warnings()` is the health detectors on the
+    current buffer plus every kept finding. Used by `DetectorRegistry.scan`
+    (CLI) and the live dashboard, so both score the same way.
+    """
+
+    def __init__(self, registry: DetectorRegistry) -> None:
+        self.registry = registry
+        self.findings: dict[str, Warning] = {}
+        self._has_security = any(d.is_security_detector for d in registry.detectors)
+
+    def add(self, buffer: "ActionBuffer", action: "Action") -> None:
+        buffer.add(action)
+        if not self._has_security:
+            return
+        for w in self.registry.check_security(buffer):
+            key = warning_dedup_key(w)
+            kept = self.findings.get(key)
+            if kept is None or w.severity.score_impact > kept.severity.score_impact:
+                self.findings[key] = w
+
+    def replay(self, actions: "Iterable[Action]") -> None:
+        """Keep the findings *actions* would have raised, using a scratch
+        buffer (the live one already holds them)."""
+        from agentwatch.parser.models import ActionBuffer
+
+        scratch = ActionBuffer()
+        for action in actions:
+            self.add(scratch, action)
+
+    def warnings(self, buffer: "ActionBuffer") -> list[Warning]:
+        warnings = self.registry.check_health(buffer) + list(self.findings.values())
+        warnings.sort(key=lambda w: _SEVERITY_ORDER.get(w.severity.value, 4))
+        return warnings

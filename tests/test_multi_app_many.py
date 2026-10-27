@@ -385,7 +385,7 @@ async def test_teams_group_members_and_follow_scans(tmp_path, monkeypatch):
     async with app.run_test(size=(120, 40)) as pilot:
         await _wait(pilot, lambda: _loaded(app, 5))
         k = {p.pid: str(p.log_file) for p in scan}
-        app.agents[kid.log_file]["registry"].check_all = lambda b: [_warning(Severity.CRITICAL)]
+        app.agents[kid.log_file]["registry"].check_health = lambda b: [_warning(Severity.CRITICAL)]
         app.agents[kid.log_file]["_last_count"] = -1
         app.refresh_ui()
         # the team sorts by its worst member; the tree under its header

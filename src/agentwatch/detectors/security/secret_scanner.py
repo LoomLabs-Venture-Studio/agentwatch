@@ -686,58 +686,32 @@ class SecretLeakScanner(SecurityDetector):
     name = "secret_leak_scanner"
     description = "Real-time scanning for secrets leaked through any channel"
 
-    DEDUP_TTL = 300.0  # 5 minutes
-
-    def __init__(self) -> None:
-        # Dedup cache: fingerprint -> timestamp of first alert
-        self._seen: dict[str, float] = {}
-
-    def _dedup_key(self, secret_type: str, channel: str, file_path: str | None) -> str:
-        return f"{secret_type}:{channel}:{file_path or ''}"
-
-    def _is_seen(self, key: str, now: float) -> bool:
-        ts = self._seen.get(key)
-        if ts is None:
-            return False
-        if now - ts > self.DEDUP_TTL:
-            del self._seen[key]
-            return False
-        return True
-
-    def _mark_seen(self, key: str, now: float) -> None:
-        self._seen[key] = now
-
-    def _expire_old(self, now: float) -> None:
-        """Remove entries older than TTL."""
-        expired = [k for k, ts in self._seen.items() if now - ts > self.DEDUP_TTL]
-        for k in expired:
-            del self._seen[k]
-
     def check(self, buffer: ActionBuffer) -> Warning | None:
         """Scan recent actions for secret leaks. Returns the highest-severity finding."""
-        recent = buffer.last(5)
-        if not recent:
-            return None
-
-        now = time.time()
-        self._expire_old(now)
-
         best_warning: Warning | None = None
-        best_severity_impact = -1
+        for warning in self.check_many(buffer):
+            if best_warning is None or warning.severity.score_impact > (
+                best_warning.severity.score_impact
+            ):
+                best_warning = warning
+        return best_warning
 
-        for action in recent:
+    def check_many(self, buffer: ActionBuffer) -> list[Warning]:
+        """Every distinct (secret type, channel, file) in the last 5 actions.
+
+        Reported on every call: nothing is suppressed because it was seen
+        before (notification dedup lives in the UI and the exporters). One
+        finding per key, so a session keeps all of its distinct secrets
+        rather than only the worst one in the window.
+        """
+        found: dict[tuple, Warning] = {}
+        for action in buffer.last(5):
             contents = extract_scannable_content(action)
             for text, channel, file_path in contents:
                 for pattern, secret_type in _SECRET_PATTERNS:
                     m = _first_live_match(pattern, secret_type, text, file_path)
                     if m is None:
                         continue
-
-                    dedup = self._dedup_key(secret_type, channel, file_path)
-                    if self._is_seen(dedup, now):
-                        continue
-
-                    self._mark_seen(dedup, now)
 
                     severity = _CHANNEL_SEVERITY.get(channel, Severity.MEDIUM)
                     tool_name = getattr(action, "tool_name", None) or ""
@@ -764,11 +738,13 @@ class SecretLeakScanner(SecurityDetector):
                         },
                     )
 
-                    if severity.score_impact > best_severity_impact:
-                        best_severity_impact = severity.score_impact
-                        best_warning = warning
+                    key = (secret_type, channel, file_path)
+                    if key not in found or severity.score_impact > (
+                        found[key].severity.score_impact
+                    ):
+                        found[key] = warning
 
-        return best_warning
+        return list(found.values())
 
 
 # ---------------------------------------------------------------------------

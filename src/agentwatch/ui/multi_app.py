@@ -24,6 +24,7 @@ from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
 from agentwatch.coach import state_path
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Severity, format_usd, warning_dedup_key
+from agentwatch.detectors.registry import SessionScan
 from agentwatch.detectors.security.network import _flaggable
 from agentwatch.discovery import (
     AgentProcess,
@@ -516,6 +517,7 @@ class MultiAgentWatchApp(App):
         return {
             "buffer": buffer,
             "registry": registry,
+            "scan": SessionScan(registry),
             "item": item,
             "rot_scorer": RotScorer(),
             "pid": pid,
@@ -639,7 +641,7 @@ class MultiAgentWatchApp(App):
                         state["net_prev_end"] = attach(
                             self._net_sampler, state["pid"], action, state.get("net_prev_end")
                         )
-                    state["buffer"].add(action)
+                    self._session_scan(state).add(state["buffer"], action)
                     # The 1s interval timer handles refreshes — don't pile up
                     # extra calls that cause sporadic update behaviour.
 
@@ -813,6 +815,14 @@ class MultiAgentWatchApp(App):
             state = "not armed"
         return f"  Loop breaker: {state}"
 
+    @staticmethod
+    def _session_scan(data: dict) -> SessionScan:
+        """The agent's scan object (kept findings), made on first use."""
+        scan = data.get("scan")
+        if scan is None or scan.registry is not data["registry"]:
+            scan = data["scan"] = SessionScan(data["registry"])
+        return scan
+
     def _score(self, data: dict) -> "HealthReport":
         """One agent's report, rescored only when it has new actions
         (action_count only grows) or its cache was dropped (`s`). Selected or
@@ -822,7 +832,7 @@ class MultiAgentWatchApp(App):
         count = buffer.stats.action_count
         if count == data["_last_count"] and data["_last_report"] is not None:
             return data["_last_report"]
-        warnings = data["registry"].check_all(buffer)
+        warnings = self._session_scan(data).warnings(buffer)
         self._export_and_assess(data, warnings)
         eff = calculate_efficiency(warnings, buffer)
         rot_scorer = data.get("rot_scorer")
@@ -1971,6 +1981,8 @@ class MultiAgentWatchApp(App):
         for data in self.agents.values():
             mode = "all" if self.security_mode else "health"
             data["registry"] = create_registry(mode=mode)
+            data["scan"] = scan = SessionScan(data["registry"])
+            scan.replay(data["buffer"].actions)  # findings from before the toggle
             data["_last_count"] = -1
 
         # The rescoring's new/cleared findings are one summary line, not a burst.

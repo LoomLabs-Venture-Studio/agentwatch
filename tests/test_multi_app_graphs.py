@@ -283,7 +283,7 @@ async def test_selected_strip_is_rebuilt_only_when_it_changes():
             app.refresh_ui()  # nothing changed
         assert built == []
         data = app.agents[a]
-        data["registry"].check_all = lambda buffer: [_warning(Severity.HIGH, "new_sig")]
+        data["registry"].check_health = lambda buffer: [_warning(Severity.HIGH, "new_sig")]
         data["buffer"].add(_action(0, 1))
         app.refresh_ui()
         await pilot.pause()

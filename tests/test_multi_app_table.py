@@ -51,7 +51,7 @@ def _seed(app, name, *, ago=1.0, warnings=(), depth=0, team_id=None, pid=None, s
     buffer = ActionBuffer()
     buffer.add(_action(ago))
     registry = create_registry(mode="health")
-    registry.check_all = lambda buffer, w=list(warnings): list(w)
+    registry.check_health = lambda buffer, w=list(warnings): list(w)
     app.agents[path] = app._new_agent_state(
         buffer=buffer, registry=registry, item=item, pid=pid, team_id=team_id,
         log_path=path, agent_type="claude-code",
@@ -163,7 +163,7 @@ async def test_cursor_stays_on_session_when_rows_reorder():
         await pilot.pause()
         assert app.selected_path == b and _order(app) == ["a", "b"]
 
-        app.agents[b]["registry"].check_all = lambda buffer: [_warning(Severity.HIGH)]
+        app.agents[b]["registry"].check_health = lambda buffer: [_warning(Severity.HIGH)]
         app.agents[b]["buffer"].add(_action(2, 1))  # rescored only on new actions
         app.refresh_ui()
         await pilot.pause()
@@ -190,7 +190,7 @@ async def test_tick_updates_changed_cells_only():
 
         app.refresh_ui()
         assert calls["updated"] == []  # nothing changed
-        app.agents[a]["registry"].check_all = lambda buffer: [_warning(Severity.MEDIUM)]
+        app.agents[a]["registry"].check_health = lambda buffer: [_warning(Severity.MEDIUM)]
         app.agents[a]["buffer"].add(_action(0, 1))
         app.refresh_ui()
         await pilot.pause()
@@ -218,7 +218,7 @@ async def test_health_trend_arrow_vs_a_minute_ago():
         health = lambda: table.get_cell("a.jsonl", "health").plain  # noqa: E731
 
         def change(severity, i):
-            data["registry"].check_all = lambda buffer: [_warning(severity)]
+            data["registry"].check_health = lambda buffer: [_warning(severity)]
             data["buffer"].add(_action(0, i))
             app.refresh_ui()
 

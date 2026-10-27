@@ -6,6 +6,14 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Fixed
+
+- Security findings now persist for the whole session. The live dashboard
+  runs the security detectors on every action (like `security-scan`) and
+  keeps each finding, so a dangerous command followed by many harmless
+  actions still shows. The secret scanner no longer drops a finding it
+  already reported; toasts, alerts and SIEM export still fire once.
+
 ## [0.2.1] - 2026-10-26
 
 Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.

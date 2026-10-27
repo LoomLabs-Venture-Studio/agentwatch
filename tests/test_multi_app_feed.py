@@ -57,7 +57,7 @@ async def test_new_warning_is_one_feed_line_and_clearing_is_another():
         _seed(app, "sel", ago=1)
         a = _seed(app, "proj", ago=1)
         data = app.agents[a]
-        data["registry"].check_all = lambda buffer: (
+        data["registry"].check_health = lambda buffer: (
             [_warning(Severity.HIGH, count=7)] if buffer.stats.action_count == 2 else []
         )
         app.refresh_ui()
@@ -101,7 +101,7 @@ async def test_alerts_and_budget_reach_the_feed():
         data = app.agents[a]
         app.refresh_ui()
         _end_baselines(app)
-        data["registry"].check_all = lambda buffer: [_warning(Severity.CRITICAL)]
+        data["registry"].check_health = lambda buffer: [_warning(Severity.CRITICAL)]
         data["buffer"].stats.total_cost = 0.85
         data["buffer"].add(_action(0, 1))
         app.refresh_ui()
@@ -168,7 +168,7 @@ async def test_feed_and_header_are_literal():
         a = _seed(app, "p[/]x", ago=1)
         app.refresh_ui()
         _end_baselines(app)
-        app.agents[a]["registry"].check_all = lambda buffer: [
+        app.agents[a]["registry"].check_health = lambda buffer: [
             _warning(Severity.HIGH, signal="[b]sig[/b]")
         ]
         app.agents[a]["buffer"].add(_action(0, 1))

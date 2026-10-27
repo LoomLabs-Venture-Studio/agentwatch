@@ -286,7 +286,7 @@ async def test_s_toggle_counts_findings_and_off_is_one_line(monkeypatch):
 
     def registry(mode):
         reg = real(mode=mode)
-        reg.check_all = (lambda buffer: [secret]) if mode == "all" else (lambda buffer: [])
+        reg.check_health = (lambda buffer: [secret]) if mode == "all" else (lambda buffer: [])
         return reg
 
     monkeypatch.setattr(multi_app, "create_registry", registry)

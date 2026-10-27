@@ -178,7 +178,7 @@ async def test_detail_updates_live_only_when_changed():
         app.refresh_ui()
         assert calls == []  # nothing new: no update
         data = app.agents[path]
-        data["registry"].check_all = lambda buffer: [_warning(Severity.HIGH, "fresh_signal")]
+        data["registry"].check_health = lambda buffer: [_warning(Severity.HIGH, "fresh_signal")]
         data["buffer"].add(Action(timestamp=_now(), tool_name="Read", tool_type=ToolType.READ,
                                   success=True, file_path="x.py"))
         app.refresh_ui()
