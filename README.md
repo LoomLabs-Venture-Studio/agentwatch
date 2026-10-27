@@ -986,24 +986,21 @@ Claude Code only: other agents have no PreToolUse hook and keep getting
 warnings in `watch`/`watch-all` and alerts.
 
 The plugin needs agentwatch **0.2.0 or later** on your PATH (`agentwatch hook`
-is not in 0.1.x, the current PyPI release). Until 0.2.0 is on PyPI, install
-from git:
+is not in 0.1.x). Install it from PyPI, or upgrade an older install:
 
 ```bash
-pipx install git+https://github.com/LoomLabs-Venture-Studio/agentwatch@develop-overdrive
+pipx install agentwatch-monitor    # or: pipx upgrade agentwatch-monitor
 ```
 
-Then add the plugin. `/plugin marketplace add owner/repo` reads the default
-branch, which has no `plugin/` yet, so pin the branch with `#ref` for now:
+Then add the plugin in Claude Code:
 
 ```
-/plugin marketplace add LoomLabs-Venture-Studio/agentwatch#develop-overdrive
+/plugin marketplace add LoomLabs-Venture-Studio/agentwatch
 /plugin install agentwatch@agentwatch
 ```
 
-Once `plugin/` is on the default branch, drop the `#develop-overdrive`. On
-Claude Code 2.1.275+ one step also works:
-`/plugin install agentwatch --marketplace LoomLabs-Venture-Studio/agentwatch#develop-overdrive`.
+On Claude Code 2.1.275+ one step also works:
+`/plugin install agentwatch --marketplace LoomLabs-Venture-Studio/agentwatch`.
 To try it from a checkout without installing: `claude --plugin-dir ./plugin`.
 
 If `agentwatch` is not on PATH the hook does nothing. Any error, bad input or

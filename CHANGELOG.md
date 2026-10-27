@@ -6,7 +6,7 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-10-26
+## [0.2.1] - 2026-10-27
 
 Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.
 

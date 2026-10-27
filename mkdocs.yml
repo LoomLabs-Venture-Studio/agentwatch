@@ -1,53 +1,103 @@
 site_name: AgentWatch
-site_url: https://loomlabs-venture-studio.github.io/agentwatch/
-site_description: Real-time health and security monitoring for AI coding agents
+site_url: https://agentwatch.info/
+site_description: >-
+  AgentWatch watches AI coding assistants like Claude Code, Cursor and Codex
+  while they work, and tells you when one is going in circles, wasting money,
+  or doing something risky with your passwords, keys or data. Free, open
+  source, and it runs on your own computer.
 site_author: LoomLabs
+copyright: >-
+  AgentWatch is free and open source under the MIT license. Made by
+  <a href="https://loomlabs.io">LoomLabs</a>.
 
-repo_url: https://github.com/loomlabs-venture-studio/agentwatch
-repo_name: agentwatch
+repo_url: https://github.com/LoomLabs-Venture-Studio/agentwatch
+repo_name: GitHub
+edit_uri: ""
+
+# Internal notes stay in the repo but are not published.
+exclude_docs: |
+  adr/
+  research/
+  superpowers/
 
 theme:
   name: material
   custom_dir: overrides
+  language: en
+  favicon: assets/images/favicon.svg
   palette:
-    - scheme: slate
-      primary: custom
-      accent: custom
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
     - scheme: default
       primary: custom
       accent: custom
       toggle:
-        icon: material/brightness-7
+        icon: octicons/moon-16
         name: Switch to dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: octicons/sun-16
+        name: Switch to light mode
   font:
-    text: Inter
-    code: JetBrains Mono
+    text: Atkinson Hyperlegible Next
+    code: Atkinson Hyperlegible Mono
   icon:
-    repo: fontawesome/brands/github
+    logo: octicons/pulse-24
+    repo: octicons/mark-github-16
+    admonition:
+      note: octicons/info-16
+      tip: octicons/light-bulb-16
+      warning: octicons/alert-16
   features:
+    - navigation.tabs
+    - navigation.footer
+    - navigation.top
+    - search.suggest
+    - search.highlight
     - content.code.copy
     - content.tabs.link
+    - toc.follow
 
-plugins: []
+plugins:
+  - search
+  # Downloads the Google Fonts at build time and serves them from the site,
+  # so pages make no third-party requests.
+  - privacy
 
 markdown_extensions:
   - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Link to this section
   - pymdownx.details
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
-  - attr_list
-  - md_in_html
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
-  - tables
+
+extra:
+  generator: false
+  social:
+    - icon: octicons/mark-github-16
+      link: https://github.com/LoomLabs-Venture-Studio/agentwatch
+      name: AgentWatch on GitHub
+    - icon: octicons/link-16
+      link: https://loomlabs.io
+      name: LoomLabs
 
 extra_css:
   - assets/stylesheets/extra.css
 
 nav:
   - Home: index.md
+  - Get started: get-started.md
+  - What it checks: what-it-checks.md
+  - Supported agents: supported-agents.md
+  - Commands: commands.md
+  - FAQ: faq.md

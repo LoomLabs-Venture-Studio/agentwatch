@@ -1,317 +1,170 @@
 ---
 template: home.html
-title: AgentWatch — AI Agent Monitoring
+title: Know when your AI coding assistant needs you
 hide:
   - navigation
   - toc
 ---
 
-<div class="aw-features">
-  <div class="aw-card">
-    <div class="aw-card__icon aw-card__icon--health">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M7.5 4A5.5 5.5 0 0 0 2 9.5c0 .5.09 1 .22 1.5H6.3l1.27-3.37c.3-.8 1.48-.88 1.86 0L11.5 13l.59-1.42c.13-.33.48-.58.91-.58h8.78c.13-.5.22-1 .22-1.5A5.5 5.5 0 0 0 16.5 4c-1.86 0-3.5.93-4.5 2.34C11 4.93 9.36 4 7.5 4M3 12.5a1 1 0 0 0-1 1 1 1 0 0 0 1 1h2.44L11 20c1 .9 1 .9 2 0l5.56-5.5H21a1 1 0 0 0 1-1 1 1 0 0 0-1-1h-7.6l-.93 2.3c-.4 1.01-1.55.87-1.92.03L8.5 9.5l-.96 2.33c-.15.38-.49.67-.94.67z"/></svg>
-    </div>
-    <h3 class="aw-card__title">Health Monitoring</h3>
-    <p class="aw-card__text">15 deterministic detectors catch loops, stuck states, error spirals, and context rot in real time.</p>
-  </div>
-  <div class="aw-card">
-    <div class="aw-card__icon aw-card__icon--security">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
-    </div>
-    <h3 class="aw-card__title">Security Scanning</h3>
-    <p class="aw-card__text">21 security detectors for prompt injection, credential exfiltration, privilege escalation, and supply chain attacks.</p>
-  </div>
-  <div class="aw-card">
-    <div class="aw-card__icon aw-card__icon--tokens">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M17.66 11.2c-.23-.3-.51-.56-.77-.82-.67-.6-1.43-1.03-2.07-1.66C13.33 7.26 13 4.85 13.95 3c-.95.23-1.78.75-2.49 1.32-2.59 2.08-3.61 5.75-2.39 8.9.04.1.08.2.08.33 0 .22-.15.42-.35.5-.23.1-.47.04-.66-.12a.6.6 0 0 1-.14-.17c-1.13-1.43-1.31-3.48-.55-5.12C5.78 10 4.87 12.3 5 14.47c.06.5.12 1 .29 1.5.14.6.41 1.2.71 1.73 1.08 1.73 2.95 2.97 4.96 3.22 2.14.27 4.43-.12 6.07-1.6 1.83-1.66 2.47-4.32 1.53-6.6l-.13-.26c-.21-.46-.77-1.26-.77-1.26m-3.16 6.3c-.28.24-.74.5-1.1.6-1.12.4-2.24-.16-2.9-.82 1.19-.28 1.9-1.16 2.11-2.05.17-.8-.15-1.46-.28-2.23-.12-.74-.1-1.37.17-2.06.19.38.39.76.63 1.06.77 1 1.98 1.44 2.24 2.8.04.14.06.28.06.43.03.82-.33 1.72-.93 2.27"/></svg>
-    </div>
-    <h3 class="aw-card__title">Token Analytics</h3>
-    <p class="aw-card__text">Track burn rate, cache efficiency, I/O ratio, and context pressure. Know exactly where your tokens go.</p>
-  </div>
-  <div class="aw-card">
-    <div class="aw-card__icon aw-card__icon--teams">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M12 5.5A3.5 3.5 0 0 1 15.5 9a3.5 3.5 0 0 1-3.5 3.5A3.5 3.5 0 0 1 8.5 9 3.5 3.5 0 0 1 12 5.5M5 8c.56 0 1.08.15 1.53.42-.15 1.43.27 2.85 1.13 3.96C7.16 13.34 6.16 14 5 14a3 3 0 0 1-3-3 3 3 0 0 1 3-3m14 0a3 3 0 0 1 3 3 3 3 0 0 1-3 3c-1.16 0-2.16-.66-2.66-1.62a5.54 5.54 0 0 0 1.13-3.96c.45-.27.97-.42 1.53-.42M5.5 18.25c0-2.07 2.91-3.75 6.5-3.75s6.5 1.68 6.5 3.75V20h-13zM0 20v-1.5c0-1.39 1.89-2.56 4.45-2.9-.59.68-.95 1.62-.95 2.65V20zm24 0h-3.5v-1.75c0-1.03-.36-1.97-.95-2.65 2.56.34 4.45 1.51 4.45 2.9z"/></svg>
-    </div>
-    <h3 class="aw-card__title">Multi-Agent Teams</h3>
-    <p class="aw-card__text">Discover sub-agents via PPID chains, group into teams, and get aggregate health scores across your swarm.</p>
-  </div>
-</div>
+<section class="aw-hero" markdown>
 
----
+# Know when your AI coding assistant needs you
 
-## Quick Start
+<p class="aw-lead">AgentWatch watches Claude Code, Cursor, Codex and other AI coding
+assistants while they work. It tells you when one is going in circles, keeps failing,
+is burning through money, or is doing something risky with your passwords, keys or
+data.</p>
 
-Install from PyPI:
+<p class="aw-actions" markdown>
+[Get started](get-started.md){ .md-button .md-button--primary }
+[See what it checks](what-it-checks.md){ .aw-textlink }
+</p>
 
-```bash
-pip install agentwatch-monitor
-```
+</section>
 
-Run a health check on any running agent:
+<figure class="aw-shot" markdown>
+<a href="assets/images/dashboard.svg" class="aw-shot__frame" title="Open the screenshot full size">
+<img src="assets/images/dashboard.svg" width="1365" height="731" alt="The AgentWatch dashboard listing four coding sessions. At the top, checkout-api, a Claude Code session, has health 69%, its context 86% full, and the warning 'loop: Bash (7x)'. Below it, newsletter has the warning 'credential access'. photo-gallery, a Codex session, and recipe-app show ok. The details panel for checkout-api lists 'Repeated action: Bash (7x)' with the error it keeps getting, and the Events panel shows newsletter's 'credential access' and 'upload' warnings arriving.">
+</a>
+<figcaption>The live dashboard (<code>agentwatch watch-all --security</code>) with four
+made-up sessions: one stuck re-running a failing command, one that read a password
+file and uploaded it, and two working normally. Security 0 means no security findings
+for that session.
+<a class="aw-shot__full" href="assets/images/dashboard.svg">Open full size</a></figcaption>
+</figure>
 
-```bash
-# One-shot health check
-agentwatch check
+<section class="aw-section" markdown>
 
-# Live TUI dashboard
-agentwatch watch
+## What it watches for
 
-# Security scan
-agentwatch scan
+<div class="aw-groups" markdown>
 
-# List running agents
-agentwatch ps
+<div class="aw-group" markdown>
 
-# Programs using AI right now
-agentwatch detect
+### :octicons-pulse-24: Wasted time and money
 
-# Who local AI runtimes (Ollama, LM Studio, ...) talk to
-agentwatch net
-
-# Token usage stats
-agentwatch stats
-```
-
----
-
-## Scoring System
-
-=== "Health Score"
-
-    **3-tier composite score (0–100)**
-
-    | Component | Weight | What it measures |
-    |-----------|--------|------------------|
-    | Detectors | 40% | Warnings from 15 health detectors, weighted by category |
-    | Efficiency | 30% | Token burn rate, cache hits, I/O ratio, context pressure |
-    | Context Rot | 30% | Temporal decay — are early files still referenced? |
-
-    **Detector categories:**
-
-    | Category | Weight | Detectors |
-    |----------|--------|-----------|
-    | Progress | 35% | loop, reread, thrash, stall |
-    | Errors | 30% | error_spiral, error_blindness, syntax_loop, high_error_rate |
-    | Context | 20% | context_rot, context_pressure, rediscovery |
-    | Goal | 15% | same_outcome, file_churn, exploration_stall, error_class_persistence |
-
-    **Severity impact:** LOW (-5) · MEDIUM (-15) · HIGH (-30) · CRITICAL (-50)
-
-=== "Security Score"
-
-    **Starts at 100, deducts per finding**
-
-    | Category | Detectors |
-    |----------|-----------|
-    | Credentials | credential_access, secret_in_output, credential_exfil, secret_leak_scanner |
-    | Injection | prompt_injection, hidden_instruction, indirect_injection |
-    | Network | network_anomaly, data_exfiltration, c2_communication, dns_exfiltration |
-    | Privilege | privilege_escalation, dangerous_command, mass_file_operation, sensitive_directory |
-    | Supply Chain | malicious_skill, skill_network, new_skill, skill_chain, skill_install |
-
-=== "Efficiency Score"
-
-    **Composite of 6 operational metrics**
-
-    | Metric | Weight | What it measures |
-    |--------|--------|------------------|
-    | Context Pressure | 30% | Latest call's context vs. context window (200K, or 1M once a call exceeds 200K) |
-    | Token Burn Rate | 20% | Fresh tokens per minute (input + cache creation + output; cache reads excluded) |
-    | Cache Hit Rate | 15% | How well the agent reuses cached context |
-    | Duration | 15% | Session length relative to task |
-    | I/O Ratio | 10% | Fresh input (cache reads excluded) vs. output tokens |
-    | Actions Per Turn | 10% | Tool call density (thrashing detection) |
-
----
-
-## Detectors
-
-<div class="aw-two-col" markdown>
-
-<div markdown>
-
-### Health Detectors (15)
-
-**Loop & Progress**
-
-| Detector | Catches |
-|----------|---------|
-| `loop` | Same action repeated |
-| `reread` | Re-reading same files |
-| `thrash` | Edit → test → fail cycles |
-| `stall` | No meaningful progress |
-
-**Stuck Patterns**
-
-| Detector | Catches |
-|----------|---------|
-| `same_outcome` | Different fixes, same error |
-| `file_churn` | Repeated edits without success |
-| `exploration_stall` | No new files explored |
-| `error_class_persistence` | Same error type persists |
-
-**Error Patterns**
-
-| Detector | Catches |
-|----------|---------|
-| `error_spiral` | Consecutive failures |
-| `error_blindness` | Ignoring repeated errors |
-| `syntax_loop` | Syntax/import loops |
-| `high_error_rate` | High failure rate |
-
-**Context**
-
-| Detector | Catches |
-|----------|---------|
-| `context_rot` | Early files forgotten |
-| `context_pressure` | Context window filling |
-| `rediscovery` | Re-learning known info |
+- **Going in circles.** It runs the same command, gets the same error, and runs it
+  again.
+- **Failing over and over.** Step after step fails, and nothing works in between.
+- **Stuck, no progress.** It keeps reading and searching files but never changes
+  anything.
+- **Forgetting earlier work.** Its memory (the *context window*: how much of the
+  conversation it can hold at once) fills up, and it goes back to files it already
+  read.
+- **Burning money.** AI services charge by the *token*, a few characters of text.
+  AgentWatch estimates what each session has cost so far, and how much of that
+  went on steps that led nowhere.
 
 </div>
 
-<div markdown>
+<div class="aw-group" markdown>
 
-### Security Detectors (21)
+### :octicons-shield-lock-24: Security
 
-**Credentials**
-
-| Detector | Catches |
-|----------|---------|
-| `credential_access` | Accessing secret files |
-| `secret_in_output` | Secrets in output |
-| `credential_exfil` | Credential access followed by network activity |
-| `secret_leak_scanner` | Secrets leaked through any channel |
-
-**Injection**
-
-| Detector | Catches |
-|----------|---------|
-| `prompt_injection` | Prompt injection |
-| `hidden_instruction` | Hidden instructions |
-| `indirect_injection` | Indirect injection |
-
-**Network**
-
-| Detector | Catches |
-|----------|---------|
-| `network_anomaly` | Unusual network activity |
-| `data_exfiltration` | Data exfiltration |
-| `c2_communication` | C2 communication |
-| `dns_exfiltration` | DNS tunneling |
-| `undeclared_egress` | Live: connection no action declared |
-
-**Privilege**
-
-| Detector | Catches |
-|----------|---------|
-| `privilege_escalation` | Privilege escalation |
-| `dangerous_command` | Dangerous commands |
-| `mass_file_operation` | Mass file operations |
-| `sensitive_directory` | Sensitive directory access |
-
-**Supply Chain**
-
-| Detector | Catches |
-|----------|---------|
-| `malicious_skill` | Malicious skill behavior |
-| `skill_network` | Skill network requests |
-| `new_skill` | New skill execution |
-| `skill_chain` | Chained skill execution |
-| `skill_install` | Skill installation |
+- **Leaked passwords and keys.** An API key (a password for an online service)
+  shows up in a command the assistant ran or in what it wrote.
+- **Prompt injection.** Hidden instructions in a file or web page try to take over
+  the assistant, such as "ignore your previous instructions".
+- **Data sent somewhere unexpected.** It opens your `.env` file, where passwords
+  are often kept, and then sends data to a server.
+- **Dangerous commands.** It deletes files in bulk, or gives itself administrator
+  rights with `sudo`.
+- **Unknown add-ons.** A new *skill* (an add-on that gives the assistant new
+  abilities) is installed, or starts connecting to the internet.
 
 </div>
 
 </div>
 
----
+</section>
 
-## Architecture
+<section class="aw-section" markdown>
 
-!!! info "Deterministic-First Design"
+## How it works
 
-    AgentWatch uses **zero LLM calls** for detection. All 36 detectors are rule-based pattern
-    matchers operating on log streams. This means:
+<ol class="aw-steps">
+<li class="aw-step">
+<h3>Install it</h3>
+<p>Open a terminal, the app where you type commands, and run one command:
+<code>pipx install agentwatch-monitor</code>. You need Python 3.11 or newer.
+<a href="get-started/">Get started</a> has the steps for Mac, Windows and
+Linux.</p>
+</li>
+<li class="aw-step">
+<h3>Run it next to your assistant</h3>
+<p>In a second terminal window, run <code>agentwatch watch-all</code>. It finds the
+assistants running on your computer by itself and follows each session as it
+works.</p>
+</li>
+<li class="aw-step">
+<h3>Read the score</h3>
+<p>Every session gets a health score from 0 to 100 and a list of what is wrong, in
+plain words. Add <code>--security</code>, or press <kbd>s</kbd>, to turn on the
+security checks. For a one-word verdict (secure / at risk / compromised), run
+<code>agentwatch security-scan</code>.</p>
+</li>
+</ol>
 
-    - **No additional token cost** — monitoring doesn't consume your API budget
-    - **No latency** — detections are instant, not waiting on inference
-    - **Fully reproducible** — same logs always produce the same score
-    - **Offline capable** — works without network access
+<div class="aw-scale">
+<p class="aw-scale__title" id="health-scale">The health score, from 0 to 100</p>
+<div class="aw-scale__track">
+<ol class="aw-scale__bands" aria-labelledby="health-scale">
+<li class="aw-band aw-band--bad"><span class="aw-band__word">Stuck</span> <span class="aw-band__range">0–39</span></li>
+<li class="aw-band aw-band--warn"><span class="aw-band__word">Spinning</span> <span class="aw-band__range">40–59</span></li>
+<li class="aw-band aw-band--degraded"><span class="aw-band__word">Struggling</span> <span class="aw-band__range">60–79</span></li>
+<li class="aw-band aw-band--ok"><span class="aw-band__word">Productive</span> <span class="aw-band__range">80–100</span></li>
+</ol>
+<p class="aw-scale__marker" style="--at: 69" aria-hidden="true">checkout-api, 69</p>
+</div>
+<p class="aw-scale__note">In the screenshot above, checkout-api scores 69: struggling.
+These are AgentWatch's own words for each range; if you prefer healthy, degraded,
+warning and critical, add <code>--theme classic</code>.</p>
+<p class="aw-scale__note"><code>agentwatch security-scan</code> gives a separate
+security verdict: <span class="aw-chip aw-chip--ok">Secure</span> when nothing is
+found (100),
+<span class="aw-chip aw-chip--degraded">At risk</span> from 50 to 99, and
+<span class="aw-chip aw-chip--bad">Compromised</span> below 50. One critical finding,
+such as a password file being read and then sent over the network, means
+compromised.</p>
+</div>
 
----
+</section>
 
-## Supported Agents
+<section class="aw-section aw-private" markdown>
 
-| Agent | Detection | Log Parsing | Teams |
-|-------|-----------|-------------|-------|
-| Claude Code | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } |
-| Moltbot / Clawdbot | — | :material-check-circle:{ .t-green } | — |
-| Aider | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| Codex | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| GitHub Copilot CLI | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| Antigravity CLI (agy) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| Gemini CLI | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| Cursor | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| GitHub Copilot in VS Code | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| Cline (VS Code extension and CLI) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
-| Kilo Code 7.x (CLI and VS Code extension) | :material-check-circle:{ .t-green } | :material-check-circle:{ .t-green } | — |
+<div class="aw-private__intro" markdown>
 
-Each agent is an adapter in `agentwatch.agents` (ordered `ADAPTERS` registry). Running agents are
-found by scanning processes with `psutil` and matching each adapter's pattern against the *program*
-(argv[0], or the script after `node`/`python`), never its arguments, so `copilot --model
-claude-sonnet-4.5` is Copilot, not Claude Code. Sub-agents are linked through PPID chain walking and
-grouped into teams.
+## It stays on your computer
 
-Claude Code, Aider, GitHub Copilot CLI and Antigravity CLI (agy) each have the full pipeline:
-process discovery, log-file resolution, and log parsing into actions, both one-shot (`check`,
-`security-scan`) and live (`watch`, `watch-all`). Cursor has the same pipeline, but discovery is
-gated on the Cursor process and reads composers from its `state.vscdb`. GitHub Copilot in VS Code
-works the same way: discovery is gated on the VS Code process, with one entry per recent agent-mode
-chat, read from VS Code's chat-session log. Codex is discovered and its
-rollout JSONL is parsed, but the parser is verified against fixtures only, not a live session.
-Gemini CLI has the full pipeline too, but is likewise fixture-verified only (checked against the
-gemini-cli 0.62.0 source, not a live session).
-Cline is read from two stores: the legacy VS Code extension's `globalStorage` tasks (in VS Code,
-VS Code Insiders, VSCodium and Cursor, each gated on its own editor process; the forks are
-source-verified, not live; Windsurf is not supported) and the SDK store `~/.cline/data/sessions`, shared by the new extension and
-the Cline CLI. It is fixture-verified only; live testing was not approved.
-Kilo Code 7.x is an OpenCode fork and is read from its SQLite store `~/.local/share/kilo/kilo.db`
-with OpenCode's parser. It is fixture-verified only (no live install); Kilo 5.x is not supported.
-Moltbot has a log parser but no process discovery, so you point it at a log file directly. An Aider
-`--analytics-log` JSONL sidecar backfills token and cost data.
-
----
-
-## CI/CD Integration
-
-AgentWatch returns meaningful exit codes for pipeline automation:
-
-| Exit Code | Health | Security |
-|-----------|--------|----------|
-| `0` | Score >= 60 (healthy) | Score = 100 (secure) |
-| `1` | Score 40–59 (warning) | Score 50–99 (at risk) |
-| `2` | Score < 40 (critical) | Score < 50 (compromised) |
-
-**Example pipeline step:**
-
-```yaml
-- name: Check agent health
-  run: |
-    pip install agentwatch-monitor
-    agentwatch check --exit-code
-```
-
-```yaml
-- name: Security gate
-  run: |
-    agentwatch scan
-    # Fails the pipeline if security score < 50
-```
-
----
-
-<div class="aw-footer-cta" markdown>
-
-[:material-github: **GitHub**](https://github.com/loomlabs-venture-studio/agentwatch){ .md-button }
-[:material-package-variant: **PyPI**](https://pypi.org/project/agentwatch-monitor/){ .md-button .md-button--primary }
+Your assistant already keeps a log of everything it does. AgentWatch reads that
+log on your own computer, and that is all it needs.
 
 </div>
+
+<ul class="aw-facts">
+<li><strong>No server, no account.</strong> There is no AgentWatch server and
+nothing to sign up for.</li>
+<li><strong>Your code and conversations are never uploaded.</strong> If you set up an
+alert webhook, each alert sends a short warning message (which can name a file or
+command) to the address you chose. Otherwise it only looks up server names
+(<a href="faq/#does-it-send-my-data-anywhere">details</a>).</li>
+<li><strong>No AI in the checks.</strong> They are plain rules, so they cost nothing
+to run and give the same answer every time.</li>
+<li><strong>Free, and the code is public.</strong> It's open source under the MIT
+license. Anyone can read the code on
+<a href="https://github.com/LoomLabs-Venture-Studio/agentwatch">GitHub</a>.</li>
+</ul>
+
+</section>
+
+<section class="aw-section aw-end" markdown>
+
+<p class="aw-works" markdown>**Works with** Claude Code, Cursor, Codex, the ChatGPT desktop
+app, GitHub Copilot, Aider, Gemini CLI, Cline, OpenCode and more.
+[See which are fully tested](supported-agents.md).</p>
+
+[Get started](get-started.md){ .md-button .md-button--primary }
+
+<p class="aw-maker" markdown>AgentWatch is built by [LoomLabs](https://loomlabs.io){ .aw-hit }.</p>
+
+</section>
