@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -285,6 +285,10 @@ def _is_tool_use(action: Action) -> bool:
     return isinstance(action.raw, dict) and action.raw.get("type") == "tool_use"
 
 
+# Messages whose peak usage is remembered; a message's lines arrive together.
+_MAX_PEAK_MESSAGES = 4096
+
+
 class ActionBuffer:
     """Rolling buffer of recent actions with query methods."""
 
@@ -297,7 +301,7 @@ class ActionBuffer:
         # message_id -> (tokens, cost) already counted for that call
         self._billed: dict[str, tuple[int, float]] = {}
         # message_id -> largest (in, out, cache_creation, cache_read, cost) counted
-        self._peak_usage: dict[str, tuple[int, int, int, int, float]] = {}
+        self._peak_usage: OrderedDict[str, tuple[int, int, int, int, float]] = OrderedDict()
         # Calls added before their result: the parser fills in the outcome on
         # the same Action later, and stats catch up in _sync_results.
         self._awaiting: deque[Action] = deque(maxlen=max_size)
@@ -307,6 +311,9 @@ class ActionBuffer:
 
     def add(self, action: Action) -> None:
         """Add an action to the buffer."""
+        # Count finished outcomes first: _awaiting is bounded, and a finished
+        # call must not be evicted from it before it is counted.
+        self._sync_results()
         self.actions.append(action)
 
         # Update stats
@@ -326,6 +333,9 @@ class ActionBuffer:
             peak = self._peak_usage.get(action.message_id, (0, 0, 0, 0, 0.0))
             new_peak = tuple(max(a, b) for a, b in zip(peak, usage))
             self._peak_usage[action.message_id] = new_peak
+            self._peak_usage.move_to_end(action.message_id)
+            if len(self._peak_usage) > _MAX_PEAK_MESSAGES:
+                self._peak_usage.popitem(last=False)
             usage = tuple(n - p for n, p in zip(new_peak, peak))
         t_in, t_out, t_cache_w, t_cache_r, t_cost = usage
         self._stats.total_tokens += t_in + t_out

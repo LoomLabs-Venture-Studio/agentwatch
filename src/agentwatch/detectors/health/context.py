@@ -25,7 +25,7 @@ class ContextRotDetector(Detector):
         self.min_actions = min_actions
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.min_actions:
+        if buffer.history_len < self.min_actions:
             return None
 
         # Use the first 25% of the session as "early"
@@ -120,7 +120,7 @@ class RediscoveryDetector(Detector):
         self.rediscovery_gap = rediscovery_gap
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         actions = buffer.last(self.window)

@@ -133,7 +133,7 @@ class RereadDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
@@ -177,7 +177,7 @@ class ThrashDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
@@ -238,7 +238,7 @@ class StallDetector(Detector):
         self.min_edits = min_edits
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)

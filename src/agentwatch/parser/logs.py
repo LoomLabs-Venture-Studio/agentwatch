@@ -80,7 +80,8 @@ def claude_context_window(model: Any) -> int:
     return 0
 
 
-# Result text kept on a call's Action (incoming_message, as Codex and Cline do).
+# Result text kept on a call's Action (incoming_message, as Codex and Cline do),
+# truncated.
 _RESULT_TEXT_LIMIT = 2000
 _MAX_PENDING_CALLS = 1024
 
@@ -282,9 +283,11 @@ def _parse_claude_code(
                 if call_action is not None:
                     # The call's Action is already out; record its outcome on it.
                     if result_content:
-                        call_action.incoming_message = _redact_truncate(
-                            str(result_content), _RESULT_TEXT_LIMIT
-                        )
+                        # Unredacted, like Codex and Cline: the secret scanner
+                        # reads it, and masks what it reports.
+                        call_action.incoming_message = str(result_content)[
+                            :_RESULT_TEXT_LIMIT
+                        ]
                     if is_error:
                         call_action.success = False
                         call_action.error_message = error_msg

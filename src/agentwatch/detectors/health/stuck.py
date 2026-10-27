@@ -64,7 +64,7 @@ class SameOutcomeDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
@@ -140,7 +140,7 @@ class FileChurnDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
@@ -217,7 +217,7 @@ class ExplorationStallDetector(Detector):
         self.min_actions = min_actions
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.min_actions:
+        if buffer.history_len < self.min_actions:
             return None
 
         all_actions = list(buffer.actions)
@@ -295,7 +295,7 @@ class ErrorClassPersistenceDetector(Detector):
         self.min_edits_between = min_edits_between
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)

@@ -78,22 +78,6 @@ def test_successful_result_content_is_kept_on_the_call(run, tmp_path):
     assert actions[0].incoming_message == "README.md\nsetup.py"
 
 
-def test_result_content_is_redacted():
-    parser = ClaudeCodeParser()
-    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
-    (call,) = parser.parse_entry({
-        "type": "assistant", "sessionId": "s", "timestamp": "2026-01-01T00:00:00Z",
-        "message": {"role": "assistant", "id": "m", "content": [
-            {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "env"}}]},
-    })
-    parser.parse_entry({
-        "type": "user", "sessionId": "s", "timestamp": "2026-01-01T00:00:01Z",
-        "message": {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "t", "content": f"TOKEN={token}"}]},
-    })
-    assert token not in call.incoming_message
-
-
 def test_unmatched_error_result_keeps_its_own_action():
     (action,) = ClaudeCodeParser().parse_entry({
         "type": "user", "sessionId": "s", "timestamp": "2026-01-01T00:00:01Z",
@@ -226,3 +210,128 @@ def test_buffer_counts_cost_and_cache_once_per_message():
             buffer.add(a)
     stats = buffer.stats
     assert (stats.total_cost, stats.total_cache_creation, stats.total_cache_read) == (0.25, 30, 40)
+
+
+def _write_failing_log(path: Path, n: int, error=lambda i: f"make: no rule {i}", prefix="") -> None:
+    rows = []
+    for i in range(n):
+        ts = f"2026-01-01T{i // 3600:02d}:{i // 60 % 60:02d}:{i % 60:02d}Z"
+        rows.append({
+            "type": "assistant", "sessionId": "s", "timestamp": ts,
+            "message": {"role": "assistant", "id": f"m{i}", "content": [
+                {"type": "tool_use", "id": f"t{i}", "name": "Bash",
+                 "input": {"command": f"{prefix}step {i}"}}]},
+        })
+        rows.append({
+            "type": "user", "sessionId": "s", "timestamp": ts,
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "is_error": True,
+                 "content": error(i)}]},
+        })
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def _run_log(run: str, log: Path, tmp_path: Path, mode: str = "health"):
+    if run == "parse_file":
+        buffer = ActionBuffer()
+        warnings = create_registry(mode).scan(parse_file(log), buffer)
+        return buffer, warnings
+    live = tmp_path / "live.jsonl"
+    live.write_text("", encoding="utf-8")
+    watcher, buffer = LogWatcher(live), ActionBuffer()
+    for line in log.read_text(encoding="utf-8").splitlines(keepends=True):
+        with open(live, "a", encoding="utf-8") as f:
+            f.write(line)
+        for action in watcher._read_new_lines():
+            buffer.add(action)
+    return buffer, create_registry(mode).check_health(buffer)
+
+
+@PATHS
+def test_error_count_is_exact_past_the_buffer_size(run, tmp_path):
+    log = tmp_path / "many.jsonl"
+    _write_failing_log(log, 601)
+    buffer, _ = _run_log(run, log, tmp_path)
+
+    assert buffer.stats.error_count == 601
+    assert len(buffer.recent_errors(1000)) == 601
+
+
+@PATHS
+def test_secret_in_failed_tool_result_is_still_a_leak(run, tmp_path):
+    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    log = tmp_path / "leak.jsonl"
+    _write_failing_log(log, 1, error=lambda i: f"curl failed, TOKEN={token}")
+    actions = list(parse_file(log))
+    assert token not in actions[0].error_message  # the error text stays masked
+    assert token in actions[0].incoming_message  # the scanner needs the raw text
+
+    buffer = ActionBuffer()
+    warnings = create_registry("security").scan(iter(actions), buffer)
+    assert "secret_leak" in {w.signal for w in warnings}
+    assert all(token not in str(w.details) + w.message for w in warnings)
+
+
+@PATHS
+def test_syntax_loop_fires_at_the_same_call_count_as_before(run, tmp_path):
+    """8 SyntaxError calls (16 Actions on develop) opened the window-15 gate."""
+    log = tmp_path / "syntax.jsonl"
+    _write_failing_log(log, 8, error=lambda i: f"SyntaxError: bad {i}")
+    _, warnings = _run_log(run, log, tmp_path)
+
+    assert "syntax_loop" in {w.signal for w in warnings}
+
+
+def test_no_history_gate_counts_raw_actions():
+    """Warm-up gates use buffer.history_len (a merged failure is two calls' worth),
+    except the two that read only the failures themselves."""
+    import re
+
+    root = Path(__file__).parent.parent / "src" / "agentwatch" / "detectors" / "health"
+    gates = {
+        (p.name, line.strip())
+        for p in root.glob("*.py")
+        for line in p.read_text(encoding="utf-8").splitlines()
+        if re.match(r"\s*if len\(buffer\) <", line)
+    }
+    assert gates == {
+        ("errors.py", "if len(buffer) < self.threshold:"),
+        ("errors.py", "if len(buffer) < self.min_actions:"),
+    }
+
+
+def test_peak_usage_map_is_bounded(monkeypatch):
+    import agentwatch.parser.models as models
+
+    monkeypatch.setattr(models, "_MAX_PEAK_MESSAGES", 3)
+    parser, buffer = ClaudeCodeParser(), ActionBuffer()
+    for i in range(10):
+        for a in parser.parse_entry({
+            "type": "assistant", "sessionId": "s", "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "assistant", "id": f"m{i}", "usage": {"input_tokens": 5},
+                        "content": [{"type": "tool_use", "id": f"t{i}", "name": "Bash",
+                                     "input": {"command": "ls"}}]},
+        }):
+            buffer.add(a)
+    assert len(buffer._peak_usage) == 3
+    assert buffer.stats.total_input_tokens == 50
+
+
+def test_tool_result_text_is_not_the_stated_task():
+    from agentwatch.llm import OllamaAnalyzer
+
+    parser, buffer = ClaudeCodeParser(), ActionBuffer()
+    for e in (
+        {"type": "assistant", "sessionId": "s", "timestamp": "2026-01-01T00:00:00Z",
+         "message": {"role": "assistant", "id": "m", "content": [
+             {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "ls"}}]}},
+        {"type": "user", "sessionId": "s", "timestamp": "2026-01-01T00:00:01Z",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "t", "content": "README.md"}]}},
+    ):
+        for a in parser.parse_entry(e):
+            buffer.add(a)
+
+    assert buffer.actions[0].incoming_message == "README.md"
+    analyzer = OllamaAnalyzer.__new__(OllamaAnalyzer)
+    assert analyzer.assess_goal_alignment(buffer) is None

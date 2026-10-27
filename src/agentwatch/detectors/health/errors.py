@@ -146,7 +146,7 @@ class SyntaxLoopDetector(Detector):
         self._pattern = re.compile("|".join(self.SYNTAX_PATTERNS), re.IGNORECASE)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
