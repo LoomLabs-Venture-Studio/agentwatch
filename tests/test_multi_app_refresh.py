@@ -12,7 +12,7 @@ it away.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from test_multi_app_table import _now, _seed
@@ -25,7 +25,7 @@ from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
 def _make_action(i: int) -> Action:
     return Action(
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
         tool_name="Read",
         tool_type=ToolType.READ,
         success=True,
@@ -50,13 +50,13 @@ async def test_idle_agent_skips_recompute_until_buffer_changes():
 
         idle_registry = create_registry(mode="health")
         call_count = {"n": 0}
-        original_check_all = idle_registry.check_all
+        original_check_all = idle_registry.check_health
 
         def counting_check_all(buffer):
             call_count["n"] += 1
             return original_check_all(buffer)
 
-        idle_registry.check_all = counting_check_all
+        idle_registry.check_health = counting_check_all
 
         selected_item = AgentItem(selected_path, pid=100, team_id=100)
         idle_item = AgentItem(idle_path, pid=200, team_id=100)

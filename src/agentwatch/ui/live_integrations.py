@@ -1,10 +1,12 @@
 """Shared live-TUI wiring for `--siem-log` export and `--llm` Tier-2 triage.
 
 `AgentWatchApp` (`ui/app.py`, single-agent) and `MultiAgentWatchApp`
-(`ui/multi_app.py`, one of these per tracked agent) both re-run
-`registry.check_all()` on a 1s `set_interval` render tick. `Warning` is a
-plain `@dataclass` (`detectors/base.py`) freshly constructed by whichever
-detector fires on *every* `check_all()` call (`detectors/registry.py`) --
+(`ui/multi_app.py`, one of these per tracked agent) both re-run the
+detectors on a 1s `set_interval` render tick (the multi-agent dashboard via
+`SessionScan.warnings()`, which also keeps security findings for the whole
+session). `Warning` is a plain `@dataclass` (`detectors/base.py`) freshly
+constructed by whichever health detector fires on *every* check, and by
+`check_all()` (`detectors/registry.py`) --
 there is no persisted object identity to key off of tick-over-tick, so a
 still-open issue is a brand new `Warning` instance every second.
 

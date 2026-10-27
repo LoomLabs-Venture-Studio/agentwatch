@@ -289,34 +289,15 @@ class TestSecretLeakScanner:
     # Deduplication
     # -----------------------------------------------------------------------
 
-    def test_dedup_suppresses_repeat(self):
+    def test_repeat_check_still_reports_the_finding(self):
         scanner = SecretLeakScanner()
-        action = _make_action(outgoing_data="sk-abcdefghij1234567890ab")
         buf = ActionBuffer()
-        buf.add(action)
+        buf.add(_make_action(outgoing_data="sk-abcdefghij1234567890ab"))
 
-        w1 = scanner.check(buf)
-        assert w1 is not None
+        w1, w2 = scanner.check(buf), scanner.check(buf)
 
-        # Same buffer, same content — should be suppressed
-        w2 = scanner.check(buf)
-        assert w2 is None
-
-    def test_dedup_expires_after_ttl(self):
-        scanner = SecretLeakScanner()
-        scanner.DEDUP_TTL = 0.1  # Very short TTL for testing
-        action = _make_action(outgoing_data="sk-abcdefghij1234567890ab")
-        buf = ActionBuffer()
-        buf.add(action)
-
-        w1 = scanner.check(buf)
-        assert w1 is not None
-
-        # Wait for TTL to expire
-        time.sleep(0.15)
-
-        w2 = scanner.check(buf)
-        assert w2 is not None
+        assert w1 is not None and w2 is not None
+        assert w1.details == w2.details
 
     # -----------------------------------------------------------------------
     # False positive rejection
