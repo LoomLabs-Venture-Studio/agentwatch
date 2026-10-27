@@ -81,6 +81,9 @@ class Action:
     # line per content block, each with the full usage) share it.
     message_id: str | None = None
     cache_creation_1h_tokens: int = 0  # part of cache_creation_tokens on the 1h TTL
+    # The call's failed result was merged into this Action (Claude Code); it
+    # used to be a second Action. See ActionBuffer.history_len.
+    error_merged: bool = False
 
     # Security-relevant fields
     incoming_message: str | None = None  # For prompt injection detection
@@ -278,6 +281,10 @@ def calls_usage(calls: Iterable[Action]) -> tuple[int | None, float | None]:
     return tokens, cost
 
 
+def _is_tool_use(action: Action) -> bool:
+    return isinstance(action.raw, dict) and action.raw.get("type") == "tool_use"
+
+
 class ActionBuffer:
     """Rolling buffer of recent actions with query methods."""
 
@@ -289,6 +296,9 @@ class ActionBuffer:
         self._stats = SessionStats()
         # message_id -> (tokens, cost) already counted for that call
         self._billed: dict[str, tuple[int, float]] = {}
+        # Calls added before their result: the parser fills in the outcome on
+        # the same Action later, and stats catch up in _sync_results.
+        self._awaiting: deque[Action] = deque(maxlen=max_size)
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -358,6 +368,8 @@ class ActionBuffer:
         if not action.success and action.error_message:
             self._stats.error_count += 1
             self._error_messages.append(action.error_message)
+        elif _is_tool_use(action) and action.incoming_message is None:
+            self._awaiting.append(action)
 
         # Raw per-action security-stat counters -- see the design-decision
         # comment on `SessionStats` above for why these count raw pattern
@@ -374,6 +386,30 @@ class ActionBuffer:
         if action.incoming_message and is_injection_like(action.incoming_message):
             self._stats.injection_attempts += 1
 
+    def _sync_results(self) -> None:
+        """Count the outcomes the parser recorded on actions already added
+        (a Claude Code tool_result arriving on a later line)."""
+        if not self._awaiting:
+            return
+        pending: deque[Action] = deque(maxlen=self.max_size)
+        for action in self._awaiting:
+            if not action.success and action.error_message:
+                self._stats.error_count += 1
+                self._error_messages.append(action.error_message)
+            elif action.incoming_message is None:
+                pending.append(action)
+                continue
+            if action.incoming_message and is_injection_like(action.incoming_message):
+                self._stats.injection_attempts += 1
+        self._awaiting = pending
+
+    @property
+    def history_len(self) -> int:
+        """``len(self)`` as it was when a failed Claude Code result was its own
+        Action: a merged failure counts twice. Detectors gate "enough history"
+        on this so merging results does not delay their first warning."""
+        return len(self.actions) + sum(a.error_merged for a in self.actions)
+
     def last(self, n: int) -> list[Action]:
         """Get the last n actions (chronological order)."""
         if n <= 0:
@@ -386,6 +422,7 @@ class ActionBuffer:
 
     @property
     def stats(self) -> SessionStats:
+        self._sync_results()
         return self._stats
 
     def file_access_count(self, path: str) -> int:
@@ -402,6 +439,7 @@ class ActionBuffer:
 
     def recent_errors(self, n: int = 10) -> list[str]:
         """Get recent error messages."""
+        self._sync_results()
         return self._error_messages[-n:]
 
     def actions_by_file(self, path: str) -> list[Action]:

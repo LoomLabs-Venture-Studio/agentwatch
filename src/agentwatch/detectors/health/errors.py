@@ -82,7 +82,8 @@ class ErrorBlindnessDetector(Detector):
         return redact_truncate(error.strip(), 200)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        # history_len: a failed call is one Action here, two before results were merged.
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
