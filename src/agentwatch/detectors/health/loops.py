@@ -44,7 +44,8 @@ class LoopDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        # history_len: a failed call is one Action here, two before results were merged.
+        if buffer.history_len < self.window:
             return None
 
         # The last `window` tool calls. Parsers' role-label sentinels (Cursor's
@@ -132,7 +133,7 @@ class RereadDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
@@ -176,7 +177,7 @@ class ThrashDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)
@@ -237,7 +238,7 @@ class StallDetector(Detector):
         self.min_edits = min_edits
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.history_len < self.window:
             return None
 
         recent = buffer.last(self.window)

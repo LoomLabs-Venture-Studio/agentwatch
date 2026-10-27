@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -81,6 +81,13 @@ class Action:
     # line per content block, each with the full usage) share it.
     message_id: str | None = None
     cache_creation_1h_tokens: int = 0  # part of cache_creation_tokens on the 1h TTL
+    # The call's failed result was merged into this Action (Claude Code); it
+    # used to be a second Action. See ActionBuffer.history_len.
+    error_merged: bool = False
+    # Counts the tool results merged into this Action after it was emitted, so
+    # a scan that cached its findings can tell the Action has changed.
+    result_revision: int = 0
+    completed_at: datetime | None = None  # when the merged tool result was logged
 
     # Security-relevant fields
     incoming_message: str | None = None  # For prompt injection detection
@@ -278,6 +285,14 @@ def calls_usage(calls: Iterable[Action]) -> tuple[int | None, float | None]:
     return tokens, cost
 
 
+def _is_tool_use(action: Action) -> bool:
+    return isinstance(action.raw, dict) and action.raw.get("type") == "tool_use"
+
+
+# Messages whose peak usage is remembered; a message's lines arrive together.
+_MAX_PEAK_MESSAGES = 4096
+
+
 class ActionBuffer:
     """Rolling buffer of recent actions with query methods."""
 
@@ -289,12 +304,23 @@ class ActionBuffer:
         self._stats = SessionStats()
         # message_id -> (tokens, cost) already counted for that call
         self._billed: dict[str, tuple[int, float]] = {}
+        # message_id -> largest (in, out, cache_creation, cache_read, cost) counted
+        self._peak_usage: OrderedDict[str, tuple[int, int, int, int, float]] = OrderedDict()
+        # Calls added before their result: the parser fills in the outcome on
+        # the same Action later, and stats catch up in _sync_results.
+        self._awaiting: deque[Action] = deque(maxlen=max_size)
+        self._revision = 0
+        self._changed: deque[Action] = deque(maxlen=max_size)  # synced, not yet taken
 
     def __len__(self) -> int:
         return len(self.actions)
 
     def add(self, action: Action) -> None:
         """Add an action to the buffer."""
+        # Count finished outcomes first: _awaiting is bounded, and a finished
+        # call must not be evicted from it before it is counted.
+        self._sync_results()
+        self._revision += 1
         self.actions.append(action)
 
         # Update stats
@@ -304,12 +330,27 @@ class ActionBuffer:
         if action.context_window:
             self._stats.context_window = action.context_window
         self._stats.unpriced |= action.unpriced
-        self._stats.total_tokens += action.tokens_in + action.tokens_out
-        self._stats.total_input_tokens += action.tokens_in
-        self._stats.total_output_tokens += action.tokens_out
-        self._stats.total_cost += action.cost_usd
-        self._stats.total_cache_creation += action.cache_creation_tokens
-        self._stats.total_cache_read += action.cache_read_tokens
+        # Totals count each message_id once, at its largest value across the
+        # lines Claude Code streams it in (as cc_stats does).
+        usage = (
+            action.tokens_in, action.tokens_out, action.cache_creation_tokens,
+            action.cache_read_tokens, action.cost_usd,
+        )
+        if action.message_id:
+            peak = self._peak_usage.get(action.message_id, (0, 0, 0, 0, 0.0))
+            new_peak = tuple(max(a, b) for a, b in zip(peak, usage))
+            self._peak_usage[action.message_id] = new_peak
+            self._peak_usage.move_to_end(action.message_id)
+            if len(self._peak_usage) > _MAX_PEAK_MESSAGES:
+                self._peak_usage.popitem(last=False)
+            usage = tuple(n - p for n, p in zip(new_peak, peak))
+        t_in, t_out, t_cache_w, t_cache_r, t_cost = usage
+        self._stats.total_tokens += t_in + t_out
+        self._stats.total_input_tokens += t_in
+        self._stats.total_output_tokens += t_out
+        self._stats.total_cost += t_cost
+        self._stats.total_cache_creation += t_cache_w
+        self._stats.total_cache_read += t_cache_r
         # Each call once; a later copy with more tokens (streamed output)
         # replaces the earlier count, as calls_of keeps the largest copy.
         tokens = call_tokens(action)
@@ -332,22 +373,8 @@ class ActionBuffer:
         if action_context > 0:
             self._stats.last_context_tokens = action_context
 
-        # Extend the covered span at either end. Gaps are capped so a session
-        # resumed hours or days later doesn't count the idle time (#38).
-        ts = action.timestamp
-        cap = IDLE_GAP_CAP.total_seconds()
-        if ts is None:
-            pass  # untimed: still counted and scanned, but adds no duration (#44)
-        elif self._stats.start_time is None:
-            self._stats.start_time = self._stats.last_action_time = ts
-        elif ts > self._stats.last_action_time:
-            gap = (ts - self._stats.last_action_time).total_seconds()
-            self._stats.active_seconds += min(gap, cap)
-            self._stats.last_action_time = ts
-        elif ts < self._stats.start_time:
-            gap = (self._stats.start_time - ts).total_seconds()
-            self._stats.active_seconds += min(gap, cap)
-            self._stats.start_time = ts
+        self._extend_span(action.timestamp)
+        self._extend_span(action.completed_at)
 
         if action.file_path:
             self._file_access_counts[action.file_path] = (
@@ -358,6 +385,8 @@ class ActionBuffer:
         if not action.success and action.error_message:
             self._stats.error_count += 1
             self._error_messages.append(action.error_message)
+        elif _is_tool_use(action) and not action.result_revision:
+            self._awaiting.append(action)
 
         # Raw per-action security-stat counters -- see the design-decision
         # comment on `SessionStats` above for why these count raw pattern
@@ -374,6 +403,68 @@ class ActionBuffer:
         if action.incoming_message and is_injection_like(action.incoming_message):
             self._stats.injection_attempts += 1
 
+    def _extend_span(self, ts: datetime | None) -> None:
+        """Extend the covered span at either end. Gaps are capped so a session
+        resumed hours or days later doesn't count the idle time (#38)."""
+        cap = IDLE_GAP_CAP.total_seconds()
+        if ts is None:
+            pass  # untimed: still counted and scanned, but adds no duration (#44)
+        elif self._stats.start_time is None:
+            self._stats.start_time = self._stats.last_action_time = ts
+        elif ts > self._stats.last_action_time:
+            gap = (ts - self._stats.last_action_time).total_seconds()
+            self._stats.active_seconds += min(gap, cap)
+            self._stats.last_action_time = ts
+        elif ts < self._stats.start_time:
+            gap = (self._stats.start_time - ts).total_seconds()
+            self._stats.active_seconds += min(gap, cap)
+            self._stats.start_time = ts
+
+    def _sync_results(self) -> None:
+        """Count the outcomes the parser recorded on actions already added
+        (a Claude Code tool_result arriving on a later line)."""
+        if not self._awaiting:
+            return
+        pending: deque[Action] = deque(maxlen=self.max_size)
+        done = 0
+        for action in self._awaiting:
+            if not action.result_revision:
+                pending.append(action)
+                continue
+            if not action.success and action.error_message:
+                self._stats.error_count += 1
+                self._error_messages.append(action.error_message)
+            done += 1
+            self._changed.append(action)
+            self._extend_span(action.completed_at)
+            if action.incoming_message and is_injection_like(action.incoming_message):
+                self._stats.injection_attempts += 1
+        self._awaiting = pending
+        self._revision += bool(done)
+
+    def take_changed(self) -> list[Action]:
+        """The actions whose tool result landed since the last call, once. A
+        scan that looked at them when they were added must look again."""
+        self._sync_results()
+        changed = list(self._changed)
+        self._changed.clear()
+        return changed
+
+    @property
+    def revision(self) -> int:
+        """Changes whenever the buffer's content does: on every ``add`` and when
+        a tool result lands on an action already added. Unlike ``action_count``
+        it moves for a result-only update, so a cache keyed on it rescored."""
+        self._sync_results()
+        return self._revision
+
+    @property
+    def history_len(self) -> int:
+        """``len(self)`` as it was when a failed Claude Code result was its own
+        Action: a merged failure counts twice. Detectors gate "enough history"
+        on this so merging results does not delay their first warning."""
+        return len(self.actions) + sum(a.error_merged for a in self.actions)
+
     def last(self, n: int) -> list[Action]:
         """Get the last n actions (chronological order)."""
         if n <= 0:
@@ -386,6 +477,7 @@ class ActionBuffer:
 
     @property
     def stats(self) -> SessionStats:
+        self._sync_results()
         return self._stats
 
     def file_access_count(self, path: str) -> int:
@@ -402,6 +494,7 @@ class ActionBuffer:
 
     def recent_errors(self, n: int = 10) -> list[str]:
         """Get recent error messages."""
+        self._sync_results()
         return self._error_messages[-n:]
 
     def actions_by_file(self, path: str) -> list[Action]:

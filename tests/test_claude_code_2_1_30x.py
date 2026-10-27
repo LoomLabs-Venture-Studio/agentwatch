@@ -72,7 +72,7 @@ class _Session:
 
 def test_api_request_lines_are_not_actions():
     names = [a.tool_name for a in parse_file(FIXTURE)]
-    assert names == ["text_output", "Bash", "tool_result", "Read", _block(MCP)["name"]]
+    assert names == ["text_output", "Bash", "Read", _block(MCP)["name"]]
 
 
 def test_text_only_turns_are_not_a_loop(tmp_path):

@@ -832,12 +832,13 @@ class MultiAgentWatchApp(App):
         return scan
 
     def _score(self, data: dict) -> "HealthReport":
-        """One agent's report, rescored only when it has new actions
-        (action_count only grows) or its cache was dropped (`s`). Selected or
+        """One agent's report, rescored only when its buffer changed (new
+        actions, or a tool result landing on one; `revision` only grows) or its
+        cache was dropped (`s`). Selected or
         not, so every session scores the same way. RotScorer is fed only new
         actions: each update() advances its EMA and state machine."""
         buffer = data["buffer"]
-        count = buffer.stats.action_count
+        count = buffer.revision
         scan = self._session_scan(data)
         if count == data["_last_count"] and data["_last_report"] is not None and not scan.pending:
             return data["_last_report"]

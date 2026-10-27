@@ -235,6 +235,13 @@ def create_registry(
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
+# Security detectors that read a tool result's text (incoming_message,
+# error_message). They need no surrounding actions, so a result that lands on
+# an action already scanned is checked alone, in a scratch buffer.
+_RESULT_WINDOW = 5  # the narrowest window among them (the secret scanner's)
+_RESULT_DETECTORS = frozenset({"prompt_injection", "hidden_instruction", "secret_leak_scanner"})
+
+
 class SessionScan:
     """One session's security findings, kept for the whole session.
 
@@ -284,9 +291,34 @@ class SessionScan:
                 self.findings[key] = w
                 self.version += 1
 
+    def _scan_results(self, buffer: "ActionBuffer") -> None:
+        """Check the actions a tool result has landed on since the last scan.
+        The window detectors may have moved past them (parallel calls)."""
+        if not self._has_security:
+            return
+        from agentwatch.parser.models import ActionBuffer
+
+        # Actions still in the window are re-read by the check that follows.
+        in_window = {id(a) for a in buffer.last(_RESULT_WINDOW)}
+        for action in buffer.take_changed():
+            if id(action) in in_window:
+                continue
+            scratch = ActionBuffer(max_size=1)
+            scratch.add(action)
+            for detector in self.registry.detectors:
+                if detector.name not in _RESULT_DETECTORS:
+                    continue
+                try:
+                    many = getattr(detector, "check_many", None)
+                    found = many(scratch) if many is not None else [detector.check(scratch)]
+                except Exception:
+                    continue
+                self._keep([w for w in found if w])
+
     def add(self, buffer: "ActionBuffer", action: "Action") -> None:
         buffer.add(action)
         if self._has_security:
+            self._scan_results(buffer)
             self._keep(self.registry.check_security(buffer))
 
     def suspend(self, action_count: int) -> None:
@@ -342,6 +374,7 @@ class SessionScan:
 
     def warnings(self, buffer: "ActionBuffer") -> list[Warning]:
         if self._has_security:
+            self._scan_results(buffer)
             self._keep(self.registry.check_security(buffer))
         warnings = self.registry.check_health(buffer)
         if self._has_security:

@@ -146,6 +146,19 @@ Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.
   sessions kept their old report). The selected session is no longer
   rescored every second without new actions, which moved its context health
   and state on its own; every session is now rescored only on new actions.
+- Claude Code logs: a tool result now updates the call it answers instead
+  of becoming a second action, so failed calls count as failed (error
+  spirals and high error rates were missed) and the result text is kept.
+  Loop and error-blindness detection keep their sensitivity. Result text
+  now sits on the call (`incoming_message`), so the prompt-injection
+  detector and the `injection_attempts` stat see injection-like text in
+  tool results, as they already did for Codex and Cline; some sessions can
+  score lower on security.
+- Claude Code logs: the session token and cost totals count a message's
+  usage once, at its largest streamed value, not once per tool call or per
+  log line of the message.
+- The secret scanner now also scans successful Claude Code tool results (up
+  to 2,000 characters), not only failed ones, which are scanned in full.
 - Security findings now persist for the whole session. The live dashboard
   runs the security detectors on every action (like `security-scan`) and
   keeps each finding, so a dangerous command followed by many harmless

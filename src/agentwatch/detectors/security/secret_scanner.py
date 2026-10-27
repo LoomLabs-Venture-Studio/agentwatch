@@ -706,9 +706,10 @@ class SecretLeakScanner(SecurityDetector):
     _MEMO_SIZE = 32
 
     def __init__(self) -> None:
-        # id(action) -> (action, its findings); the action is held so its id
-        # cannot be reused while cached.
-        self._memo: OrderedDict[int, tuple[Any, list[Warning]]] = OrderedDict()
+        # id(action) -> (action, its result_revision, its findings); the action
+        # is held so its id cannot be reused while cached, and a tool result
+        # merged into it later (a new revision) invalidates the entry.
+        self._memo: OrderedDict[int, tuple[Any, int, list[Warning]]] = OrderedDict()
 
     def check_many(self, buffer: ActionBuffer) -> list[Warning]:
         """Every distinct (secret type, channel, file) in the last 5 actions.
@@ -731,12 +732,13 @@ class SecretLeakScanner(SecurityDetector):
 
     def _action_findings(self, action: Any) -> list[Warning]:
         """Findings of one action, remembered by action identity (bounded)."""
+        revision = getattr(action, "result_revision", 0)
         hit = self._memo.get(id(action))
-        if hit is not None and hit[0] is action:
+        if hit is not None and hit[0] is action and hit[1] == revision:
             self._memo.move_to_end(id(action))
-            return hit[1]
+            return hit[2]
         warnings = self._scan_action(action)
-        self._memo[id(action)] = (action, warnings)
+        self._memo[id(action)] = (action, revision, warnings)
         while len(self._memo) > self._MEMO_SIZE:
             self._memo.popitem(last=False)
         return warnings

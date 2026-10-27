@@ -29,9 +29,9 @@ from .cursor_source import (
 )
 from .gemini import GeminiParser
 from .logs import (
+    ClaudeCodeParser,
     FormatSniffer,
     ensure_supported_log,
-    parse_claude_code_entry,
     parse_moltbot_entry,
 )
 from .models import Action
@@ -60,6 +60,7 @@ class LogWatcher:
         self._last_sig: tuple[int, int, int] | None = None
         self._log_format: str | None = None
         self._sniffer = FormatSniffer()
+        self._claude_parser = ClaudeCodeParser()
         self._codex_parser: CodexParser | CopilotParser | AgyParser | GeminiParser | None = None
         self._callbacks: list[Callable[[Action], None]] = []
 
@@ -114,7 +115,7 @@ class LogWatcher:
             # this by unifying with parse_file()'s flush-at-EOF behavior.
             return self._codex_parser.parse_line(entry)
         else:
-            result = parse_claude_code_entry(entry)
+            result = self._claude_parser.parse_entry(entry)
 
         if isinstance(result, list):
             return result
@@ -151,6 +152,7 @@ class LogWatcher:
             # different content is re-read from the start.
             if sig[0] < self._position or self._read_prefix() != self._prefix:
                 self._position = 0
+                self._claude_parser = ClaudeCodeParser()  # re-read: forget the old calls
         self._last_sig = sig
 
         try:
@@ -215,8 +217,7 @@ class LogWatcher:
             # with no message yet is emitted now, not held back. The format
             # stays undecided; take_* drains, so nothing is replayed later.
             for entry in self._sniffer.take_metadata_only():
-                result = parse_claude_code_entry(entry)
-                for a in result if isinstance(result, list) else [result] if result else []:
+                for a in self._claude_parser.parse_entry(entry):
                     if not self.session_id or a.session_id == self.session_id:
                         actions.append(a)
 
