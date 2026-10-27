@@ -165,4 +165,6 @@ app, GitHub Copilot, Aider, Gemini CLI, Cline, OpenCode and more.
 
 [Get started](get-started.md){ .md-button .md-button--primary }
 
+<p class="aw-maker" markdown>AgentWatch is built by [LoomLabs](https://loomlabs.io){ .aw-hit }.</p>
+
 </section>

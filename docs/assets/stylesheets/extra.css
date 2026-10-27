@@ -326,6 +326,23 @@
   color: var(--aw-accent);
 }
 
+/* On phones the copy button is a 44px target; its icon keeps its size. */
+@media screen and (max-width: 44.9375em) {
+  .md-typeset .md-code__nav {
+    top: 0.1rem;
+    right: 0.1rem;
+    padding: 0;
+  }
+
+  .md-typeset .md-code__button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.2rem;
+    height: 2.2rem;
+  }
+}
+
 .md-typeset table:not([class]) {
   font-size: 0.8em;
   border: 1px solid var(--aw-rule-strong);
@@ -447,6 +464,22 @@
 
 .md-copyright {
   color: var(--aw-ink-muted);
+}
+
+/* Text links outside a list or table: padding grows the hit area to 44px
+   without moving the text (inline padding doesn't change the line). */
+.md-typeset a.aw-hit {
+  padding-block: 0.7em;
+}
+
+.md-copyright a {
+  padding-block: 0.75rem;
+}
+
+.md-copyright a {
+  color: var(--aw-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
 }
 
 .md-social__link {
@@ -908,4 +941,9 @@
 .md-typeset .aw-works {
   max-width: 40em;
   margin: 0 0 1.5em;
+}
+
+.md-typeset .aw-maker {
+  margin: 2em 0 0;
+  color: var(--aw-ink-muted);
 }

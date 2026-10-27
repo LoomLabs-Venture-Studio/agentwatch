@@ -117,3 +117,8 @@ secrets and personal information hidden:
 ```bash
 agentwatch scrub <log file>
 ```
+
+## Who makes AgentWatch?
+
+AgentWatch is built and maintained by [LoomLabs](https://loomlabs.io){ .aw-hit }.
+It is free and open source under the MIT license.

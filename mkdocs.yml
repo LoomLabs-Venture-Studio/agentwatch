@@ -6,7 +6,9 @@ site_description: >-
   or doing something risky with your passwords, keys or data. Free, open
   source, and it runs on your own computer.
 site_author: LoomLabs
-copyright: AgentWatch is free and open source under the MIT license. Made by LoomLabs.
+copyright: >-
+  AgentWatch is free and open source under the MIT license. Made by
+  <a href="https://loomlabs.io">LoomLabs</a>.
 
 repo_url: https://github.com/LoomLabs-Venture-Studio/agentwatch
 repo_name: GitHub
@@ -85,6 +87,9 @@ extra:
     - icon: octicons/mark-github-16
       link: https://github.com/LoomLabs-Venture-Studio/agentwatch
       name: AgentWatch on GitHub
+    - icon: octicons/link-16
+      link: https://loomlabs.io
+      name: LoomLabs
 
 extra_css:
   - assets/stylesheets/extra.css
