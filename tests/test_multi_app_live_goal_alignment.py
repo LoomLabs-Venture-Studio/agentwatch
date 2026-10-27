@@ -11,7 +11,7 @@ mount-time "free tick" to rewind here the way the single-agent tests must.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,7 +22,7 @@ from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
 def _make_action(i: int, incoming_message: str | None = None) -> Action:
     return Action(
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
         tool_name="Read",
         tool_type=ToolType.READ,
         success=True,
