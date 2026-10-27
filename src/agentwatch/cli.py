@@ -247,6 +247,14 @@ def _default_log() -> tuple[Path | None, str | None]:
     return log, f"No session for {Path.cwd()}; using newest session from {project}"
 
 
+def _security_exit_code(security_score: int) -> int:
+    """Exit code for a security score: 0 secure, 1 at risk, 2 compromised.
+
+    Shared by `security-scan` and `check --security`.
+    """
+    return SECURITY_TIER_EXIT_CODES[security_tier_from_score(security_score)]
+
+
 def _waste_line(waste: dict) -> str:
     """'Waste: ~$X on N findings (Y% of session cost)'; tokens when unpriced."""
     def pct(part: float, whole: float) -> str:
@@ -467,7 +475,13 @@ def check(
     llm: bool,
     llm_model: str,
 ):
-    """Run a one-time health check on agent logs."""
+    """Run a one-time health check on agent logs.
+
+    \b
+    Exit codes: 0 = healthy or degraded, 1 = warning, 2 = critical.
+    With --security, the exit code is the worse of that and the security
+    result: 1 = at risk (score 50-99), 2 = compromised (score below 50).
+    """
     # Find log file
     note = None
     if log is None:
@@ -536,11 +550,12 @@ def check(
     # < 40 = level_3 (critical/stuck) -> exit 2
     # < 60 = level_2 (warning/spinning) -> exit 1
     # >= 60 = level_0/level_1 (healthy/productive or degraded/struggling) -> exit 0
-    if report.overall_score < 40:
-        sys.exit(2)
-    elif report.overall_score < 60:
-        sys.exit(1)
-    sys.exit(0)
+    exit_code = 2 if report.overall_score < 40 else 1 if report.overall_score < 60 else 0
+    if security:
+        # The averaged health score can hide a CRITICAL finding, so the
+        # security tier also decides the exit code (the worse one wins).
+        exit_code = max(exit_code, _security_exit_code(calculate_security_score(warnings)))
+    sys.exit(exit_code)
 
 
 def _check_webhook(ctx, param, value: str | None) -> str | None:
@@ -1554,7 +1569,7 @@ def security_scan(
             _print_llm_assessments(warnings)
             _print_goal_alignment(goal_alignment)
 
-    sys.exit(SECURITY_TIER_EXIT_CODES[security_tier_from_score(security_score)])
+    sys.exit(_security_exit_code(security_score))
 
 
 @cli.command()
