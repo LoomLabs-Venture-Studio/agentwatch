@@ -5203,10 +5203,12 @@ Every PR went through engineer, then CTO diff review, then QA, then fixes. QA fi
 | B Claude tool-result matching | `fix/claude-tool-results` | sonnet | sonnet |
 | C persistent findings | `fix/persistent-findings` | opus design, sonnet build | sonnet |
 
-Rules for every task: branch from `origin/develop`, draft PR to `develop`, add one `CHANGELOG.md` bullet under `[Unreleased]`, push with `--no-verify`.
+Rules for every task: branch from `origin/develop`, draft PR to `develop`, add one `CHANGELOG.md` bullet (fix A: under `[0.2.1]` / Fixed; B-D: under `[Unreleased]`), push with `--no-verify`.
 
-**Open board question:** #183 (0.2.1 promotion, Sprint 35) is open, and its source branch is `develop` itself. A fix merged into `develop` before #183 merges ships in 0.2.1; otherwise these fixes ship as 0.2.2.
+### Board decisions (2026-10-26)
+1. Hold #183 (0.2.1 promotion, Sprint 35) until fix A merges, so 0.2.1 never ships a `check --security` that passes on critical findings. #183's source branch is `develop` itself, so fix A rides along once merged. B-D are not holding #183; they go in the next release (0.2.2 unless the board says otherwise).
 
 ### PR Log
 | Date | PR | Branch | Type | Status | Rejection Reason |
 |---|---|---|---|---|---|
+| 2026-10-26 | #184 | fix/check-security-exit | fix | CTO review, QA PASS (haiku), CI green; QA test gaps being added | -- |
