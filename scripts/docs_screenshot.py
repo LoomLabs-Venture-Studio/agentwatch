@@ -19,6 +19,11 @@ name, host name and home path; the script fails if one is there.
 Usage (from the repo root, with agentwatch installed):
     python scripts/docs_screenshot.py
     python scripts/docs_screenshot.py --out docs/assets/images/dashboard.svg
+
+--logs DIR writes the four finished session logs to DIR instead, plus
+signup-form.jsonl (Claude Code re-running the same failing test), and
+renders nothing. The sample report on the Get started page is
+`agentwatch check --log DIR/signup-form.jsonl`.
 """
 
 from __future__ import annotations
@@ -53,7 +58,7 @@ from agentwatch.ui import multi_app  # noqa: E402  (after the env is isolated)
 from agentwatch.ui.multi_app import MultiAgentWatchApp  # noqa: E402
 
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "docs/assets/images/dashboard.svg"
-SIZE = (100, 30)  # columns, rows: 100+ columns show every column
+SIZE = (112, 30)  # columns, rows: 100+ columns show every column
 MODEL = "claude-sonnet-4-6"  # a priced model with a known (1M) context window
 
 
@@ -293,10 +298,45 @@ def check_private(svg: str) -> list[str]:
     return found
 
 
+def sample_session(now: datetime) -> list[str]:
+    """The Get started page's sample report: a passing build, then the same
+    failing test six times in a row."""
+    path = "/work/signup-form/src/validate.ts"
+    steps = [
+        ("Read", {"file_path": path}, "(file contents)", False),
+        ("Edit", {"file_path": path, "old_string": "x", "new_string": "y"},
+         "The file has been updated.", False),
+        ("Bash", {"command": "npm run build"}, "built", False),
+    ] + [("Bash", {"command": "npm test"},
+          "FAIL src/validate.test.ts: expected true, got false", True)] * 6
+    return claude_lines("signup-form", steps, now - timedelta(minutes=25),
+                        now - timedelta(minutes=1), (40_000, 90_000))
+
+
+def write_logs(directory: Path) -> None:
+    """The sessions as they end in the screenshot, and the sample session,
+    one log file each."""
+    directory.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    start, later = build_sessions(now)
+    for name, lines in later:
+        start[name] = start[name] + lines
+    start["signup-form.jsonl"] = sample_session(now)
+    for name, lines in start.items():
+        (directory / name).write_text("".join(lines), encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="SVG to write")
+    parser.add_argument("--logs", type=Path, metavar="DIR",
+                        help="only write the session logs to DIR, render nothing")
     args = parser.parse_args()
+    if args.logs:
+        write_logs(args.logs.resolve())
+        shutil.rmtree(TMP, ignore_errors=True)
+        print(f"wrote logs to {args.logs}")
+        return 0
     out = args.out.resolve()
     try:
         svg = asyncio.run(render(out))
