@@ -24,11 +24,13 @@ data.</p>
 
 <figure class="aw-shot" markdown>
 <a href="assets/images/dashboard.svg" class="aw-shot__frame" title="Open the screenshot full size">
-<img src="assets/images/dashboard.svg" width="1219" height="633" alt="The AgentWatch dashboard listing four coding sessions. At the top, checkout-api, a Claude Code session, has health 69%, its context 86% full, and the warning 'loop: Bash (7x)'. Below it, newsletter has the warning 'credential access'. photo-gallery, a Codex session, and recipe-app show ok. The details panel for checkout-api lists 'Repeated action: Bash (7x)' with the error it keeps getting, and the Events panel shows newsletter's 'credential access' and 'upload' warnings arriving.">
+<img src="assets/images/dashboard.svg" width="1365" height="731" alt="The AgentWatch dashboard listing four coding sessions. At the top, checkout-api, a Claude Code session, has health 69%, its context 86% full, and the warning 'loop: Bash (7x)'. Below it, newsletter has the warning 'credential access'. photo-gallery, a Codex session, and recipe-app show ok. The details panel for checkout-api lists 'Repeated action: Bash (7x)' with the error it keeps getting, and the Events panel shows newsletter's 'credential access' and 'upload' warnings arriving.">
 </a>
 <figcaption>The live dashboard (<code>agentwatch watch-all --security</code>) with four
 made-up sessions: one stuck re-running a failing command, one that read a password
-file and uploaded it, and two working normally.</figcaption>
+file and uploaded it, and two working normally. Security 0 means no security findings
+for that session.
+<a class="aw-shot__full" href="assets/images/dashboard.svg">Open full size</a></figcaption>
 </figure>
 
 <section class="aw-section" markdown>
@@ -83,9 +85,10 @@ file and uploaded it, and two working normally.</figcaption>
 <ol class="aw-steps">
 <li class="aw-step">
 <h3>Install it</h3>
-<p>One command in a terminal: <code>pipx install agentwatch-monitor</code>. You need
-Python 3.11 or newer. The <a href="get-started/">Get started</a> page walks you
-through it on Mac, Windows and Linux.</p>
+<p>Open a terminal, the app where you type commands, and run one command:
+<code>pipx install agentwatch-monitor</code>. You need Python 3.11 or newer.
+<a href="get-started/">Get started</a> has the steps for Mac, Windows and
+Linux.</p>
 </li>
 <li class="aw-step">
 <h3>Run it next to your assistant</h3>
@@ -96,8 +99,9 @@ works.</p>
 <li class="aw-step">
 <h3>Read the score</h3>
 <p>Every session gets a health score from 0 to 100 and a list of what is wrong, in
-plain words. Add <code>--security</code>, or press <kbd>s</kbd>, to get a security
-verdict too.</p>
+plain words. Add <code>--security</code>, or press <kbd>s</kbd>, to turn on the
+security checks. For a one-word verdict (secure / at risk / compromised), run
+<code>agentwatch security-scan</code>.</p>
 </li>
 </ol>
 
@@ -115,8 +119,9 @@ verdict too.</p>
 <p class="aw-scale__note">In the screenshot above, checkout-api scores 69: struggling.
 These are AgentWatch's own words for each range; if you prefer healthy, degraded,
 warning and critical, add <code>--theme classic</code>.</p>
-<p class="aw-scale__note">The security verdict is separate:
-<span class="aw-chip aw-chip--ok">Secure</span> when nothing is found (100),
+<p class="aw-scale__note"><code>agentwatch security-scan</code> gives a separate
+security verdict: <span class="aw-chip aw-chip--ok">Secure</span> when nothing is
+found (100),
 <span class="aw-chip aw-chip--degraded">At risk</span> from 50 to 99, and
 <span class="aw-chip aw-chip--bad">Compromised</span> below 50. One critical finding,
 such as a password file being read and then sent over the network, means
@@ -129,7 +134,7 @@ compromised.</p>
 
 <div class="aw-private__intro" markdown>
 
-## Private by design
+## It stays on your computer
 
 Your assistant already keeps a log of everything it does. AgentWatch reads that
 log on your own computer, and that is all it needs.
@@ -137,14 +142,16 @@ log on your own computer, and that is all it needs.
 </div>
 
 <ul class="aw-facts">
-<li><strong>Runs on your computer.</strong> There is no AgentWatch server and no
-account to create.</li>
-<li><strong>Your code stays with you.</strong> Nothing from your code or your
-conversations is sent anywhere. Its only network use is looking up server names, and
-alerts you choose to set up (<a href="faq/#does-it-send-my-data-anywhere">details</a>).</li>
+<li><strong>No server, no account.</strong> There is no AgentWatch server and
+nothing to sign up for.</li>
+<li><strong>Your code and conversations are never uploaded.</strong> If you set up an
+alert webhook, each alert sends a short warning message (which can name a file or
+command) to the address you chose. Otherwise it only looks up server names
+(<a href="faq/#does-it-send-my-data-anywhere">details</a>).</li>
 <li><strong>No AI in the checks.</strong> They are plain rules, so they cost nothing
 to run and give the same answer every time.</li>
-<li><strong>Free and open source.</strong> MIT license. Anyone can read the code on
+<li><strong>Free, and the code is public.</strong> It's open source under the MIT
+license. Anyone can read the code on
 <a href="https://github.com/LoomLabs-Venture-Studio/agentwatch">GitHub</a>.</li>
 </ul>
 

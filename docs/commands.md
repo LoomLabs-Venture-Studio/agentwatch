@@ -106,7 +106,8 @@ agentwatch security-scan --log session.jsonl
 
 `check` and `security-scan` also accept `--siem-log FILE`, which appends each
 finding as a line of JSON for security tools, and `--llm`, which asks a local
-Ollama model for a second opinion without changing any score. Both need
+AI model for a second opinion without changing any score. That model runs in
+Ollama, a free app that runs AI models on your own computer. Both need
 optional extras; see the
 [README](https://github.com/LoomLabs-Venture-Studio/agentwatch#siem-integration-optional).
 `watch` and `watch-all` accept them too.
@@ -158,8 +159,9 @@ agentwatch stats --burn
 ### history
 
 The local history behind `report`, kept in one file on your computer. It stores
-a summary of each session (times, tokens, cost, score and findings), never your
-prompts, the assistant's replies or the commands it ran.
+a summary of each session (times, tokens, cost, score and findings) and short
+warning messages (cut to 120 characters, paths shortened), never your prompts or
+the assistant's replies.
 
 | Command | What it does |
 | --- | --- |

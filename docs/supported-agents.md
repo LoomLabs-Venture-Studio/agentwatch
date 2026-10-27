@@ -37,7 +37,9 @@ GitHub Copilot CLI
     session, so AgentWatch shows no token counts or cost.
 
 GitHub Copilot in VS Code
-:   Agent-mode chats. Tested live on Windows with VS Code 1.140. Token counts,
+:   Agent-mode chats. Tested live on Windows with VS Code 1.140:
+    `agentwatch ps`, `agentwatch check`, and the dashboard's engine run with
+    `--headless`. Token counts,
     but no cost, because Copilot is billed in credits rather than dollars.
     VS Code can hold back saving a chat from a window in the background, so the
     dashboard may lag until you bring that window up.
@@ -46,8 +48,9 @@ Antigravity CLI (agy)
 :   Tested live with version 1.2.14. Its log has no token counts.
 
 ChatGPT desktop app, Codex view
-:   Tested live on Windows against a real coding session. It writes the same
-    logs as Codex CLI. No cost estimates. Only the Codex view is covered; the
+:   Tested live on Windows with one real coding thread: `agentwatch ps`,
+    `agentwatch check`, and the dashboard's engine run with `--headless`. It
+    writes the same logs as Codex CLI. No cost estimates. Only the Codex view is covered; the
     Chat and Work views run on OpenAI's servers and leave nothing to read.
 
 ## Tested with sample logs only
@@ -86,7 +89,8 @@ Claude Desktop (Cowork)
     read them. Checked against the Windows Store version of the app.
 
 Moltbot
-:   Not found automatically and no live view. Check its log files directly:
+:   An AI agent, also called Clawdbot, that can install add-ons called skills. Not
+    found automatically and no live view. Check its log files directly:
     `agentwatch check --log <file>`.
 
 ## Not supported yet

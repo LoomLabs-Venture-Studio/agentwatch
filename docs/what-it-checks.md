@@ -110,8 +110,8 @@ that is *about* prompt injection, such as security notes.
 
 **What it looks like.** The assistant reads files and then sends data out, for
 example to a paste site. It runs a command that contacts a server on a timer or
-in an endless loop. It runs name-lookup commands such as `dig`, which can smuggle
-data out. In the live dashboard with security on, AgentWatch also notices
+in an endless loop. It runs DNS name lookups (for example the `dig` command),
+which can smuggle data out. In the live dashboard with security on, AgentWatch also notices
 connections that no step announced, such as an install command quietly
 contacting an unknown server.
 
@@ -132,7 +132,8 @@ Some assistants can install *skills*, add-ons that give them new abilities.
 
 **What it looks like.** A new skill is installed or starts running, a skill
 connects to the internet, or skills call each other in unusual chains. These
-checks were written mainly for Moltbot skills.
+checks were written mainly for the skills of Moltbot, an AI agent that AgentWatch
+also reads (see [Supported agents](supported-agents.md#limited)).
 
 **What to do.** Keep only skills you trust, from sources you know.
 
@@ -204,5 +205,6 @@ checks were written mainly for Moltbot skills.
     The ranges for the words are 80 and up, 60 to 79, 40 to 59, and below 40.
     `agentwatch themes` lists the sets of words you can choose from.
 
-    With the optional `--llm` flag, a local AI model (Ollama, on your own
-    computer) adds a second opinion on the warnings. It never changes a score.
+    With the optional `--llm` flag, a local AI model adds a second opinion on
+    the warnings. It runs in Ollama, a free app that runs AI models on your own
+    computer. It never changes a score.
