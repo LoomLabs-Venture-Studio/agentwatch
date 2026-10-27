@@ -149,9 +149,14 @@ Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.
 - Claude Code logs: a tool result now updates the call it answers instead
   of becoming a second action, so failed calls count as failed (error
   spirals and high error rates were missed) and the result text is kept.
-  Loop and error-blindness detection keep their sensitivity.
-- Claude Code logs: a message's token usage and cost are counted once, not
-  once per tool call or per log line of the message.
+  Loop and error-blindness detection keep their sensitivity. Result text
+  now sits on the call (`incoming_message`), so the prompt-injection
+  detector and the `injection_attempts` stat see injection-like text in
+  tool results, as they already did for Codex and Cline; some sessions can
+  score lower on security.
+- Claude Code logs: the session token and cost totals count a message's
+  usage once, at its largest streamed value, not once per tool call or per
+  log line of the message.
 
 ### Security
 

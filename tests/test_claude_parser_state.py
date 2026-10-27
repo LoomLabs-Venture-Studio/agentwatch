@@ -111,12 +111,15 @@ def test_message_usage_counted_once(run, fixture, tmp_path):
     actions, buffer, _ = _run(run, fixture, tmp_path)
 
     assert len(actions) == 2
-    assert [a.tokens_in + a.tokens_out for a in actions] == [150, 0]
+    # one line: first Action carries the usage; split: each line repeats it
+    expected = [150, 0] if "one_line" in fixture else [150, 150]
+    assert [a.tokens_in + a.tokens_out for a in actions] == expected
     stats = buffer.stats
     assert stats.total_tokens == 150
     assert stats.billed_tokens == 150
     assert stats.total_input_tokens == 100 and stats.total_output_tokens == 50
     assert stats.last_context_tokens == 100  # context fill still read
+    assert stats.peak_context_tokens == 100
     assert stats.estimated_cost == pytest.approx(
         (100 * 3 + 50 * 15) / 1_000_000  # claude-sonnet-4-5 list rates, once
     )
@@ -199,9 +202,27 @@ def test_streamed_output_tokens_count_at_their_maximum(run, tmp_path):
     fixture.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     actions, buffer, _ = _run(run, fixture, tmp_path)
 
-    assert [a.tokens_out for a in actions] == [10, 30, 10]
-    assert [a.tokens_in for a in actions] == [100, 0, 0]
+    assert [a.tokens_out for a in actions] == [10, 40, 50]  # each line as logged
+    assert [a.tokens_in for a in actions] == [100, 100, 100]
     stats = buffer.stats
     assert (stats.total_input_tokens, stats.total_output_tokens) == (100, 50)
-    assert stats.billed_tokens == 150
+    assert stats.total_tokens == 150
+    assert stats.billed_tokens == 150  # the max copy, not the first (110)
     assert stats.estimated_cost == pytest.approx((100 * 3 + 50 * 15) / 1_000_000)
+
+
+def test_buffer_counts_cost_and_cache_once_per_message():
+    parser, buffer = ClaudeCodeParser(), ActionBuffer()
+    for i in range(2):
+        for a in parser.parse_entry({
+            "type": "assistant", "sessionId": "s", "timestamp": f"2026-01-01T00:00:0{i}Z",
+            "costUSD": 0.25,
+            "message": {"role": "assistant", "id": "m", "usage": {
+                "input_tokens": 1, "output_tokens": 2,
+                "cache_creation_input_tokens": 30, "cache_read_input_tokens": 40},
+                "content": [{"type": "tool_use", "id": f"t{i}", "name": "Bash",
+                             "input": {"command": "ls"}}]},
+        }):
+            buffer.add(a)
+    stats = buffer.stats
+    assert (stats.total_cost, stats.total_cache_creation, stats.total_cache_read) == (0.25, 30, 40)
