@@ -5199,9 +5199,18 @@ Every PR went through engineer, then CTO diff review, then QA, then fixes. QA fi
 | Task | Branch | Model | QA model |
 |---|---|---|---|
 | A `check --security` exit code | `fix/check-security-exit` | haiku | haiku |
-| D token usage once per message | `fix/claude-usage-once` | haiku | haiku |
-| B Claude tool-result matching | `fix/claude-tool-results` | sonnet | sonnet |
-| C persistent findings | `fix/persistent-findings` | opus design, sonnet build | sonnet |
+| B+D stateful Claude parser: tool-result matching and usage once per message | `fix/claude-parser-state` | sonnet | sonnet |
+| C persistent findings (CTO design, below) | `fix/persistent-findings` | sonnet | sonnet |
+
+B and D are one task: both need Claude parser state across log lines (`tool_use_id` -> call, and seen `message.id`), and they change the same function.
+
+C design (CTO, 2026-10-26):
+- A per-session scan object in `detectors/registry.py` feeds each action into the buffer and runs the security detectors right away. It keeps each finding by `warning_dedup_key`.
+- Reported warnings = health detectors on the current buffer, plus all kept security findings.
+- `registry.scan()` (the CLI) and the dashboard's ingestion and `_score()` both use it, so the CLI and dashboard score the same way.
+- The secret scanner stops suppressing repeat findings. Notification dedup stays where it already is: the UI's `_alerted_signals`, the SIEM exporter, and `_feed_findings`.
+
+Loop per task (board, 2026-10-26): engineer -> CTO review -> QA -> Codex review (`codex exec review --base origin/develop`, at most 3 rounds, stop early on diminishing returns) -> fixes -> board approval to merge.
 
 Rules for every task: branch from `origin/develop`, draft PR to `develop`, add one `CHANGELOG.md` bullet (fix A: under `[0.2.1]` / Fixed; B-D: under `[Unreleased]`), push with `--no-verify`.
 
