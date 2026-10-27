@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 35 (develop-overdrive) Feature 5, session history + `agentwatch report` (2026-10-18), at the end of this file, followed only by the Feature 6 budget alert plan; before it Feature 4, alerts (2026-10-18); before it Feature 3, `agentwatch statusline` (2026-10-18); before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
+> **Latest: Sprint 38, Codex review fixes (2026-10-26), at the end of this file; before it Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -5178,3 +5178,46 @@ Every PR went through engineer, then CTO diff review, then QA, then fixes. QA fi
 | 2026-10-24 | #167 | fix/release-small-fixes | fix | ready (CTO review x3, QA PASS, CTO verified final commit, CI green) | -- |
 | 2026-10-24 | #168 | fix/redact-data-safety | fix | ready (CTO review, QA PASS, CTO verified follow-ups, CI green) | -- |
 | 2026-10-24 | #171 | chore/release-0.2.0-prep | chore | ready (CTO review x2) | -- |
+
+---
+
+### Sprint 38 -- Codex review fixes (2026-10-26)
+**Type:** bug fix. Same engineer -> CTO review -> QA -> fix loop as Sprint 37.
+**Goal:** scores and exit codes never give false reassurance.
+**Source:** Codex review of v0.2.0 (a2c0fab), 2026-10-26. It reproduced each bug with synthetic logs. The CTO confirmed each one in the code on `develop` 68b28ff (after #181/#182). Already fixed in 0.2.0: dashboard first-action drop, full-session `security-scan`, JSON-safe redaction, Python 3.11 syntax.
+
+### Acceptance Criteria
+- [ ] A `check --security` exits non-zero when there is any security finding. It uses the `security-scan` thresholds: score 100 -> 0, 50-99 -> 1, under 50 -> 2 (a CRITICAL finding scores 0). The exit code is the worse of the health and security codes. `check` without `--security` is unchanged. Exit codes are in `check --help` and the README.
+- [ ] B The Claude parser matches each `tool_result` to its `tool_use` by `tool_use_id`. A failed result marks its call failed, with no separate "successful" call plus a failure action. Successful result content and user text are kept for detectors. Six consecutive failed calls trigger error-spiral and high-error-rate.
+- [ ] C Findings persist. A security finding stays active after its action leaves the detector window and across dashboard refreshes. Secret-scanner dedup suppresses repeat notifications only, never the finding. In the live dashboard, a dangerous command followed by 60 harmless actions still shows.
+- [ ] D Token usage counts once per message, not once per tool call: a 150-token message with two tool calls counts 150.
+- [ ] Each fix has an integration test that starts from a JSONL fixture and goes through the parser (and the dashboard, for C). The test fails before the fix.
+- [ ] All tests pass on 3.11/3.12 (CI) and `ruff check .` is clean.
+- [ ] Integrated QA on `develop` after all merges.
+
+### Implementation Plan
+| Task | Branch | Model | QA model |
+|---|---|---|---|
+| A `check --security` exit code | `fix/check-security-exit` | haiku | haiku |
+| B+D stateful Claude parser: tool-result matching and usage once per message | `fix/claude-parser-state` | sonnet | sonnet |
+| C persistent findings (CTO design, below) | `fix/persistent-findings` | sonnet | sonnet |
+
+B and D are one task: both need Claude parser state across log lines (`tool_use_id` -> call, and seen `message.id`), and they change the same function.
+
+C design (CTO, 2026-10-26):
+- A per-session scan object in `detectors/registry.py` feeds each action into the buffer and runs the security detectors right away. It keeps each finding by `warning_dedup_key`.
+- Reported warnings = health detectors on the current buffer, plus all kept security findings.
+- `registry.scan()` (the CLI) and the dashboard's ingestion and `_score()` both use it, so the CLI and dashboard score the same way.
+- The secret scanner stops suppressing repeat findings. Notification dedup stays where it already is: the UI's `_alerted_signals`, the SIEM exporter, and `_feed_findings`.
+
+Loop per task (board, 2026-10-26): engineer -> CTO review -> QA -> Codex review (`codex exec review --base origin/develop`, at most 3 rounds, stop early on diminishing returns) -> fixes -> board approval to merge.
+
+Rules for every task: branch from `origin/develop`, draft PR to `develop`, add one `CHANGELOG.md` bullet (fix A: under `[0.2.1]` / Fixed; B-D: under `[Unreleased]`), push with `--no-verify`.
+
+### Board decisions (2026-10-26)
+1. Hold #183 (0.2.1 promotion, Sprint 35) until fix A merges, so 0.2.1 never ships a `check --security` that passes on critical findings. #183's source branch is `develop` itself, so fix A rides along once merged. B-D are not holding #183; they go in the next release (0.2.2 unless the board says otherwise).
+
+### PR Log
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
+| 2026-10-26 | #184 | fix/check-security-exit | fix | CTO review, QA PASS (haiku), CI green; QA test gaps being added | -- |

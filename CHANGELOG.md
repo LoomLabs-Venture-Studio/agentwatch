@@ -131,6 +131,11 @@ Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.
 
 ### Fixed
 
+- **Behaviour change:** `check --security` now exits 1 (at risk, score 50-99)
+  or 2 (compromised, score below 50) on security findings, using the
+  `security-scan` thresholds; it used to exit 0 when the averaged health score
+  was high, even with a CRITICAL finding. The exit code is the worse of the
+  health and security codes. `check` without `--security` is unchanged.
 - `watch-all`: sessions with health 40-59 had no colour in the table (the
   theme's `orange` is not a colour Rich knows; it now shows orange).
 - `watch-all --budget`: the cost column switches between its wide and
