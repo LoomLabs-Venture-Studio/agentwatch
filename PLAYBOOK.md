@@ -5193,7 +5193,12 @@ Every PR went through engineer, then CTO diff review, then QA, then fixes. QA fi
 - [x] D Token usage counts once per message, not once per tool call: a 150-token message with two tool calls counts 150. A message streamed over several lines counts its largest usage. (#186)
 - [x] Each fix has an integration test that starts from a JSONL fixture and goes through the parser (and the dashboard, for C). The test fails before the fix.
 - [x] All tests pass on 3.11/3.12 (CI) and `ruff check .` is clean. (develop caa2687: 2567 passed / 1 skipped locally on macOS 3.12, CI green)
-- [ ] Integrated QA on `develop` after all merges.
+- [x] Integrated QA on `develop` after all merges. QA (sonnet) on caa2687, 2026-10-27, verdict PASS: no regressions, release recommended.
+  - Tests: 2567 passed / 1 skipped on macOS 3.12 and 3.14; ruff clean.
+  - Packaging: build and twine check pass. The wheel in a fresh venv reports 0.2.1 for both entry points, and all 15 commands' `--help` exit 0.
+  - Synthetic CLI checks: exit codes, loop and error detection, usage counted once, an EOF hidden instruction, and a secret in a failed result all behave as expected.
+  - Headless dashboard: findings persist, survive a toggle, and late results get rescored, with no exceptions.
+  - Live checks, metadata only: `ps --json`, `detect --json` and `net --once` all exit 0.
 
 ### Implementation Plan
 | Task | Branch | Model | QA model |
@@ -5255,6 +5260,8 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 - Emit Claude Code user text blocks (after scoring ignores `user_message`).
 - A secret fingerprint in the dedup key.
 - The SIEM, audit and notification consumers serialise a call when it is added, before its result lands. Check each one.
+- `security-scan` prints "Analyzed N actions" and sets `action_count` from `len(buffer)` (`cli.py` ~1554). That is the buffer size, for example 500, not the number of actions scanned. Predates Sprint 38; found by integrated QA.
+- The `error_spiral` message reports its threshold ("5 consecutive failures"), not the actual count. Found by integrated QA.
 
 ### PR Log
 | Date | PR | Branch | Type | Status | Rejection Reason |
