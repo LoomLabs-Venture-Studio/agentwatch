@@ -284,10 +284,16 @@ def _parse_claude_code(
                     # The call's Action is already out; record its outcome on it.
                     if result_content:
                         # Unredacted, like Codex and Cline: the secret scanner
-                        # reads it, and masks what it reports.
-                        call_action.incoming_message = str(result_content)[
-                            :_RESULT_TEXT_LIMIT
-                        ]
+                        # reads it, and masks what it reports. A failed result
+                        # is kept whole, as develop kept it in raw, so no
+                        # finding past the cut is lost; a successful one is
+                        # capped, which bounds a 2,000-action buffer of big
+                        # Reads (scanning successes is new anyway).
+                        text = str(result_content)
+                        call_action.incoming_message = (
+                            text if is_error else text[:_RESULT_TEXT_LIMIT]
+                        )
+                    call_action.result_revision += 1
                     if is_error:
                         call_action.success = False
                         call_action.error_message = error_msg

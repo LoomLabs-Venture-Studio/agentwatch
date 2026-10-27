@@ -84,6 +84,9 @@ class Action:
     # The call's failed result was merged into this Action (Claude Code); it
     # used to be a second Action. See ActionBuffer.history_len.
     error_merged: bool = False
+    # Counts the tool results merged into this Action after it was emitted, so
+    # a scan that cached its findings can tell the Action has changed.
+    result_revision: int = 0
 
     # Security-relevant fields
     incoming_message: str | None = None  # For prompt injection detection
@@ -306,6 +309,7 @@ class ActionBuffer:
         # the same Action later, and stats catch up in _sync_results.
         self._awaiting: deque[Action] = deque(maxlen=max_size)
         self._revision = 0
+        self._changed: deque[Action] = deque(maxlen=max_size)  # synced, not yet taken
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -427,10 +431,19 @@ class ActionBuffer:
                 pending.append(action)
                 continue
             done += 1
+            self._changed.append(action)
             if action.incoming_message and is_injection_like(action.incoming_message):
                 self._stats.injection_attempts += 1
         self._awaiting = pending
         self._revision += bool(done)
+
+    def take_changed(self) -> list[Action]:
+        """The actions whose tool result landed since the last call, once. A
+        scan that looked at them when they were added must look again."""
+        self._sync_results()
+        changed = list(self._changed)
+        self._changed.clear()
+        return changed
 
     @property
     def revision(self) -> int:
