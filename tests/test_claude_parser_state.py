@@ -102,6 +102,39 @@ def test_unmatched_error_result_keeps_its_own_action():
     assert action.tool_name == "tool_result" and not action.success
 
 
+@PATHS
+@pytest.mark.parametrize(
+    "fixture", ["claude_usage_one_line.jsonl", "claude_usage_split_lines.jsonl"]
+)
+def test_message_usage_counted_once(run, fixture, tmp_path):
+    actions, buffer, _ = _run(run, fixture, tmp_path)
+
+    assert len(actions) == 2
+    assert [a.tokens_in + a.tokens_out for a in actions] == [150, 0]
+    stats = buffer.stats
+    assert stats.total_tokens == 150
+    assert stats.billed_tokens == 150
+    assert stats.total_input_tokens == 100 and stats.total_output_tokens == 50
+    assert stats.last_context_tokens == 100  # context fill still read
+    assert stats.estimated_cost == pytest.approx(
+        (100 * 3 + 50 * 15) / 1_000_000  # claude-sonnet-4-5 list rates, once
+    )
+
+
+def test_entry_without_message_id_bills_its_first_action_only():
+    (a, b) = ClaudeCodeParser().parse_entry({
+        "type": "assistant", "sessionId": "s", "timestamp": "2026-01-01T00:00:00Z",
+        "costUSD": 0.5,
+        "message": {"role": "assistant", "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "content": [
+                        {"type": "tool_use", "id": i, "name": "Bash", "input": {"command": c}}
+                        for i, c in (("a", "ls"), ("b", "pwd"))
+                    ]},
+    })
+    assert (a.tokens_in, a.tokens_out, a.cost_usd) == (10, 5, 0.5)
+    assert (b.tokens_in, b.tokens_out, b.cost_usd) == (0, 0, 0.0)
+
+
 def _failing_calls(n: int) -> list:
     """n identical failing Bash calls, call and result on separate lines."""
     parser = ClaudeCodeParser()

@@ -211,6 +211,9 @@ def _parse_claude_code(
             "cache_read_tokens": cache_read_tokens,
             "cache_creation_1h_tokens": cache_1h,
         }
+        if entry_type == "assistant" and not state._claim_billing(call["message_id"]):
+            billing = dict.fromkeys(billing, 0)
+            billing["cost_usd"] = 0.0
 
         session_id = entry.get("sessionId")
         context_window = claude_context_window(msg.get("model"))
@@ -271,6 +274,8 @@ def _parse_claude_code(
                 state._remember_call(block.get("id"), actions[-1])
                 # Only the first tool_use in this entry gets the text and usage
                 outgoing_data = None
+                billing = dict.fromkeys(billing, 0)
+                billing["cost_usd"] = 0.0
 
             elif block_type == "tool_result" and entry_type == "user":
                 is_error = block.get("is_error", False)

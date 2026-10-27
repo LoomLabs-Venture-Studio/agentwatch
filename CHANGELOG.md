@@ -146,6 +146,12 @@ Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.
   sessions kept their old report). The selected session is no longer
   rescored every second without new actions, which moved its context health
   and state on its own; every session is now rescored only on new actions.
+- Claude Code logs: a tool result now updates the call it answers instead
+  of becoming a second action, so failed calls count as failed (error
+  spirals and high error rates were missed) and the result text is kept.
+  Loop and error-blindness detection keep their sensitivity.
+- Claude Code logs: a message's token usage and cost are counted once, not
+  once per tool call or per log line of the message.
 
 ### Security
 
