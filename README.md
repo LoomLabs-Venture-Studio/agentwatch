@@ -915,6 +915,12 @@ agentguard watch
 `audit` uses the same codes by finding severity: 2 if any critical finding,
 1 if any high, otherwise 0. Medium, low and `--pii` findings never fail it.
 
+`check --security` also fails on security findings. Its exit code is the worse
+of the health code above and the `security-scan` code: 0 = secure (score 100),
+1 = at risk (score 50-99), 2 = compromised (score below 50). A CRITICAL
+finding scores 0, so it exits 2 even when the health score is high.
+`check` without `--security` keeps the health codes only.
+
 Use in CI/CD:
 
 ```bash
