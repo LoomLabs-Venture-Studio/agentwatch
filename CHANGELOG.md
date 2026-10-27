@@ -157,6 +157,8 @@ Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.
 - Claude Code logs: the session token and cost totals count a message's
   usage once, at its largest streamed value, not once per tool call or per
   log line of the message.
+- The secret scanner now also scans successful Claude Code tool results (up
+  to 2,000 characters), not only failed ones, which are scanned in full.
 - Security findings now persist for the whole session. The live dashboard
   runs the security detectors on every action (like `security-scan`) and
   keeps each finding, so a dangerous command followed by many harmless
