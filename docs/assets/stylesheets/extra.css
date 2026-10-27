@@ -210,12 +210,19 @@
   font-weight: 700;
 }
 
-.md-header__button.md-logo svg {
+.md-header__button.md-logo svg,
+.md-nav__button.md-logo svg {
   fill: var(--aw-accent);
 }
 
+.md-tabs__item {
+  height: auto;
+}
+
 .md-tabs__link {
-  font-size: 0.75rem;
+  margin-top: 0;
+  padding: 0.7rem 0 0.65rem;
+  font-size: 0.8rem; /* 16px */
   color: var(--aw-ink-muted);
   opacity: 1;
 }
@@ -230,7 +237,20 @@
   text-decoration: underline;
   text-decoration-color: var(--aw-accent);
   text-decoration-thickness: 3px;
-  text-underline-offset: 0.55em;
+  text-underline-offset: 0.5em;
+}
+
+/* Header icon buttons: 44px hit areas in the 48px bar (24px icons). */
+.md-header__button {
+  margin: 0.1rem;
+  padding: 0.5rem;
+}
+
+/* The repository link in the phone menu: light, like the rest of it. */
+.md-nav__source {
+  border-block: 1px solid var(--aw-rule);
+  background-color: var(--aw-bg-alt);
+  color: var(--aw-ink);
 }
 
 @media screen and (min-width: 60em) {
@@ -298,11 +318,11 @@
 }
 
 /* The copy button stays visible, not only on hover. */
-.md-typeset .md-clipboard {
+.md-typeset .md-code__button {
   color: var(--aw-ink-muted);
 }
 
-.md-typeset .md-clipboard:is(:hover, :focus-visible) {
+.md-typeset .md-code__button:is(:hover, :focus-visible) {
   color: var(--aw-accent);
 }
 
@@ -390,8 +410,13 @@
 
 /* Content tabs (Mac / Windows / Linux). */
 .md-typeset .tabbed-labels > label {
-  font-size: 0.85em;
+  min-height: 2.2rem; /* 44px */
+  font-size: 0.8rem; /* 16px */
   font-weight: 700;
+}
+
+.md-typeset details > summary {
+  padding-block: 0.55rem;
 }
 
 /* ------------------------------------------------------------- footer */
@@ -422,6 +447,14 @@
 
 .md-copyright {
   color: var(--aw-ink-muted);
+}
+
+.md-social__link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.2rem;
+  height: 2.2rem;
 }
 
 /* ------------------------------------------------------ focus, motion */
@@ -502,11 +535,21 @@
   margin: 0;
 }
 
-.md-typeset a.aw-textlink {
+.md-typeset a.aw-textlink,
+.md-typeset a.aw-shot__full {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.2rem; /* 44px */
   font-weight: 700;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.25em;
+}
+
+.md-typeset a.aw-shot__full {
+  display: flex;
+  width: fit-content;
+  margin-top: 0.15em;
 }
 
 .md-typeset a.aw-textlink::after {
