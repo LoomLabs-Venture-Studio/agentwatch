@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import Enum
 from itertools import islice
@@ -234,6 +234,20 @@ def call_cost(action: Action) -> float | None:
     )
 
 
+_USAGE_FIELDS = (
+    "tokens_in", "tokens_out", "cache_creation_tokens", "cache_read_tokens",
+    "cache_creation_1h_tokens", "cost_usd",
+)
+
+
+def _add_usage(total: Action, part: Action) -> Action:
+    """*total* with the usage counters of *part* added: the lines of one API
+    message carry the increases of its usage, not copies of it."""
+    return replace(
+        total, **{f: getattr(total, f) + getattr(part, f) for f in _USAGE_FIELDS}
+    )
+
+
 def calls_of(actions: Iterable[Action], buffer: "ActionBuffer") -> dict[Any, Action]:
     """The API calls behind *actions*, as {call key: action carrying its usage}.
 
@@ -242,14 +256,16 @@ def calls_of(actions: Iterable[Action], buffer: "ActionBuffer") -> dict[Any, Act
     ``tool_use`` it answers. Actions of one call count once. Actions with no
     usage and no link to a call are left out.
     """
-    usage: dict[str, Action] = {}  # message_id -> copy with the most tokens
+    usage: dict[str, Action] = {}  # message_id -> its usage, all lines summed
     tool_call: dict[str, str] = {}  # tool_use id -> message_id
     for b in buffer.actions:
         if b.message_id is None:
             continue
-        best = usage.get(b.message_id)
-        if best is None or call_tokens(b) > call_tokens(best):
+        total = usage.get(b.message_id)
+        if total is None:
             usage[b.message_id] = b
+        elif call_tokens(b) or b.cost_usd:
+            usage[b.message_id] = _add_usage(total, b)
         raw = b.raw if isinstance(b.raw, dict) else {}
         if raw.get("type") == "tool_use" and raw.get("id"):
             tool_call[raw["id"]] = b.message_id
@@ -296,8 +312,7 @@ class ActionBuffer:
         self._stats = SessionStats()
         # message_id -> (tokens, cost) already counted for that call
         self._billed: dict[str, tuple[int, float]] = {}
-        # message_id -> largest (in, out, cache_creation, cache_read, cost) counted
-        self._peak_usage: dict[str, tuple[int, int, int, int, float]] = {}
+        self._msg_usage: dict[str, Action] = {}  # message_id -> usage so far
         # Calls added before their result: the parser fills in the outcome on
         # the same Action later, and stats catch up in _sync_results.
         self._awaiting: deque[Action] = deque(maxlen=max_size)
@@ -316,38 +331,21 @@ class ActionBuffer:
         if action.context_window:
             self._stats.context_window = action.context_window
         self._stats.unpriced |= action.unpriced
-        # Totals count each message_id once, at its largest value across the
-        # lines Claude Code streams it in (as cc_stats does).
-        usage = (
-            action.tokens_in, action.tokens_out, action.cache_creation_tokens,
-            action.cache_read_tokens, action.cost_usd,
-        )
-        if action.message_id:
-            peak = self._peak_usage.get(action.message_id, (0, 0, 0, 0, 0.0))
-            new_peak = tuple(max(a, b) for a, b in zip(peak, usage))
-            self._peak_usage[action.message_id] = new_peak
-            usage = tuple(n - p for n, p in zip(new_peak, peak))
-        t_in, t_out, t_cache_w, t_cache_r, t_cost = usage
-        self._stats.total_tokens += t_in + t_out
-        self._stats.total_input_tokens += t_in
-        self._stats.total_output_tokens += t_out
-        self._stats.total_cost += t_cost
-        self._stats.total_cache_creation += t_cache_w
-        self._stats.total_cache_read += t_cache_r
-        # Each call once; a later copy with more tokens (streamed output)
-        # replaces the earlier count, as calls_of keeps the largest copy.
+        self._stats.total_tokens += action.tokens_in + action.tokens_out
+        self._stats.total_input_tokens += action.tokens_in
+        self._stats.total_output_tokens += action.tokens_out
+        self._stats.total_cost += action.cost_usd
+        self._stats.total_cache_creation += action.cache_creation_tokens
+        self._stats.total_cache_read += action.cache_read_tokens
+        # Each call once: the lines of one message add up to its usage.
         tokens = call_tokens(action)
-        counted = self._billed.get(action.message_id) if action.message_id else None
-        if tokens and (counted is None or tokens > counted[0]):
-            cost = call_cost(action)
-            old_tokens, old_cost = counted or (0, 0.0)
-            self._stats.billed_tokens += tokens - old_tokens
-            if cost is None:
-                self._stats.billed_cost = None
-            elif self._stats.billed_cost is not None:
-                self._stats.billed_cost += cost - old_cost
-            if action.message_id:
-                self._billed[action.message_id] = (tokens, cost or 0.0)
+        if action.message_id and (tokens or action.cost_usd):
+            total = self._msg_usage.get(action.message_id)
+            total = action if total is None else _add_usage(total, action)
+            self._msg_usage[action.message_id] = total
+            self._count_billed(action.message_id, call_tokens(total), call_cost(total))
+        elif tokens:
+            self._count_billed(None, tokens, call_cost(action))
         # Track high-water mark of per-action context size (survives compaction)
         action_context = action.tokens_in + action.cache_creation_tokens + action.cache_read_tokens
         if action_context > self._stats.peak_context_tokens:
@@ -399,6 +397,16 @@ class ActionBuffer:
             self._stats.network_connections += 1
         if action.incoming_message and is_injection_like(action.incoming_message):
             self._stats.injection_attempts += 1
+
+    def _count_billed(self, message_id: str | None, tokens: int, cost: float | None) -> None:
+        old_tokens, old_cost = self._billed.get(message_id, (0, 0.0)) if message_id else (0, 0.0)
+        self._stats.billed_tokens += tokens - old_tokens
+        if cost is None:
+            self._stats.billed_cost = None
+        elif self._stats.billed_cost is not None:
+            self._stats.billed_cost += cost - old_cost
+        if message_id:
+            self._billed[message_id] = (tokens, cost or 0.0)
 
     def _sync_results(self) -> None:
         """Count the outcomes the parser recorded on actions already added
