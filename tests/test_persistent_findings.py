@@ -9,7 +9,7 @@ actions through the dashboard's real ingestion path (`SessionScan.add`, as
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agentwatch.detectors import create_registry
@@ -23,16 +23,20 @@ from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
 
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _bash(command: str) -> Action:
     return Action(
-        timestamp=datetime.now(), tool_name="Bash", tool_type=ToolType.BASH,
+        timestamp=_now(), tool_name="Bash", tool_type=ToolType.BASH,
         success=True, command=command,
     )
 
 
 def _read(i: int) -> Action:
     return Action(
-        timestamp=datetime.now(), tool_name="Read", tool_type=ToolType.READ,
+        timestamp=_now(), tool_name="Read", tool_type=ToolType.READ,
         success=True, file_path=f"src/file_{i}.py",
     )
 
