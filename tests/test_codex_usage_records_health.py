@@ -17,7 +17,12 @@ from agentwatch.detectors.health.errors import (
     HighErrorRateDetector,
     SyntaxLoopDetector,
 )
-from agentwatch.detectors.health.loops import LoopDetector, RereadDetector, StallDetector
+from agentwatch.detectors.health.loops import (
+    LoopDetector,
+    RereadDetector,
+    StallDetector,
+    ThrashDetector,
+)
 from agentwatch.detectors.health.stuck import (
     ErrorClassPersistenceDetector,
     ExplorationStallDetector,
@@ -71,8 +76,9 @@ def _buffer(path):
 
 
 def _signals(buf):
+    # scan() feeds the actions into the buffer it is given: use a fresh one.
     registry = create_registry(mode="health")
-    return registry.scan(iter(list(buf.actions)), buf)
+    return registry.scan(iter(list(buf.actions)), ActionBuffer())
 
 
 def test_distinct_calls_with_usage_records_are_not_a_loop(tmp_path):
@@ -197,15 +203,38 @@ def test_exploration_stall_split_ignores_usage_records():
     # 20 real actions in the recent window; a new file in its oldest part.
     acts = [_act(i, "Read", ToolType.READ, path=f"f{i % 3}.py") for i in range(10)]
     acts += _neutral(1, 100) + [_act(i, "Read", ToolType.READ, path="f0.py") for i in range(19)]
-    bare = ExplorationStallDetector().check(_interleave(acts, usage=False))
-    assert bare is None
+    assert ExplorationStallDetector().check(_interleave(acts, usage=False)) is None
     assert ExplorationStallDetector().check(_interleave(acts)) is None
 
 
-def test_context_rot_ignores_usage_records():
-    early = [_act(i, "Edit", ToolType.EDIT, path=f"e{i}.py") for i in range(4)]
-    acts = early + [_act(i, "Read", ToolType.READ, path=f"r{i % 5}.py") for i in range(80)]
-    assert ContextRotDetector().check(_interleave(acts, usage=False)) is not None
+def test_exploration_stall_still_detected_with_usage_records():
+    acts = [_act(i, "Read", ToolType.READ, path=f"f{i % 3}.py") for i in range(30)]
+    warning = ExplorationStallDetector().check(_interleave(acts))
+    assert warning is not None
+    assert warning.details["recent_action_count"] == 20
+    assert warning.details["unique_recent_files"] == 3
+
+
+def _rot_session():
+    edits = [_act(i, "Edit", ToolType.EDIT, path=f"e{i}.py") for i in range(4)]
+    acts = edits + [_act(i, "Read", ToolType.READ, path=f"r{i % 5}.py") for i in range(76)]
+    # Three early files are re-touched 40 real actions before the end: inside the
+    # 50-action recent window, but outside it once usage records fill half of it.
+    acts[40] = _act(0, "Read", ToolType.READ, path="e0.py")
+    acts[41] = _act(0, "Read", ToolType.READ, path="e1.py")
+    acts[42] = _act(0, "Read", ToolType.READ, path="e2.py")
+    return acts
+
+
+def test_context_rot_recent_window_not_halved_by_usage_records():
+    acts = _rot_session()
+    assert ContextRotDetector().check(_interleave(acts, usage=False)) is None
+    assert ContextRotDetector().check(_interleave(acts)) is None
+
+
+def test_context_rot_still_detected_with_usage_records():
+    acts = _rot_session()
+    acts[40] = acts[41] = acts[42] = _act(0, "Read", ToolType.READ, path="r0.py")
     assert ContextRotDetector().check(_interleave(acts)) is not None
 
 
@@ -222,3 +251,18 @@ def test_repeated_tool_calls_metric_ignores_usage_records():
     result = compute_tool_thrash(_interleave(acts))
     repeated = next(c for c in result.contributors if c.name == "repeated_tool_calls")
     assert repeated.value == 0.0
+
+
+def _thrash_cycle():
+    # edit, read, failing bash: the bash is the 2nd action after the edit
+    return [_act(0, "Edit", ToolType.EDIT, path="a.py"),
+            _act(0, "Read", ToolType.READ, path="r.py"),
+            _act(0, ok=False, err="AssertionError: nope", cmd="pytest")]
+
+
+def test_thrash_lookahead_spans_usage_records():
+    acts = _neutral(14) + _thrash_cycle() * 3
+    bare = ThrashDetector().check(_interleave(acts, usage=False))
+    assert bare is not None and bare.details["count"] == 3
+    with_usage = ThrashDetector().check(_interleave(acts))
+    assert with_usage is not None and with_usage.details["count"] == 3
