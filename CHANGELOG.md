@@ -6,8 +6,20 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Added
+
+- `agentwatch statusline`: one short word in Claude Code's status line
+  (`⚠ loop ~$1.40`) for the most severe current HIGH/CRITICAL coach
+  finding, nothing when healthy (`--ok` shows a dim check mark). Reads only
+  the coach's state file and always exits 0; a one-line setup in
+  `~/.claude/settings.json` (PR #146). The command already shipped in 0.2.1
+  but was missing from its notes.
+
 ### Fixed
 
+- `agentwatch report --days` above 10000 is now a usage error instead of a
+  traceback, and an empty report mentions `--include-active` for sessions
+  still being written.
 - Codex sessions (Codex CLI and the ChatGPT desktop app) no longer get a
   false "Repeated action: token_count" loop warning. The `token_count` usage
   record Codex writes after every turn no longer counts as an agent action in

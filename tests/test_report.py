@@ -80,7 +80,8 @@ def test_no_previous_period_has_no_trend(conn):
     rep = report.build(conn, days=7, now=NOW + 30 * DAY)
     assert rep["totals"]["sessions"] == 0
     assert rep["trend"] == {"cost_usd": None, "waste_usd": None}
-    assert "No sessions" in "\n".join(report.render(rep))
+    text = "\n".join(report.render(rep))
+    assert "No sessions" in text and "--include-active" in text
 
 
 def test_render(conn):
@@ -107,6 +108,12 @@ JSON_KEYS = {"schema", "period", "filters", "totals", "top_findings", "by_agent"
              "by_project", "security", "previous", "trend"}
 TOTAL_KEYS = {"sessions", "unpriced_sessions", "cost_usd", "tokens", "waste_usd",
               "waste_pct", "waste_findings"}
+
+
+def test_days_above_max_is_usage_error():
+    out = CliRunner().invoke(cli, ["report", "--no-sync", "--days", "1000000"])
+    assert out.exit_code == 2 and isinstance(out.exception, SystemExit)
+    assert "Traceback" not in out.output and "--days" in out.output
 
 
 def test_json_schema(tmp_path, monkeypatch, conn):
