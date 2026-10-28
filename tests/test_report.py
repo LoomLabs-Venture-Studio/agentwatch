@@ -94,6 +94,16 @@ def test_render(conn):
     assert "Security: 3 findings (1 leak findings, 1 egress, 1 injection, 0 other)" in text
 
 
+def test_render_cuts_long_names_so_columns_align(conn):
+    rep = report.build(conn, days=7, now=NOW)
+    rep["by_project"][0]["project"] = "scratch-2026-10-23-ea6b5d"
+    lines = report.render(rep)
+    rows = lines[lines.index("  By project") + 1:]
+    rows = rows[:rows.index("")]
+    assert "    scratch-2026-10-23-ea… " in rows[0], rows
+    assert len({row.index("waste") for row in rows}) == 1, rows  # costs in one column
+
+
 JSON_KEYS = {"schema", "period", "filters", "totals", "top_findings", "by_agent",
              "by_project", "security", "previous", "trend"}
 TOTAL_KEYS = {"sessions", "unpriced_sessions", "cost_usd", "tokens", "waste_usd",

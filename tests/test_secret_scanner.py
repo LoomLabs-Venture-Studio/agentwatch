@@ -289,34 +289,15 @@ class TestSecretLeakScanner:
     # Deduplication
     # -----------------------------------------------------------------------
 
-    def test_dedup_suppresses_repeat(self):
+    def test_repeat_check_still_reports_the_finding(self):
         scanner = SecretLeakScanner()
-        action = _make_action(outgoing_data="sk-abcdefghij1234567890ab")
         buf = ActionBuffer()
-        buf.add(action)
+        buf.add(_make_action(outgoing_data="sk-abcdefghij1234567890ab"))
 
-        w1 = scanner.check(buf)
-        assert w1 is not None
+        w1, w2 = scanner.check(buf), scanner.check(buf)
 
-        # Same buffer, same content — should be suppressed
-        w2 = scanner.check(buf)
-        assert w2 is None
-
-    def test_dedup_expires_after_ttl(self):
-        scanner = SecretLeakScanner()
-        scanner.DEDUP_TTL = 0.1  # Very short TTL for testing
-        action = _make_action(outgoing_data="sk-abcdefghij1234567890ab")
-        buf = ActionBuffer()
-        buf.add(action)
-
-        w1 = scanner.check(buf)
-        assert w1 is not None
-
-        # Wait for TTL to expire
-        time.sleep(0.15)
-
-        w2 = scanner.check(buf)
-        assert w2 is not None
+        assert w1 is not None and w2 is not None
+        assert w1.details == w2.details
 
     # -----------------------------------------------------------------------
     # False positive rejection
@@ -906,7 +887,7 @@ class TestRedactLogFile:
 
         assert p.read_bytes() == original
         assert p.stat().st_mtime == 1_000_000_000
-        assert not (tmp_path / "clean.jsonl.bak").exists()
+        assert not list(tmp_path.glob("clean.jsonl.bak*"))
 
     def test_creates_backup_with_original_bytes(self, tmp_path):
         original = (
@@ -918,9 +899,10 @@ class TestRedactLogFile:
 
         redact_log_file(p)
 
-        assert (tmp_path / "bak.jsonl.bak").read_bytes() == original
+        (backup,) = tmp_path.glob("bak.jsonl.bak.*")
+        assert backup.read_bytes() == original
 
-    def test_does_not_overwrite_existing_backup(self, tmp_path):
+    def test_does_not_touch_existing_backup(self, tmp_path):
         p = tmp_path / "bak2.jsonl"
         p.write_text(json.dumps({"password": "Hunter2Pass!x"}) + "\n")
         bak = tmp_path / "bak2.jsonl.bak"
@@ -929,6 +911,7 @@ class TestRedactLogFile:
         assert redact_log_file(p) == 1
 
         assert bak.read_bytes() == b"older backup\n"
+        assert len(list(tmp_path.glob("bak2.jsonl.bak.*"))) == 1  # this run's own
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="POSIX file mode bits are not supported on Windows"
@@ -948,7 +931,9 @@ class TestRedactLogFile:
 
         redact_log_file(p)
 
-        assert sorted(x.name for x in tmp_path.iterdir()) == ["mode.jsonl", "mode.jsonl.bak"]
+        names = sorted(x.name for x in tmp_path.iterdir())
+        assert names[0] == "mode.jsonl" and names[1].startswith("mode.jsonl.bak.")
+        assert len(names) == 2
 
     def test_false_positive_not_counted_or_changed(self, tmp_path):
         original = json.dumps({"api_key": "your_key_here_placeholder_12345678901234567890"}) + "\n"
@@ -958,7 +943,7 @@ class TestRedactLogFile:
         assert redact_log_file(p) == 0
 
         assert p.read_text() == original
-        assert not (tmp_path / "fp2.jsonl.bak").exists()
+        assert not list(tmp_path.glob("fp2.jsonl.bak*"))
 
     def test_second_run_is_noop(self, tmp_path):
         p = tmp_path / "twice.jsonl"
@@ -1060,7 +1045,8 @@ class TestRedactLogFile:
         redact_log_file(p, backups=backups)
         redact_log_file(clean, backups=backups)
 
-        assert backups == [tmp_path / "out.jsonl.bak"]
+        assert backups == list(tmp_path.glob("out.jsonl.bak.*"))
+        assert len(backups) == 1
 
 
 class TestAuditRedactCli:
@@ -1082,7 +1068,12 @@ class TestAuditRedactCli:
             }]),
         ])
         monkeypatch.setattr("agentwatch.cc_stats.CLAUDE_PROJECTS_DIR", tmp_path / "projects")
-        return project / f"{name}.jsonl.bak"
+        return project / f"{name}.jsonl"
+
+    @staticmethod
+    def _backup_of(log: Path) -> Path:
+        (backup,) = log.parent.glob(log.name + ".bak.*")
+        return backup
 
     def test_rerun_after_redact_reports_no_findings(self, tmp_path, monkeypatch):
         from click.testing import CliRunner
@@ -1155,20 +1146,20 @@ class TestAuditRedactCli:
         from agentwatch.detectors.security import secret_scanner
 
         self._setup(tmp_path, monkeypatch, name="a_bad")
-        good_bak = self._setup(tmp_path, monkeypatch, name="b_good")
+        good = self._setup(tmp_path, monkeypatch, name="b_good")
         real = secret_scanner.redact_log_file
 
-        def flaky(path, backups=None):
+        def flaky(path, backups=None, **kwargs):
             if path.name == "a_bad.jsonl":
                 raise UnicodeEncodeError("utf-8", "\ud83d", 0, 1, "surrogates not allowed")
-            return real(path, backups=backups)
+            return real(path, backups=backups, **kwargs)
 
         monkeypatch.setattr(secret_scanner, "redact_log_file", flaky)
         result = CliRunner().invoke(cli, ["audit", "--all", "--redact", "--json"])
 
         data = json.loads(result.stdout)
         assert data["redacted"] == 1
-        assert data["backups"] == [str(good_bak)]
+        assert data["backups"] == [str(self._backup_of(good))]
         assert [e["log_file"] for e in data["redact_errors"]] == [
             str(tmp_path / "projects" / "-tmp-proj" / "a_bad.jsonl")
         ]
@@ -1178,9 +1169,10 @@ class TestAuditRedactCli:
 
         from agentwatch.cli import cli
 
-        bak = self._setup(tmp_path, monkeypatch)
+        log = self._setup(tmp_path, monkeypatch)
         result = CliRunner().invoke(cli, ["audit", "--all", "--redact"])
 
+        bak = self._backup_of(log)
         assert bak.exists()
         assert "ORIGINAL (unredacted) secrets" in result.output
         assert str(bak) in result.output
@@ -1190,12 +1182,12 @@ class TestAuditRedactCli:
 
         from agentwatch.cli import cli
 
-        bak = self._setup(tmp_path, monkeypatch)
+        log = self._setup(tmp_path, monkeypatch)
         result = CliRunner().invoke(cli, ["audit", "--all", "--redact", "--json"])
 
         data = json.loads(result.stdout)
         assert data["redacted"] >= 1
-        assert data["backups"] == [str(bak)]
+        assert data["backups"] == [str(self._backup_of(log))]
 
 
 # ---------------------------------------------------------------------------
@@ -1449,15 +1441,23 @@ def test_glued_secrets_all_redacted():
 
 
 @pytest.mark.parametrize(
-    "url,expected",
+    "url,expected,shown",
     [
         # A 1-char host used to make "last 4" of "//u:Pw12345678@x" read "…78@x".
-        ("postgres://u:Pw12345678@x", "[hidden, 10 chars]"),
-        ("mysql://root:S3cretPw@db.internal:3306/app", "[hidden, 8 chars]"),
-        ("postgres://u:Ab3dEf6hIj9kLm2nOp5qRs8t@h/db", "…Rs8t"),  # 24-char password
+        ("postgres://u:Pw12345678@x", "[hidden, 10 chars]", "[hidden, 10 chars]"),
+        (
+            "mysql://root:S3cretPw@db.internal:3306/app",
+            "[hidden, 8 chars]", "[hidden, 8 chars]",
+        ),
+        # An unlabelled mask reveals the password's tail (never the URL's); the
+        # scanner knows the value is a password and shows nothing (F3).
+        (
+            "postgres://u:Ab3dEf6hIj9kLm2nOp5qRs8t@h/db",
+            "…Rs8t", "[hidden, 24 chars]",
+        ),
     ],
 )
-def test_db_url_mask_reveals_only_from_password(url, expected):
+def test_db_url_mask_reveals_only_from_password(url, expected, shown):
     # Issue #24 part 4a: the reveal comes from the password, not the URL tail.
     from agentwatch.detectors.security.secret_scanner import mask_secret
 
@@ -1465,7 +1465,7 @@ def test_db_url_mask_reveals_only_from_password(url, expected):
     buf = ActionBuffer()
     buf.add(_make_action(tool_type=ToolType.BASH, command=f"psql {url}"))
     w = SecretLeakScanner().check(buf)
-    assert w is not None and w.details["matched_prefix"] == expected
+    assert w is not None and w.details["matched_prefix"] == shown
 
 
 # ---------------------------------------------------------------------------

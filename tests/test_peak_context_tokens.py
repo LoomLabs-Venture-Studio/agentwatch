@@ -96,7 +96,7 @@ class TestContextHealthWidgetPeakContextTokens:
         # Same state/score line in both, only the peak-context line differs.
         rendered_a = widget_a._build_content()
         rendered_b = widget_b._build_content()
-        assert "State: PRODUCTIVE".upper() in rendered_a.upper() or "State:" in rendered_a
+        assert "Context Health [" in rendered_a  # the score line (no state word since PR 4)
         # Strip the peak-context line and compare the rest for equality.
         lines_a = [ln for ln in rendered_a.splitlines() if "Peak context" not in ln]
         lines_b = [ln for ln in rendered_b.splitlines() if "Peak context" not in ln]

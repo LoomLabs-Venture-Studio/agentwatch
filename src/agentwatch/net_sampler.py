@@ -41,6 +41,18 @@ def _denied(kind):
     raise psutil.AccessDenied()
 
 
+def _own_pids(root: int, trees: dict[int, list]) -> set[int]:
+    """Pids whose sockets are charged to *root*: its whole tree minus the
+    subtrees of any other tracked root nested inside it. A nested tracked
+    root (and its descendants) is attributed to that root alone, so traffic
+    is never counted under both the parent and the child."""
+    own = {p.pid for p in trees[root]}
+    for other in trees:
+        if other != root and other in own:
+            own -= {other} | {p.pid for p in trees[other]}
+    return own
+
+
 class NetSampler:
     def __init__(
         self,
@@ -107,7 +119,8 @@ class NetSampler:
             for root, tree in trees.items():
                 if root not in self._started:
                     continue  # untracked while polling
-                seen = set().union(*(seen_by_pid.get(p.pid, ()) for p in tree))
+                own = _own_pids(root, trees)
+                seen = set().union(*(seen_by_pid.get(pid, ()) for pid in own))
                 live, spans = self._live[root], self._spans[root]
                 fresh = {}
                 for ip, port in seen:
@@ -133,6 +146,14 @@ class NetSampler:
             return sorted({
                 (e.ip, e.port) for e in self._spans[pid] if e.first_seen <= hi and e.last_seen >= lo
             })
+
+    def spans(self, pid: int) -> list[Endpoint] | None:
+        """Copies of *pid*'s endpoint spans (the last _RETENTION s), oldest
+        first; None if *pid* is untracked."""
+        with self._lock:
+            if pid not in self._spans:
+                return None
+            return [Endpoint(e.ip, e.port, e.first_seen, e.last_seen) for e in self._spans[pid]]
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():

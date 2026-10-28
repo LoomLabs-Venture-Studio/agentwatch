@@ -265,9 +265,11 @@ _VOLATILE_ERROR_RE = re.compile(
 )
 
 
-def normalize_error(msg: str) -> str:
+def normalize_error(msg: object) -> str:
     """Stable signature of an error message: volatile parts become ``<X>``,
-    whitespace collapsed."""
+    whitespace collapsed. Non-strings are stringified, not trusted."""
+    if not isinstance(msg, str):
+        msg = "" if msg is None else str(msg)
     return " ".join(_VOLATILE_ERROR_RE.sub("<X>", msg.lower()).split())
 
 

@@ -20,6 +20,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -73,15 +74,19 @@ def user_dir(tmp_path):
     (root / "workspaceStorage" / "empty-window").mkdir(parents=True)
 
     (root / "workspaceStorage" / "ws-1" / "workspace.json").write_text(
-        json.dumps({"folder": "file:///c%3A/Users/zaid/myproject"}), encoding="utf-8"
+        json.dumps({"folder": "file:///c%3A/Users/alice/myproject"}), encoding="utf-8"
     )
     # "empty-window" real case: no workspace.json at all.
 
+    # lastUpdatedAt is epoch milliseconds (same unit as createdAt).
+    now_ms = int(time.time() * 1000)
     db_path = root / "globalStorage" / "state.vscdb"
     conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(SCHEMA_SQL)
-        _insert_header(conn, "c-real", "ws-1", 2000, {})
+        _insert_header(conn, "c-real", "ws-1", now_ms - 60_000, {})
+        # Messaged long ago, well outside the 30 min activity window.
+        _insert_header(conn, "c-stale", "ws-1", now_ms - 2 * 3600 * 1000, {})
         _insert_header(conn, "c-chat", "ws-1", 2500, {"unifiedMode": "chat"})
         _insert_header(conn, "c-archived", "ws-1", 3000, {}, archived=1)
         _insert_header(conn, "c-never-messaged", "ws-1", None, {})
@@ -129,9 +134,9 @@ class TestFileUriToPath:
 class TestDefaultCursorUserDir:
     def test_windows_uses_appdata_env_var(self, monkeypatch):
         monkeypatch.setattr(vscode_paths.sys, "platform", "win32")
-        monkeypatch.setenv("APPDATA", r"C:\Users\zaid\AppData\Roaming")
+        monkeypatch.setenv("APPDATA", r"C:\Users\alice\AppData\Roaming")
         result = default_cursor_user_dir()
-        assert result == Path(r"C:\Users\zaid\AppData\Roaming") / "Cursor" / "User"
+        assert result == Path(r"C:\Users\alice\AppData\Roaming") / "Cursor" / "User"
 
     def test_windows_falls_back_when_appdata_unset(self, monkeypatch):
         monkeypatch.setattr(vscode_paths.sys, "platform", "win32")
@@ -162,8 +167,8 @@ class TestDefaultCursorUserDir:
         assert result == Path.home() / ".config" / "Cursor" / "User"
 
     def test_posix_style_uri_keeps_leading_slash(self):
-        result = _file_uri_to_path("file:///home/zaid/project")
-        assert str(result) in ("/home/zaid/project", "\\home\\zaid\\project")
+        result = _file_uri_to_path("file:///home/alice/project")
+        assert str(result) in ("/home/alice/project", "\\home\\alice\\project")
 
 
 # ---------------------------------------------------------------------------
@@ -238,10 +243,22 @@ class TestFindCursorAgents:
         agents = find_cursor_agents(user_dir=user_dir, require_running=False)
         assert len(agents) == 1
 
+    def test_excludes_composer_idle_past_activity_window(self, user_dir, monkeypatch):
+        """c-stale is a real agent-mode composer that was messaged 2h ago --
+        outside the 30 min window, so it must not be reported as running."""
+        monkeypatch.setattr(cursor_discovery, "is_cursor_running", lambda: True)
+        ids = [a.session_id for a in find_cursor_agents(user_dir=user_dir)]
+        assert "c-stale" not in ids
+        assert "c-real" in ids
+
+    def test_activity_window_is_30_minutes(self):
+        assert cursor_discovery.ACTIVITY_WINDOW_SECONDS == 1800
+
     def test_only_surfaces_qualifying_agent_mode_composer(self, user_dir, monkeypatch):
         """c-chat (chat mode), c-archived (archived), c-never-messaged (no
-        lastUpdatedAt), empty-state-draft (isDraft), and c-no-workspace (no
-        resolvable workspace) must all be excluded -- only c-real survives."""
+        lastUpdatedAt), c-stale (idle past the activity window),
+        empty-state-draft (isDraft), and c-no-workspace (no resolvable
+        workspace) must all be excluded -- only c-real survives."""
         monkeypatch.setattr(cursor_discovery, "is_cursor_running", lambda: True)
         agents = find_cursor_agents(user_dir=user_dir)
 
@@ -265,3 +282,41 @@ class TestFindCursorAgents:
         (root / "globalStorage").mkdir(parents=True)
         (root / "globalStorage" / "state.vscdb").write_text("not a sqlite file")
         assert find_cursor_agents(user_dir=root) == []
+
+
+class TestActivityWindowBoundary:
+    """Exact-edge check for ACTIVITY_WINDOW_SECONDS, with a pinned clock."""
+
+    NOW_S = 1_700_000_000.0
+
+    @pytest.fixture
+    def boundary_dir(self, tmp_path):
+        root = tmp_path / "Cursor" / "User"
+        (root / "globalStorage").mkdir(parents=True)
+        (root / "workspaceStorage" / "ws-1").mkdir(parents=True)
+        (root / "workspaceStorage" / "ws-1" / "workspace.json").write_text(
+            json.dumps({"folder": "file:///c%3A/Users/zaid/myproject"}), encoding="utf-8"
+        )
+        now_ms = int(self.NOW_S * 1000)
+        conn = sqlite3.connect(str(root / "globalStorage" / "state.vscdb"))
+        try:
+            conn.executescript(SCHEMA_SQL)
+            _insert_header(conn, "c-at-edge", "ws-1", now_ms - 1_800_000, {})
+            _insert_header(conn, "c-just-past", "ws-1", now_ms - 1_800_001, {})
+            _insert_header(conn, "c-just-inside", "ws-1", now_ms - 1_799_999, {})
+            conn.commit()
+        finally:
+            conn.close()
+        return root
+
+    def test_exactly_at_window_is_included_and_one_ms_past_is_excluded(
+        self, boundary_dir, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(cursor_discovery, "is_cursor_running", lambda: True)
+        monkeypatch.setattr(cursor_discovery, "time", SimpleNamespace(time=lambda: self.NOW_S))
+        ids = {a.session_id for a in find_cursor_agents(user_dir=boundary_dir)}
+        assert "c-at-edge" in ids
+        assert "c-just-inside" in ids
+        assert "c-just-past" not in ids

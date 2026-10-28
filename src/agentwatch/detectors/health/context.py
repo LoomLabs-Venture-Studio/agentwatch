@@ -25,21 +25,21 @@ class ContextRotDetector(Detector):
         self.min_actions = min_actions
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.min_actions:
+        if buffer.activity_history_len < self.min_actions:
             return None
 
         # Use the first 25% of the session as "early"
-        early_count = max(15, int(len(buffer) * self.early_fraction))
+        early_count = max(15, int(buffer.activity_len * self.early_fraction))
 
         # Get files from early in session
-        early_actions = buffer.first(early_count)
+        early_actions = buffer.first(early_count, activity=True)
         early_files = {a.file_path for a in early_actions if a.file_path}
 
         if not early_files:
             return None
 
         # Get files referenced recently
-        recent_files = buffer.files_in_window(self.recent_window)
+        recent_files = buffer.files_in_window(self.recent_window, activity=True)
 
         # Find forgotten files
         forgotten = early_files - recent_files
@@ -120,10 +120,10 @@ class RediscoveryDetector(Detector):
         self.rediscovery_gap = rediscovery_gap
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        actions = buffer.last(self.window)
+        actions = buffer.last(self.window, activity=True)
 
         # Track file read positions
         file_first_read: dict[str, int] = {}

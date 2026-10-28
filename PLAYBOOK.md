@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 35 (develop-overdrive) Feature 3, `agentwatch statusline` (2026-10-18), at the end of this file; before it Feature 1, coach hook (2026-10-17); before it Sprint 35 (scrub skill, 2026-10-15/16; PR #133); Sprint 34 Part B (`agentwatch net`, #134-#136) is just before it.** Start there.
+> **Latest: Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -51,7 +51,7 @@ type: fix | feat | refactor | test | docs | chore
 **Priority:** Unblocks all future sprints (no committed baseline, no CI gate,
 no accurate docs existed before this)
 **PRD Status:** not needed (recon-driven; see
-`C:\Users\Zaid\.claude\plans\what-do-you-recommend-unified-tulip.md` for the
+`C:\Users\<user>\.claude\plans\what-do-you-recommend-unified-tulip.md` for the
 full plan)
 **Harness:** PLAYBOOK standalone (`.loom/config.yml` shows no GSD/Ruflo
 signal)
@@ -124,7 +124,7 @@ follow-up (not yet assigned).
 today (POSIX-only `ps`/`lsof` shell-outs + POSIX-only path encoding fail
 silently instead of erroring)
 **PRD Status:** full implementation plan approved; see
-`C:\Users\Zaid\.claude\plans\whats-the-plans-glittery-forest.md`
+`C:\Users\<user>\.claude\plans\whats-the-plans-glittery-forest.md`
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
 
 ### Acceptance Criteria
@@ -132,8 +132,8 @@ silently instead of erroring)
 - [x] New `src/agentwatch/path_encoding.py` with `encode_path_for_claude()`
       (unconditional regex-replace of `/`, `\`, `:`, ` ` with `-`),
       unit-tested including the empirically-confirmed case
-      (`C:\Users\Zaid\Desktop\claude work\...` ->
-      `C--Users-Zaid-Desktop-claude-work-...`)
+      (`C:\Users\<user>\Desktop\claude work\...` ->
+      `C--Users-<user>-Desktop-claude-work-...`)
 - [x] `discovery.py::_encode_path_for_claude` removed, replaced by the
       shared function; `cc_stats.py::cwd_to_project_dir` wired to the same
       shared function
@@ -182,7 +182,7 @@ silently instead of erroring)
 
 ### Implementation Plan
 See full file-by-file plan at
-`C:\Users\Zaid\.claude\plans\whats-the-plans-glittery-forest.md`.
+`C:\Users\<user>\.claude\plans\whats-the-plans-glittery-forest.md`.
 Landed as: (1) `pyproject.toml` psutil dep, (2) new `path_encoding.py` +
 tests, (3) `cc_stats.py` wired to shared encoder + test fix, (4)
 `discovery.py` full psutil rewrite (including `_find_open_jsonl`, a
@@ -197,7 +197,7 @@ UTF-8 stdio fix found via the manual smoke test. Status: done.
   installed on this machine, so this is web/source research against
   Aider's real GitHub repo and live sample files, not a local capture).
   **PRD written** (2026-07-10):
-  `C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md` — full file-by-file
+  `C:\Users\<user>\.claude\plans\aider-log-parser-prd.md` — full file-by-file
   design (new `parser/aider.py`, ordinal turn-pairing between the Markdown
   and opt-in analytics JSONL, dual diff-marker regex support), 6 open
   questions flagged for live-install confirmation. Ready for sprint
@@ -245,7 +245,7 @@ UTF-8 stdio fix found via the manual smoke test. Status: done.
   github.com/openai/codex): researched + independently verified
   2026-07-10 (not installed on this machine — web/source research
   against the real GitHub repo, issues, and docs). **PRD written**
-  (2026-07-10): `C:\Users\Zaid\.claude\plans\codex-cli-support-prd.md` —
+  (2026-07-10): `C:\Users\<user>\.claude\plans\codex-cli-support-prd.md` —
   new `_resolve_codex_log()` + dedicated `parser/codex.py` with
   `call_id`-based buffering and explicit era-detection, 7-item
   live-install-gated open-questions list, acceptance criteria that block
@@ -300,7 +300,7 @@ UTF-8 stdio fix found via the manual smoke test. Status: done.
   resolution). Researched 2026-07-10 against this machine's real Cursor
   install — findings below correct and supersede the earlier note (which
   pointed at the wrong file). **Architecture review written** (2026-07-10):
-  `C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md` —
+  `C:\Users\<user>\.claude\plans\cursor-sqlite-architecture-review.md` —
   weighs polling-strategy and watcher-abstraction alternatives (recommends
   a two-tier `composerHeaders`-then-`composerData` poll and a new
   `CursorWatcher` class rather than generalizing `LogWatcher`), recommends
@@ -428,9 +428,9 @@ reviewed — per the architecture review's own Delegation section, this is
 a harder gate than the usual "board approval to merge": it's board
 approval to even start writing Phase 1.
 **PRD Status:** architecture review exists (not a PRD) at
-`C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md`; this
+`C:\Users\<user>\.claude\plans\cursor-sqlite-architecture-review.md`; this
 sprint's own scoping plan is at
-`C:\Users\Zaid\.claude\plans\whats-next-serialized-elephant.md`
+`C:\Users\<user>\.claude\plans\whats-next-serialized-elephant.md`
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
 
 **Why Cursor over Aider/Codex CLI:** board reviewed a comparison of all
@@ -636,7 +636,7 @@ resolves their log path (`discovery.py::_resolve_aider_log`), but
 today — `parse_file()` is JSONL-only and every Markdown line fails
 `json.loads()`.
 **PRD Status:** full implementation plan approved, includes ready-to-use
-code:  `C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md`
+code:  `C:\Users\<user>\.claude\plans\aider-log-parser-prd.md`
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
 **Board decision (2026-07-11):** started in parallel with the blocked
 Cursor Phase 0 spike (Sprint 2) and the devops pre-push hook fix below —
@@ -747,7 +747,7 @@ branches on `"claude-code"`/`"aider"` — Codex processes always get
 `log_file=None`, so `agentwatch check`/`watch` can never parse a Codex
 session even though the process is visible in `agentwatch ps`.
 **PRD Status:** full implementation plan exists:
-`C:\Users\Zaid\.claude\plans\codex-cli-support-prd.md` — written entirely
+`C:\Users\<user>\.claude\plans\codex-cli-support-prd.md` — written entirely
 from source/issue-tracker research (real `openai/codex` repo,
 `codex-rs/protocol/src/protocol.rs`, issues #4963/#13463/#21660,
 `PixelPaw-Labs/codex-trace`), **no live Codex CLI install was available to
@@ -880,7 +880,7 @@ round (1-3) was blocked on "no populated conversation exists to inspect";
 round 4 (2026-07-12) closed that gap with real, three-way-corroborated
 content.
 **PRD Status:** architecture review + 4 rounds of investigation exist at
-`C:\Users\Zaid\.claude\plans\cursor-sqlite-architecture-review.md`. No
+`C:\Users\<user>\.claude\plans\cursor-sqlite-architecture-review.md`. No
 separate PRD document — this section's acceptance criteria serve that role,
 derived directly from round 4's confirmed findings.
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
@@ -1068,7 +1068,7 @@ verbatim into a PR body whenever this branch is actually opened for review.
 shipped — several materially affect correctness for real aider sessions
 (resumed sessions, long-lived analytics files) even though none blocked
 the original PR
-**PRD Status:** original PRD (`C:\Users\Zaid\.claude\plans\
+**PRD Status:** original PRD (`C:\Users\<user>\.claude\plans\
 aider-log-parser-prd.md`) Open Questions section is the source for this
 sprint's scope
 **Harness:** PLAYBOOK standalone (no GSD/Ruflo signal)
@@ -1334,8 +1334,8 @@ platform-clean (pure `Path` / `watchfiles`).
    - Verified against this machine's real `~/.claude/projects/`: Claude
      Code's actual Windows encoding replaces `\`, `:`, **and spaces**
      with `-`, e.g.
-     `C:\Users\Zaid\Desktop\claude work\agentwatch\agentwatch-main` ->
-     `C--Users-Zaid-Desktop-claude-work-agentwatch-agentwatch-main`.
+     `C:\Users\<user>\Desktop\claude work\agentwatch\agentwatch-main` ->
+     `C--Users-<user>-Desktop-claude-work-agentwatch-agentwatch-main`.
    - This is the root cause of the known-failing test
      `test_cc_stats.py::TestCwdMapping::test_cwd_to_project_dir_existing`.
 
@@ -1742,7 +1742,7 @@ Markdown, and `MultiLogWatcher._find_all_logs()` hardcoded a `.jsonl`-only
 filter that excluded `.aider.chat.history.md` from process-mode discovery
 entirely.
 **PRD Status:** no separate PRD; scope is exactly Sprint 6 item 6's own
-description (`C:\Users\Zaid\.claude\plans\aider-log-parser-prd.md`'s
+description (`C:\Users\<user>\.claude\plans\aider-log-parser-prd.md`'s
 lineage).
 **Board decision:** same continuous-pass authorization as Sprint 7's Cursor
 half above.
@@ -4491,6 +4491,139 @@ Code's status line when the session is unhealthy, from the coach's state.
   (cursor_discovery -> parser -> cursor_discovery), fixed by making
   parser's discovery re-exports lazy too.
 
+### Sprint 35 (develop-overdrive) — Feature 4: alerts (2026-10-18)
+**Type:** feature. Branch `feature/alerts` from `develop-overdrive` @
+`8dd8365` (after #146); draft PR into `develop-overdrive`. Tell the user when
+an unattended session goes bad with no TUI on screen.
+
+### Acceptance Criteria
+- [x] 1. `watch-all --headless`: the same `MultiAgentWatchApp` engine on
+      Textual's headless driver (no fork, nothing extracted: the driver does
+      no screen I/O). One stdout line per new warning (any severity, per
+      (session, `warning_dedup_key`)), flushed. Ctrl+C exits 0 through the
+      app's normal shutdown. With no agents running it waits for them
+      instead of exiting.
+- [x] 2. `--notify` on `watch` and `watch-all` (headless or not): Critical
+      overall status or a new finding at `--notify-min high|critical`
+      (default critical). Windows: `powershell -NoProfile -NonInteractive
+      -EncodedCommand` fixed ToastNotificationManager script, PowerShell's
+      own AppId, on a daemon thread; on failure a `winsound.MessageBeep`
+      and one warning. macOS `osascript`, Linux `notify-send`; none: warn
+      once and continue. No new deps.
+- [x] 3. `--webhook URL` / `AGENTWATCH_WEBHOOK` (read only): urllib POST
+      `{"text": ...}`, 5 s timeout, daemon thread; failure warns once with
+      the URL masked (`scheme://host/***`); http(s) only, an invalid value
+      is rejected without echoing it.
+- [x] 4. One alert per (session, `warning_dedup_key`); overall Critical once
+      per episode and at most once per session per 10 min; cleared ->
+      forgotten -> recurrence alerts.
+- [x] 5. Text only as argv/stdin, no shell: PowerShell gets ASCII JSON on
+      stdin into XML text nodes (script constant), AppleScript gets
+      run-handler argv, notify-send `--`. Tested with quotes, backticks,
+      `$()`, `$env:`, `<b>`, newlines; real PowerShell round-trip test.
+- [x] 6. `tests/test_alerts.py` (35): rate limiting, text/redaction, webhook
+      payload + 500 + refused (local http.server), backend selection,
+      escaping, CLI, headless engine smoke on a fixture transcript.
+- [x] 7. Live (Windows 10 19045): `watch --log <fixture> --security --notify
+      --webhook http://127.0.0.1:8765/...` in a new console -> toast in
+      `ToastNotificationManager.History` ("agentwatch: Claude Code · myproj
+      — privilege_escalation") and the local server got the JSON. Direct
+      fire with quotes/backticks/`$()`/newline/`<b>&amp;` text: rc 0, shown
+      verbatim. `watch-all --headless --security --notify` against the live
+      Claude Code session printed its warning; a real console Ctrl+C
+      (GenerateConsoleCtrlEvent) exited 0, no traceback. README's hidden
+      `Start-Process` background example run as written.
+- [x] 8. README "Alerts", CLAUDE.md module map + env var, this section,
+      CHANGELOG.
+- [x] 9. Full suite + ruff green.
+
+### Decisions
+- Headless is Textual's headless driver, not an extracted engine: the engine
+  already runs headless (`app.run(headless=True)`; print reaches the real
+  stdout, SIGINT is handled), so there is no second loop to keep in sync.
+- A finding alert in the same pass stands in for the overall-Critical alert
+  (they nearly always coincide), so one bad turn gives one notification.
+- `--notify-min` also gates `--webhook`; the headless log is unfiltered.
+- Labels and cost reuse statusline's `_LABELS` / `_cost` (no third
+  formatter); unmapped signals (security) show the signal name.
+- Single `watch` waits for its process lookup before alerting so the text
+  names the project (falls back to the log's folder).
+- Windows toast uses PowerShell's registered AppId: an unregistered one
+  makes Show() succeed with no toast on Windows 10.
+- In the TUIs a sink failure shows as a Textual toast (stderr is hidden).
+
+### Limits
+- macOS and Linux backends are unit-tested (argv) only, not live-run.
+- A detector whose warning flickers on and off between passes re-alerts on
+  each return (same rule as the coach).
+- Background runs with no console (`pythonw`) have no stdout for headless
+  lines; redirect stdout as in the README.
+
+### CTO review fix (PR #150)
+- [x] Startup baseline: what a session already shows when first seen (at
+      startup, or discovered later with history) is recorded as alerted
+      without sending; only later findings and later transitions into
+      Critical alert. `--notify-existing` opts back in. The headless log is
+      not baselined.
+- The baseline is a window (`BASELINE_S` = 5 s from the session's first pass
+      with actions), not a single pass: a pass can run before the watcher
+      has read the log (empty buffer), and a large log loads in one blocking
+      step, so "first pass" alone would alert on the history. A pass with no
+      actions does not start the clock.
+- Critical at baseline counts as the current episode; if it clears and
+      recurs, it alerts at once (no cooldown consumed).
+- Tests: pre-existing HIGH/CRITICAL + Critical at startup -> 0 alerts, a
+      new finding afterwards -> 1; later-discovered session; history load
+      blocking past the window; `--notify-existing`; headless smoke now
+      appends `sudo` to the fixture log after the baseline and gets exactly
+      one alert.
+- `AGENTWATCH_WEBHOOK` kept: board approved option B (2026-10-23), env var
+      as fallback for `--webhook`, the flag wins.
+
+### QA round 1 fixes (PR #150)
+- [x] 1 (MEDIUM) Control chars: `secret_scanner.one_line(text, limit)` (next
+      to redact_truncate, which both callers already used) maps every
+      non-printable char to a space (QA's `[\x00-\x1f\x7f-\x9f]` plus bidi
+      overrides and zero-width chars), collapses, redacts, bounds. Used for
+      alert agent/project (60 chars each), signal, message, headless line,
+      and coach._clean (the note kept ESC before). net._printable (DNS
+      names, "?" replacement) left as is.
+- [x] 2 Webhook text Slack-escaped (`& < >`) in `_post`; the toast keeps
+      the raw (cleaned) text.
+- [x] 3 Opener built with a no-redirect HTTPRedirectHandler subclass: any
+      3xx is an HTTPError (302 to another host and to ftp:// both refused,
+      not followed); post_webhook also refuses non-http(s).
+- [x] 4 `--webhook "http://[::1/x"`: BadParameter, value not echoed;
+      mask_url returns `<invalid url>` instead of raising.
+- [x] 5 One delivery worker per Alerter (lock + list, exits when idle):
+      one notifier process at a time; more than COALESCE_AT (3) queued ->
+      one "agentwatch: N new alerts" summary with the first 3 heads. Burst
+      check, `watch-all --headless --all-logs --notify-existing --notify-min
+      high` over this machine's logs: 43 alerts -> 2 deliveries (1 + "42 new
+      alerts"), peak 1 PowerShell child, 6 threads.
+- [x] 6 `_ALERT_LABELS`: statusline labels + every security signal (kept
+      out of statusline._LABELS, whose keys pick what the status line
+      shows). Plain http:// webhook warns once on stderr at startup.
+- Tests: control chars in message/project/agent (printable, one line,
+      bounded), coach uses the helper, Slack escaping, redirect refused
+      (other host, ftp), non-http refused, malformed URL, plain-http
+      warning, queue bound + coalescing (real threads), labels.
+
+### QA round 2 fix (PR #150, QA passed on 1d101fa)
+- [x] `Alerter._run`: each sink call is wrapped (`_safely`): any exception
+      warns once per sink with the exception type only (a webhook error's
+      text can hold the URL) and delivery continues. An unexpected exit
+      outside a sink resets `_busy`, so the next alert starts a new worker
+      (that batch is lost). `_busy` is still cleared under the same lock as
+      the empty-queue check, so no wakeup is lost.
+- Tests: `_desktop` raising RuntimeError and the webhook raising, then a
+      second alert is still delivered and each sink warned once; worker
+      crash outside a sink resets `_busy`. The redirect test server now
+      reads the request body before replying (one unreproduced flake: an
+      unread body is a TCP reset on Windows).
+- `AGENTWATCH_WEBHOOK`: board approved option B (2026-10-23): read-only
+      fallback for `--webhook`, the flag wins when both are set (test
+      `test_webhook_flag_overrides_env`).
 
 ### Sprint 35 (develop-overdrive) — Feature 5: session history + `agentwatch report` (2026-10-18)
 **Type:** feature. Branch `feature/history-report` from `develop-overdrive` @
@@ -4589,3 +4722,612 @@ webhook, after alerts #150), any cloud or team sync.
       `/home/<name>` and `/Users/<name>` are `~` on any OS. Tests: Windows,
       POSIX, UNC, mixed separators, trailing separator. history's
       `_base`/`_SEP` already split on both separators.
+
+### Next: Feature 6 budget alert (after #150 merges) -- DONE (feature/budget-alert)
+Board decisions (2026-10-23):
+- [x] `--budget USD` on `watch` and `watch-all`.
+- [x] One alert per session when `SessionStats.estimated_cost` reaches the
+  limit; an unknown cost (no price) never alerts.
+- [x] A session already over budget at startup DOES alert: exempt from the
+  silent startup baseline.
+- [x] `--budget` alone turns on desktop notifications (no `--notify` needed).
+
+### Feature 7: loop circuit breaker (feature/loop-breaker, 2026-10-23)
+Board-approved spec. Claude Code plugin only.
+- [x] PostToolUse: HIGH `loop` warning -> state["armed"] = loop_id, count,
+  cost_usd, blocked (hashes only, no command/path text).
+- [x] PreToolUse (same `agentwatch hook`, hooks.json timeout 5, `; exit 0`):
+  reads only the state file; key via `coach.call_loop_id` (CC parser +
+  `loops._loop_key`), parity test for Bash, Edit, Write, Read, MCP.
+- [x] 7th identical call after a HIGH loop denied (exit 0,
+  `hookSpecificOutput.permissionDecision: "deny"`, fixed reason, cost only
+  when known, no transcript text, no `<`/`>`).
+- [x] Retry right after a denial allowed (block once per loop).
+- [x] Loop no longer HIGH -> armed entry dropped, a new loop blocks again.
+- [x] Allowlist `coach.LOOP_ALLOW` (Bash prefixes): never denied, warning
+  still fires.
+- [x] `AGENTWATCH_LOOP_BREAKER=off` (case-insensitive): prints nothing.
+  Board approved; default on.
+- [x] Fail open: bad JSON, missing/corrupt state, any exception, watchdog.
+- [x] Subagents keyed `session.agent_id` like the coach; separate state.
+- [x] End-to-end test on the real Claude Code 2.1.30x fixture.
+- [x] No interaction with `--budget`.
+
+## Watch UI overhaul (Sprint 36)
+Board decisions (2026-10-24):
+- Replace the old `watch-all` screen. `watch` gets the same redesign.
+- Crash fixes ship first.
+- `--all-logs` defaults to the last 24h.
+- Network, detect and the weekly report are in scope now.
+- 9 PRs as a stack, each on the previous one:
+  1. Crash fixes.
+  2. Sessions table.
+  3. Header + event feed.
+  4. Detail view (+ fix stale-after-`s` and selected-only rescoring).
+  5. Loop-breaker + budget columns.
+  6. Many sessions: idle fold, filter, project names, 24h default, team
+     grouping fix.
+  7. Narrow layout + `?` help.
+  8. Net/detect/weekly report.
+  8b. Visual polish: graphs, gauges, colour (board decision 2026-10-25).
+  9. `watch` uses the same app.
+
+### PR 1: crash fixes (fix/watch-markup-crashes) -- DONE (superseded by #166 on develop)
+- [x] Claude Code `system/api_error` logs `error` as a dict: the parser
+  (`parser.logs.error_text`) keeps its `message`, else compact JSON. Also
+  used by the flat Claude Code, Moltbot, Antigravity and Copilot CLI
+  parsers. `detectors.base.normalize_error` stringifies any non-str.
+- [x] Log text is plain text in every widget: `markup=False` on the
+  `Static`/`Label` widgets in `ui/app.py`, `ui/multi_app.py` and
+  `ui/rot_widget.py` (none use intentional markup), and both apps' `notify`
+  defaults to `markup=False` (toasts carry agent labels and LLM/SIEM
+  errors). `[/]` no longer crashes, log `[link=...]`/`[@click=...]` are
+  inert, and our `[claude-code]`, `[root]`/`[sub]`, `[loop ...]`,
+  `[Tier-2]`, `[ALIGNED]`/`[POSSIBLE DRIFT]`/`[UNCLEAR]` and `[TIP]` labels
+  show.
+- [x] Tests: `tests/test_ui_markup.py` (synthetic api_error fixture; pilot
+  runs of `watch` and `watch-all`).
+
+### PR 2: sessions table (feature/watch-ui-2-table) -- DONE
+- [x] `watch-all` main screen is a full-width `DataTable` (one row per
+  session, row key = log path) plus a Selected strip; the old panels are not
+  mounted (classes kept for PR 4's detail view). Enter stays unbound.
+- [x] Attention sort (Critical, HIGH, other warnings, active by recency,
+  idle 5+ min/stopped last); `o` cycles attention/cost/recent; the cursor is
+  put back on the selected session after a reorder. Subagents under their
+  parent; team header row kept.
+- [x] Per tick: only changed cells get `update_cell`; rows are added/removed
+  only when sessions appear/disappear; a changed row is bold for ~2s.
+  Unselected sessions keep the cached report (selected-only rescoring is
+  PR 4). `c` (clear cache) removed.
+- [x] Cells are `rich.text.Text` (log text never parsed as markup).
+- [x] Tests: `tests/test_multi_app_table.py`.
+
+### PR 3: header + event feed (feature/watch-ui-3-feed) -- DONE
+- [x] PR 2 follow-ups: HEALTH ▲/▼ vs the score 60s ago (nothing before a
+  minute of history; evaluated every tick); AGENT display names
+  (`agents.DISPLAY_NAMES`, also in alert text); stopped rows grey; a team
+  score of 0 is Critical.
+- [x] Header line replaces Textual's Header: sessions, active, need you
+  (Critical or HIGH+; no "needs input" detection exists), "on screen $X"
+  (sum of the on-screen sessions' estimated cost: history totals would need
+  a sync, left to PR 8), alerts (Alerter sends to desktop/webhook, else new
+  HIGH+ findings), clock. Blocks omitted until PR 5 wires coach state.
+- [x] Events panel (newest first, 200 lines): started/stopped, new warning
+  per `warning_dedup_key`, cleared, alert sent (`Alerter.on_send`, delivery
+  unchanged), budget 80%/hit. A session's first `BASELINE_S` with actions
+  is silent, like the Alerter; one "N sessions loaded" line at startup.
+- [x] `e` focuses the feed, `e`/Esc back to the table.
+- [x] Tests: `tests/test_multi_app_feed.py`.
+
+### PR 4: detail view (feature/watch-ui-4-detail) -- DONE
+- [x] Enter (priority binding; not on a team header row; a click on the
+  highlighted row too) pushes `ui/detail.py`'s `DetailScreen`: title line,
+  `TabbedContent` Health/Security/Network/Process, each a `VerticalScroll`.
+  Esc/Backspace/`q` pop it; the table keeps its cursor. Tab/Shift+Tab, 1-4,
+  arrows and PgUp/PgDn are screen bindings. `o`/`e`/Enter are off there.
+- [x] The PR 2 widget classes are reused and compacted in place (so `watch`
+  changes too): one status word (HealthBar), no 0-1 numbers by bars, zero
+  context modules dropped, `_hm` durations, no padding rows;
+  `WarningsList.limit = None` in the detail view (all warnings, suggestions
+  not cut). `SecurityStatus` says "Security: clean / N findings".
+- [x] Live: `_update_detail` on the 1s tick, only for the shown session, from
+  its cached scoring; widgets update only when their text changed (`show`).
+- [x] Network: endpoints seen in the session's actions (PR 8 extends).
+  Process: `AgentProcess` fields from the watcher, `n/a` with `--all-logs`.
+- [x] Fixed: `s` drops every cached report (rescored next tick). Every
+  session, selected included, is rescored only on new actions; RotScorer is
+  fed only new actions (`_rot_count`). Tier-2 verdicts are re-stamped onto
+  the shown session's cached warnings each tick; LLM dispatch now happens on
+  scoring passes only (as for unselected sessions before).
+- [x] Tests: `tests/test_multi_app_detail.py`.
+- [x] PR 3 QA follow-ups: budget feed lines held in a session's window
+  (`_in_window`, like findings) and alert-sent lines held during startup,
+  then one `_flush_held` line ("$ N sessions over budget $X; N alerts sent");
+  Alerter delivery unchanged. "need you" skips stopped sessions.
+  `Alerter._send` survives a raising `on_send` (warned once).
+- [x] CI fix: `refresh_ui` is a no-op once the screen stack is empty (a
+  RowHighlighted queued during shutdown raised ScreenStackError).
+
+### PR 5: loop-breaker blocks + budget (feature/watch-ui-5-blocks) -- DONE
+- [x] Coach state, read only: every `COACH_EVERY_S` (2s) one `listdir` per
+  `statusline.state_dirs()` dir, a `stat` per Claude Code session's state
+  file (`coach.state_path` name; subagent logs `<session>.<agent_id>`), and
+  a JSON read only when the newest file or its mtime changed. Missing or
+  corrupt files are no state.
+- [x] `armed.blocked` on a new loop_id: TOP SIGNAL `⛔ loop blocked: <tool>
+  (Nx) $X` (tool/count from the matching loop warning, else the state
+  count; never a command), attention bucket 0, counts as "need you", one
+  feed line; at startup counted into "N sessions loaded; M loop blocks so
+  far". Header `blocks N`. Detail Health tab `Loop breaker:` line (the env
+  var is only read for display).
+- [x] `--budget`: `COST / BUDGET` column `$4.12 / $5.00 ▮▮▮▯` (10-wide
+  `$4.12 ▮▮▮▯` when started under 100 columns), amber >= 80%, red when hit,
+  `n/a` unpriced; header `budget $X`. The 80-column header drops "on screen",
+  then the clock, when it does not fit.
+- [x] `s`: the rescoring's finding lines are muted; one `security on: N
+  findings` / `security off` line.
+- [x] Perf (perf.py, 15s): synthetic 10 sessions idle CPU 3.0% / refresh_ui
+  1.06ms (PR 4: 3.0% / 0.86ms); --all-logs 122 sessions 11.3% / 3.73ms
+  (PR 4: 11.0% / 3.83ms). Coach pass over 122 sessions: 0.19ms.
+- [x] Tests: `tests/test_multi_app_blocks.py` (incl. an end-to-end run of the
+  real `agentwatch hook` PostToolUse + PreToolUse into watch-all).
+- [x] PR 4 follow-ups: `refresh_ui` also skips while the app is shutting
+  down (flaky NoMatches in a detail test); module bars that round to empty
+  are left out; warning/tip lines wrap with a hanging indent
+  (`ui.app.hang`), long Process values continue indented.
+
+### PR 6: many sessions (feature/watch-ui-6-many) -- DONE
+- [x] `--all-logs` loads logs modified in the last 24h (board decision);
+  `--since Nh|Nd|all` (no env var; an error without `--all-logs`). The
+  filter is in `MultiLogWatcher._find_all_logs` (one `stat` per not-yet-
+  watched log per scan), so old logs are never parsed; one written to again
+  is picked up by the next scan. Table title `Sessions (last 24h)`, feed
+  `N sessions loaded (last 24h of M logs)`.
+- [x] Idle fold: no action for `IDLE_FOLD_S` (15 min) or stopped (not: no
+  actions yet) -> one `○ … N idle (a to show)` row at the bottom; a parent
+  stays while a subagent is shown; team header while any member is. `a`
+  toggles. Folded rows are removed (rows added/removed only on a change);
+  the cursor stays on the selected session, or moves to the nearest shown
+  session in the full order. RowHighlighted now also checks the row key.
+- [x] `/` filter: one-line `Input` above the footer, live substring match on
+  the AGENT/PROJECT/TOP SIGNAL cells (any case); Enter keeps it (input
+  hidden, `filter: xyz` in the table subtitle as `Text`, literal), Esc clears
+  it (also Esc on the table while a filter is kept). Enter's priority
+  binding is off while typing.
+- [x] Project names with `--all-logs`: the adapter's `history_meta` (Claude
+  Code: `project_dir_to_name`, i.e. the transcript's recorded cwd via
+  `cc_stats.project_name`, worktrees and `~`; else the projects dir name),
+  then the transcript's cwd for Claude Code logs outside the projects dir,
+  else the log name. Strip, detail title, feed and alerts use it; the
+  Process tab keeps the log path. Claude Code `subagents/agent-*.jsonl` sit
+  under their session (`parent_log`).
+- [x] Teams: `self.teams` follows each process scan (new teams; a team with
+  no tracked session is dropped, its header row goes); `update_process_info`
+  copies depth/parent/team. Groups (team, or session + subagents) sort by
+  their most urgent member; inside, a tree (parent, then its subagents,
+  siblings in sort order).
+- [x] Perf (perf6.py: startup to first data, idle CPU and refresh_ui, 15s,
+  real logs, 124 total / 47 in 24h): 24h first data 1.3s (PR 5 all logs
+  3.4-3.6s), idle CPU 2.9-4.2%, refresh_ui 1.5-1.9ms; `--since all` 3.4s,
+  4.7-5.8%, 3.1-3.7ms vs PR 5 4.9-6.1%, 2.7-3.4ms (grouping costs
+  ~0.4ms per tick at 124 sessions). Synthetic 10: 0.91ms (PR 5 0.86ms).
+- [x] Tests: `tests/test_multi_app_many.py`.
+- [x] PR 5 QA follow-ups: the COST / BUDGET column switches form on a
+  resize across 100 columns (`on_resize`, from the event's size: it runs
+  before `App._on_resize`); 80-column header `spent $X`, `budget
+  $X/session`; `Loop breaker: off in this shell (...)`; the `[TIP]`
+  hanging indent is the prefix's cell width; README run-on line and how
+  watch-all finds coach state; tests no longer write the real coach pointer
+  (autouse `XDG_CACHE_HOME`/`LOCALAPPDATA` in `tests/conftest.py`); QA's
+  odd state-file cases in `tests/test_multi_app_blocks.py`.
+
+### PR 7: narrow layout + `?` help (feature/watch-ui-7-narrow) -- DONE
+- [x] One place decides the layout, `_layout(width, height)`: (narrow,
+  Events height, columns). `on_resize` (PR 6's budget-column hook, extended)
+  applies it only when it changed; the table's columns are rebuilt then (rows
+  re-added by the same refresh, the cursor put back on the selected session,
+  no flash). Nothing extra per tick; the Selected strip is not even filled
+  while hidden.
+- [x] Under 100 columns: no AGENT/CTX columns, PROJECT 12 wide (the subagent
+  `└` and `TEAM name` go there; the team's member count and the fold row's
+  `(a to show)` go to TOP SIGNAL), no Selected strip. The filter still
+  matches the agent. TOP SIGNAL is fixed to the remaining width at every
+  size, so no horizontal scroll (also 100-139 columns, which scrolled before).
+- [x] Under 30 rows Events is 3 lines; under 20 it is hidden and `e` shows
+  it in place of the table (`e`/Esc back). 80x24: 13 table rows; 80x18: 13.
+- [x] `?`: `ui/help.py` `HelpScreen` (modal, scrolls): keys, detail view
+  keys, columns and icons, sort modes, header, flags. Esc/`?`/`q` close;
+  Enter and the other main keys are off under it; works from the detail view.
+  Footer: Detail, Filter, Idle, Help, Quit, Sort, Events, Security; the
+  `^p palette` entry is hidden (^p still works).
+- [x] Header: counts and need-you first; when tight, in turn: clock and
+  "on screen" -> "spent", title, "N sess · M need you" (no active), then cut.
+  "budget $X/session" kept.
+- [x] Detail: `Loop breaker:` line wraps with a hanging indent at 80 columns.
+- [x] Perf (synthetic 120 sessions, refresh_ui best of 3x300): PR 6 2.35ms /
+  2.33ms (120x40 / 80x24), PR 7 2.38ms / 2.33ms.
+- [x] Tests: `tests/test_multi_app_narrow.py` (120x40, 100x30, 99x30, 80x24,
+  80x18, 60x20; resizes both ways; help; footer; header; detail wrap). Tests
+  that read the Selected strip run at 120x40.
+- [x] PR 6 QA follow-ups: Enter with a filter that matches nothing (or on
+  a team/fold row) opens nothing; a subagent that matches the filter is
+  shown under its parent (the parent kept, like idle folding does).
+- [ ] Not done: the design's `▶` cursor marker and `↑↓` footer hint (the
+  table's row highlight is the cursor; Textual's footer shows bindings only),
+  and Sessions/Events in one box.
+
+### PR 8: network, other AI, weekly report (feature/watch-ui-8-net) -- DONE
+- [x] Board decision: in now, reusing net/ai_detect/history/report read-only
+  (no new detection logic). Formatting in `ui/machine.py`; blocking calls on
+  worker threads / a subprocess, never the UI thread. Off with `--headless`
+  and in tests (`MACHINE_CHECKS`, conftest; also `XDG_DATA_HOME` -> tmp).
+- [x] Network tab (process mode): the existing NetSampler's spans
+  (`NetSampler.spans(pid)`, a locked copy; no second sampler), merged per
+  ip:port with first/last seen; names and `AI-PROVIDER` via `net.Namer`
+  (`name_many(wait=0)` + `providers()`, like `Tracker._rename`) and the
+  tree's TCP listeners (`net.tree_sockets` + `listener_scope`, `EXPOSED`
+  unless loopback) on a worker every `NAME_EVERY_S` (5s) while the tab is
+  shown. `--all-logs`: `Network: n/a (no process)`. Long rows continue
+  indented at 80 columns.
+- [x] Other AI: `ai_detect.detect()` on a thread at start and every 30s;
+  unmonitored = no adapter (what `detect` calls "not monitored"). Header
+  `+N unmonitored AI`; `d` overlay (the `?` modal with other text, width
+  100, scrolls) lists every program; feed `new unmonitored AI program:
+  <name>` once per name after the startup baseline. A failure hides the
+  count; the overlay says so.
+- [x] Weekly report: `history.sync(connect(), days=14)` in a subprocess
+  (its parse pool must not fork the threaded app; parsing stays off the UI
+  process), then `report.build` for today (local midnight window) and 7 days
+  on a thread; at start and every 5 min. Header `today $X · week $Y ▲Z%`
+  (vs the previous 7 days; no arrow without one). `w` overlay:
+  `report.render` + when synced. Failure: figures hidden, one
+  `history unavailable` line. "spent" kept: live, loaded sessions; history
+  lags (active logs wait 60s+ for a sync).
+- [x] Header order when tight: clock/"on screen", title, (100+ columns:
+  `N sess · M need you`), today/week, then the short counts. Under 100
+  columns today/week go before the counts are shortened.
+- [x] Perf (perf8.py, 30s idle, PR 7 -> PR 8): synthetic 10 sessions
+  3.3-3.7% / 1.40-1.53ms -> 3.2-3.4% / 1.18-1.19ms; `--all-logs` 24h (18
+  sessions) 4.1% / 1.55ms -> 3.6% / 1.37ms; process mode (2 agents) 10.3% /
+  0.82ms -> 11.4% / 0.82ms, with the Network tab open 11.0-11.2% ->
+  12.7-13.5%. Most of process mode's idle CPU is the existing NetSampler:
+  ~61ms per 1s poll here (2 tracked agents). detect(): 44ms CPU per call
+  (every 30s); listeners: ~41ms per read (every 5s, tab open). `history
+  sync` on real logs (14 days, empty DB): 17.7s cold, 0.2-1.6s warm, 5.7s
+  with changed logs; its own process.
+- [x] Tests: `tests/test_multi_app_machine.py` (fake NetSampler/Namer,
+  mocked detect, tmp history DB with synthetic sessions, a real sync
+  subprocess under a tmp HOME/XDG, failures, slow workers vs a responsive
+  UI, 120x40 / 80x24).
+- [x] PR 7 QA follow-ups: the `?`/`d`/`w` modal has its own footer
+  (`esc Close`; the table's `q Quit` was shown though `q` closes it); the
+  header's `--budget` item goes before the line is cut (the column shows it)
+  and the clock shows at 120 columns when it fits (a 2-space form with the
+  clock); "on screen" -> "spent" everywhere (it sums every loaded session,
+  folded and filtered ones too); help: "need you" = Critical, HIGH+ or
+  loop-blocked, not stopped; "Main flags"; the box fits the terminal (max
+  76) and wraps with hanging indents (`help.hang`).
+- [x] PR 8 QA fixes: quitting mid-sync no longer orphans the sync's pool
+  workers (own process group, killed from the cancelled worker and
+  `on_unmount`; the sync dies with its parent); a test's
+  `monkeypatch.undo()` no longer reaches the real history DB (conftest
+  fails any test left pointing at it); the Network tab hides loopback,
+  link-local and multicast endpoints like `agentwatch net`, and at 80
+  columns puts AI-PROVIDER under ENDPOINT (then drops FIRST SEEN); overlays
+  wrap beside their scrollbar; `d` says SUPPORTED like `detect`.
+
+### PR 8b: visual polish (feature/watch-ui-8b-visual) -- DONE
+- [x] Board decision (2026-10-25), after trying PRs 1-7 ("too simple"):
+  graphs + gauges, same layout. No new deps, nothing written to disk.
+- [x] History: one per-session deque (`data["_hist"]`, `HISTORY_MAX` 60) of
+  (time, health, cost, ctx), replacing PR 3's 60s trend deque (the arrows
+  read it too). A sample when the values changed, at most every
+  `SAMPLE_S` (15s), at once for a 5+ point health/context move; cost kept
+  to the cent. 15s: 60 samples cover 15+ min (a session's arc, more than the
+  60s arrow window) and a busy session redraws its graphs at most 4x a
+  minute. Idle sessions add nothing.
+- [x] TREND column (8 cells, after COST): `TREND H` (health, 0-100 scale,
+  each point in its health colour) under attention/recent sort, `TREND $`
+  (cost, min..max) under cost sort; the sort is part of `_layout`, so `o`
+  rebuilds the columns. Rich Text cells (not the Sparkline widget). TREND
+  goes when it would leave TOP SIGNAL under `SIGNAL_MIN` (25): 80 columns
+  keep TOP SIGNAL's 33 (a loop block's tool, count and cost), 120 columns
+  show TREND also with `--budget` (84-99 narrow; not 100-119 with
+  `--budget`, 100-109 without).
+- [x] Selected strip (6 lines): title (agent coloured); health / cost / ctx
+  rows with value, 16-sample sparkline, arrow vs a minute ago (health ▲
+  green ▼ red; cost and context ▲ amber), gauge (health by status colour;
+  context and budget green < 80%, amber, red >= 100%; `budget ▮▮▮▮▮▮▮▮▯▯
+  82%` with `--budget`); efficiency/security/net after health, $/min after
+  cost; the top signal (loop block first) and next warning in severity
+  colours. Detail Health tab: the same rows over every sample (up to 60).
+- [x] Colour: one per known agent (`AGENT_COLORS` from `DISPLAY_NAMES`,
+  blues/purples, none a health or severity colour); severity critical bold
+  red, HIGH dark_orange (was red), MEDIUM yellow, LOW dim. Fixed: the
+  theme's `orange` (health 40-59) is not a Rich colour, so those table cells
+  had no colour; `_color()` maps it to dark_orange.
+- [x] `--theme ascii`: sparklines `_.:-=+*#`, gauges `[########..] 82%`,
+  arrows `^`/`v`; meaning never by colour alone (arrows, numbers).
+- [x] Perf: a sparkline is recomputed only when its session gets a sample
+  (cache keyed by the sample count, kind and width); table cells update
+  only on change (existing); TREND does not flash a row. perf8.py, 30s
+  idle, 2 runs each, PR 8 -> 8b: synthetic 10 sessions 3.3% / 1.04-1.15ms
+  -> 2.3-3.5% / 1.32ms (one 2.96ms run with a 34ms outlier tick);
+  `--all-logs` 24h (18 sessions) 3.7-4.3% / 1.23-1.58ms -> 3.8-4.2% /
+  2.16-2.24ms; process mode (1 agent) 11.3-12.6% / 0.59-0.62ms -> 11.2-12.3%
+  / 0.65-0.72ms. Idle CPU flat; the ~0.7ms was mostly the strip's Text
+  (~0.4ms a tick). Follow-up: the strip is rebuilt only when its signature
+  (report, sample count, arrows, title, coach state, Tier-2 verdicts/goal,
+  security mode) changes: `--all-logs` (16 sessions) 1.12-1.80ms ->
+  1.16-1.46ms, synthetic 0.98ms.
+- [x] The one-off `test_enter_opens_detail_tabs...[120x40]` failure (cursor
+  on the fold row) was a laptop suspend mid-run: the wall clock jumped ~9h,
+  the seeded sessions became idle 15+ min and folded, the selected one too,
+  so the fold row was the right place. Not an app race; a test now folds
+  sessions while the detail view is open and checks Esc keeps the cursor on
+  the selected session (30x green).
+- [x] Tests: `tests/test_multi_app_graphs.py` (history cap/sampling/
+  reference, arrows, sparkline scaling, gauge thresholds, ascii, TREND vs
+  sort, narrow rule, no recompute without a sample, colours on screen,
+  strip/detail, 120x40 / 80x24).
+- [x] PR 8b QA minors: at 80 columns the Network tab keeps one row per
+  endpoint (after FIRST SEEN goes, HOST is cut with an ellipsis); both
+  footers are compact (`d` is "AI", no palette item) and fit with nothing
+  cut; the `w` overlay puts a one-line "History DB synced at" note first
+  (in view at 80x24) and lists 3 per group; `report.render` cuts names at
+  22 with an ellipsis so the cost columns align (CLI too).
+
+### PR 9: `watch` uses the new app (feature/watch-ui-9-watch) -- DONE
+- [x] Board decision (2026-10-25): the new screen replaces the old one, for
+  `watch` too. `watch` runs `MultiAgentWatchApp(session=<log>)`: a
+  `MultiLogWatcher` on that one file, opened straight into its detail view
+  (Esc: the table, just that row; q there quits). Same log pick as before
+  (`--log`, else `_default_log()`), same `ensure_supported_log` check.
+- [x] Flags: `--security`, `--siem-log`, `--llm`, `--llm-model`, `--notify`,
+  `--notify-min`, `--notify-existing`, `--webhook`, `--budget` pass through
+  unchanged; `guard watch` too.
+- [x] `cli._session_proc`: the running agent writing the log (resolved-path
+  match, one psutil scan at start, was the old app's `_find_own_process`)
+  seeds the watcher's process meta: pid, project, net sampling. Cursor
+  `state.vscdb`: the newest agent-mode composer (`select_latest_agent_composer`,
+  as `check`); none (or an unreadable DB) now exits 1 with a message instead
+  of the old idle dashboard + toast.
+- [x] `MultiLogWatcher` takes a file named outright in any format an adapter
+  reads (Aider `.md`, Cline `.json`, `.vscdb`); directory scans still take
+  `*.jsonl` only.
+- [x] Deleted: `AgentWatchApp` and `select_single_agent_watcher` (ui/app.py
+  keeps the widgets the detail view uses) and the tests that drove only
+  them (`test_app_live_wiring`, `test_app_live_goal_alignment`,
+  `test_app_on_action_regression`, `test_live_wiring_end_to_end`,
+  `test_cursor_single_agent_tui`; the multi app's own tests cover SIEM/LLM/
+  goal alignment). Ported: net wiring, markup, registry dispatch, CLI flags.
+- [x] Process mode, scoped: the 5s rescan keeps only the agent writing
+  this log (never adds others), so CPU/MEM/status update and an agent
+  started after `watch` is picked up; the session is never reaped.
+- [x] Tests: `tests/test_watch_session.py` (CLI passes the session and every
+  flag; real watcher -> detail view opens by itself -> SIEM line, Esc shows
+  one row; Aider `.md` followed; Cursor composer pick and clear exit).
+- [x] PR 9 QA fixes: the Network and Process tabs were empty although the
+  pid was found (`_process_mode` was off for `session=`, so four checks
+  ignored `session_proc`); Esc on an idle or stopped session showed only the
+  "N idle (a to show)" row (`watch` never folds its one session).
+
+
+---
+
+### Sprint 37 -- 0.2.0 release hardening (2026-10-24)
+**Type:** bug fix. Run by the CTO agent as an engineer -> CTO review -> QA -> fix loop (board directive 2026-10-24).
+**Goal:** make `develop` safe to release as `agentwatch-monitor` 0.2.0 for a social relaunch.
+Source: CTO + 3-way QA review of `develop` (2026-10-22) and PR #157's crash findings.
+
+### Board decisions (2026-10-24)
+1. Scope A: release 0.2.0 from `develop`; `develop-overdrive` features ship later as 0.3.0.
+2. Fix `scrub` / `audit --redact` data safety (no "experimental" label).
+3. The board approves every PR.
+4. Package name stays `agentwatch-monitor` (PyPI `agentwatch` upload was rejected with 400; `agent-watch` exists).
+5. Pick the model by task complexity to keep cost down.
+6. RESOLVED 2026-10-25: the "never merge into main" rule means merges into `main` need a board-reviewed PR; it is not a ban (see CLAUDE.md Git Rules). 0.2.0 ships through a `develop` -> `main` promotion PR, then a `v0.2.0` tag on `main`.
+
+### Acceptance Criteria
+- [x] F1 `watch` / `watch-all` no longer exit on dict `error` fields or on `[...]` text in logs; log text never renders as markup, links or actions (port of #157)
+- [x] F2 two Claude Code sessions in one project dir map to their own logs; a cached mapping is re-checked; a stopped agent's watcher task is cancelled (no double emission)
+- [x] F3 redact never loses appended lines; a second redact keeps a real backup or refuses; symlinks are refused or resolved; a placeholder word inside a secret does not skip redaction; password-like values show no tail
+- [x] F4 Cursor lists only recently active composers; state.vscdb reads set a timeout; a nested agent's endpoints are not also charged to its parent; the HTML-comment injection pattern is linear; non-loopback `OLLAMA_HOST` is refused or warned
+- [x] F5 `test_aider_watcher` passes on macOS 3.12 or the macOS gap is root-caused and documented
+- [x] F6 release prep: no personal paths in tracked files, repo-root clutter removed, CHANGELOG dated, `publish.yml` runs tests and checks tag == version
+- [x] All existing tests pass on 3.11/3.12 (CI) and `ruff check .` is clean
+- [x] Integrated QA on `develop` after all merges (pre-merge integration run done 2026-10-24: all 7 branches merge cleanly, 2007 passed on 3.12 and 3.14, ruff clean; post-merge run 2026-10-25 on b3d8fc2: 2021 passed / 25 skipped on 3.12 and 3.14, ruff clean; live macOS `ps` / `ps --json` / `net --once` / `audit --all` / `watch-all` / `detect --json` all pass, metadata-only; QA note fixed: `audit` exit codes documented)
+- [x] No new security issues
+
+### Implementation Plan
+| Task | Branch | Model | QA model |
+|---|---|---|---|
+| F1 crash + markup fixes (port #157) | `fix/watch-crashes` | sonnet | sonnet |
+| F2 Claude session mapping, cache, watcher leak | `fix/claude-session-mapping` | opus | sonnet |
+| F3 redact / scrub data safety | `fix/redact-data-safety` | sonnet | sonnet |
+| F4 small fixes batch | `fix/release-small-fixes` | haiku | haiku |
+| F5 macOS Aider watcher | `fix/aider-watcher-macos` | sonnet | haiku |
+| F6 release prep (after F1-F5 merge) | `chore/release-0.2.0-prep` | haiku | haiku |
+
+Rules for every task: branch from `origin/develop`, draft PR to `develop`, never touch `CHANGELOG.md` except in F6, push with `--no-verify` (board-approved 2026-09-30).
+
+### Result (pre-merge, 2026-10-24)
+Every PR went through engineer, then CTO diff review, then QA, then fixes. QA findings were fixed rather than deferred (board: everything on develop is QA'd and fixed).
+- F1 #166: ported #157. Also added a per-line `except` in LogWatcher (one bad line can no longer kill `watch`) and five codex `error_text` sites. QA PASS.
+- F5 #165: Aider and the JSONL LogWatcher only read `Change.modified`. macOS FSEvents reports appends as `Change.added`, so on macOS `watch` never live-tailed any agent. Fixed with a read on any event, resolved paths, a 1 s tick gated by a stat signature, and a prefix fingerprint for truncate and rewrite. Also fixed QA-found shrink-then-append drops. QA PASS x2, CTO verified the final commit.
+- F2 #169: Claude Code never holds its transcript open. The authoritative pid-to-session map is `~/.claude/sessions/<pid>.json` (sessionId, cwd, procStart), rewritten on /clear and /resume and deleted on exit. The mapping is now one-to-one, the cache is re-validated each scan, and reaped watcher tasks are cancelled. Live: 6/6 sessions resolved (develop: 5/6). QA PASS.
+- F4 #167: the injection HTML-comment check is now a linear `str.find` scan with whole-word keywords. The old regex never finished on a 50k flood. False positives on 20k local docs went from ~450 to 53 files. Also: Cursor 30-min window, db timeout, nested net attribution, local-only OLLAMA_HOST (0.0.0.0 counts as local). QA PASS, CTO verified.
+- F3 #168: redact data safety, plus `audit` now really scans user prompts and tool results (it never did). Real-machine audit: 2.2 GB in 19.8 s, 69 of 86 findings in the new channels. QA PASS (20x race runs, no loss), CTO verified the follow-ups.
+- F6 #171: personal paths removed, root ADRs moved to docs/adr/, `graphify-out/` gitignored, publish.yml gated on tests plus tag==version, CHANGELOG entries.
+
+### Open (documented, not fixed)
+- Session record `~/.claude/sessions/<pid>.json` is a Claude Code internal. If it changes, discovery falls back to leaving the process unresolved.
+- `CLAUDE_CONFIG_DIR` not honoured (pre-existing).
+- Redact: a writer that holds an append fd across the replace still loses its later writes (documented in the `--force` warning).
+- CI runs Linux only. The macOS-only watcher bug went unseen for months. Recommend a macos-latest job (board decision: CI minutes cost).
+- `ruff format --check` fails on ~48 files repo-wide (pre-existing, not enforced by CI).
+
+### PR Log
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
+| 2026-10-24 | #164 | docs/sprint-37-release-hardening | docs | ready for board approval | -- |
+| 2026-10-24 | #166 | fix/watch-crashes | fix | ready (CTO review, QA PASS, CI green) | -- |
+| 2026-10-24 | #165 | fix/aider-watcher-macos | fix | ready (CTO review, QA PASS x2, CTO verified final commit, CI green) | -- |
+| 2026-10-24 | #169 | fix/claude-session-mapping | fix | ready (CTO review, QA PASS, CI green) | -- |
+| 2026-10-24 | #167 | fix/release-small-fixes | fix | ready (CTO review x3, QA PASS, CTO verified final commit, CI green) | -- |
+| 2026-10-24 | #168 | fix/redact-data-safety | fix | ready (CTO review, QA PASS, CTO verified follow-ups, CI green) | -- |
+| 2026-10-24 | #171 | chore/release-0.2.0-prep | chore | ready (CTO review x2) | -- |
+
+---
+
+### Sprint 38 -- Codex review fixes (2026-10-26)
+**Type:** bug fix. Same engineer -> CTO review -> QA -> fix loop as Sprint 37.
+**Goal:** scores and exit codes never give false reassurance.
+**Source:** Codex review of v0.2.0 (a2c0fab), 2026-10-26. It reproduced each bug with synthetic logs. The CTO confirmed each one in the code on `develop` 68b28ff (after #181/#182). Already fixed in 0.2.0: dashboard first-action drop, full-session `security-scan`, JSON-safe redaction, Python 3.11 syntax.
+
+### Acceptance Criteria
+- [x] A `check --security` exits non-zero when there is any security finding. It uses the `security-scan` thresholds: score 100 -> 0, 50-99 -> 1, under 50 -> 2 (a CRITICAL finding scores 0). The exit code is the worse of the health and security codes. `check` without `--security` is unchanged. Exit codes are in `check --help` and the README. (#184)
+- [x] B The Claude parser matches each `tool_result` to its `tool_use` by `tool_use_id`. A failed result marks its call failed, with no separate "successful" call plus a failure action. Successful result content is kept for detectors. Six consecutive failed calls trigger error-spiral and high-error-rate. (#186) User text blocks are deferred; see Known limitations.
+- [x] C Findings persist. A security finding stays active after its action leaves the detector window and across dashboard refreshes. Secret-scanner dedup suppresses repeat notifications only, never the finding. In the live dashboard, a dangerous command followed by 60 harmless actions still shows. (#185)
+- [x] D Token usage counts once per message, not once per tool call: a 150-token message with two tool calls counts 150. A message streamed over several lines counts its largest usage. (#186)
+- [x] Each fix has an integration test that starts from a JSONL fixture and goes through the parser (and the dashboard, for C). The test fails before the fix.
+- [x] All tests pass on 3.11/3.12 (CI) and `ruff check .` is clean. (develop caa2687: 2567 passed / 1 skipped locally on macOS 3.12, CI green)
+- [x] Integrated QA on `develop` after all merges. QA (sonnet) on caa2687, 2026-10-27, verdict PASS: no regressions, release recommended.
+  - Tests: 2567 passed / 1 skipped on macOS 3.12 and 3.14; ruff clean.
+  - Packaging: build and twine check pass. The wheel in a fresh venv reports 0.2.1 for both entry points, and all 15 commands' `--help` exit 0.
+  - Synthetic CLI checks: exit codes, loop and error detection, usage counted once, an EOF hidden instruction, and a secret in a failed result all behave as expected.
+  - Headless dashboard: findings persist, survive a toggle, and late results get rescored, with no exceptions.
+  - Live checks, metadata only: `ps --json`, `detect --json` and `net --once` all exit 0.
+
+### Implementation Plan
+| Task | Branch | Model | QA model |
+|---|---|---|---|
+| A `check --security` exit code | `fix/check-security-exit` | haiku | haiku |
+| B+D stateful Claude parser: tool-result matching and usage once per message | `fix/claude-parser-state` | sonnet | sonnet |
+| C persistent findings (CTO design, below) | `fix/persistent-findings` | sonnet | sonnet |
+
+B and D are one task: both need Claude parser state across log lines (`tool_use_id` -> call, and seen `message.id`), and they change the same function.
+
+C design (CTO, 2026-10-26):
+- A per-session scan object (`SessionScan` in `detectors/registry.py`) feeds each action into the buffer and runs the security detectors right away. It keeps each finding by `warning_dedup_key`.
+- Reported warnings = health detectors on the current buffer, plus all kept security findings.
+- `registry.scan()` (the CLI) and the dashboard's ingestion and `_score()` both use it, so the CLI and dashboard score the same way.
+- The secret scanner stops suppressing repeat findings. Notification dedup stays where it already is: the UI's `_alerted_signals`, the SIEM exporter, and `_feed_findings`.
+
+Loop per task (board, 2026-10-26): engineer -> CTO review -> QA -> Codex review (at most 3 rounds, stop early on diminishing returns) -> fixes -> merge. The board allows squash-merging fully reviewed PRs into `develop` without asking; `main`, tags and PyPI still need its go.
+- Codex command: `codex exec review -c sandbox_mode='"workspace-write"' -o <file> "<instructions>"`. It rejects `--base` together with custom instructions, so put "diff against origin/develop" in the instructions.
+- Run Codex and QA in a separate detached review worktree, so an engineer's late commits can't change code under review.
+
+Rules for every task: branch from `origin/develop`, draft PR to `develop`, add one `CHANGELOG.md` bullet under `[0.2.1]` / Fixed, push with `--no-verify`.
+
+### Board decisions (2026-10-26/27)
+1. Hold #183 (0.2.1 promotion, Sprint 35) until fix A merges (2026-10-26). Updated the same day: **hold #183 until all four fixes are done**, so 0.2.1 ships A, B, C and D. #183's source branch is `develop` itself, so every merged fix rides along.
+2. Squash-merge fully reviewed PRs into `develop` without asking. Merges into `main`, tags, GitHub Releases and PyPI still need an explicit go.
+3. **Ship tool-result scanning for prompt injection in 0.2.1** (2026-10-27, option 1). Claude Code tool-result text reaches the prompt-injection detector and `injection_attempts`, as Codex, Cline, Copilot and agy output already did. A high-confidence match is CRITICAL, so security can score 0 when an agent reads a file that only discusses injection (docs, tests). Reducing those false positives is a follow-up.
+4. CTO, accepted: `security-scan` is about 2.9x slower than develop on a 5,000-action synthetic log (1.65 s vs 0.57 s). The extra time is new work: the secret scanner now scans successful Claude Code tool results.
+
+### Result (2026-10-27)
+- **#184 (fix A)** passed CTO review, QA (haiku), and Codex round 1 ("ship", no findings). Merged as 8882a27. QA added at-risk and clean-path tests.
+- **#185 (fix C)** passed CTO review and QA (sonnet). Codex took 3 rounds (5, then 3, then 2 findings), all fixed. Merged as 902b1bf. The Codex rounds found:
+  - findings lost on a security toggle;
+  - per-action scanning blocking the UI on history bursts (6.75 s, now 70 ms) and on toggle replays (3.9 s, now 32 ms; 23 sessions: 636 ms, now 207 ms);
+  - overlapping secret patterns (Neon URL, PEM header plus block) counted twice;
+  - pending-DNS egress checks never retried;
+  - replay losing buffer context.
+
+  Also fixed the macOS-only `test_team_header_updates_from_grouped_reports`. It was a timezone bug in the tests: they used local `datetime.now()` and the code assumes UTC.
+- **#186 (fixes B+D)** passed CTO review and QA (sonnet). Codex took 3 rounds (5, then 3, then 2 findings), all fixed. Merged as caa2687.
+  - The detector warm-up gates use `ActionBuffer.history_len`, which counts a merged failure twice, so loops are detected as early as on develop.
+  - `ActionBuffer.revision` is the dashboard cache key, so a result-only update rescores.
+  - Failed results keep their full text. Successful results are capped at 2,000 characters.
+  - Content detectors are memoized per `(action, result_revision)` and rescan actions whose result landed outside their window.
+  - Results carry `completed_at` for session time.
+
+  The CTO's mid-task design messages crossed with the engineer's commits, so D flipped between two designs over 4 commits before settling on the buffer-side one. The lesson: message engineers only when idle, with a target SHA.
+
+### Release (2026-10-27): 0.2.1 SHIPPED
+- Board go ("go release"), 2026-10-27. #183 (`develop` -> `main`) merged with a merge commit: main 8453e93, its tree identical to develop 1f43192.
+- Annotated tag `v0.2.1` on 8453e93. GitHub Release "agentwatch-monitor 0.2.1" published 13:50 UTC. The notes are the CHANGELOG `[0.2.1]` section.
+- publish.yml: tests on 3.11 and 3.12, the tag/version check and the PyPI upload all passed. PyPI lists 0.2.1 (wheel and sdist, 13:55 UTC).
+- Clean-venv smoke test from PyPI (`pip install agentwatch-monitor==0.2.1`): `agentwatch` and `agentguard --version` print 0.2.1, all 15 commands' `--help` exit 0, and `check --security` on the synthetic fixtures exits 2 (critical), 1 (medium) and 0 (clean).
+- Post-ship docs: #188 (CHANGELOG date moved to 2026-10-27, the README plugin install now uses PyPI, CLAUDE.md architecture and known issues, and this section).
+
+### Known limitations (0.2.1)
+- Claude Code user text blocks are not emitted yet. First, scoring has to ignore `user_message` sentinels (#46 dropped them on purpose).
+- Two different secrets of the same type in the same channel and file count as one finding. Telling them apart needs a secret fingerprint in the dedup key.
+- A security-mode toggle recovers actions that arrived while security was off only from the live buffer (2,000 actions). Context older than the buffer can't be recovered.
+- A toggle's own `refresh_ui` rescores every session synchronously (about 200 ms with 23 sessions), as on develop.
+- `--audit-log` runs once, after the scan, on the final buffer. It now records every secret in that window.
+
+### Follow-ups (next sprint)
+- Fewer prompt-injection false positives from local files that only discuss injection (docs, tests).
+- A literal-prefix pre-check in the secret scanner, to win back `security-scan` speed.
+- The secret scanner labels tool-result text with channel `user_message`; give it its own channel.
+- Emit Claude Code user text blocks (after scoring ignores `user_message`).
+- A secret fingerprint in the dedup key.
+- The SIEM, audit and notification consumers serialise a call when it is added, before its result lands. Check each one.
+- `security-scan` prints "Analyzed N actions" and sets `action_count` from `len(buffer)` (`cli.py` ~1554). That is the buffer size, for example 500, not the number of actions scanned. Predates Sprint 38; found by integrated QA.
+- The `error_spiral` message reports its threshold ("5 consecutive failures"), not the actual count. Found by integrated QA.
+
+### PR Log
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
+| 2026-10-26 | #184 | fix/check-security-exit | fix | merged 8882a27 (CTO review, QA PASS haiku, Codex r1 ship, CI green) | -- |
+| 2026-10-27 | #185 | fix/persistent-findings | fix | merged 902b1bf (CTO review, QA PASS WITH NOTES sonnet, Codex 3 rounds fixed, CI green) | -- |
+| 2026-10-27 | #186 | fix/claude-parser-state | fix | merged caa2687 (CTO review, QA PASS WITH NOTES sonnet, Codex 3 rounds fixed, CI green) | -- |
+| 2026-10-27 | #187 | docs/sprint-38-results | docs | merged 1f43192 | -- |
+| 2026-10-27 | #183 | develop | release | merged into main 8453e93 (merge commit, board go), tag v0.2.1, PyPI 0.2.1 | -- |
+| 2026-10-27 | #188 | docs/post-ship-0.2.1 | docs | post-ship docs for 0.2.1 | -- |
+
+### Sprint 39 -- info site redesign + agentwatch.info (2026-10-27)
+**Type:** docs / site. Branch `docs/site-redesign` from develop 210acb9.
+**Goal:** a reader who is not a developer understands what AgentWatch does, whether it is safe, and how to start, from one visit. The site reads as written by a person, not generated.
+**Board (2026-10-27):** "do option 1 but first the page looks like slop code, fix it ... a user who might not be technical understands it ... run it through your ux skills and show me the final". Option 1: keep GitHub Pages (MkDocs Material, `docs.yml` on push to main) and serve it at a Cloudflare domain. Domain: `agentwatch.info` (Cloudflare zone created 2026-10-27, no records yet).
+**Problems found (CTO, current site):**
+- Jargon on the home page: PPID chains, deterministic detectors, context rot, C2.
+- Generic AI-landing layout: a fake terminal with traffic-light dots, four identical icon cards, and giant detector and weight tables.
+- Wrong facts: `agentwatch scan` doesn't exist (the command is `security-scan`), `check --exit-code` doesn't exist, and the detector counts are inconsistent (15 + 21 vs "36"). The agent list is out of date (no OpenCode, ChatGPT desktop or Claude Desktop) and says nothing about verification status.
+- Internal docs are published as pages (`docs/adr`, `docs/research`, `docs/superpowers`).
+
+### Acceptance Criteria
+- [x] Plain language. The home page needs no developer knowledge. Each technical term is explained where it appears or moved to the reference pages.
+- [x] Accurate. Every command, flag, count, agent and verification status matches 0.2.1 (`--help`, `list-detectors`, README support table). No invented numbers or claims.
+- [x] Pages: Home, Get started (Mac / Windows / Linux), What it checks, Supported agents, Commands (including CI exit codes), FAQ (privacy, cost, AI use, effect on the agent).
+- [x] Real product visuals: a dashboard screenshot rendered from synthetic logs with a reproducible script. No real machine data in it (no process names, paths, usernames or hosts). No fake terminal chrome.
+- [x] Design: light default with a dark toggle. Calm neutral palette with one accent. Status colours always paired with words. One icon set, no emoji icons, no gradients or glow.
+- [x] Accessibility: WCAG AA contrast in both themes, visible focus, ordered headings, alt text, reduced motion respected, no horizontal scroll at 375 px.
+- [x] `mkdocs build --strict` is clean. Internal docs are excluded from the site (they stay in the repo).
+- [x] Domain: `docs/CNAME` = `agentwatch.info`, `site_url` = `https://agentwatch.info/`.
+- [x] The CTO reviews screenshots (desktop and phone, light and dark), QA runs a UX and accuracy audit, and the board sees the final before anything goes live.
+- [ ] Go-live (board go): Cloudflare DNS for `agentwatch.info` and `www` (DNS only) to GitHub Pages, the Pages custom domain set, HTTPS enforced, and develop -> main merged so `docs.yml` deploys. DNS, the Pages custom domain and HTTPS were done 2026-10-27 (see Result); the develop -> main merge is pending.
+
+### Board decisions (2026-10-27)
+1. Option 1: keep GitHub Pages and serve it at a Cloudflare domain. The domain is `agentwatch.info`. loomlabs.io is on GoDaddy DNS, so it was not used.
+2. "approved to set up on cloudflare when ready". The Cloudflare connector is read-only (no `dns.write`). The board added the GitHub org domain-verification TXT record, then imported a BIND file the CTO wrote (`~/Downloads/agentwatch.info-github-pages.txt`, all records DNS only).
+3. The site links back to loomlabs.io: the footer on every page, the Home page, a FAQ question and a footer icon. The links are plain followed links, with no nofollow or UTM tags.
+4. "go live" (2026-10-27): merge #189 into develop, then develop -> main with a merge commit, so `docs.yml` deploys.
+
+### Result (2026-10-27)
+- **#189** (opus engineer). The pages are Home, Get started, What it checks, Supported agents, Commands and FAQ.
+  - The design is calm and neutral, light by default with a dark toggle, and set in Atkinson Hyperlegible.
+  - The dashboard screenshot is a real `watch-all --security` render of 4 made-up sessions, made by `scripts/docs_screenshot.py`. It runs with a temp HOME and with discovery, detect, net and history patched to raise, and it guards against the user name, host or home path appearing in the output.
+  - Material's `privacy` plugin self-hosts the fonts, and the header source partial makes no api.github.com call. Pages make only same-origin requests.
+  - The README plugin install no longer pins `#develop-overdrive`, because the plugin is on main since 0.2.1.
+- **QA (sonnet): PASS WITH NOTES**, with 10 non-blocking items, all fixed in round 1 (e61c5a2).
+  - About 40 facts were checked against 0.2.1. One was wrong: the dashboard shows no security verdict. Several were overconfident: the privacy wording, the history contents and reverse DNS.
+  - Contrast is AA in both themes (the lowest is 4.79). Touch targets are at least 44 px at 375 px, and no page scrolls sideways at 1440, 768 or 375.
+- **Domain.** The Pages cname is `agentwatch.info`. The certificate was approved in 30 s (expires 2027-01-25, auto-renews), and HTTPS is enforced. http, www and github.io all redirect to https://agentwatch.info/.
+  - **Trap:** `docs.yml` runs `mkdocs gh-deploy --force`, which replaces gh-pages. If main has no `docs/CNAME`, a deploy deletes the custom domain. #189 adds `docs/CNAME`.
+- **Found while building the screenshot:** health detectors counted Codex `token_count` usage records as actions (false "loop: token_count"). Fixed in #190 (`fix/codex-usage-loop`). It passed CTO review and QA, and is held out of develop until the site promotion so that main gets docs only.
+
+### Follow-ups
+- `test_flag_gap_linear_on_glued_program_words` (tests/test_secret_leak_sinks.py) is wall-clock sensitive and fails on develop under heavy CPU load. Loosen or retry it.
+- Codex usage records still take ActionBuffer slots, so a Codex session keeps about half as many real actions. The security detectors still use raw windows (#190 known limits).
+- Material 9.8 is the last MkDocs-based Material (critical fixes until 2027-05-05). Plan a move to Zensical or a pinned fork before then.
+
+### PR Log
+| Date | PR | Branch | Type | Status | Rejection Reason |
+|---|---|---|---|---|---|
+| 2026-10-27 | #189 | docs/site-redesign | docs | CTO review, QA PASS WITH NOTES (sonnet), round 1 fixed, board "go live" | -- |
+| 2026-10-27 | #190 | fix/codex-usage-loop | fix | CTO review, QA PASS WITH NOTES (sonnet), follow-ups fixed (011af8d); held until after the site promotion | -- |

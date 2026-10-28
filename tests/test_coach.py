@@ -186,7 +186,7 @@ def test_plugin_and_marketplace_manifests():
     manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text("utf-8"))
     assert manifest["name"] == entry["name"]
     hooks = json.loads((plugin_dir / "hooks" / "hooks.json").read_text("utf-8"))["hooks"]
-    for event in ("PostToolUse", "PostToolUseFailure"):
+    for event in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
         assert "agentwatch hook" in hooks[event][0]["hooks"][0]["command"]
     assert (plugin_dir / "skills" / "agentwatch-scrub" / "SKILL.md").is_file()
 
@@ -240,6 +240,8 @@ def test_state_dir_prefers_plugin_data(monkeypatch, tmp_path):
 
 def test_state_dir_is_per_user_not_shared_tmp(monkeypatch):
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)  # the default dir (nothing written)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
     assert REAL_STATE_DIR() == coach.user_state_dir()
     d = REAL_USER_STATE_DIR()
     assert d.parts[-2:] == ("agentwatch", "coach")
@@ -352,8 +354,8 @@ def test_no_pointer_when_state_is_in_the_user_dir(tmp_path, monkeypatch):
 
 
 def test_user_state_dir_ignores_plugin_data(monkeypatch, tmp_path):
-    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
-    assert tmp_path not in REAL_USER_STATE_DIR().parents
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "plugin"))
+    assert tmp_path / "plugin" not in REAL_USER_STATE_DIR().parents
 
 
 def test_imports_without_a_home_dir():

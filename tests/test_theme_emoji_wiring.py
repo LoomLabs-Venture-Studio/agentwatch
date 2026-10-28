@@ -40,12 +40,12 @@ import re
 from datetime import datetime, timedelta
 
 import pytest
+from rich.cells import cell_len
 
 from agentwatch.cli import print_health_report, print_security_alert
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Category, Severity, Warning
 from agentwatch.health import calculate_health
-from agentwatch.health.rot import RotScorer
 from agentwatch.parser.models import Action, ActionBuffer, ToolType
 from agentwatch.themes import (
     THEMES,
@@ -54,8 +54,8 @@ from agentwatch.themes import (
     security_status_from_score,
     set_theme,
 )
-from agentwatch.ui.app import AgentWatchApp, SecurityStatus, WarningsList
-from agentwatch.ui.multi_app import AgentItem
+from agentwatch.ui.app import SecurityStatus, WarningsList
+from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
 EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF☀-➿⬀-⯿]")
 
@@ -129,8 +129,21 @@ class TestSecurityStatusThemeWiring:
         widget.score = 100
         rendered = widget.render()
         assert theme.emoji_0 in rendered
-        assert theme.level_0.upper() in rendered
+        assert "Security: clean" in rendered
+        assert "SECURE" in rendered
+        assert theme.level_0.upper() not in rendered  # health words are HealthBar's
         assert "\U0001F6E1" not in rendered  # old hardcoded shield emoji gone
+
+    @pytest.mark.parametrize(("score", "label"), [(60, "AT RISK"), (10, "COMPROMISED")])
+    def test_widget_verdict_text_is_security_wording_not_health(self, score, label):
+        """The dashboard widget and `security-scan` must name the same verdict."""
+        set_theme("agent")
+        widget = SecurityStatus()
+        widget.score = score
+        rendered = widget.render()
+        assert label in rendered
+        for health in ("STUCK", "STRUGGLING", "SPINNING", "PRODUCTIVE"):
+            assert health not in rendered
 
     def test_default_theme_at_risk_and_compromised_map_to_level_1_and_level_3(self):
         """security_status_from_score() skips level_2 by design (see its
@@ -139,7 +152,8 @@ class TestSecurityStatusThemeWiring:
         theme = get_theme("agent")
         assert security_status_from_score(100) == theme.level_0
         assert security_status_from_score(75) == theme.level_1
-        assert security_status_from_score(50) == theme.level_3
+        assert security_status_from_score(50) == theme.level_1
+        assert security_status_from_score(49) == theme.level_3
         assert security_status_from_score(0) == theme.level_3
 
     @pytest.mark.parametrize("theme_name", [n for n in THEMES if n != "ascii"])
@@ -238,21 +252,37 @@ class TestWarningsListSuggestionMarker:
         assert_no_emoji(rendered)
         assert "[TIP]" in rendered
 
+    @pytest.mark.parametrize(("theme", "indent"), [("ascii", 11), ("agent", 8)])
+    def test_tip_continuation_indent_is_the_prefix_width(self, monkeypatch, theme, indent):
+        """QA #161: `     [TIP] ` is 11 cells, `     💡 ` 8 (the emoji is 2 wide)."""
+        from agentwatch.ui import app as ui_app
 
-class TestMultiAppFileMarker:
-    def test_agent_item_fallback_label_ascii_safe_under_ascii_theme(self, tmp_path):
+        calls = []
+        monkeypatch.setattr(ui_app, "hang", lambda line, width, ind: calls.append((line, ind))
+                            or line)
+        set_theme(theme)
+        widget = WarningsList()
+        widget.update_warnings([Warning(category=Category.PROGRESS, severity=Severity.MEDIUM,
+                                        signal="loop", message="m", suggestion="try")])
+        widget._build_content()
+        tip = next((line, ind) for line, ind in calls if line.endswith(" try"))
+        assert tip[1] == indent and cell_len(tip[0][:-len("try")]) == indent
+
+
+class TestMultiAppAsciiCells:
+    def test_status_dot_and_tree_ascii_safe_under_ascii_theme(self, tmp_path):
         set_theme("ascii")
-        item = AgentItem(tmp_path / "session.jsonl")
-        # compose() is a generator of widgets; render the Label's content
-        # directly rather than mounting, mirroring how the other widget
-        # tests in this file exercise render logic without a full App.
-        # NOTE: Label interprets `[...]` as Rich markup and silently strips
-        # unrecognized tags, which is why the ASCII fallback is "(file)"
-        # rather than "[FILE]" -- see the comment in multi_app.py.
-        labels = list(item.compose())
-        name_label = labels[0]
-        rendered = name_label.render().plain
-        assert "(file)" in rendered
+        from agentwatch.health import calculate_health
+
+        app = MultiAgentWatchApp()
+        data = {
+            "item": AgentItem(tmp_path / "s.jsonl", agent_type="claude-code", depth=1),
+            "buffer": ActionBuffer(),
+        }
+        cells = app._row_cells(data, calculate_health([]), None)
+        rendered = " ".join(cell[0] for cell in cells.values())
+        assert cells["dot"][0] == "o"
+        assert cells["agent"][0].startswith("`- sub")
         assert_no_emoji(rendered)
 
 
@@ -552,61 +582,3 @@ class TestCliRunnerEndToEnd:
         result = runner.invoke(cli, args)
         assert result.exit_code in (0, 1, 2), result.output
         assert EMOJI_RE.search(result.output) is not None
-
-
-# ---------------------------------------------------------------------------
-# True end-to-end for the TUI: `agentwatch --theme ascii watch --security`
-# is exactly the command the user ran when they hit this bug (a tofu'd
-# emoji in the Security panel). It's not CliRunner-drivable since it's an
-# interactive Textual App, so this drives the actual AgentWatchApp through
-# Textual's headless pilot (`App.run_test()`, same pattern as
-# test_multi_app_refresh.py) and runs the REAL `_do_refresh()` pipeline
-# (detectors -> calculate_health/calculate_security_score -> widget
-# updates), then reads the SecurityStatus panel's actual rendered text.
-# ---------------------------------------------------------------------------
-
-
-class TestWatchSecurityTuiEndToEnd:
-    async def test_security_panel_ascii_theme_pure_ascii_after_real_refresh(self, tmp_path):
-        set_theme("ascii")
-        log_path = tmp_path / "session.jsonl"
-        log_path.write_text("", encoding="utf-8")
-
-        app = AgentWatchApp(log_path=log_path, security_mode=True)
-        async with app.run_test():
-            # Seed the same state on_mount() would (buffer/registry/rot
-            # scorer), then drive the exact refresh path `set_interval`
-            # calls in the real app, using the fixture that produces real
-            # HIGH/CRITICAL security warnings.
-            app._buffer = _build_buffer_with_real_warnings()
-            app._detector_registry = create_registry(mode="all")
-            app._rot_scorer = RotScorer()
-            app._do_refresh()
-
-            security_status = app.query_one("#security-status", SecurityStatus)
-            rendered = security_status.render()
-            assert all(ord(c) < 128 for c in rendered), rendered
-
-            warnings_list = app.query_one("#warnings-list", WarningsList)
-            warnings_rendered = warnings_list._build_content()
-            assert_no_emoji(warnings_rendered)
-
-    async def test_security_panel_default_theme_still_shows_theme_emoji(self, tmp_path):
-        """Regression: the same real pipeline under the default theme still
-        shows a real theme emoji in the Security panel (unchanged from
-        Task #9's perspective -- SecurityStatus is now theme-driven for
-        every theme, not just newly-ASCII for `ascii`)."""
-        set_theme("agent")
-        log_path = tmp_path / "session.jsonl"
-        log_path.write_text("", encoding="utf-8")
-
-        app = AgentWatchApp(log_path=log_path, security_mode=True)
-        async with app.run_test():
-            app._buffer = _build_buffer_with_real_warnings()
-            app._detector_registry = create_registry(mode="all")
-            app._rot_scorer = RotScorer()
-            app._do_refresh()
-
-            security_status = app.query_one("#security-status", SecurityStatus)
-            rendered = security_status.render()
-            assert EMOJI_RE.search(rendered) is not None

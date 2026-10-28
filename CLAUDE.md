@@ -70,6 +70,9 @@ src/agentwatch/
                        file (copy by default, `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
                        (output without `--pii` unchanged)
+                       `check --security` exits with the worse of the health
+                       and security codes (`_security_exit_code`; security-scan
+                       thresholds: 100 -> 0, 50-99 -> 1, under 50 -> 2)
                        Entry points: `agentwatch` and `agentguard`
                        (security-first alias), both -> agentwatch.cli
   __init__.py          Public package API re-exporting detectors/health/parser/etc.
@@ -182,7 +185,15 @@ src/agentwatch/
                        unwritable -> user_state_dir(); also the latest
                        warnings with cost_usd). state_path(dir, key) is the
                        one file-name rule. Evidence `"` -> `'`. Fails open:
-                       exit 0, no stdout; 5 s watchdog
+                       exit 0, no stdout; 5 s watchdog. Loop breaker
+                       (Feature 7): a HIGH `loop` warning is stored as
+                       state["armed"] {loop_id, count, cost_usd, blocked}
+                       (hashes only; dropped once the loop is not HIGH).
+                       PreToolUse reads only that file; call_loop_id() keys
+                       the call via parse_claude_code_entry + loops._loop_key
+                       (same id as LoopDetector) and denies the first match
+                       once (permissionDecision deny, fixed reason).
+                       LOOP_ALLOW Bash prefixes are never denied.
   statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
@@ -197,6 +208,40 @@ src/agentwatch/
                        `✓ agentwatch`. No state / > 10 min old / any error:
                        nothing, exit 0. No transcript parsing; imports only
                        stdlib + coach (~150 ms on Windows)
+  alerts.py            Alerter for `watch`/`watch-all` `--notify`,
+                       `--webhook URL` (env AGENTWATCH_WEBHOOK) and
+                       `watch-all --headless`. observe(session, agent,
+                       project, warnings, report, actions) after each
+                       scoring pass:
+                       headless -> one stdout line per new warning
+                       (print_line: sys.__stdout__, flushed); alerts -> one
+                       per (session, warning_dedup_key) at >= --notify-min
+                       (high|critical, default critical) + overall Critical
+                       (theme level_3) once per episode, <= 1 per session
+                       per 10 min, folded into a finding alert sent the same
+                       pass; cleared keys forgotten. Startup baseline:
+                       for BASELINE_S (5 s) from a session's first pass
+                       with actions, findings/Critical are recorded, not
+                       sent (history loads async, so not one pass);
+                       --notify-existing disables it; headless log not
+                       baselined. Text: `agentwatch:
+                       <Agent> · <project> — <label> ~$x` (_ALERT_LABELS =
+                       statusline _LABELS + security signals; _cost) +
+                       message; agent, project, signal and message all go
+                       through secret_scanner.one_line (non-printables ->
+                       space, collapsed, redacted, bounded).
+                       Desktop: powershell -EncodedCommand fixed toast
+                       script, text as ASCII JSON on stdin (PowerShell's own
+                       AppId); osascript run-handler argv; notify-send --.
+                       Webhook: POST {"text"} Slack-escaped (& < >), 5 s,
+                       opener without redirects (3xx = failure), http(s)
+                       only; plain http warns at startup. One delivery
+                       worker (one notifier process at a time); > 3 queued
+                       -> one "N new alerts" summary. Failure -> warn once
+                       (URL masked), beep on
+                       Windows toast failure; TUIs route warn to a toast
+                       (tui_warn). Headless = MultiAgentWatchApp.run(
+                       headless=True), the same engine
   _entry.py            Console-script entry: `hook` and `statusline` go
                        straight to coach.py / statusline.py without
                        importing cli.py, the rest to cli.main. The package
@@ -256,10 +301,22 @@ src/agentwatch/
   parser/
     models.py           Action / ActionBuffer / SessionStats / ToolType /
                        MetricResult data models
+                       ActionBuffer merges a late tool result into its call
+                       (`_sync_results`, `take_changed()`) and bumps
+                       `revision` on any change (the dashboard's score cache
+                       key); `history_len` counts a merged failure twice
+                       (health warm-up gates); `total_*` tokens count once
+                       per message id, at its largest usage
     logs.py              JSONL parsers per agent log format (Claude Code,
                        Moltbot, Codex, Copilot, agy, Gemini), sensitive-path pattern matching,
                        parse_file() extension-based dispatch (.md -> aider,
                        .vscdb -> cursor_source, else JSONL auto-detect)
+                       ClaudeCodeParser keeps state across lines: a
+                       `tool_result` is merged into its `tool_use` by
+                       `tool_use_id` (`success`, `error_message`,
+                       `incoming_message`, `completed_at`,
+                       `result_revision`); failed results keep their full
+                       text, successful ones are capped at 2,000 characters
     aider.py             Aider Markdown chat-history + --analytics-log JSONL
                        parsing; resumed-session splitting; diff/udiff/whole
                        edit-format coverage
@@ -339,11 +396,22 @@ src/agentwatch/
                        waste_summary (`check`'s waste line, history)
     registry.py          DetectorRegistry; create_registry(mode=
                        "health"|"security"|"all") auto-collects detectors
+                       `SessionScan`: the per-session scan used by
+                       `registry.scan()` (CLI) and the dashboard. Security
+                       detectors run on each action as it arrives and each
+                       finding is kept for the whole session (keyed by
+                       `warning_dedup_key`); content detectors rescan an
+                       action whose result lands after it left their window
     health/*.py          Health detectors: loops, tool_thrash, stall/stuck,
                        errors, context, repetition, behavioral, progress,
                        constraints
     security/*.py        Security detectors: credentials, injection,
                        network, privilege, supply_chain, secret_scanner
+                       (also redact_truncate and one_line, the shared
+                       safe-display-line helper used by coach and alerts)
+                       secret_scanner.py no longer drops repeat findings
+                       (notification dedup lives in the consumers);
+                       `check_many()` scans several texts at once
     security/pii.py      PII patterns + validators (email, phone, US SSN,
                        Luhn-checked card, street address; look-alikes
                        rejected), stdlib only; imported by
@@ -372,7 +440,10 @@ src/agentwatch/
                        helpers, including the Tier-2 goal-alignment advisory
     multi_app.py          Multi-agent Textual App (MultiLogWatcher + team
                        health aggregation); same `--siem-log`/`--llm`/
-                       goal-alignment wiring as app.py, applied per-agent
+                       goal-alignment wiring as app.py, applied per-agent;
+                       `alerter` (alerts.py) fed from both scoring paths.
+                       `watch-all --headless` runs it on Textual's headless
+                       driver (no screen I/O; SIGINT exits cleanly)
     live_integrations.py  Shared live-TUI SIEM export + Tier-2 LLM triage
                        wiring for app.py/multi_app.py's 1s refresh loop:
                        `warning_dedup_key()` (content-based identity so a
@@ -391,7 +462,9 @@ src/agentwatch/
   `check(buffer) -> Warning | None`. `DetectorRegistry` /
   `create_registry()` (`detectors/registry.py`) auto-collects detectors and
   exception-isolates each one so a single detector failure never crashes a
-  scan.
+  scan. Security findings persist for the whole session (`SessionScan`);
+  repeat-notification dedup lives in the consumers (the UI's
+  `_alerted_signals`, the SIEM exporter, `_feed_findings`).
 - **Streaming log parser + watcher:** `parser/logs.py` normalizes
   agent-specific JSONL formats into a unified `Action` model.
   `parser/watcher.py`'s `LogWatcher` tails files by byte offset via
@@ -426,10 +499,15 @@ agentwatch watch --security     # manual smoke test (live TUI)
 ```
 
 ## Git Rules
-- **NEVER push to `main`, and NEVER recommend or propose merging anything
-  into `main`** (standing board rule, 2026-09-30). This includes
-  release/promote PRs; leave `main` out of next steps entirely.
-  (Native memory is per-machine, so this rule lives here too.)
+- **Never push to `main`. Merges into `main` go only through a PR that the
+  board reviews and approves** (board rule 2026-09-30, clarified
+  2026-10-25). It is not a ban: propose a release/promote PR into `main`
+  when it is the right next step, but never merge one without the board's
+  explicit go. (Native memory is per-machine, so this rule lives here too.)
+- Promoting `develop` to `main`: open a plain `develop` -> `main` PR and,
+  after the board's go, merge it with a merge commit, not a squash (0.2.1,
+  #183). The one-time `git merge -s ours origin/main` for main's revert
+  commits (ee1f65e, 349c7a1, dc5d03d) was done in the 0.2.0 promotion (#180).
 - `develop` is the integration line (v0.2.0+). Branch `feature/`, `fix/`,
   `chore/` or `docs/` **from `develop`**; PRs target `develop`.
 - One commit per logical change
@@ -717,5 +795,25 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   Live smoke-tested on Windows 10 unelevated (2026-10-15); macOS/Linux
   fixture-tested only. `tests/conftest.py` stubs `AgentWatchApp.
   _find_own_process` so TUI tests never scan real processes.
+- **0.2.1 known limitations** (Sprint 38, PRs #184-#186): Claude Code user
+  text blocks are not emitted yet (scoring must first ignore `user_message`
+  sentinels); two different secrets of the same type in the same channel and
+  file count as one finding (needs a secret fingerprint in the dedup key); a
+  security-mode toggle recovers actions that arrived while security was off
+  only from the 2,000-action live buffer; a toggle's `refresh_ui` rescores
+  every session synchronously (about 200 ms with 23 sessions); `--audit-log`
+  runs once, after the scan, on the final buffer. `security-scan` is about
+  2.9x slower than 0.2.0 (1.65 s vs 0.57 s on a 5,000-action synthetic log)
+  because successful Claude Code tool results are now secret-scanned. Claude
+  Code tool-result text reaches the prompt-injection detector, so reading a
+  file that only discusses injection (docs, tests) can score security 0
+  (board accepted 2026-10-27; reducing these false positives is a follow-up).
+  The secret scanner labels tool-result text with channel `user_message`.
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
+
+- `AGENTWATCH_WEBHOOK` (read only, Sprint 35 Feature 4): default for
+  `watch`/`watch-all --webhook URL`. A secret; never printed.
+- `AGENTWATCH_LOOP_BREAKER` (read only, Feature 7, board approved): `off`
+  (case-insensitive) turns off the coach hook's PreToolUse loop breaker.
+  Default on.

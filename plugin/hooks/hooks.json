@@ -1,6 +1,9 @@
 {
-  "description": "agentwatch coach: health check after each tool call. `; exit 0` keeps the hook a silent no-op (no hook-error notice) when agentwatch is not on PATH; it works in both Git Bash and PowerShell.",
+  "description": "agentwatch coach: health check after each tool call, and a one-time block of a call that repeats a HIGH loop (PreToolUse; AGENTWATCH_LOOP_BREAKER=off disables it). `; exit 0` keeps the hook a silent no-op (no hook-error notice) when agentwatch is not on PATH; it works in both Git Bash and PowerShell.",
   "hooks": {
+    "PreToolUse": [
+      { "hooks": [ { "type": "command", "command": "agentwatch hook; exit 0", "timeout": 5 } ] }
+    ],
     "PostToolUse": [
       { "hooks": [ { "type": "command", "command": "agentwatch hook; exit 0", "timeout": 10 } ] }
     ],

@@ -14,12 +14,11 @@ single-agent coverage.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from textual.widgets import ListView
 
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Category, Severity, Warning
@@ -31,7 +30,7 @@ from agentwatch.ui.multi_app import AgentItem, MultiAgentWatchApp
 
 def _make_action(i: int) -> Action:
     return Action(
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
         tool_name="Read",
         tool_type=ToolType.READ,
         success=True,
@@ -81,9 +80,6 @@ class _FakeOllamaClient:
 async def _seed_agent(app: MultiAgentWatchApp, pilot, path: Path, pid: int) -> None:
     buffer = ActionBuffer(max_size=2000)
     item = AgentItem(path, pid=pid, team_id=pid)
-    agent_list = app.query_one("#agent-list", ListView)
-    agent_list.append(item)
-    await pilot.pause()
 
     app.agents[path] = app._new_agent_state(
         buffer=buffer,
@@ -106,7 +102,7 @@ class TestPerAgentSiemExportDedup:
         async with app.run_test() as pilot:
             path = Path("agent.jsonl")
             await _seed_agent(app, pilot, path, pid=100)
-            app.agents[path]["registry"].check_all = lambda buffer: [_fixed_warning()]
+            app.agents[path]["registry"].check_health = lambda buffer: [_fixed_warning()]
             app.agents[path]["buffer"].add(_make_action(0))
 
             app.refresh_ui()
@@ -126,8 +122,8 @@ class TestPerAgentSiemExportDedup:
             await _seed_agent(app, pilot, path_a, pid=100)
             await _seed_agent(app, pilot, path_b, pid=200)
 
-            app.agents[path_a]["registry"].check_all = lambda buffer: [_fixed_warning("a.env")]
-            app.agents[path_b]["registry"].check_all = lambda buffer: [_fixed_warning("b.env")]
+            app.agents[path_a]["registry"].check_health = lambda buffer: [_fixed_warning("a.env")]
+            app.agents[path_b]["registry"].check_health = lambda buffer: [_fixed_warning("b.env")]
             app.agents[path_a]["buffer"].add(_make_action(0))
             app.agents[path_b]["buffer"].add(_make_action(0))
 
@@ -182,7 +178,7 @@ class TestPerAgentLlmThrottle:
                 call_count["n"] += 1
 
             app._run_llm_batch = fake_run_llm_batch
-            app.agents[path]["registry"].check_all = lambda buffer: [_fixed_warning()]
+            app.agents[path]["registry"].check_health = lambda buffer: [_fixed_warning()]
             app.agents[path]["buffer"].add(_make_action(0))
 
             app.refresh_ui()
@@ -196,6 +192,7 @@ class TestPerAgentLlmThrottle:
             assert call_count["n"] == 1  # still within the throttle window
 
             clock["t"] += LLM_ASSESSMENT_INTERVAL_SECONDS
+            app.agents[path]["buffer"].add(_make_action(1))  # rescored only on new actions
             app.refresh_ui()
             await pilot.pause()
             assert call_count["n"] == 2
@@ -219,7 +216,7 @@ class TestPerAgentFailureModes:
 
             path = Path("agent.jsonl")
             await _seed_agent(app, pilot, path, pid=100)
-            app.agents[path]["registry"].check_all = lambda buffer: [_fixed_warning()]
+            app.agents[path]["registry"].check_health = lambda buffer: [_fixed_warning()]
             app.agents[path]["buffer"].add(_make_action(0))
 
             app.refresh_ui()
@@ -248,7 +245,7 @@ class TestPerAgentFailureModes:
 
             path = Path("agent.jsonl")
             await _seed_agent(app, pilot, path, pid=100)
-            app.agents[path]["registry"].check_all = lambda buffer: [_fixed_warning()]
+            app.agents[path]["registry"].check_health = lambda buffer: [_fixed_warning()]
             app.agents[path]["buffer"].add(_make_action(0))
 
             for _ in range(3):
@@ -280,7 +277,7 @@ class TestPerAgentFailureModes:
         async with app.run_test() as pilot:
             path = Path("agent.jsonl")
             await _seed_agent(app, pilot, path, pid=100)
-            app.agents[path]["registry"].check_all = lambda buffer: [_fixed_warning()]
+            app.agents[path]["registry"].check_health = lambda buffer: [_fixed_warning()]
             app.agents[path]["buffer"].add(_make_action(0))
 
             for _ in range(3):
@@ -299,7 +296,7 @@ class TestOnUnmountClosesAllSiemHandles:
         async with app.run_test() as pilot:
             path = Path("agent.jsonl")
             await _seed_agent(app, pilot, path, pid=100)
-            app.agents[path]["registry"].check_all = lambda buffer: [_fixed_warning()]
+            app.agents[path]["registry"].check_health = lambda buffer: [_fixed_warning()]
             app.agents[path]["buffer"].add(_make_action(0))
             app.refresh_ui()
 

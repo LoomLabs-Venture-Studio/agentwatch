@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
@@ -79,16 +80,65 @@ def claude_context_window(model: Any) -> int:
     return 0
 
 
+# Result text kept on a call's Action (incoming_message, as Codex and Cline do),
+# truncated.
+_RESULT_TEXT_LIMIT = 2000
+_MAX_PENDING_CALLS = 1024
+
+
+class ClaudeCodeParser:
+    """Stateful parser for one Claude Code log file.
+
+    Two facts span JSONL lines, so the parser remembers them:
+
+    * a ``tool_result`` answers a ``tool_use`` from an earlier line. The call's
+      Action is emitted at once (security detectors must not wait); when its
+      result arrives, that same Action is updated in place (``success``,
+      ``error_message``, ``incoming_message``) and no separate Action is made.
+    * Claude Code writes one line per content block of an API message, each
+      repeating the message's ``usage``. Lines keep the full usage (the
+      buffer counts each ``message.id`` once, at its maximum); within one
+      line only the first Action carries it.
+
+    Use one instance per file: ``parse_file`` and ``LogWatcher`` each make one.
+    """
+
+    def __init__(self) -> None:
+        self._calls: OrderedDict[str, Action] = OrderedDict()  # tool_use id -> Action
+
+    def parse_entry(self, entry: dict) -> list[Action]:
+        result = _parse_claude_code(entry, self)
+        if result is None:
+            return []
+        return result if isinstance(result, list) else [result]
+
+    def _remember_call(self, tool_use_id: Any, action: Action) -> None:
+        if isinstance(tool_use_id, str):
+            self._calls[tool_use_id] = action
+            if len(self._calls) > _MAX_PENDING_CALLS:
+                self._calls.popitem(last=False)
+
+
 def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
+    """Stateless wrapper over :class:`ClaudeCodeParser` for a single entry.
+
+    Results cannot be matched to calls from earlier lines here; use
+    ``ClaudeCodeParser`` (one per file) to follow a whole log.
+    """
+    return _parse_claude_code(entry, ClaudeCodeParser())
+
+
+def _parse_claude_code(
+    entry: dict, state: ClaudeCodeParser
+) -> Action | list[Action] | None:
     """Parse a Claude Code JSONL log entry.
 
     Claude Code logs store one JSON object per line with structure:
         {type: "assistant"|"user", message: {role, content: [...]}, ...}
 
     Assistant messages contain tool_use blocks (the action).
-    User messages contain tool_result blocks (the outcome).
-
-    We extract actions from tool_use blocks and later merge results.
+    User messages contain tool_result blocks (the outcome), merged into the
+    call's Action through *state*.
     """
     if entry.get("type") in _NON_ACTION_TYPES:
         return None
@@ -140,8 +190,16 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
         call = {
             "model": msg.get("model") if isinstance(msg.get("model"), str) else None,
             "message_id": msg.get("id") if isinstance(msg.get("id"), str) else None,
-            "cache_creation_1h_tokens": cache_1h,
         } if entry_type == "assistant" else {}
+        # Within one entry only the first Action carries the usage.
+        billing = {
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+            "cache_creation_tokens": cache_creation_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_creation_1h_tokens": cache_1h,
+        }
 
         session_id = entry.get("sessionId")
         context_window = claude_context_window(msg.get("model"))
@@ -192,19 +250,18 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                     file_path=file_path,
                     command=command,
                     network_host=network_host,
-                    tokens_in=tokens_in,
-                    tokens_out=tokens_out,
-                    cost_usd=cost_usd,
-                    cache_creation_tokens=cache_creation_tokens,
-                    cache_read_tokens=cache_read_tokens,
                     context_window=context_window,
                     outgoing_data=outgoing_data,
                     session_id=session_id,
                     raw=block,
+                    **billing,
                     **call,
                 ))
-                # Only attach text to the first tool_use in this entry
+                state._remember_call(block.get("id"), actions[-1])
+                # Only the first tool_use in this entry gets the text and usage
                 outgoing_data = None
+                billing = dict.fromkeys(billing, 0)
+                billing["cost_usd"] = 0.0
 
             elif block_type == "tool_result" and entry_type == "user":
                 is_error = block.get("is_error", False)
@@ -214,12 +271,37 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                         b.get("text", "") for b in result_content if isinstance(b, dict)
                     )
 
-                if is_error:
-                    # Create an action representing the failed result
-                    error_msg = (
-                        _redact_truncate(str(result_content), 500)
-                        if result_content else "Tool error"
-                    )
+                error_msg = (
+                    _redact_truncate(str(result_content), 500)
+                    if result_content else "Tool error"
+                )
+                tool_use_id = block.get("tool_use_id")
+                call_action = (
+                    state._calls.pop(tool_use_id, None)
+                    if isinstance(tool_use_id, str) else None
+                )
+                if call_action is not None:
+                    # The call's Action is already out; record its outcome on it.
+                    if result_content:
+                        # Unredacted, like Codex and Cline: the secret scanner
+                        # reads it, and masks what it reports. A failed result
+                        # is kept whole, as develop kept it in raw, so no
+                        # finding past the cut is lost; a successful one is
+                        # capped, which bounds a 2,000-action buffer of big
+                        # Reads (scanning successes is new anyway).
+                        text = str(result_content)
+                        call_action.incoming_message = (
+                            text if is_error else text[:_RESULT_TEXT_LIMIT]
+                        )
+                    call_action.result_revision += 1
+                    call_action.completed_at = timestamp
+                    if is_error:
+                        call_action.success = False
+                        call_action.error_message = error_msg
+                        call_action.error_merged = True
+                elif is_error:
+                    # No call to merge into (log starts mid-session): keep the
+                    # failure as an action of its own.
                     actions.append(Action(
                         timestamp=timestamp,
                         tool_name="tool_result",
@@ -243,14 +325,10 @@ def parse_claude_code_entry(entry: dict) -> Action | list[Action] | None:
                 tool_type=ToolType.UNKNOWN,
                 success=True,
                 outgoing_data=joined,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                cost_usd=cost_usd,
-                cache_creation_tokens=cache_creation_tokens,
-                cache_read_tokens=cache_read_tokens,
                 context_window=context_window,
                 session_id=session_id,
                 raw={"type": "text", "text": joined[:500]},
+                **billing,
                 **call,
             ))
 
@@ -272,6 +350,22 @@ def _redact_truncate(text: str, limit: int) -> str:
     from agentwatch.detectors.security.secret_scanner import redact_truncate
 
     return redact_truncate(text, limit)
+
+
+def error_text(value: Any) -> str | None:
+    """A log's ``error`` field as text. Claude Code's ``system/api_error``
+    logs a dict there; detectors expect a string. Falsy values (``False``,
+    ``0``, ``{}``, ``[]``) mean no error."""
+    if not value:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and isinstance(value.get("message"), str):
+        return value["message"]
+    try:
+        return json.dumps(value, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def url_hostname(url: Any) -> str | None:
@@ -366,7 +460,9 @@ def _parse_claude_code_flat(entry: dict) -> Action | None:
         if "error" in entry or "err" in entry:
             success = False
 
-        error_message = entry.get("error") or entry.get("err") or entry.get("error_message")
+        error_message = error_text(
+            entry.get("error") or entry.get("err") or entry.get("error_message")
+        )
 
         tokens_in = entry.get("tokens_in") or entry.get("input_tokens") or 0
         tokens_out = entry.get("tokens_out") or entry.get("output_tokens") or 0
@@ -451,7 +547,7 @@ def parse_moltbot_entry(entry: dict) -> Action | None:
 
         # Success/error
         success = entry.get("success", True)
-        error_message = entry.get("error")
+        error_message = error_text(entry.get("error"))
         if error_message:
             success = False
 
@@ -724,6 +820,7 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
     sniffer = FormatSniffer()
     log_format = None
     codex_parser: CodexParser | CopilotParser | AgyParser | GeminiParser | None = None
+    claude_parser = ClaudeCodeParser()
 
     def parse(entry: dict) -> list[Action]:
         if log_format == "moltbot":
@@ -731,7 +828,7 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
         elif log_format in ("codex", "copilot", "agy", "gemini"):
             result = codex_parser.parse_line(entry)
         else:
-            result = parse_claude_code_entry(entry)
+            result = claude_parser.parse_entry(entry)
         if not isinstance(result, list):
             result = [result] if result else []
         return [a for a in result if session_id is None or a.session_id == session_id]

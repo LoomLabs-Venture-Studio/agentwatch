@@ -700,7 +700,7 @@ def test_bare_key_value_secret_masked(text, secret):
         "password={{ db_password }}",
         "password=changeme",
         "PASSWORD=CHANGEME",
-        "PWD=/home/zaid/project",
+        "PWD=/home/alice/project",
         "password=self.password",  # code, not a value
         "api_key=os.environ['API_KEY']",
         "token=get_token(user)",

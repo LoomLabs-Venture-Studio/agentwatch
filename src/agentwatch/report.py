@@ -14,6 +14,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from agentwatch.themes import ascii_safe
+
 JSON_SCHEMA = 1
 TOP_FINDINGS = 3
 # Security finding categories as the report groups them. Counts are findings,
@@ -157,6 +159,12 @@ def _n(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
+def _cell(x: Any) -> str:
+    """A name column: 22 wide, longer names cut with an ellipsis (columns stay aligned)."""
+    s, dots = str(x or "-"), ascii_safe("…", "...")
+    return f"{s if len(s) <= 22 else s[:22 - len(dots)] + dots:<22}"
+
+
 def render(rep: dict[str, Any], limit: int = 10) -> list[str]:
     """The report as text lines."""
     t, days = rep["totals"], rep["period"]["days"]
@@ -186,13 +194,13 @@ def render(rep: dict[str, Any], limit: int = 10) -> list[str]:
         lines += ["", "  Costliest findings"]
         for f in rep["top_findings"]:
             cost = _usd(f["cost_usd"]) if f["cost_usd"] is not None else f"{_tok(f['tokens'])} tok"
-            lines.append(f"    {f['signal']:<22} {f['project'] or '-':<22} {cost:>10}  {f['date']}")
+            lines.append(f"    {_cell(f['signal'])} {_cell(f['project'])} {cost:>10}  {f['date']}")
 
     for title, key in (("By agent", "agent"), ("By project", "project")):
         groups = rep[f"by_{key}"]
         lines += ["", f"  {title}"]
         for g in groups[:limit]:
-            lines.append(f"    {str(g[key] or '-'):<22} {_n(g['sessions'], 'session'):<12} "
+            lines.append(f"    {_cell(g[key])} {_n(g['sessions'], 'session'):<12} "
                          f"{_usd(g['cost_usd']):>10}   waste {_usd(g['waste_usd'])}")
         if len(groups) > limit:
             lines.append(f"    ... and {len(groups) - limit} more")
