@@ -5331,3 +5331,14 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 |---|---|---|---|---|---|
 | 2026-10-27 | #189 | docs/site-redesign | docs | CTO review, QA PASS WITH NOTES (sonnet), round 1 fixed, board "go live" | -- |
 | 2026-10-27 | #190 | fix/codex-usage-loop | fix | CTO review, QA PASS WITH NOTES (sonnet), follow-ups fixed (011af8d); held until after the site promotion | -- |
+
+### Sprint 40 (cont.) -- statusline cost
+
+- `agentwatch statusline --cost` (gap #2), stacked on #192: the active
+  5-hour block's spend, projection and reset time after the warning
+  segment. `{"block": ...}` summary cached in `user_state_dir()/block.json`
+  (60 s TTL, coach `_private_dir` + `_atomic_write`); a miss runs
+  `compute_blocks(since=now - 24 h)`, cc_stats imported only then.
+- Limit: more than ~24 h of back-to-back blocks can start the active block
+  at a different hour than `stats --blocks` (`ponytail:` note in
+  statusline.py).

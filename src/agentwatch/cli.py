@@ -2423,7 +2423,12 @@ def hook():
 
 @cli.command()
 @click.option("--ok", is_flag=True, help="When healthy, print a dim check mark and 'agentwatch'")
-def statusline(ok: bool):
+@click.option(
+    "--cost", is_flag=True,
+    help="Add the current 5-hour block's spend, projected spend and reset time "
+    "(all projects; cached 60 s)",
+)
+def statusline(ok: bool, cost: bool):
     """Claude Code status line: a short warning (loop ~$1.40) when unhealthy.
 
     Reads the status line JSON on stdin and the coach's state for that
@@ -2432,7 +2437,7 @@ def statusline(ok: bool):
     """
     from agentwatch.statusline import main as statusline_main
 
-    statusline_main(ok)
+    statusline_main(ok, cost)
 
 
 @cli.command()

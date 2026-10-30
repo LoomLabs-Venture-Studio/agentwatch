@@ -194,7 +194,7 @@ src/agentwatch/
                        (same id as LoopDetector) and denies the first match
                        once (permissionDecision deny, fixed reason).
                        LOOP_ALLOW Bash prefixes are never denied.
-  statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
+  statusline.py        `agentwatch statusline [--ok] [--cost]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
                        user_state_dir()/state-dir (coach.POINTER, written
@@ -207,7 +207,11 @@ src/agentwatch/
                        yellow/red, NO_COLOR). Healthy: nothing, `--ok` dim
                        `✓ agentwatch`. No state / > 10 min old / any error:
                        nothing, exit 0. No transcript parsing; imports only
-                       stdlib + coach (~150 ms on Windows)
+                       stdlib + coach (~150 ms on Windows). `--cost`: the
+                       active 5-hour block (spend -> projection · resets)
+                       from a 60 s cache (user_state_dir()/block.json); a
+                       miss imports cc_stats and scans transcripts modified
+                       in the last 24 h
   alerts.py            Alerter for `watch`/`watch-all` `--notify`,
                        `--webhook URL` (env AGENTWATCH_WEBHOOK) and
                        `watch-all --headless`. observe(session, agent,

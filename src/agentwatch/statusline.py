@@ -10,6 +10,11 @@ the transcript, and imports nothing heavy (`_entry` skips cli.py).
 Prints the most severe current HIGH/CRITICAL coached warning as `⚠ loop
 ~$1.40`, or nothing when healthy (`--ok`: a dim `✓ agentwatch`). No state,
 state older than STALE_S, or any error: nothing, exit 0.
+
+`--cost` adds the current 5-hour usage block (`stats --blocks`) as `5h $4.12
+→ ~$9.80 · resets 2h13m`: spend so far, projected spend at reset, time left.
+Computing it reads transcripts, so the summary is cached in the per-user
+state dir for BLOCK_TTL_S and cc_stats is imported only on a miss.
 """
 
 from __future__ import annotations
@@ -21,9 +26,27 @@ import sys
 import time
 from pathlib import Path
 
-from agentwatch.coach import POINTER, state_dir, state_path, user_state_dir
+from agentwatch.coach import (
+    POINTER,
+    _atomic_write,
+    _private_dir,
+    state_dir,
+    state_path,
+    user_state_dir,
+)
 
 STALE_S = 600
+BLOCK_CACHE = "block.json"
+BLOCK_TTL_S = 60
+# A straight-line projection from a block's first minutes is mostly noise.
+PROJECT_AFTER_S = 15 * 60
+# Only transcripts written in the last day are read on a cache miss.
+# ponytail: a block's start is chained from older messages; with more than
+# ~24 h of back-to-back blocks the chain is cut and the active block can start
+# at a different hour than `stats --blocks` shows. Anchor from the previous
+# block's end if that matters.
+LOOKBACK_S = 24 * 3600
+_now = time.time
 _LABELS = {
     "loop": "loop", "reread": "loop",
     "thrash": "thrash", "file_churn": "thrash", "syntax_loop": "thrash",
@@ -68,17 +91,84 @@ def _load(session_id: str) -> dict | None:
     return json.loads(newest.read_text(encoding="utf-8"))
 
 
-def _cost(value: object) -> str:
-    # Bounded: a corrupt or hostile state file must not print "~$1e+300" or "nan".
+def _usd(value: object, limit: float = 10_000) -> str | None:
+    # Bounded: a corrupt or hostile state file must not print "$1e+300" or "nan".
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return ""
-    if not (math.isfinite(value) and 0 <= value < 10_000):
-        return ""
-    return " <$0.01" if value < 0.01 else f" ~${value:,.2f}"
+        return None
+    if not (math.isfinite(value) and 0 <= value < limit):
+        return None
+    return "<$0.01" if value < 0.01 else f"${value:,.2f}"
 
 
-def render(stdin_text: str, ok: bool = False) -> str:
+def _cost(value: object) -> str:
+    text = _usd(value)
+    return "" if text is None else f" {text}" if text.startswith("<") else f" ~{text}"
+
+
+def _active_block(now: float) -> dict | None:
+    """The active block's summary {end, cost_usd, projected_cost_usd}, or None.
+    Cached in the per-user state dir; recomputed when older than BLOCK_TTL_S."""
+    path = user_state_dir() / BLOCK_CACHE
+    try:
+        if 0 <= now - path.stat().st_mtime < BLOCK_TTL_S:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and "block" in cached:
+                return cached["block"]
+    except (OSError, ValueError):
+        pass  # missing or corrupt: recompute
+    from datetime import UTC, datetime
+
+    from agentwatch import cc_stats
+
+    at = datetime.fromtimestamp(now, UTC)
+    blocks = cc_stats.compute_blocks(since=now - LOOKBACK_S)
+    burn = blocks[-1].burn(at) if blocks else None
+    block = None if burn is None else {
+        "end": blocks[-1].end.timestamp(),
+        "cost_usd": blocks[-1].usage.cost_usd,
+        "projected_cost_usd": burn["projected_cost_usd"],
+    }
+    try:
+        if _private_dir(path.parent):
+            _atomic_write(path, json.dumps({"block": block}))
+    except OSError:
+        pass  # uncached: the next refresh scans again
+    return block
+
+
+def _block_text() -> str:
+    """`5h $4.12 → ~$9.80 · resets 2h13m`; "" with no active block or on any error."""
+    try:
+        now = _now()
+        block = _active_block(now)
+        if not isinstance(block, dict):
+            return ""
+        left = block["end"] - now
+        if not (isinstance(left, (int, float)) and 0 < left <= 5 * 3600):
+            return ""  # the cached block has ended (or the cache is nonsense)
+        minutes = int(left // 60)
+        text = f"resets {minutes // 60}h{minutes % 60:02d}m"
+        spent = _usd(block.get("cost_usd"), 1_000_000)
+        if spent:  # unpriced model: no dollars, never a guess
+            projected = _usd(block.get("projected_cost_usd"), 1_000_000)
+            if 5 * 3600 - left < PROJECT_AFTER_S or not (
+                block["projected_cost_usd"] >= block["cost_usd"]
+            ):
+                projected = None
+            text = f"{spent}{f' → ~{projected}' if projected else ''} · {text}"
+        text = f"5h {text}"
+        return f"{_DIM}{text}{_RESET}" if not os.environ.get("NO_COLOR") else text
+    except Exception:
+        return ""
+
+
+def render(stdin_text: str, ok: bool = False, cost: bool = False) -> str:
     """The status line text, or "" to print nothing."""
+    parts = [_health(stdin_text, ok), _block_text() if cost else ""]
+    return " · ".join(p for p in parts if p)
+
+
+def _health(stdin_text: str, ok: bool) -> str:
     try:
         session_id = json.loads(stdin_text)["session_id"]
         if not isinstance(session_id, str):
@@ -102,13 +192,13 @@ def render(stdin_text: str, ok: bool = False) -> str:
         return ""
 
 
-def main(ok: bool = False) -> None:
-    """Entry for `agentwatch statusline [--ok]`: always exits 0."""
+def main(ok: bool = False, cost: bool = False) -> None:
+    """Entry for `agentwatch statusline [--ok] [--cost]`: always exits 0."""
     try:
         stdin = getattr(sys.stdin, "buffer", None)
         # utf-8-sig: a PowerShell pipe (`$json | agentwatch statusline`) adds a BOM.
         text = stdin.read().decode("utf-8-sig", "replace") if stdin else sys.stdin.read()
-        out = render(text, ok)
+        out = render(text, ok, cost)
         if out:
             # UTF-8 bytes: a piped stdout on Windows is cp1252, which has no ⚠/✓.
             sys.stdout.buffer.write((out + "\n").encode("utf-8"))
