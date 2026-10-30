@@ -11,8 +11,8 @@ Prints the most severe current HIGH/CRITICAL coached warning as `⚠ loop
 ~$1.40`, or nothing when healthy (`--ok`: a dim `✓ agentwatch`). No state,
 state older than STALE_S, or any error: nothing, exit 0.
 
-`--cost` adds the current 5-hour usage block (`stats --blocks`) as `$4.12 →
-~$9.80 · resets 2h13m`: spend so far, projected spend at reset, time left.
+`--cost` adds the current 5-hour usage block (`stats --blocks`) as `5h $4.12
+→ ~$9.80 · resets 2h13m`: spend so far, projected spend at reset, time left.
 Computing it reads transcripts, so the summary is cached in the per-user
 state dir for BLOCK_TTL_S and cc_stats is imported only on a miss.
 """
@@ -135,7 +135,7 @@ def _active_block(now: float) -> dict | None:
 
 
 def _block_text() -> str:
-    """`$4.12 → ~$9.80 · resets 2h13m`; "" with no active block or on any error."""
+    """`5h $4.12 → ~$9.80 · resets 2h13m`; "" with no active block or on any error."""
     try:
         now = _now()
         block = _active_block(now)
@@ -150,6 +150,7 @@ def _block_text() -> str:
         if spent:  # unpriced model: no dollars, never a guess
             projected = _usd(block.get("projected_cost_usd"), 1_000_000)
             text = f"{spent}{f' → ~{projected}' if projected else ''} · {text}"
+        text = f"5h {text}"
         return f"{_DIM}{text}{_RESET}" if not os.environ.get("NO_COLOR") else text
     except Exception:
         return ""

@@ -19,9 +19,9 @@ numbers refer to the GitHub repository.
   cost as `-`. `--json` lists every window. No plan-limit estimate and no
   live refresh yet.
 - `agentwatch statusline --cost`: adds the current 5-hour window to the
-  status line as `$4.12 → ~$9.80 · resets 2h13m` (spent, projected at reset,
-  time left), after any warning. Nothing when no window is active; no
-  dollars for an unpriced model. The summary is cached for 60 s and a refresh
+  status line as `5h $4.12 → ~$9.80 · resets 2h13m` (spent, projected at reset,
+  time left), after any warning. Nothing when no window is active; only `5h resets …`
+  for an unpriced model. The summary is cached for 60 s and a refresh
   reads only transcripts written in the last 24 hours, so a warm run costs
   no more than plain `statusline`.
 

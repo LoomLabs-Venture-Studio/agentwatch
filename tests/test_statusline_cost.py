@@ -49,7 +49,7 @@ def test_active_block_spend_projection_and_reset(home):
     _log(home, _line("m1", "2026-10-30T10:30:00Z"))
     # $21 over 2 h -> $52.50 at 15:00 UTC, 3 h from now
     assert statusline.render(STDIN, cost=True) == (
-        f"{statusline._DIM}$21.00 → ~$52.50 · resets 3h00m{statusline._RESET}")
+        f"{statusline._DIM}5h $21.00 → ~$52.50 · resets 3h00m{statusline._RESET}")
 
 
 def test_cache_hit_skips_scan_stale_cache_rescans(home, monkeypatch):
@@ -63,7 +63,7 @@ def test_cache_hit_skips_scan_stale_cache_rescans(home, monkeypatch):
     monkeypatch.setattr(cc_stats, "compute_blocks", boom)
     monkeypatch.setattr(statusline, "_now", lambda: NOW + 600)  # 10 min later, warm cache
     os.utime(cache, (NOW + 590, NOW + 590))
-    assert _plain(statusline.render(STDIN, cost=True)) == "$21.00 → ~$52.50 · resets 2h50m"
+    assert _plain(statusline.render(STDIN, cost=True)) == "5h $21.00 → ~$52.50 · resets 2h50m"
 
     os.utime(cache, (NOW + 500, NOW + 500))  # 100 s old: stale -> scan
     assert statusline.render(STDIN, cost=True) == ""  # the scan failed: fail open
@@ -84,7 +84,7 @@ def test_corrupt_cache_recomputes_or_shows_nothing(home):
 def test_unpriced_model_shows_reset_only(home, monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     _log(home, _line("m1", "2026-10-30T10:30:00Z", model="claude-opus-4-9"))
-    assert statusline.render(STDIN, cost=True) == "resets 3h00m"
+    assert statusline.render(STDIN, cost=True) == "5h resets 3h00m"
 
 
 def test_no_active_block_no_segment(home):
@@ -108,11 +108,11 @@ def test_joins_with_warning_and_ok(home, monkeypatch):
     path = coach.state_path(state, SID)
     path.write_text(json.dumps({"warnings": []}))
     assert statusline.render(STDIN, ok=True, cost=True) == (
-        "✓ agentwatch · $21.00 → ~$52.50 · resets 3h00m")
+        "✓ agentwatch · 5h $21.00 → ~$52.50 · resets 3h00m")
     path.write_text(json.dumps({"warnings": [
         {"severity": "high", "signal": "loop", "cost_usd": 1.4}]}))
     assert statusline.render(STDIN, cost=True) == (
-        "⚠ loop ~$1.40 · $21.00 → ~$52.50 · resets 3h00m")
+        "⚠ loop ~$1.40 · 5h $21.00 → ~$52.50 · resets 3h00m")
 
 
 def test_cost_off_never_scans(home, monkeypatch):
