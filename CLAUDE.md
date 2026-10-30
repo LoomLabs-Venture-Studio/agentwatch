@@ -172,7 +172,8 @@ src/agentwatch/
                        PostToolUseFailure hook. Tail (4 MB) of
                        transcript_path -> parse_claude_code_entry ->
                        health registry; new HIGH/CRITICAL PROGRESS/ERRORS
-                       warning -> hookSpecificOutput.additionalContext
+                       warning (includes `test_tampering`, Try line fixed)
+                       -> hookSpecificOutput.additionalContext
                        (<= 3 lines; evidence quoted with </> stripped, the
                        Try line is fixed text per signal). Subagent
                        payloads (agent_id) read <transcript>/subagents/
@@ -202,7 +203,7 @@ src/agentwatch/
                        CLAUDE_PLUGIN_DATA), else <CLAUDE_CONFIG_DIR or
                        ~/.claude>/plugins/data/agentwatch-*/coach, and
                        user_state_dir; worst HIGH/CRITICAL of the mapped
-                       signals -> `⚠ loop|thrash|errors|stuck ~$x` (cost
+                       signals -> `⚠ loop|thrash|errors|stuck|tests weakened ~$x` (cost
                        only if finite, 0 <= x < 10k; < 0.01 -> `<$0.01`;
                        yellow/red, NO_COLOR). Healthy: nothing, `--ok` dim
                        `✓ agentwatch`. No state / > 10 min old / any error:
@@ -404,7 +405,11 @@ src/agentwatch/
                        action whose result lands after it left their window
     health/*.py          Health detectors: loops, tool_thrash, stall/stuck,
                        errors, context, repetition, behavioral, progress,
-                       constraints
+                       constraints, fake_green (`test_tampering`: tests
+                       skipped/weakened/deleted on test files only; HIGH when
+                       the last test run before it failed; edit text read
+                       from raw for Claude Code, Codex, Copilot CLI, Gemini,
+                       OpenCode/Kilo, Cline; commands for all)
     security/*.py        Security detectors: credentials, injection,
                        network, privilege, supply_chain, secret_scanner
                        (also redact_truncate and one_line, the shared
