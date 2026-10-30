@@ -41,6 +41,16 @@ such as a typo in the code, survives one fix after another.
 **What to do.** Undo the recent changes, or start again with a different plan. The
 error message is usually the best place to start.
 
+### Making the tests pass the wrong way
+
+**What it looks like.** A test fails, and instead of fixing the code the
+assistant skips the test, deletes it, removes its checks, or runs the tests in a
+way that hides the failure (for example `|| true`). The tests then "pass", but
+nothing was fixed.
+
+**What to do.** Undo the change to the test and ask the assistant to fix the code
+instead. If a test really is wrong, decide that yourself.
+
 ### Stuck, no progress
 
 **What it looks like.** The assistant is busy but nothing changes. It reads and
@@ -139,9 +149,9 @@ also reads (see [Supported agents](supported-agents.md#limited)).
 
 ## Technical details
 
-??? info "All 36 checks, and how the scores are calculated"
+??? info "All 37 checks, and how the scores are calculated"
 
-    `agentwatch list-detectors --security` lists every check. There are 36: 15
+    `agentwatch list-detectors --security` lists every check. There are 37: 16
     health checks and 21 security checks.
 
     **Health checks**
@@ -150,7 +160,8 @@ also reads (see [Supported agents](supported-agents.md#limited)).
       times), `thrash` (edit, test, fail, repeat), `stall` (no meaningful
       progress), `same_outcome` (different fixes, same error), `file_churn` (a
       file edited again and again without a passing test), `exploration_stall`
-      (no new files explored).
+      (no new files explored), `test_tampering` (tests skipped, weakened or
+      deleted instead of the code being fixed).
     - Errors: `error_spiral` (failures in a row), `error_blindness` (the same
       error ignored), `error_class_persistence` (the same kind of error after
       different fixes), `syntax_loop` (repeated syntax or import errors),

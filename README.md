@@ -177,7 +177,7 @@ Otherwise, penalties ramp gradually from 0.0 to 1.0 over the first 10 turns.
 
 This scaling only affects progress/stall metrics. Behavioral signals (repetition, error loops, thrashing) always apply at full strength since they indicate real context degradation regardless of session phase.
 
-## Health Detectors (15)
+## Health Detectors (16)
 
 | Detector                  | What It Catches                                       |
 | ------------------------- | ----------------------------------------------------- |
@@ -189,6 +189,7 @@ This scaling only affects progress/stall metrics. Behavioral signals (repetition
 | `file_churn`              | File edited repeatedly without a successful test      |
 | `exploration_stall`       | No new files explored despite continued activity      |
 | `error_class_persistence` | Same type of error persisting despite different fixes |
+| `test_tampering`          | Tests skipped, weakened or deleted instead of fixed   |
 | `error_spiral`            | Multiple consecutive failures                         |
 | `error_blindness`         | Same error repeated without fix                       |
 | `syntax_loop`             | Repeated syntax/import errors                         |
@@ -196,6 +197,13 @@ This scaling only affects progress/stall metrics. Behavioral signals (repetition
 | `context_rot`             | Important early files no longer being referenced      |
 | `context_pressure`        | Context window filling up                             |
 | `rediscovery`             | Agent re-discovering previously learned information   |
+
+`test_tampering` ("fake green") flags tests skipped, weakened or deleted on test
+files: HIGH when the last test run before the change failed. It reads edit text
+for Claude Code, Codex, Copilot CLI, Gemini CLI, OpenCode/Kilo and Cline, and
+test commands for every agent with a shell. Known limits: in-place shell edits
+(`sed -i '/assert/d' tests/test_x.py`) are not seen, a Write that rewrites a whole
+existing test file is not diffed, and only the last 100 actions are checked.
 
 ## Security Detectors (21)
 
@@ -223,7 +231,7 @@ This scaling only affects progress/stall metrics. Behavioral signals (repetition
 | `skill_chain`          | Suspicious skill chaining                                 |
 | `skill_install`        | New skill being installed                                 |
 
-AgentWatch registers **36 detectors total** (15 health + 21 security), enumerated at runtime via `agentwatch.detectors.registry.get_all_health_detectors()` / `get_all_security_detectors()` — this is the source of truth if the numbers above ever drift.
+AgentWatch registers **37 detectors total** (16 health + 21 security), enumerated at runtime via `agentwatch.detectors.registry.get_all_health_detectors()` / `get_all_security_detectors()` — this is the source of truth if the numbers above ever drift.
 
 Security categories and weights:
 
@@ -957,7 +965,8 @@ Claude Code only.
 
 The `agentwatch` plugin coaches Claude Code while it works. After every tool
 call a hook runs agentwatch's health detectors on the live session. When a
-new HIGH or CRITICAL loop, thrash, error spiral or stuck pattern shows up, it
+new HIGH or CRITICAL loop, thrash, error spiral or stuck pattern shows up, or
+a failing test is skipped, weakened or deleted instead of fixed, it
 adds a short note to Claude's context (what is wrong, the evidence, what to
 try). It reports each problem once per session, again only if it clears
 and comes back. Context-size estimates are not coached. The plugin also
@@ -1030,7 +1039,8 @@ the session is unhealthy, and prints nothing when it is healthy:
 ```
 
 The word is the most severe current HIGH/CRITICAL coach finding: `loop`,
-`thrash`, `errors` or `stuck` (yellow for HIGH, red for CRITICAL), plus the
+`thrash`, `errors`, `stuck` or `tests weakened` (yellow for HIGH, red for
+CRITICAL), plus the
 cost of the API calls behind it when that is known. It reads only the
 coach's state file for the session, never the transcript, so it needs the
 plugin's hook (above) and runs in about 150 ms on Windows, most of it Python

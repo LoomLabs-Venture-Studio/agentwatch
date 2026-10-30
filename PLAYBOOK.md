@@ -5331,3 +5331,37 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 |---|---|---|---|---|---|
 | 2026-10-27 | #189 | docs/site-redesign | docs | CTO review, QA PASS WITH NOTES (sonnet), round 1 fixed, board "go live" | -- |
 | 2026-10-27 | #190 | fix/codex-usage-loop | fix | CTO review, QA PASS WITH NOTES (sonnet), follow-ups fixed (011af8d); held until after the site promotion | -- |
+
+### Sprint 40 (cont.) -- fake-green detector (2026-10-30)
+Market gap #5 (cf. karanb192/claude-code-hooks "protect-tests"): flag an agent that makes failing tests pass by skipping, weakening or deleting them instead of fixing the code.
+
+**Acceptance criteria**
+- [x] New health detector `test_tampering` (`detectors/health/fake_green.py`, `FakeGreenDetector`, Category PROGRESS, no new Category), auto-collected by `get_all_health_detectors()`, so it shows in `check`, `watch`, `watch-all`, `history` and `report`.
+- [x] Signals on test files only (fixtures, snapshots, golden files, caches and temp dirs excluded): new unconditional skip/xfail markers, `.only`/`fit`, removed, commented-out or trivialised assertions, deleted test functions, deleted or emptied test files, test-config exclusions (`testPathIgnorePatterns`, `collect_ignore`, `addopts` with `--ignore`/`--deselect`/`-k`), and test commands that hide failures (`|| true`, `--deselect`, `-k "not ..."`, `--passWithNoTests`, `-skip`, `--skip`).
+- [x] HIGH when the last test run before the change failed (a failure is a failed call or failing output, so `pytest | tail` counts); "(then tests passed)" when a later run passed. Otherwise MEDIUM (skip, `.only`, config) or LOW (assertions, deletions, command flags).
+- [x] No finding for: platform/env skips (and skips under an `if`), moved tests (same name re-added in the window), renamed tests, fixture/snapshot edits, assertions moved into a helper (window assertion count level), new tests, non-test edits after a failure, `rm -rf .pytest_cache`, deleting a test file the agent wrote itself, failed edits.
+- [x] Coach coaches it (PROGRESS, HIGH) with a fixed Try line; status line label `tests weakened`.
+- [x] Real-path tests (JSONL -> parser -> registry / `check --log`), per-agent parser tests, full suite and ruff green.
+
+**Result**
+- Edit text read for Claude Code (Edit, MultiEdit, Write), Codex (apply_patch V4A, also via shell heredoc), Copilot CLI (edit/create), Gemini CLI (replace/write_file), OpenCode and Kilo (edit/write/apply_patch), Cline (legacy replace_in_file SEARCH/REPLACE and write_to_file, SDK editor). Test commands for every agent with a shell tool.
+- Not covered for edits: Aider (no per-edit old/new text in the chat history), Cursor (bubbles carry no tool input), Copilot in VS Code (the part has no patch text), Antigravity (only the replacement text is kept), Claude Desktop Cowork host-loop sessions follow Claude Code.
+- Timing, `agentwatch check --log` on the largest local Claude Code log (7.6 MB), median of 5: 0.33 s before, 0.35-0.38 s after across three runs.
+  The detector itself: ~6.5 ms module import (regex compile) and 3.3 ms per one-shot check; 120 us per check when run after every action. Edit analysis is cached per action.
+  After QA round 1: 0.33-0.35 s before (develop 8e3b5fc), 0.35 s after, three median-of-5 runs each; 5.2 ms one-shot check, 156 us per check live.
+- Precision sweep: 42 real local Claude Code sessions, checked after every action: 0 findings.
+- Tests: 2632 passed, 1 skipped (45 new in `tests/test_fake_green.py`, 1 in `tests/test_statusline.py`). After QA round 1: 2660 passed, 1 skipped (73 in `tests/test_fake_green.py`).
+
+**Known limits**
+- Health detectors look at the last 100 actions, so in `check`/`history` a tampering far back in a long session is not reported.
+- A Write that rewrites a whole existing test file is not diffed (no old text); only an empty Write counts.
+- Rust `#[test]` and Java `@Test` deletions are not counted (no name on the same line); their skip markers are.
+- In-place shell edits are not read: `sed -i '/assert/d' tests/test_x.py` or a Python one-liner rewriting a test file goes unseen.
+
+**QA round 1 (FAIL on b0c8718) and fixes**
+- The coach parsed each transcript line with a fresh parser, so a tool result never merged into its call: a failed `pytest` stayed a successful Bash call plus a separate result, and `test_tampering` never reached HIGH in the coach. The coach now reads the tail with one `ClaudeCodeParser`, as `check` does. Effect on other coached warnings: consecutive failing calls now raise `error_spiral` (HIGH) in the coach too, as `check` already reported. Two coach tests changed for that: the 8x failing loop gives 3 HIGH notes instead of 2, and the fold-in test uses 2 failed calls (below error_spiral's 3) instead of 5. Loop breaker and `call_loop_id` unchanged.
+- `|| true` counts only right after the test-runner pipeline, and hiding flags only on that pipeline. Commands are split outside quotes (a commit message is not a command). Heredoc bodies are dropped.
+- Files the shell writes (`>`, `>>`, `tee`, `cp`/`mv` destination) count as the agent's own, like Write. Edits to the agent's own new test file are at most LOW.
+- Under `tests/`, `spec/`, `__tests__/` and `src/test/` only source files count (`rm -rf tests/` still does). `pytest.raises`/`warns` and `toThrow` count as assertions. Removed assertions are offset only by assertions added later in the window or in a helper function.
+- Older Codex output (`{"output", "metadata": {"exit_code"}}`) is decoded.
+- Precision sweep: 141 real Claude Code logs (42 sessions + 99 subagent logs), checked after every action. One finding: a subagent `git rm` of 5 test files while rebuilding a superseded PR, no failing run before it, LOW. Judged a legitimate cleanup and correctly kept at LOW. (Before the fixes: 4 findings, one HIGH: scratch tests created by shell, and a quoted commit message.)
