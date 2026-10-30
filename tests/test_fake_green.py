@@ -442,3 +442,133 @@ def test_coach_hook_end_to_end_and_statusline(tmp_path, monkeypatch):
     assert context.startswith("agentwatch coach [high]: Tests weakened after a failing run")
     assert context.splitlines()[-1] == f"Try: {coach._TIPS['test_tampering']}"
     assert statusline.render(json.dumps({"session_id": "sess-fg"})) == "⚠ tests weakened"
+
+
+# --- QA round 1 -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", [
+    "mkdir -p out || true && pytest",
+    "pytest -x; rm -f x || true",
+    "pytest && git commit -m 'skip -k not x' || true",
+])
+def test_or_true_on_other_segment_is_ignored(tmp_path, command):
+    none_fire(Session().run("pytest", ok=False).run(command), tmp_path)
+
+
+@pytest.mark.parametrize("command", [
+    "pytest -q 2>&1 | tail -5 || true",
+    "cd app && npm test || exit 0",
+])
+def test_or_true_right_after_runner(tmp_path, command):
+    w = one(Session().run("pytest", ok=False).run(command, out=FAIL_OUT).save(tmp_path))
+    assert w.severity.value == "high" and "|| true" in w.message
+
+
+def test_heredoc_body_is_not_a_command(tmp_path):
+    s = (Session().run("cargo test", ok=False, out="test result: FAILED")
+         .run("cat > notes.md <<'EOF'\ncargo test -- --skip slow\nrm tests/test_a.py\n"
+              "pytest || true\nEOF", out=""))
+    none_fire(s, tmp_path)
+
+
+@pytest.mark.parametrize("create", [
+    "cat > tests/test_scratch.py <<'EOF'\ndef test_x():\n    assert f()\nEOF",
+    "echo 'def test_x(): assert f()' >> tests/test_scratch.py",
+    "printf 'x' | tee tests/test_scratch.py",
+    "cp /tmp/t.py tests/test_scratch.py",
+    "mv /tmp/test_scratch.py tests/",
+])
+def test_shell_created_scratch_test_can_be_deleted(tmp_path, create):
+    s = (Session().run(create, out="")
+         .run("pytest tests/test_scratch.py", ok=False)
+         .run("rm tests/test_scratch.py", out=""))
+    none_fire(s, tmp_path)
+
+
+def test_edit_to_own_new_test_file_is_low(tmp_path):
+    s = (Session().write("/repo/tests/test_new.py", TEST_OLD)
+         .run("pytest tests/test_new.py", ok=False)
+         .edit("/repo/tests/test_new.py", "def test_login():", SKIP_NEW))
+    assert one(s.save(tmp_path)).severity.value == "low"
+
+
+@pytest.mark.parametrize("path", [
+    "docs/spec/design.md", "tests/data/case.json", "spec/fixtures.yml", "tests/README",
+])
+def test_non_source_files_in_test_dirs(path):
+    assert not is_test_path(path)
+
+
+def test_rm_whole_test_dir(tmp_path):
+    w = one(Session().run("pytest", ok=False).run("rm -rf tests/", out="").save(tmp_path))
+    assert w.severity.value == "high"
+
+
+@pytest.mark.parametrize("line", [
+    "    with pytest.raises(ValueError):",
+    "    with self.assertRaises(KeyError):",
+    "    expect(fn).toThrow();",
+])
+def test_raises_counts_as_assertion(tmp_path, line):
+    path = "/repo/tests/test_a.py" if "expect" not in line else "/repo/src/a.test.js"
+    s = Session().run("pytest", ok=False).edit(path, f"{line}\n        f()", "    f()")
+    assert "removed 1 assertion" in one(s.save(tmp_path)).message
+
+
+def test_added_tests_do_not_hide_a_later_assert_removal(tmp_path):
+    """Add tests, they fail, delete the failing assert, pass: fires."""
+    s = (Session().edit("/repo/tests/test_auth.py", "import pytest\n",
+                        "import pytest\n\ndef test_a():\n    assert a()\n\n"
+                        "def test_b():\n    assert b()\n")
+         .run("pytest", ok=False)
+         .edit("/repo/tests/test_auth.py", "def test_b():\n    assert b()\n",
+               "def test_b():\n    b()\n")
+         .run("pytest"))
+    w = one(s.save(tmp_path))
+    assert w.severity.value == "high" and "removed 1 assertion" in w.message
+
+
+def test_move_with_new_file_written_first(tmp_path):
+    """The destination is edited before the source: still a move."""
+    s = (Session().run("pytest", ok=False)
+         .edit("/repo/tests/test_login.py", "import pytest\n", "import pytest\n\n" + TEST_OLD)
+         .edit("/repo/tests/test_auth.py", TEST_OLD, ""))
+    none_fire(s, tmp_path)
+
+
+def _codex_rollout(tmp_path, output: str) -> object:
+    patch = ("*** Begin Patch\n*** Update File: tests/test_auth.py\n@@\n"
+             "+@pytest.mark.skip\n def test_login():\n*** End Patch")
+    lines = [
+        {"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta",
+         "payload": {"id": "x", "cwd": "/repo", "cli_version": "0.1.0"}},
+        {"timestamp": "2026-01-01T00:00:01Z", "type": "response_item",
+         "payload": {"type": "function_call", "call_id": "a", "name": "shell",
+                     "arguments": json.dumps({"command": ["bash", "-lc", "pytest"]})}},
+        {"timestamp": "2026-01-01T00:00:02Z", "type": "response_item",
+         "payload": {"type": "function_call_output", "call_id": "a", "output": output}},
+        {"timestamp": "2026-01-01T00:00:03Z", "type": "response_item",
+         "payload": {"type": "custom_tool_call", "call_id": "b", "name": "apply_patch",
+                     "input": patch}},
+        {"timestamp": "2026-01-01T00:00:04Z", "type": "response_item",
+         "payload": {"type": "custom_tool_call_output", "call_id": "b", "output": "Done"}},
+    ]
+    p = tmp_path / "rollout-2026-01-01T00-00-00-x.jsonl"
+    p.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    return p
+
+
+def test_codex_older_json_output_exit_code(tmp_path):
+    out = json.dumps({"output": "boom", "metadata": {"exit_code": 1, "duration_seconds": 1}})
+    assert one(_codex_rollout(tmp_path, out)).severity.value == "high"
+
+
+def test_codex_older_json_output_text(tmp_path):
+    out = json.dumps({"output": FAIL_OUT, "metadata": {"duration_seconds": 1}})
+    assert one(_codex_rollout(tmp_path, out)).severity.value == "high"
+
+
+def test_codex_older_json_output_passing(tmp_path):
+    out = json.dumps({"output": PASS_OUT, "metadata": {"exit_code": 0}})
+    assert one(_codex_rollout(tmp_path, out)).severity.value == "medium"
