@@ -26,6 +26,12 @@ LoopDetector does, and if it is the armed loop's next call denies it once with
 "deny", "permissionDecisionReason": <fixed text>}}` (the reason is shown to
 Claude). The retry is allowed; the entry is dropped when the loop is no longer
 HIGH, so a new loop blocks again. AGENTWATCH_LOOP_BREAKER=off disables it.
+
+Command guard (runs first on PreToolUse, see guard.py): a catastrophic Bash
+command (rm -rf ~, git push --force, mkfs, curl | sh, ...) or a read of a
+secrets file (.env, SSH keys, cloud credentials) returns `"permissionDecision":
+"ask"` with a fixed reason, so Claude Code asks the user. No off switch: a
+false positive costs one click.
 """
 
 from __future__ import annotations
@@ -380,6 +386,21 @@ def _breaker(payload: dict, key: str) -> str | None:
     }})
 
 
+def _guard(payload: dict) -> str | None:
+    """PreToolUse: ask the user before a catastrophic command or a secrets read."""
+    from agentwatch.guard import check
+
+    name = payload["tool_name"]
+    reason = check(name, payload.get("tool_input")) if isinstance(name, str) else None
+    if reason is None:
+        return None
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "ask",
+        "permissionDecisionReason": reason,
+    }})
+
+
 def run(stdin_text: str) -> str | None:
     """Return the hook's stdout JSON, or None to print nothing."""
     try:
@@ -393,7 +414,7 @@ def run(stdin_text: str) -> str | None:
         if agent_id is not None and (not isinstance(agent_id, str) or not _ID.fullmatch(agent_id)):
             return None
         if event == "PreToolUse":
-            return _breaker(payload, key)
+            return _guard(payload) or _breaker(payload, key)
         transcript = Path(payload["transcript_path"])
         if event not in EVENTS:
             return None

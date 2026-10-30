@@ -963,6 +963,20 @@ try). It reports each problem once per session, again only if it clears
 and comes back. Context-size estimates are not coached. The plugin also
 includes the scrub skill.
 
+**Command guard.** Before a tool call runs, the PreToolUse hook makes Claude
+Code ask you first when the call is catastrophic or reads secrets: `rm -r`
+of `/`, `~`, `$HOME`, `*`, `.` or `..`; `git push --force`/`-f` (not
+`--force-with-lease`); `git reset --hard`; `git clean -fd`; `mkfs`; `dd
+of=/dev/...`; `> /dev/sdX`; `curl`/`wget ... | sh`; `chmod -R 777 /`; a fork
+bomb; and reading `.env`/`.env.*` (not `.example`/`.sample`/`.template`),
+`~/.ssh/id_*` (not `.pub`), `~/.aws/credentials`, `~/.netrc`, `~/.npmrc`,
+`~/.pypirc`, `~/.docker/config.json`, `~/.kube/config` or `*.pem`/`*.key`
+with the Read tool, `cat`/`less`/`head`/`tail`/`cp`/`scp`, `curl -F @file`
+or `< file`. It also looks inside `bash -c '...'`, `sudo`, `env X=1` and
+chains (`&&`, `;`, `||`, `|`). Text passed to other programs is not checked,
+so `echo "rm -rf /"` runs. It asks rather than blocks, so a false alarm
+costs one click. There is no off switch.
+
 **Loop breaker.** When the same action has run 6 or more times in the last
 10 tool calls (a HIGH loop), the plugin's PreToolUse hook blocks the next
 identical call once and tells Claude why: "agentwatch blocked this call: the
