@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
+> **Latest: Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -5331,3 +5331,39 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 |---|---|---|---|---|---|
 | 2026-10-27 | #189 | docs/site-redesign | docs | CTO review, QA PASS WITH NOTES (sonnet), round 1 fixed, board "go live" | -- |
 | 2026-10-27 | #190 | fix/codex-usage-loop | fix | CTO review, QA PASS WITH NOTES (sonnet), follow-ups fixed (011af8d); held until after the site promotion | -- |
+
+### Sprint 40 -- market-gap features (2026-10-30)
+**Goal:** close the top gaps from a 2026-10-30 market survey of agent monitoring and safety tools.
+
+**Ranked gaps:**
+1. 5-hour block / quota tracking (ccusage 19.3k stars, Claude-Code-Usage-Monitor 8.8k).
+2. Statusline cost/quota segment (ccusage, ccstatusline 13.5k).
+3. Destructive-command guard before execution (destructive_command_guard 6.2k, cc-safety-net 1.9k).
+4. Protect secrets before they are read (karanb192/claude-code-hooks).
+5. "Fake green" test-tampering detector (karanb192 protect-tests).
+6. Offline MCP/skills/config audit (Snyk agent-scan 3.2k, needs an account; Pillar).
+7. Error taxonomy in `report` (sniffly).
+8. Needs-input/done alerts (notification hooks).
+9. CSV/OTLP export (ccusage --json, claude-code-otel).
+10. Cache efficiency and per-model breakdown (opcode, Grafana #25255).
+
+**Picked:** A, command guard (items 3 and 4, branch `feature/command-guard`); B, `stats --blocks` (item 1, branch `feature/stats-blocks`).
+
+### Acceptance criteria
+**A: command guard**
+- [ ] The coach hook's PreToolUse returns `permissionDecision: "ask"` with a fixed reason for: `rm -r` of `/`, `~`, `$HOME`, `*`, `.`, `..`; `git push --force`/`-f` (not `--force-with-lease`); `git reset --hard`; `git clean -fd`/`-fdx`; `mkfs.*`; `dd of=/dev/...`; `> /dev/sdX`; `curl`/`wget | sh`; `chmod -R 777 /`; fork bomb.
+- [ ] The same for secrets reads (Read tool, `cat`/`less`/`head`/`tail`/`cp`/`scp`, `curl -F @`): `.env`/`.env.*` (not `.example`/`.sample`/`.template`), `~/.ssh/id_*` (not `.pub`), `~/.aws/credentials`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.docker/config.json`, `~/.kube/config`, `*.pem`/`*.key`.
+- [ ] Caught inside `bash -c`/`sh -c`, `sudo`, `env X=1` and `&&`/`;`/`||`/`|` chains; unparsable commands fall back to the raw patterns.
+- [ ] Safe look-alikes pass with no output (`rm -rf ./build`, `rm -rf node_modules`, `git push --force-with-lease`, `cat .env.example`, `echo "rm -rf /"`).
+- [ ] Runs before the loop breaker, which is unchanged; any error fails open; no detector registry import on PreToolUse; hook latency measured.
+- [ ] No new env vars or dependencies. hooks.json, README, CHANGELOG and CLAUDE.md updated. Tests through `coach.run()` and the real `_entry` process.
+
+**B: `stats --blocks`**
+- [ ] 5-hour blocks computed from Claude Code logs.
+- [ ] The active block shows elapsed and remaining time, burn rate and projected cost.
+- [ ] `--json` output.
+- [ ] Tests from a JSONL fixture.
+
+### Board questions
+- (a) The guard is on by default with `ask` and has no off switch. OK?
+- (b) Does `ask` still prompt under `bypassPermissions` mode? The Claude Code docs (hooks, permission-modes, 2026-10-30) do not say. They say a hook `ask` shows the reason to the user in the prompt, still prompts in auto mode, and is denied in `claude -p` (Claude then sees the reason). Bypass mode "skips permission prompts, except for the actions no mode auto-approves", and that list names explicit ask rules, not hook `ask`. Open: verify live.
