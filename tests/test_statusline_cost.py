@@ -123,3 +123,19 @@ def test_cost_off_never_scans(home, monkeypatch):
     assert statusline.render(STDIN) == ""
     assert statusline.render(STDIN, ok=False, cost=False) == statusline._health(STDIN, False)
     assert not (coach.user_state_dir() / statusline.BLOCK_CACHE).exists()
+
+
+def test_projection_hidden_early_in_block_or_below_spend(home, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    _log(home, _line("m1", "2026-10-30T12:01:00Z"))  # block 12:00-17:00
+    monkeypatch.setattr(statusline, "_now", lambda: NOW + 14 * 60)
+    assert statusline.render(STDIN, cost=True) == "5h $21.00 · resets 4h46m"
+    (coach.user_state_dir() / statusline.BLOCK_CACHE).unlink()
+    monkeypatch.setattr(statusline, "_now", lambda: NOW + 15 * 60)
+    assert "→ ~$" in statusline.render(STDIN, cost=True)
+
+    cache = coach.user_state_dir() / statusline.BLOCK_CACHE
+    cache.write_text(json.dumps({"block": {
+        "end": NOW + 3 * 3600, "cost_usd": 21.0, "projected_cost_usd": 20.0}}))
+    os.utime(cache, (NOW + 15 * 60, NOW + 15 * 60))
+    assert statusline.render(STDIN, cost=True) == "5h $21.00 · resets 2h45m"

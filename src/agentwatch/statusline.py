@@ -38,6 +38,8 @@ from agentwatch.coach import (
 STALE_S = 600
 BLOCK_CACHE = "block.json"
 BLOCK_TTL_S = 60
+# A straight-line projection from a block's first minutes is mostly noise.
+PROJECT_AFTER_S = 15 * 60
 # Only transcripts written in the last day are read on a cache miss.
 # ponytail: a block's start is chained from older messages; with more than
 # ~24 h of back-to-back blocks the chain is cut and the active block can start
@@ -149,6 +151,10 @@ def _block_text() -> str:
         spent = _usd(block.get("cost_usd"), 1_000_000)
         if spent:  # unpriced model: no dollars, never a guess
             projected = _usd(block.get("projected_cost_usd"), 1_000_000)
+            if 5 * 3600 - left < PROJECT_AFTER_S or not (
+                block["projected_cost_usd"] >= block["cost_usd"]
+            ):
+                projected = None
             text = f"{spent}{f' → ~{projected}' if projected else ''} · {text}"
         text = f"5h {text}"
         return f"{_DIM}{text}{_RESET}" if not os.environ.get("NO_COLOR") else text
