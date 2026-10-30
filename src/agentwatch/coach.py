@@ -77,6 +77,8 @@ _TIPS = {
                          "hypothesis and test it.",
     "error_class_persistence": "The same kind of error persists. Fix its cause instead "
                                "of retrying variants.",
+    "test_tampering": "A failing test was skipped, weakened or deleted. Restore it and "
+                      "fix the code it checks, or ask the user first.",
 }
 _DEFAULT_TIP = "Stop, re-read the goal, and change approach."
 # Bash commands that repeat on purpose (polling, test runs): warned, never blocked.

@@ -30,6 +30,7 @@ _LABELS = {
     "error_spiral": "errors", "error_blindness": "errors", "high_error_rate": "errors",
     "error_class_persistence": "errors",
     "stall": "stuck", "same_outcome": "stuck", "exploration_stall": "stuck",
+    "test_tampering": "tests weakened",
 }
 _RANK = {"high": 1, "critical": 2}
 _COLOR = {"high": "\x1b[33m", "critical": "\x1b[31m"}
