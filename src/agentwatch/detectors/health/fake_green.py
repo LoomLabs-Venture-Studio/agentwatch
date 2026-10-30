@@ -267,7 +267,8 @@ def _edit_changes(action: "Action") -> list[_Change]:
 
 # --- commands ------------------------------------------------------------------
 
-_LIST_SPLIT = re.compile(r"(&&|\|\||;|\n)")  # and-or list; pipelines stay whole
+_LIST_OPS = re.compile(r"&&|\|\||;|\n")  # and-or list; pipelines stay whole
+_QUOTED = re.compile(r"\"(?:\\.|[^\"\\])*\"|'[^']*'")
 _HEREDOC = re.compile(r"(<<-?\s*(['\"]?)(\w+)\2[^\n]*)\n.*?(?:^\s*\3\s*$|\Z)", re.S | re.M)
 _PREFIX = re.compile(
     r"^(?:['\"(]\s*|(?:ba|z)?sh\s+-l?c\s+|\w+=\S*\s+"
@@ -294,6 +295,7 @@ _FAIL_OUTPUT = re.compile(
     re.M,
 )
 _RM = re.compile(r"^(?:rm|unlink|del|erase|Remove-Item|ri|git\s+rm)\b")
+_PIPE = re.compile(r"\|")
 _REDIRECT = re.compile(r"(?<![<\d&])>>?\s*(?!&)([^\s;&|<>()]+)")
 _COPY = re.compile(r"^(?:cp|mv|copy|move|git\s+mv|Copy-Item|Move-Item)\b")
 
@@ -303,6 +305,17 @@ def _words(segment: str) -> list[str]:
         return shlex.split(segment, posix=True)
     except ValueError:
         return segment.split()
+
+
+def _split(text: str, ops: re.Pattern) -> list[str]:
+    """Split *text* at *ops* outside quotes, keeping the separators:
+    [part, op, part, ...]. A quoted commit message is not a command."""
+    masked = _QUOTED.sub(lambda m: m[0][0] + " " * (len(m[0]) - 2) + m[0][-1], text)
+    out, start = [], 0
+    for m in ops.finditer(masked):
+        out += [text[start:m.start()], m[0]]
+        start = m.end()
+    return out + [text[start:]]
 
 
 def _base(path: str) -> str:
@@ -322,11 +335,13 @@ def _command(command: str) -> _Command:
     one shell command. Heredoc bodies are data, not commands: dropped first."""
     out = _Command()
     command = _HEREDOC.sub(r"\1", command)
-    parts = _LIST_SPLIT.split(command)  # [pipeline, op, pipeline, op, ...]
+    parts = _split(command, _LIST_OPS)  # [pipeline, op, pipeline, op, ...]
     for k in range(0, len(parts), 2):
         pipeline = parts[k]
-        stages = [_PREFIX.sub("", st.strip()) for st in pipeline.split("|")]
-        out.written.update(_base(t) for t in _REDIRECT.findall(pipeline))
+        stages = [_PREFIX.sub("", st.strip()) for st in _split(pipeline, _PIPE)[::2]]
+        masked = _QUOTED.sub(lambda m: " " * len(m[0]), pipeline)
+        out.written.update(_base(pipeline[m.start(1):m.end(1)])
+                           for m in _REDIRECT.finditer(masked))
         for st in stages:
             if st.startswith("tee "):
                 out.written.update(_base(w) for w in _words(st)[1:] if not w.startswith("-"))

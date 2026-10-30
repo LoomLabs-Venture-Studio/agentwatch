@@ -572,3 +572,16 @@ def test_codex_older_json_output_text(tmp_path):
 def test_codex_older_json_output_passing(tmp_path):
     out = json.dumps({"output": PASS_OUT, "metadata": {"exit_code": 0}})
     assert one(_codex_rollout(tmp_path, out)).severity.value == "medium"
+
+
+def test_quoted_commit_message_is_not_a_command(tmp_path):
+    s = (Session().run("pytest", ok=False)
+         .run('git commit -q -m "fix: tighten\n\n- rm -rf tests/ still counts\n'
+              '- pytest || true is flagged"', out=""))
+    none_fire(s, tmp_path)
+
+
+def test_redirect_inside_quotes_is_not_a_write(tmp_path):
+    s = (Session().run("echo 'x > tests/test_a.py'", out="")
+         .run("pytest", ok=False).run("rm tests/test_a.py", out=""))
+    assert one(s.save(tmp_path)).severity.value == "high"
