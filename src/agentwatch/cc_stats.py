@@ -11,6 +11,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from functools import lru_cache
 from itertools import islice
@@ -976,3 +977,155 @@ def compute_stats(
         merged.project_name = f"all ({len(dirs)} projects)"
 
     return merged
+
+
+# ---------------------------------------------------------------------------
+# 5-hour usage blocks (`stats --blocks`)
+# ---------------------------------------------------------------------------
+
+# Claude subscription limits reset per 5-hour window. Same rule as ccusage: a
+# block starts at its first message floored to the hour and lasts 5 hours; a
+# message at or after the end starts a new block.
+BLOCK_LENGTH = timedelta(hours=5)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _parse_ts(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+@dataclass
+class UsageBlock:
+    """One 5-hour window of Claude Code usage (all projects)."""
+
+    start: datetime
+    usage: TokenBucket = field(default_factory=TokenBucket)  # call_count = messages
+    models: set[str] = field(default_factory=set)
+
+    @property
+    def end(self) -> datetime:
+        return self.start + BLOCK_LENGTH
+
+    def is_active(self, now: datetime) -> bool:
+        return self.start <= now < self.end
+
+    def burn(self, now: datetime) -> dict | None:
+        """Rate over the elapsed part of an active block, projected to its end."""
+        if not self.is_active(now):
+            return None
+        elapsed = max((now - self.start).total_seconds(), 60.0)
+        remaining = (self.end - now).total_seconds()
+        tokens = self.usage.total_tokens
+        cost = self.usage.cost_usd
+        return {
+            "elapsed_minutes": round(elapsed / 60, 1),
+            "remaining_minutes": round(remaining / 60, 1),
+            "tokens_per_minute": round(tokens / elapsed * 60),
+            "cost_per_hour_usd": None if cost is None else round(cost / elapsed * 3600, 2),
+            "projected_tokens": round(tokens + tokens / elapsed * remaining),
+            "projected_cost_usd": (
+                None if cost is None else round(cost + cost / elapsed * remaining, 2)
+            ),
+        }
+
+    def to_dict(self, now: datetime) -> dict:
+        u = self.usage
+        return {
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat(),
+            "active": self.is_active(now),
+            "messages": u.call_count,
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "cache_write_tokens": u.cache_write_tokens,
+            "cache_read_tokens": u.cache_read_tokens,
+            "total_tokens": u.total_tokens,
+            "cost_usd": _usd(u.cost_usd),
+            "models": sorted(self.models),
+            "burn": self.burn(now),
+        }
+
+
+def _usage_by_message(files: list[Path]) -> dict[str, dict]:
+    """Every assistant message with usage, keyed by message.id: its earliest
+    timestamp and, per field, the largest usage any of its lines report."""
+    msgs: dict[str, dict] = {}
+    for path in files:
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(obj, dict) or obj.get("type") != "assistant":
+                        continue
+                    msg = obj.get("message")
+                    if not isinstance(msg, dict):
+                        continue
+                    usage, msg_id = msg.get("usage"), msg.get("id")
+                    ts = _parse_ts(obj.get("timestamp"))
+                    if not isinstance(usage, dict) or not msg_id or ts is None:
+                        continue
+                    md = msgs.setdefault(msg_id, {"ts": ts, "model": "", "in": 0, "out": 0,
+                                                  "cw": 0, "cw1h": 0, "cr": 0})
+                    md["ts"] = min(md["ts"], ts)
+                    if msg.get("model"):
+                        md["model"] = msg["model"]
+                    for key, src in (("in", "input_tokens"), ("out", "output_tokens"),
+                                     ("cw", "cache_creation_input_tokens"),
+                                     ("cr", "cache_read_input_tokens")):
+                        md[key] = max(md[key], usage.get(src) or 0)
+                    split = usage.get("cache_creation")
+                    if isinstance(split, dict):
+                        md["cw1h"] = max(md["cw1h"], split.get("ephemeral_1h_input_tokens") or 0)
+        except OSError:
+            continue
+    return msgs
+
+
+def compute_blocks() -> list[UsageBlock]:
+    """5-hour usage blocks across every project, oldest first.
+
+    Limits are account-wide, so this always scans all projects (and their
+    subagent transcripts); a message.id is counted once wherever it appears.
+    """
+    files: list[Path] = []
+    for pdir in find_all_project_dirs():
+        files += sorted(pdir.glob("*.jsonl")) + sorted(pdir.glob("*/subagents/*.jsonl"))
+    blocks: list[UsageBlock] = []
+    for md in sorted(_usage_by_message(files).values(), key=lambda m: m["ts"]):
+        if not (md["in"] or md["out"] or md["cw"] or md["cr"]):
+            continue  # e.g. Claude Code's local "<synthetic>" messages
+        if not blocks or md["ts"] >= blocks[-1].end:
+            blocks.append(UsageBlock(md["ts"].replace(minute=0, second=0, microsecond=0)))
+        b = blocks[-1]
+        b.usage.input_tokens += md["in"]
+        b.usage.output_tokens += md["out"]
+        b.usage.cache_write_tokens += md["cw"]
+        b.usage.cache_read_tokens += md["cr"]
+        b.usage.call_count += 1
+        b.usage.add_cost(usage_cost_usd(md["model"], md["in"], md["out"],
+                                        md["cw"], md["cr"], md["cw1h"]))
+        if md["model"]:
+            b.models.add(md["model"])
+    return blocks
+
+
+def blocks_to_dict(blocks: list[UsageBlock], now: datetime) -> dict:
+    """`stats --blocks --json` (schema 1)."""
+    return {
+        "schema": 1,
+        "now": now.isoformat(),
+        "block_hours": 5,
+        "blocks": [b.to_dict(now) for b in blocks],
+    }
