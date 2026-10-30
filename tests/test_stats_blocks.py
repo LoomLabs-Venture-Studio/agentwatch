@@ -152,3 +152,47 @@ def test_cli_shows_last_ten_blocks(projects, monkeypatch):
     res = _run(monkeypatch, "2026-10-30T12:00")
     assert "(2 older blocks not shown; --json lists all)" in res.output
     assert len(json.loads(_run(monkeypatch, "2026-10-30T12:00", "--json").output)["blocks"]) == 12
+
+
+def test_malformed_lines_skipped_or_zeroed(projects):
+    bad_ts = json.loads(_line("m1", "0001-01-01T00:00:00+05:00"))  # overflows to UTC
+    str_tokens = json.loads(_line("m2", "2026-10-29T10:00:00Z", out=7))
+    str_tokens["message"]["usage"]["input_tokens"] = "100"
+    str_tokens["message"]["usage"]["cache_creation"] = {"ephemeral_1h_input_tokens": "5"}
+    bool_tokens = json.loads(_line("m3", "2026-10-29T10:01:00Z", inp=0, out=3))
+    bool_tokens["message"]["usage"]["cache_read_input_tokens"] = True
+    dict_id = json.loads(_line("m4", "2026-10-29T10:02:00Z"))
+    dict_id["message"]["id"] = {"x": 1}
+    int_model = json.loads(_line("m5", "2026-10-29T10:03:00Z", out=11))
+    int_model["message"]["model"] = 42
+    _write(projects, "-a", *(json.dumps(o) for o in
+                             (bad_ts, str_tokens, bool_tokens, dict_id, int_model)))
+    [b] = compute_blocks()
+    assert b.usage.call_count == 3  # m2, m3, m5
+    assert (b.usage.input_tokens, b.usage.output_tokens, b.usage.cache_read_tokens) == (
+        100, 21, 0)
+    assert b.models == {SONNET}
+    assert b.usage.cost_usd is None  # m5 has no usable model
+
+
+def test_naive_and_offset_timestamps_and_order_across_projects(projects):
+    _write(projects, "-later", _line("m2", "2026-10-29T13:30:00+02:00"))  # 11:30 UTC
+    _write(projects, "-earlier", _line("m1", "2026-10-29T09:15:00"))  # naive = UTC
+    _write(projects, "-last", _line("m3", "2026-10-29T15:30:00+02:00"))  # 13:30 UTC
+    [b] = compute_blocks()
+    assert (b.start, b.usage.call_count) == (_at("2026-10-29T09:00"), 3)
+    _write(projects, "-next", _line("m4", "2026-10-29T15:00:00+01:00"))  # 14:00 UTC = end
+    blocks = compute_blocks()
+    assert [x.start for x in blocks] == [_at("2026-10-29T09:00"), _at("2026-10-29T14:00")]
+    assert [x.usage.call_count for x in blocks] == [3, 1]
+
+
+def test_main_and_subagent_copy_counted_once(projects):
+    pdir = _write(projects, "-a", _line("m1", "2026-10-29T10:00:00Z", inp=40))
+    sub = pdir / "s1" / "subagents"
+    sub.mkdir(parents=True)
+    (sub / "agent-y.jsonl").write_text(
+        _line("m1", "2026-10-29T10:00:00Z", inp=40) + "\n"
+        + _line("m2", "2026-10-29T10:05:00Z", inp=60) + "\n")
+    [b] = compute_blocks()
+    assert (b.usage.call_count, b.usage.input_tokens) == (2, 100)

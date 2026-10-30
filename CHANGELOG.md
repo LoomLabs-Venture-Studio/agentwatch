@@ -10,10 +10,11 @@ numbers refer to the GitHub repository.
 
 - `agentwatch stats --blocks`: Claude Code usage per 5-hour window, the
   period Claude subscription limits reset on (same rule as ccusage: a window
-  starts at its first message, floored to the hour). Shows the last 10
+  starts at its first message, floored to the UTC hour). Shows the last 10
   windows (messages, tokens, cost, models) and, for the current one, when it
   resets, the burn rate in tokens/min and $/hour, and the projected tokens
-  and cost at reset. Always covers every project, since limits are
+  and cost at reset. The burn rate is measured from the window start
+  (ccusage measures from the first to the last message). Always covers every project, since limits are
   account-wide; each message is counted once. An unpriced model shows its
   cost as `-`. `--json` lists every window. No plan-limit estimate and no
   live refresh yet.

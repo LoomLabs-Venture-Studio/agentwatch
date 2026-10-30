@@ -998,9 +998,14 @@ def _parse_ts(value: object) -> datetime | None:
         return None
     try:
         dt = datetime.fromisoformat(value)
-    except ValueError:
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+    except (ValueError, OverflowError):  # e.g. year 1 with a positive offset
         return None
-    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+def _count(value: object) -> int:
+    """A token count from a log line; anything not a plain int is 0."""
+    return value if type(value) is int else 0
 
 
 @dataclass
@@ -1074,20 +1079,22 @@ def _usage_by_message(files: list[Path]) -> dict[str, dict]:
                         continue
                     usage, msg_id = msg.get("usage"), msg.get("id")
                     ts = _parse_ts(obj.get("timestamp"))
-                    if not isinstance(usage, dict) or not msg_id or ts is None:
+                    if not isinstance(usage, dict) or not isinstance(msg_id, str) \
+                            or not msg_id or ts is None:
                         continue
                     md = msgs.setdefault(msg_id, {"ts": ts, "model": "", "in": 0, "out": 0,
                                                   "cw": 0, "cw1h": 0, "cr": 0})
                     md["ts"] = min(md["ts"], ts)
-                    if msg.get("model"):
-                        md["model"] = msg["model"]
+                    model = msg.get("model")
+                    if isinstance(model, str) and model:
+                        md["model"] = model
                     for key, src in (("in", "input_tokens"), ("out", "output_tokens"),
                                      ("cw", "cache_creation_input_tokens"),
                                      ("cr", "cache_read_input_tokens")):
-                        md[key] = max(md[key], usage.get(src) or 0)
+                        md[key] = max(md[key], _count(usage.get(src)))
                     split = usage.get("cache_creation")
                     if isinstance(split, dict):
-                        md["cw1h"] = max(md["cw1h"], split.get("ephemeral_1h_input_tokens") or 0)
+                        md["cw1h"] = max(md["cw1h"], _count(split.get("ephemeral_1h_input_tokens")))
         except OSError:
             continue
     return msgs

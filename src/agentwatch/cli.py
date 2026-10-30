@@ -1654,8 +1654,10 @@ def stats(
     Use --burn --list to see every trivial command.
     Use --burn --list --prompts to also show what you said that triggered them.
     Use --blocks for usage per 5-hour window (when Claude subscription limits
-    reset): the last 10 windows, and for the current one its burn rate, reset
-    time and projected total. Scans all projects; --json lists every window.
+    reset; a window starts at its first message floored to the UTC hour): the
+    last 10 windows, and for the current one its reset time, burn rate
+    (measured from the window start) and projected total. Scans all
+    projects; --json lists every window.
     """
     from agentwatch.cc_stats import compute_stats
 
