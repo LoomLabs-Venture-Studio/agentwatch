@@ -194,6 +194,11 @@ src/agentwatch/
                        (same id as LoopDetector) and denies the first match
                        once (permissionDecision deny, fixed reason).
                        LOOP_ALLOW Bash prefixes are never denied.
+                       Command guard (guard.py, stdlib only, runs before
+                       the breaker): catastrophic Bash (rm -rf ~, push -f,
+                       mkfs, curl|sh, ...; shlex-split, sudo/env/bash -c
+                       unwrapped) or a secrets read (.env, SSH keys, cloud
+                       creds) -> permissionDecision ask, fixed reason
   statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in

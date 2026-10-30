@@ -6,6 +6,14 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Added
+
+- Command guard in the Claude Code plugin: before a catastrophic command
+  (`rm -rf ~`, `git push --force`, `git reset --hard`, `mkfs`, `curl | sh`,
+  ...) or a read of a secrets file (`.env`, SSH keys, cloud credentials) the
+  PreToolUse hook makes Claude Code ask you first, also when the command is
+  wrapped in `bash -c`, `sudo` or `env` or chained.
+
 ### Fixed
 
 - Codex sessions (Codex CLI and the ChatGPT desktop app) no longer get a
