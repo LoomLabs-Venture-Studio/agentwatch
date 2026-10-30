@@ -11,8 +11,10 @@ Bash commands are split with shlex into simple commands (on `;`, `&&`, `||`,
 checked recursively. Arguments of any other program are not inspected, so
 `echo "rm -rf /"` or `git commit -m "rm -rf /"` pass. When shlex cannot parse
 the command (unbalanced quotes), the raw string is matched against
-DESTRUCTIVE_PATTERNS instead, as are commands over MAX_PARSE chars (bounded
-time: about 0.5 s at 1 MB, worst case).
+DESTRUCTIVE_PATTERNS instead. Commands over MAX_PARSE chars are split on `;`,
+`&&`, `||` and newlines first; each piece up to _SMALL chars that names a
+guarded program or path is checked as above, longer pieces get the raw
+patterns on their first _PIECE chars.
 
 Stdlib only and imported on every PreToolUse: keep it cheap. It lives
 outside `agentwatch.parser`, whose package __init__ imports the watchers
@@ -24,6 +26,7 @@ from __future__ import annotations
 import posixpath
 import re
 import shlex
+import time
 
 # Raw-string patterns for destructive commands. Shared with
 # detectors.security.privilege.DangerousCommandDetector (its first entries),
@@ -41,10 +44,18 @@ _FALLBACK = re.compile("|".join(DESTRUCTIVE_PATTERNS), re.IGNORECASE)
 # lookbehind keeps it linear: without it a long word backtracks quadratically.
 _FORK_BOMB = re.compile(
     r"(?<![\w:])(\w+|:)\s*\(\)\s*\{\s*\1\s*\|\s*\1\s*&\s*\}\s*;\s*\1")
-# shlex and `dd\s+if=.+of=` are quadratic on long tokens. Longer commands get
-# only the raw patterns, per piece, each piece cut to _PIECE chars.
+# shlex and `dd\s+if=.+of=` are quadratic on long tokens, so longer commands are
+# checked piece by piece (see check_command).
 MAX_PARSE = 20_000
+_SMALL = 2_000
 _PIECE = 500
+_SPLIT = re.compile(r"&&|\|\||[;\n]")
+# A piece without any of these cannot match a rule: skip its (~30 us) parse.
+_RELEVANT = re.compile(r"rm|git|mkfs|dd|chmod|curl|wget|/dev/|\.env|\.ssh|\.aws|netrc"
+                       r"|npmrc|pypirc|\.docker|\.kube|\.pem|\.key", re.IGNORECASE)
+# ponytail: wall-clock cap on the long-command path; past it the guard asks
+# instead of finishing. Raise it (under coach.BUDGET_S) if real commands hit it.
+_LONG_BUDGET_S = 1.0
 _HOME_RE = re.compile(r"(?:~|\$HOME|\$\{HOME\})(?=/|$)")
 _DISK = re.compile(r"/dev/(?:sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|disk\d)")
 _HARMLESS_DEV = ("/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/")
@@ -75,6 +86,7 @@ REASONS = {
     "chmod": "agentwatch: this command makes every file world-writable. Allow it?",
     "fork_bomb": "agentwatch: this command is a fork bomb. Allow it?",
     "destructive": "agentwatch: this command looks destructive. Allow it?",
+    "too_long": "agentwatch: this command is too long to check. Allow it?",
     "secret": "agentwatch: this reads a file that may hold secrets ({}). Allow it?",
 }
 
@@ -231,9 +243,7 @@ def check_command(command: str, depth: int = 0) -> str | None:
     if _FORK_BOMB.search(command):
         return REASONS["fork_bomb"]
     if len(command) > MAX_PARSE:
-        pieces = re.split(r"[;&|\n()`]", command)
-        return REASONS["destructive"] if any(
-            _FALLBACK.search(piece.strip()[:_PIECE]) for piece in pieces) else None
+        return _check_long(command, depth)
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>`\n")
         lexer.whitespace = " \t\r"
@@ -251,6 +261,23 @@ def check_command(command: str, depth: int = 0) -> str | None:
             return reason
         if argv:
             pipeline.add(argv[0].rsplit("/", 1)[-1])
+    return None
+
+
+def _check_long(command: str, depth: int) -> str | None:
+    deadline = time.perf_counter() + _LONG_BUDGET_S
+    seen: set[str] = set()  # pieces already found safe
+    for piece in _SPLIT.split(command):
+        if piece in seen:
+            continue
+        if time.perf_counter() > deadline:
+            return REASONS["too_long"]
+        if len(piece) > _SMALL:
+            if _FALLBACK.search(piece.strip()[:_PIECE]):
+                return REASONS["destructive"]
+        elif _RELEVANT.search(piece) and (reason := check_command(piece, depth)):
+            return reason
+        seen.add(piece)
     return None
 
 

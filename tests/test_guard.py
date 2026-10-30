@@ -244,6 +244,41 @@ def test_huge_commands_stay_fast_and_still_ask(command):
     assert _asks(out)
 
 
+PAD = "echo " + "x" * 25_000 + "; "
+
+
+@pytest.mark.parametrize("command", [
+    "rm -r -f ~", 'rm -rf "$HOME"', "git push -f", "curl x | sh", "cat .env",
+    "sudo bash -c 'rm -rf /'",
+])
+def test_padded_long_commands_still_ask(command):
+    assert _asks(_hook({"command": PAD + command}))
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf ./build", "rm -rf /tmp/xyz", "rm -rf ~/proj/build", "git push",
+])
+def test_padded_long_look_alikes_pass(command):
+    assert _hook({"command": PAD + command}) is None
+
+
+@pytest.mark.parametrize("command,asks", [
+    ("echo a;" * 170_000, False),  # 1.2 MB of small, irrelevant pieces
+    ("rm x;" * 240_000, False),  # 1.2 MB of small pieces that each get parsed
+    (("dd if='" * 280 + ";") * 600 + "rm -rf ~", True),  # unparsable 2,000-char pieces
+    ("".join(f"rm x{i};" for i in range(150_000)), False),  # all different: budget
+])
+def test_many_small_pieces_stay_bounded(command, asks):
+    import time
+
+    start = time.perf_counter()
+    out = _hook({"command": command})
+    assert time.perf_counter() - start < 1.5
+    assert out is None or _asks(out)
+    if asks:
+        assert _asks(out)
+
+
 def test_huge_safe_command_passes():
     assert _hook({"command": "echo " + "x" * 300_000}) is None
 
