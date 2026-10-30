@@ -48,8 +48,9 @@ from pathlib import Path
 # imports this module for its state helpers on every status line update.
 
 EVENTS = ("PostToolUse", "PostToolUseFailure")
-# Seconds before the watchdog exits 0 silently. hooks.json allows 10.
-BUDGET_S = 5.0
+# Seconds before the watchdog exits 0 silently: under hooks.json's PreToolUse
+# timeout (5 s; PostToolUse allows 10).
+BUDGET_S = 4.0
 # ponytail: fixed byte tail of the transcript. ActionBuffer keeps only the last
 # 500 actions anyway; widen if a detector ever needs older history.
 TAIL_BYTES = 4_000_000

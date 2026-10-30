@@ -6,11 +6,13 @@ Code shows the user a permission prompt. A false positive costs one click.
 
 Bash commands are split with shlex into simple commands (on `;`, `&&`, `||`,
 `|`, `&`, newlines, `(`, `)`, backticks and `$(`), leading `sudo`, `env`,
-`VAR=value`, `nohup`, ... are skipped and `bash/sh/zsh -c '<script>'` is
+`VAR=value`, `timeout N`, `nohup`, ... and shell keywords (`if`, `do`, `{`,
+`!`, ...) are skipped and `bash/sh/zsh -c '<script>'` is
 checked recursively. Arguments of any other program are not inspected, so
 `echo "rm -rf /"` or `git commit -m "rm -rf /"` pass. When shlex cannot parse
 the command (unbalanced quotes), the raw string is matched against
-DESTRUCTIVE_PATTERNS instead.
+DESTRUCTIVE_PATTERNS instead, as are commands over MAX_PARSE chars (bounded
+time: about 0.5 s at 1 MB, worst case).
 
 Stdlib only and imported on every PreToolUse: keep it cheap. It lives
 outside `agentwatch.parser`, whose package __init__ imports the watchers
@@ -19,6 +21,7 @@ outside `agentwatch.parser`, whose package __init__ imports the watchers
 
 from __future__ import annotations
 
+import posixpath
 import re
 import shlex
 
@@ -34,16 +37,26 @@ DESTRUCTIVE_PATTERNS = [
     r"dd\s+if=.+of=/dev",
 ]
 _FALLBACK = re.compile("|".join(DESTRUCTIVE_PATTERNS), re.IGNORECASE)
-# `:(){ :|:& };:` and renamed variants, spaces allowed (shlex garbles it).
-_FORK_BOMB = re.compile(r"(\w+|:)\s*\(\)\s*\{\s*\1\s*\|\s*\1\s*&\s*\}\s*;\s*\1")
-
-_ROOT = {"/", "/*"}
-_HOME = {"~", "~/", "~/*", "$HOME", "$HOME/", "$HOME/*", "${HOME}", "${HOME}/", "${HOME}/*"}
-_CWD = {"*", ".", "./", "./*", "..", "../", "../*", ".*"}
+# `:(){ :|:& };:` and renamed variants, spaces allowed (shlex garbles it). The
+# lookbehind keeps it linear: without it a long word backtracks quadratically.
+_FORK_BOMB = re.compile(
+    r"(?<![\w:])(\w+|:)\s*\(\)\s*\{\s*\1\s*\|\s*\1\s*&\s*\}\s*;\s*\1")
+# shlex and `dd\s+if=.+of=` are quadratic on long tokens. Longer commands get
+# only the raw patterns, per piece, each piece cut to _PIECE chars.
+MAX_PARSE = 20_000
+_PIECE = 500
+_HOME_RE = re.compile(r"(?:~|\$HOME|\$\{HOME\})(?=/|$)")
 _DISK = re.compile(r"/dev/(?:sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|disk\d)")
 _HARMLESS_DEV = ("/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/")
 _SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
-_PREFIXES = {"sudo", "doas", "env", "command", "exec", "nohup", "time", "nice"}
+# Prefix programs and their options that take a value. timeout also takes a duration.
+_PREFIXES = {"sudo": {"-u", "-g", "-C", "-h", "-p"}, "doas": {"-u", "-C"},
+             "env": {"-u", "-C"}, "nice": {"-n"}, "ionice": {"-c", "-n", "-p"},
+             "stdbuf": {"-i", "-o", "-e"}, "timeout": {"-s", "-k"}, "command": set(),
+             "exec": set(), "nohup": set(), "time": set(), "busybox": set()}
+# Shell keywords and grouping words before a command; fi/done/esac/} stand alone.
+_KEYWORDS = {"{", "}", "!", "if", "then", "elif", "else", "do", "while", "until",
+             "fi", "done", "esac"}
 _SEPARATORS = set(";&|()`\n")
 _READERS = {"cat", "less", "more", "head", "tail", "cp", "scp", "bat"}
 
@@ -110,11 +123,14 @@ def _strip_prefixes(argv: list[str]) -> list[str]:
         word = argv[i]
         if re.fullmatch(r"[A-Za-z_]\w*=.*", word, re.DOTALL):
             i += 1
-        elif word.rsplit("/", 1)[-1] in _PREFIXES:
+        elif word in _KEYWORDS:
+            i += 1
+        elif (prefix := word.rsplit("/", 1)[-1]) in _PREFIXES:
             i += 1
             while i < len(argv) and argv[i].startswith("-"):
-                # sudo -u USER / env -u NAME / nice -n N take a value
-                i += 2 if argv[i] in ("-u", "-g", "-n", "-C") else 1
+                i += 2 if argv[i] in _PREFIXES[prefix] else 1
+            if prefix == "timeout":
+                i += 1  # the duration
         else:
             break
     return argv[i:]
@@ -135,6 +151,24 @@ def _flags(args: list[str]) -> tuple[set[str], list[str]]:
     return flags, operands
 
 
+def _target(op: str) -> str | None:
+    """"root", "home" (home or above it) or "cwd" (. .. * and up) for an rm operand."""
+    if not op:
+        return None
+    home = _HOME_RE.match(op)
+    path = "/H" + op[home.end():] if home else op
+    path = posixpath.normpath(re.sub("/+", "/", path))
+    while path.endswith("/*") or path.endswith("/.*"):
+        path = path.rsplit("/", 1)[0] or "/"
+    if home:
+        return "home" if path in ("/", "/H") else None
+    if path == "/":
+        return "root"
+    if path in ("*", ".*") or all(part == ".." for part in path.split("/")) or path == ".":
+        return "cwd"
+    return None
+
+
 def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None:
     if not argv:
         return None
@@ -153,12 +187,12 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
         return None
     flags, ops = _flags(args)
     if prog == "rm" and flags & {"r", "R", "--recursive"}:
-        for kind, targets in (("rm_root", _ROOT), ("rm_home", _HOME), ("rm_cwd", _CWD)):
-            if any(op in targets or op.rstrip("/") in targets for op in ops):
-                return REASONS[kind]
+        for op in ops:
+            if kind := _target(op):
+                return REASONS["rm_" + kind]
     if prog == "chmod" and flags & {"R", "--recursive"} and any(
             op in ("777", "0777", "a+rwx") for op in ops) and any(
-            op in _ROOT | _HOME for op in ops):
+            _target(op) in ("root", "home") for op in ops):
         return REASONS["chmod"]
     if prog.startswith("mkfs"):
         return REASONS["disk"]
@@ -169,8 +203,9 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
         while args and args[0].startswith("-"):  # git -C dir / -c k=v
             args = args[2:] if args[0] in ("-C", "-c") else args[1:]
         sub, rest = (args[0], args[1:]) if args else ("", [])
-        flags, _ = _flags(rest)
-        if sub == "push" and ("--force" in flags or "f" in flags):
+        flags, ops = _flags(rest)
+        if sub == "push" and ("--force" in flags or "f" in flags
+                              or any(op.startswith("+") for op in ops)):  # +refspec
             return REASONS["push_force"]
         if sub == "reset" and "--hard" in flags:
             return REASONS["reset_hard"]
@@ -195,6 +230,10 @@ def check_command(command: str, depth: int = 0) -> str | None:
         return None
     if _FORK_BOMB.search(command):
         return REASONS["fork_bomb"]
+    if len(command) > MAX_PARSE:
+        pieces = re.split(r"[;&|\n()`]", command)
+        return REASONS["destructive"] if any(
+            _FALLBACK.search(piece.strip()[:_PIECE]) for piece in pieces) else None
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>`\n")
         lexer.whitespace = " \t\r"

@@ -973,8 +973,12 @@ bomb; and reading `.env`/`.env.*` (not `.example`/`.sample`/`.template`),
 `~/.pypirc`, `~/.docker/config.json`, `~/.kube/config` or `*.pem`/`*.key`
 with the Read tool, `cat`/`less`/`head`/`tail`/`cp`/`scp`, `curl -F @file`
 or `< file`. It also looks inside `bash -c '...'`, `sudo`, `env X=1` and
-chains (`&&`, `;`, `||`, `|`). Text passed to other programs is not checked,
-so `echo "rm -rf /"` runs. It asks rather than blocks, so a false alarm
+chains (`&&`, `;`, `||`, `|`) and shell blocks (`if`, `while`, `{ ... }`).
+Text passed to other programs is not checked, so `echo "rm -rf /"` runs.
+Not caught: other ways to read secrets (`grep`, `source .env`, the Edit and
+Write tools), `xargs rm`, `find -delete`, `curl ... | python`, and scripts
+run from a file. Commands over 20,000 characters get only a quick pattern
+check. It asks rather than blocks, so a false alarm
 costs one click. There is no off switch.
 
 **Loop breaker.** When the same action has run 6 or more times in the last

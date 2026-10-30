@@ -182,6 +182,72 @@ def test_safe_reads_pass(tool, tool_input):
     assert _hook(tool_input, tool) is None
 
 
+@pytest.mark.parametrize("command", [
+    # Shell keywords and grouping (QA round 1)
+    "{ rm -rf /; }",
+    "if true; then rm -rf ~; fi",
+    "while :; do rm -rf ~; done",
+    "for x in a; do git push -f; done",
+    "! rm -rf /",
+    "until false; do git reset --hard; done",
+    # Force refspec
+    "git push origin +main",
+    "git push origin +HEAD:main",
+    # Path spellings of /, ~ and above home
+    "rm -rf //",
+    "rm -rf /.",
+    "rm -rf /..",
+    "rm -rf ~/.",
+    "rm -rf ~/..",
+    "rm -rf $HOME/..",
+    "rm -rf ${HOME}/../..",
+    "rm -rf ../..",
+    "rm -rf build/..",
+    "chmod -R 777 //",
+    # More prefixes
+    "timeout 5 rm -rf ~",
+    "timeout -s KILL 10s rm -rf /",
+    "ionice -c 3 rm -rf ~",
+    "stdbuf -o L rm -rf ~",
+    "nice -n 10 rm -rf ~",
+    "busybox rm -rf /",
+    "sudo -i rm -rf /",
+])
+def test_qa_round1_forms_ask(command):
+    assert _asks(_hook({"command": command}))
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf ''",
+    "rm -rf ~/projects/..x",
+    "rm -rf /tmp/build",
+    "git push origin main",
+    "timeout 5 pytest",
+    "if true; then echo ok; fi",
+])
+def test_qa_round1_look_alikes_pass(command):
+    assert _hook({"command": command}) is None
+
+
+@pytest.mark.parametrize("command", [
+    "a" * 200_000 + "; rm -rf ~",
+    "echo " + "x " * 100_000 + "&& rm -rf /",
+    "dd if=" * 200_000 + "; rm -rf ~",
+    "a() " * 100_000 + "; rm -rf ~",
+])
+def test_huge_commands_stay_fast_and_still_ask(command):
+    import time
+
+    start = time.perf_counter()
+    out = _hook({"command": command})
+    assert time.perf_counter() - start < 1.0
+    assert _asks(out)
+
+
+def test_huge_safe_command_passes():
+    assert _hook({"command": "echo " + "x" * 300_000}) is None
+
+
 def test_unparsable_command_falls_back_to_raw_patterns():
     assert _asks(_hook({"command": "rm -rf / 'unterminated"}))
     assert _hook({"command": "echo 'unterminated"}) is None
