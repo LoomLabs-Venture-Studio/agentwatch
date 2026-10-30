@@ -59,7 +59,7 @@ _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _COACHED = ("progress", "errors")
 _SEVERE = ("high", "critical")
 _ERROR_KEYS = ("last_error", "error_pattern", "recent_errors", "sample_errors")
-_OTHER_KEYS = ("last_command", "path", "file_path")
+_OTHER_KEYS = ("evidence", "last_command", "path", "file_path")
 _TIPS = {
     "loop": "The same action keeps repeating. Stop and try a different approach.",
     "thrash": "Edits keep failing the same check. Stop editing, re-read the failure, "

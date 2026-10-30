@@ -585,3 +585,58 @@ def test_redirect_inside_quotes_is_not_a_write(tmp_path):
     s = (Session().run("echo 'x > tests/test_a.py'", out="")
          .run("pytest", ok=False).run("rm tests/test_a.py", out=""))
     assert one(s.save(tmp_path)).severity.value == "high"
+
+
+# --- QA round 2: created files matched by path, not name ---------------------------
+
+T = "/repo/tests/test_x.py"
+
+
+@pytest.mark.parametrize("backup", [
+    "cp tests/test_x.py /tmp/test_x.py",
+    "cp tests/test_x.py /tmp/",
+    "git show HEAD:tests/test_x.py > /tmp/test_x.py",
+])
+def test_backup_does_not_hide_a_skip(tmp_path, backup):
+    s = (Session().run("pytest", ok=False).run(backup, out="")
+         .edit(T, "def test_a():", "@pytest.mark.skip\ndef test_a():"))
+    assert one(s.save(tmp_path)).severity.value == "high"
+
+
+def test_backup_does_not_hide_a_rm(tmp_path):
+    s = (Session().run("pytest", ok=False).run("cp tests/test_x.py /tmp/", out="")
+         .run("rm tests/test_x.py", out=""))
+    w = one(s.save(tmp_path))
+    assert w.severity.value == "high" and "deleted the test file" in w.message
+
+
+def test_same_name_in_another_repo_is_not_ours(tmp_path):
+    s = (Session().write("/other/tests/test_x.py", "def test_a():\n    assert 1\n")
+         .run("pytest", ok=False)
+         .edit(T, "def test_a():", "@pytest.mark.skip\ndef test_a():"))
+    assert one(s.save(tmp_path)).severity.value == "high"
+
+
+def test_backup_of_trivial_assert(tmp_path):
+    s = (Session().run("pytest", ok=False)
+         .run("git show HEAD:tests/test_x.py > /tmp/test_x.py", out="")
+         .edit(T, "    assert r == 4", "    assert True"))
+    assert one(s.save(tmp_path)).severity.value == "high"
+
+
+def test_rm_test_dir_message(tmp_path):
+    w = one(Session().run("pytest", ok=False).run("rm -rf tests", out="").save(tmp_path))
+    assert "deleted the test directory" in w.message
+
+
+def test_coach_evidence_is_marker_or_short_path(tmp_path):
+    from agentwatch import coach
+
+    s = Session().run("pytest", ok=False).edit("/home/u/repo/tests/test_auth.py",
+                                               SKIP_OLD, SKIP_NEW)
+    assert "/home/u" not in coach.format_message(one(s.save(tmp_path)))
+    assert "'@pytest.mark.skip'" in coach.format_message(one(s.save(tmp_path))).replace(
+        '"', "'")
+    s = Session().run("pytest", ok=False).run("rm /home/u/repo/tests/test_auth.py", out="")
+    note = coach.format_message(one(s.save(tmp_path, "rm.jsonl")))
+    assert "/home/u" not in note and "tests/test_auth.py" in note

@@ -322,12 +322,31 @@ def _base(path: str) -> str:
     return _norm(path).rstrip("/").rsplit("/", 1)[-1]
 
 
+def _clean(path: str) -> str:
+    p = _norm(path).rstrip("/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def _same_file(a: str, b: str) -> bool:
+    """One file named two ways: equal, or (no cwd to resolve against) the
+    shorter is a suffix of the longer at a `/`. Two absolute paths must be equal."""
+    a, b = _clean(a), _clean(b)
+    if a == b:
+        return True
+    if a.startswith("/") and b.startswith("/"):
+        return False
+    short, long = sorted((a, b), key=len)
+    return bool(short) and long.endswith("/" + short)
+
+
 @dataclass
 class _Command:
     test_run: bool = False
     hide: list[str] = field(default_factory=list)  # flags on the test-runner segment
     rm: list[str] = field(default_factory=list)  # test files removed
-    written: set[str] = field(default_factory=set)  # basenames the shell wrote
+    written: set[str] = field(default_factory=set)  # paths the shell wrote
 
 
 def _command(command: str) -> _Command:
@@ -340,19 +359,21 @@ def _command(command: str) -> _Command:
         pipeline = parts[k]
         stages = [_PREFIX.sub("", st.strip()) for st in _split(pipeline, _PIPE)[::2]]
         masked = _QUOTED.sub(lambda m: " " * len(m[0]), pipeline)
-        out.written.update(_base(pipeline[m.start(1):m.end(1)])
+        out.written.update(pipeline[m.start(1):m.end(1)]
                            for m in _REDIRECT.finditer(masked))
         for st in stages:
             if st.startswith("tee "):
-                out.written.update(_base(w) for w in _words(st)[1:] if not w.startswith("-"))
+                out.written.update(w for w in _words(st)[1:] if not w.startswith("-"))
             elif _COPY.match(st):
                 args = [w for w in _words(st)[1:] if not w.startswith("-") and w != "mv"]
                 if len(args) >= 2:
                     dest = args[-1]
+                    # Only the destination is created; into a directory it
+                    # is <dir>/<source name>, never the source itself.
                     if dest.endswith(("/", "\\")) or dest == ".":
-                        out.written.update(_base(a) for a in args[:-1])
+                        out.written.update(f"{_clean(dest)}/{_base(a)}" for a in args[:-1])
                     else:
-                        out.written.add(_base(dest))
+                        out.written.add(dest)
             elif _RM.match(st):
                 out.rm += [w for w in _words(st)[1:]
                            if not w.startswith("-") and w != "rm"
@@ -424,9 +445,12 @@ def _plural(n: int, word: str) -> str:
 class _Window:
     """Facts about the whole window that excuse a change."""
     added_defs: set[str] = field(default_factory=set)  # tests (re-)added anywhere: moves
-    written: set[str] = field(default_factory=set)  # basenames the agent created
+    written: set[str] = field(default_factory=set)  # paths the agent created
     # (index, real assertions gained, in a helper function) per test-file edit
     gains: list[tuple[int, int, bool]] = field(default_factory=list)
+
+    def created(self, path: str) -> bool:
+        return any(_same_file(path, w) for w in self.written)
 
     def offset(self, index: int) -> int:
         """Assertions added after *index*, or in a helper anywhere: a move."""
@@ -469,7 +493,7 @@ class FakeGreenDetector(Detector):
                 continue
             for c in info.changes:
                 if c.kind == "write":
-                    win.written.add(_base(c.path))
+                    win.written.add(c.path)
                 if is_test_path(c.path) and c.kind == "edit":
                     win.added_defs.update(_def_names(c.added))
                     gain = _assert_counts(c.added)[0] - _assert_counts(c.removed)[0]
@@ -500,8 +524,10 @@ class FakeGreenDetector(Detector):
             if not action.success:
                 continue
             for path in cmd.rm:
-                if _base(path) not in win.written:
-                    findings.append(self._finding(i, action, path, "deleted the test file",
+                if not win.created(path):
+                    what = ("deleted the test file" if is_test_path(path)
+                            else "deleted the test directory")
+                    findings.append(self._finding(i, action, path, what,
                                                   None, last_run_failed, False, win))
             for c in info.changes:
                 f = self._change_finding(i, action, c, win, last_run_failed)
@@ -528,8 +554,9 @@ class FakeGreenDetector(Detector):
             details["file_path"] = worst.file
         if worst.command:
             details["last_command"] = one_line(worst.command, 200)
-        if worst.evidence:
-            details["evidence"] = one_line(worst.evidence, 120)
+        evidence = worst.evidence or (_short(worst.file) if worst.file else None)
+        if evidence:
+            details["evidence"] = one_line(evidence, 120)
         return Warning(
             category=self.category,
             severity=worst.severity,
@@ -544,7 +571,7 @@ class FakeGreenDetector(Detector):
 
     @staticmethod
     def _finding(i, action, path, what, evidence, after_failure, strong, win) -> _Finding:
-        if _base(path) in win.written:
+        if win.created(path):
             sev = Severity.LOW  # the agent's own new test file: its to change
         elif after_failure:
             sev = Severity.HIGH
@@ -556,7 +583,7 @@ class FakeGreenDetector(Detector):
     def _change_finding(self, i, action, c: _Change, win: _Window,
                         after_failure) -> _Finding | None:
         if c.kind == "delete":
-            if not is_test_path(c.path) or _base(c.path) in win.written:
+            if not is_test_path(c.path) or win.created(c.path):
                 return None
             return self._finding(i, action, c.path, "deleted the test file", None,
                                  after_failure, False, win)
