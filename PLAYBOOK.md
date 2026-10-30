@@ -5346,11 +5346,22 @@ Market gap #5 (cf. karanb192/claude-code-hooks "protect-tests"): flag an agent t
 **Result**
 - Edit text read for Claude Code (Edit, MultiEdit, Write), Codex (apply_patch V4A, also via shell heredoc), Copilot CLI (edit/create), Gemini CLI (replace/write_file), OpenCode and Kilo (edit/write/apply_patch), Cline (legacy replace_in_file SEARCH/REPLACE and write_to_file, SDK editor). Test commands for every agent with a shell tool.
 - Not covered for edits: Aider (no per-edit old/new text in the chat history), Cursor (bubbles carry no tool input), Copilot in VS Code (the part has no patch text), Antigravity (only the replacement text is kept), Claude Desktop Cowork host-loop sessions follow Claude Code.
-- Timing, `agentwatch check --log` on the largest local Claude Code log (7.6 MB), median of 5: 0.33 s before, 0.35-0.38 s after across three runs. The detector itself: ~6.5 ms module import (regex compile) and 3.3 ms per one-shot check; 120 us per check when run after every action. Edit analysis is cached per action.
+- Timing, `agentwatch check --log` on the largest local Claude Code log (7.6 MB), median of 5: 0.33 s before, 0.35-0.38 s after across three runs.
+  The detector itself: ~6.5 ms module import (regex compile) and 3.3 ms per one-shot check; 120 us per check when run after every action. Edit analysis is cached per action.
+  After QA round 1: 0.33-0.35 s before (develop 8e3b5fc), 0.35 s after, three median-of-5 runs each; 5.2 ms one-shot check, 156 us per check live.
 - Precision sweep: 42 real local Claude Code sessions, checked after every action: 0 findings.
-- Tests: 2632 passed, 1 skipped (45 new in `tests/test_fake_green.py`, 1 in `tests/test_statusline.py`).
+- Tests: 2632 passed, 1 skipped (45 new in `tests/test_fake_green.py`, 1 in `tests/test_statusline.py`). After QA round 1: 2660 passed, 1 skipped (73 in `tests/test_fake_green.py`).
 
 **Known limits**
 - Health detectors look at the last 100 actions, so in `check`/`history` a tampering far back in a long session is not reported.
 - A Write that rewrites a whole existing test file is not diffed (no old text); only an empty Write counts.
 - Rust `#[test]` and Java `@Test` deletions are not counted (no name on the same line); their skip markers are.
+- In-place shell edits are not read: `sed -i '/assert/d' tests/test_x.py` or a Python one-liner rewriting a test file goes unseen.
+
+**QA round 1 (FAIL on b0c8718) and fixes**
+- The coach parsed each transcript line with a fresh parser, so a tool result never merged into its call: a failed `pytest` stayed a successful Bash call plus a separate result, and `test_tampering` never reached HIGH in the coach. The coach now reads the tail with one `ClaudeCodeParser`, as `check` does. Effect on other coached warnings: consecutive failing calls now raise `error_spiral` (HIGH) in the coach too, as `check` already reported. Two coach tests changed for that: the 8x failing loop gives 3 HIGH notes instead of 2, and the fold-in test uses 2 failed calls (below error_spiral's 3) instead of 5. Loop breaker and `call_loop_id` unchanged.
+- `|| true` counts only right after the test-runner pipeline, and hiding flags only on that pipeline. Commands are split outside quotes (a commit message is not a command). Heredoc bodies are dropped.
+- Files the shell writes (`>`, `>>`, `tee`, `cp`/`mv` destination) count as the agent's own, like Write. Edits to the agent's own new test file are at most LOW.
+- Under `tests/`, `spec/`, `__tests__/` and `src/test/` only source files count (`rm -rf tests/` still does). `pytest.raises`/`warns` and `toThrow` count as assertions. Removed assertions are offset only by assertions added later in the window or in a helper function.
+- Older Codex output (`{"output", "metadata": {"exit_code"}}`) is decoded.
+- Precision sweep: 141 real Claude Code logs (42 sessions + 99 subagent logs), checked after every action. One finding: a subagent `git rm` of 5 test files while rebuilding a superseded PR, no failing run before it, LOW. Judged a legitimate cleanup and correctly kept at LOW. (Before the fixes: 4 findings, one HIGH: scratch tests created by shell, and a quoted commit message.)

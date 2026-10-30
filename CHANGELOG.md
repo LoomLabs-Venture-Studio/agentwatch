@@ -14,9 +14,13 @@ numbers refer to the GitHub repository.
   removed, commented-out or trivialised assertions, deleted test functions
   and test files, test-config exclusions, and test commands that hide
   failures (`|| true`, `--deselect`, `-k "not ..."`, `--passWithNoTests`,
-  `-skip`/`--skip`). HIGH when the last test run before the change failed,
-  otherwise MEDIUM or LOW. Platform/env skips, moved or renamed tests,
-  fixtures and snapshots are ignored. Edits are read for Claude Code, Codex,
+  `-skip`/`--skip`). An edit is HIGH when the last test run before it failed,
+  otherwise MEDIUM (skip, `.only`, config) or LOW. Command flags are MEDIUM
+  after a failed run (`|| true` right after the test runner: HIGH) and LOW
+  otherwise. Platform/env skips, moved or renamed tests, fixtures,
+  snapshots, non-source files in test dirs, and test files the agent created
+  itself in the window (shell or Write: at most LOW) are ignored. Not seen:
+  in-place edits by shell (`sed -i '/assert/d'`). Edits are read for Claude Code, Codex,
   Copilot CLI, Gemini CLI, OpenCode/Kilo and Cline; test commands for every
   agent with a shell tool. The coach hook coaches on it, and the status line
   shows `⚠ tests weakened`.

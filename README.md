@@ -198,6 +198,13 @@ This scaling only affects progress/stall metrics. Behavioral signals (repetition
 | `context_pressure`        | Context window filling up                             |
 | `rediscovery`             | Agent re-discovering previously learned information   |
 
+`test_tampering` ("fake green") flags tests skipped, weakened or deleted on test
+files: HIGH when the last test run before the change failed. It reads edit text
+for Claude Code, Codex, Copilot CLI, Gemini CLI, OpenCode/Kilo and Cline, and
+test commands for every agent with a shell. Known limits: in-place shell edits
+(`sed -i '/assert/d' tests/test_x.py`) are not seen, a Write that rewrites a whole
+existing test file is not diffed, and only the last 100 actions are checked.
+
 ## Security Detectors (21)
 
 | Detector               | What It Catches                                           |
