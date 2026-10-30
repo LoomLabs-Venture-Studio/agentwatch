@@ -775,7 +775,12 @@ agentwatch stats --session <SESSION_ID>
 # commands (git, ls, npm run dev) vs substantive AI work
 agentwatch stats --burn
 
-# JSON output
+# Usage per 5-hour window (when Claude subscription limits reset), all
+# projects: the last 10 windows, and for the current one the reset time,
+# burn rate (tokens/min, $/h) and projected total at reset
+agentwatch stats --blocks
+
+# JSON output (with --blocks: every window)
 agentwatch stats --json
 ```
 
