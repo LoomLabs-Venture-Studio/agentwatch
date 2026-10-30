@@ -1058,6 +1058,19 @@ Plugins cannot set the main status line (a plugin's settings only apply
 ```
 
 Use `"agentwatch statusline --ok"` to see the check mark when all is well.
+Add `--cost` for the current 5-hour usage window (the one Claude
+subscription limits reset on, as in `agentwatch stats --blocks`), shown dim
+after any warning:
+
+```
+⚠ loop ~$1.40 · $4.12 → ~$9.80 · resets 2h13m
+```
+
+That is spent so far, projected spend at reset, and time until reset. It
+covers all projects, shows no dollars for a model without a listed price,
+and shows nothing when no window is active. The figures are cached for 60
+seconds (in the per-user agentwatch cache dir) and a refresh reads only
+transcripts written in the last 24 hours, so most runs cost nothing extra.
 On Windows, Claude Code runs the command through Git Bash (or PowerShell
 without Git Bash); if you give a full path to `agentwatch`, write it with
 forward slashes.
