@@ -415,3 +415,30 @@ def test_coach_note(tmp_path):
     note = coach.format_message(one(s.save(tmp_path)))
     assert note.startswith("agentwatch coach [high]: Tests weakened after a failing run")
     assert note.splitlines()[-1] == f"Try: {coach._TIPS['test_tampering']}"
+
+
+def test_coach_hook_end_to_end_and_statusline(tmp_path, monkeypatch):
+    """PostToolUse after `pytest` failed and an Edit added a skip: the hook
+    writes the coach note and its state file, and the status line reads it."""
+    from agentwatch import coach, statusline
+
+    state = tmp_path / "state"
+    monkeypatch.setattr(coach, "state_dir", lambda: state)
+    monkeypatch.setattr(coach, "user_state_dir", lambda: tmp_path / "user-state")
+    monkeypatch.setattr(statusline, "state_dirs", lambda: [state])
+    monkeypatch.setenv("NO_COLOR", "1")
+    s = Session().run("pytest tests/test_auth.py", ok=False).edit(
+        "/repo/tests/test_auth.py", SKIP_OLD, SKIP_NEW)
+    transcript = s.save(tmp_path)
+    payload = json.dumps({
+        "session_id": "sess-fg", "transcript_path": str(transcript), "cwd": str(tmp_path),
+        "hook_event_name": "PostToolUse", "tool_name": "Edit",
+        "tool_input": {"file_path": "/repo/tests/test_auth.py", "old_string": SKIP_OLD,
+                       "new_string": SKIP_NEW},
+        "tool_response": {}, "tool_use_id": "c2",
+    })
+    out = coach.run(payload)
+    context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert context.startswith("agentwatch coach [high]: Tests weakened after a failing run")
+    assert context.splitlines()[-1] == f"Try: {coach._TIPS['test_tampering']}"
+    assert statusline.render(json.dumps({"session_id": "sess-fg"})) == "⚠ tests weakened"
