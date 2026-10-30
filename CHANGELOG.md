@@ -6,6 +6,21 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Added
+
+- `test_tampering` health detector ("fake green"): flags an agent making
+  failing tests pass by skipping, weakening or deleting them instead of
+  fixing the code. It catches new unconditional skip/xfail markers, `.only`,
+  removed, commented-out or trivialised assertions, deleted test functions
+  and test files, test-config exclusions, and test commands that hide
+  failures (`|| true`, `--deselect`, `-k "not ..."`, `--passWithNoTests`,
+  `-skip`/`--skip`). HIGH when the last test run before the change failed,
+  otherwise MEDIUM or LOW. Platform/env skips, moved or renamed tests,
+  fixtures and snapshots are ignored. Edits are read for Claude Code, Codex,
+  Copilot CLI, Gemini CLI, OpenCode/Kilo and Cline; test commands for every
+  agent with a shell tool. The coach hook coaches on it, and the status line
+  shows `⚠ tests weakened`.
+
 ### Fixed
 
 - Codex sessions (Codex CLI and the ChatGPT desktop app) no longer get a
