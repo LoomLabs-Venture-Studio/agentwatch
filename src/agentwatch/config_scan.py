@@ -24,10 +24,12 @@ Formats (checked against each tool's docs, 2026-10-31):
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import shlex
+import socket
 import stat
 import tomllib
 from dataclasses import asdict, dataclass, field
@@ -232,7 +234,6 @@ def _unpinned(argv: list[str]) -> tuple[str, str, str] | None:
 _CREDENTIAL_DIR = re.compile(
     r"(^|[/\s])\.(aws|ssh|gnupg|kube|docker)(/|\s|\*|$)|(^|/)\.env(?!\.(example|sample|template))\b"
 )
-_LOOPBACK = re.compile(r"(localhost|127(?:\.\d{1,3}){3}|::1|\[::1\])", re.I)
 
 
 def _plain_http(url: str) -> str | None:
@@ -243,13 +244,34 @@ def _plain_http(url: str) -> str | None:
         host = urlsplit(url).hostname or ""
     except ValueError:
         return None
-    return None if not host or _LOOPBACK.fullmatch(host) else host
+    return None if not host or _is_loopback(host) else host
 
 
+def _is_loopback(host: str) -> bool:
+    """localhost, 127.0.0.0/8 (short forms like 127.1 too), ::1, 0.0.0.0, ::.
+    Parsed locally, never resolved."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        try:  # inet_aton takes the legacy short forms ("127.1") ip_address refuses
+            ip = ipaddress.ip_address(socket.inet_aton(host))
+        except OSError:
+            return False
+    return ip.is_loopback or ip.is_unspecified
+
+
+_SHELLS = r"(?:(?:ba|z|da|k|fi)?sh|python3?|perl|ruby|node)"
 _PIPE_TO_SHELL = re.compile(
-    r"\b(?:curl|wget)\b[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:/\S*/)?"
-    r"(?:(?:ba|z|da|k|fi)?sh|python3?|perl|ruby|node)\b"
-    r"|\b(?:ba|z)?sh\s+(?:-c\s+)?[\"']?(?:<\(|\$\()\s*(?:curl|wget)\b"
+    # curl ... | [tee f |] sh  (a single "|", not "||")
+    r"\b(?:curl|wget)\b[^;&\n]*?(?<!\|)\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*)?(?:/\S*/)?"
+    + _SHELLS + r"\b"
+    # bash <(curl ...), bash -c "$(curl ...)", python3 -c "$(curl ...)"
+    r"|\b" + _SHELLS + r"\s+(?:-\w+\s+)*[\"']?(?:<\(|\$\()\s*(?:curl|wget)\b"
+    # eval "$(curl ...)", source <(curl ...), . <(curl ...)
+    r"|\beval\s+[\"']?\$\(\s*(?:curl|wget)\b"
+    r"|(?:^|[\s;&|(])(?:source|\.)\s+<\(\s*(?:curl|wget)\b"
     r"|\b(?:iex|invoke-expression)\b.*\b(?:iwr|irm|invoke-webrequest|invoke-restmethod"
     r"|downloadstring)\b"
     r"|\b(?:iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]*\|\s*(?:iex|invoke-expression)\b",
@@ -261,9 +283,13 @@ _PIPE_TO_SHELL = re.compile(
 # smuggling). ZWJ/ZWNJ only between ASCII letters: emoji and Indic/Persian
 # text use them legitimately. LRM/RLM are left out (normal in RTL text).
 _HIDDEN_CHAR = re.compile(
-    "[\u200b\u2060-\u2064\u202a-\u202e\u2066-\u2069\ufeff\U000e0000-\U000e007f]"
+    "[\u200b\u2060-\u2064\u202a-\u202e\u2066-\u2069\ufeff\U000e0000-\U000e007f"
+    "\U000e0100-\U000e01ef]"
     "|(?<=[A-Za-z])[\u200c\u200d](?=[A-Za-z])"
 )
+# Subdivision flags (England, Scotland, Wales) are a black flag plus tag
+# letters plus CANCEL TAG: emoji, not smuggled text.
+_FLAG = re.compile("\U0001f3f4[\U000e0020-\U000e007e]+\U000e007f")
 # A small, high-confidence subset of the injection phrases: the full shared
 # INJECTION_PATTERNS ("you are now", "act as a", "system:") match ordinary
 # skill and agent prompts.
@@ -368,7 +394,7 @@ class Scanner:
         self._seen.add(real)
         self.report.scanned.append({"agent": agent, "file": show(path)})
         self._check_mode(path, st, agent)
-        return data.decode("utf-8", errors="replace")
+        return data.decode("utf-8-sig", errors="replace")
 
     def load(self, path: Path, agent: str, limit: int = MAX_BYTES) -> Any:
         text = self.read(path, agent, limit)
@@ -404,6 +430,9 @@ class Scanner:
                 if (f == name) if name else f.endswith(".md"):
                     n += 1
                     if n > MAX_WALK_FILES:
+                        self.report.skipped.append({
+                            "file": show(base),
+                            "reason": f"more than {MAX_WALK_FILES} files; the rest not scanned"})
                         return
                     self.markdown(Path(dirpath) / f, agent)
 
@@ -412,14 +441,15 @@ class Scanner:
     def markdown(self, path: Path, agent: str) -> None:
         text = self.read(path, agent)
         if text is not None:
-            self.text_checks(text.removeprefix("\ufeff"), agent, path, "(file)")
+            self.text_checks(text, agent, path, "(file)")
 
     def text_checks(self, text: str, agent: str, path: Path, loc: str) -> None:
         """Hidden chars, hidden HTML-comment instructions, override phrases."""
         def at(pos: int) -> str:
             return f"line {_line_of(text, pos)}" if loc == "(file)" else loc
 
-        hidden = list(_HIDDEN_CHAR.finditer(text))
+        # Flags blanked to spaces of the same length: positions (lines) hold.
+        hidden = list(_HIDDEN_CHAR.finditer(_FLAG.sub(lambda m: " " * len(m.group()), text)))
         if hidden:
             first = hidden[0]
             self.add("high", "hidden_text", agent, path, at(first.start()),
@@ -477,6 +507,7 @@ class Scanner:
         # 2. unpinned package runners
         cmd = srv.get("command")
         if isinstance(cmd, str):
+            self._secret_value("", cmd, agent, path, f"{loc}.command", label)
             argv = [cmd, *(a for a in args if isinstance(a, str))]
             if not args and " " in cmd.strip():
                 try:
@@ -628,21 +659,55 @@ class Scanner:
         agent = "claude-code"
         if root.is_symlink() or not root.is_dir():
             return
-        mcp = self.load(root / ".mcp.json", agent)
-        if isinstance(mcp, dict):
-            servers = mcp.get("mcpServers", mcp)
-            self.mcp_servers(servers, agent, root / ".mcp.json",
-                             "mcpServers" if "mcpServers" in mcp else "")
-        hooks = self.load(root / "hooks" / "hooks.json", agent)
-        if isinstance(hooks, dict):
-            self.hooks(hooks.get("hooks"), agent, root / "hooks" / "hooks.json")
-        manifest = self.load(root / ".claude-plugin" / "plugin.json", agent)
+        self._plugin_mcp_file(root / ".mcp.json")
+        self._plugin_hooks_file(root / "hooks" / "hooks.json")
+        mpath = root / ".claude-plugin" / "plugin.json"
+        manifest = self.load(mpath, agent)
         if isinstance(manifest, dict):
-            self.mcp_servers(manifest.get("mcpServers"), agent,
-                             root / ".claude-plugin" / "plugin.json", "mcpServers")
-            self.hooks(manifest.get("hooks"), agent, root / ".claude-plugin" / "plugin.json")
+            # Each of hooks / mcpServers is inline config, a path, or a list of paths.
+            for key, inline, load_file in (
+                    ("mcpServers", lambda v: self.mcp_servers(v, agent, mpath, "mcpServers"),
+                     self._plugin_mcp_file),
+                    ("hooks", lambda v: self.hooks(v, agent, mpath), self._plugin_hooks_file)):
+                value = manifest.get(key)
+                if isinstance(value, dict):
+                    inline(value)
+                for ref in [value] if isinstance(value, str) else (
+                        value if isinstance(value, list) else []):
+                    if isinstance(ref, str):
+                        target = self._plugin_path(root, ref)
+                        if target is not None:
+                            load_file(target)
+                    elif isinstance(ref, dict):
+                        inline(ref)
         for sub in ("skills", "commands", "agents"):
             self.walk_md(root / sub, agent)
+
+    def _plugin_path(self, root: Path, ref: str) -> Path | None:
+        """*ref* (``./x.json`` or ``${CLAUDE_PLUGIN_ROOT}/x.json``) under the
+        plugin root; None, listed as skipped, if it resolves outside it."""
+        rel = ref.replace("${CLAUDE_PLUGIN_ROOT}", ".")
+        target = root / rel
+        try:
+            inside = target.resolve().is_relative_to(root.resolve())
+        except OSError:
+            inside = False
+        if not inside:
+            self.report.skipped.append({"file": show(target),
+                                        "reason": "path leaves its plugin folder"})
+            return None
+        return target
+
+    def _plugin_mcp_file(self, path: Path) -> None:
+        mcp = self.load(path, "claude-code")
+        if isinstance(mcp, dict):
+            self.mcp_servers(mcp.get("mcpServers", mcp), "claude-code", path,
+                             "mcpServers" if "mcpServers" in mcp else "")
+
+    def _plugin_hooks_file(self, path: Path) -> None:
+        hooks = self.load(path, "claude-code")
+        if isinstance(hooks, dict):
+            self.hooks(hooks.get("hooks"), "claude-code", path)
 
     # -- entry --------------------------------------------------------------
 
