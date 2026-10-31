@@ -353,9 +353,13 @@ What it reads:
 Symlinks that leave the project (or your home folder) are not followed,
 symlinked folders are not entered, files over 2 MB are skipped (32 MB for
 `~/.claude.json`), and a file that can't be parsed is listed as skipped.
+Configs symlinked from outside your home folder (Nix, home-manager) are
+skipped and listed under Skipped, so check those files at their source.
 
 Exit codes: 0 = no findings, or only low ones; 1 = at least one medium;
 2 = at least one high. config-scan has no critical tier.
+Exit code 2 is also what Click returns for a usage error (a bad option or
+`--path`), so when the difference matters, read the `--json` output instead.
 
 ```bash
 agentwatch config-scan || echo "Agent config needs a look"
