@@ -300,6 +300,71 @@ agentwatch security-scan
 agentwatch security-scan --json
 ```
 
+### Config Scan
+
+Checks your AI agents' configuration files for risky settings before they
+run anything. Offline and read-only: no network calls, no account, nothing
+written, and secret values are never printed (only a masked tail, as in
+`audit`).
+
+```bash
+agentwatch config-scan                 # your user configs + the current folder
+agentwatch config-scan --path ~/myapp  # a different project
+agentwatch config-scan --json          # schema 1: findings, summary, files_scanned, files_skipped
+```
+
+Each finding names the agent, the file (home shown as `~`), the place in it
+(such as `mcpServers.github.env.GITHUB_TOKEN`), why it matters and how to fix it.
+
+| Check | Severity |
+| ----- | -------- |
+| Hard-coded secret in an MCP server's env, headers, args or URL, a settings `env` block, or a hook command (`${VAR}`, `$VAR`, `${env:VAR}`, `{env:VAR}`, `${input:id}` and placeholders are fine) | high |
+| MCP server started by npx / bunx / pnpm dlx / yarn dlx / npm exec / uvx / uv tool run / pipx run without an exact version (`@latest` and ranges count), or from a git ref or URL | medium |
+| Docker MCP image with no tag or `:latest` | low |
+| Remote MCP server over plain `http://` to a non-loopback host: with a token or auth header / without | high / medium |
+| Claude Code `permissions.defaultMode: "bypassPermissions"` (user settings / project settings) | high / medium |
+| Allow rules that allow every call of Bash, PowerShell, Edit, Write, MultiEdit, NotebookEdit or WebFetch (`Bash`, `Bash(*)`), or that cover credential files (`~/.ssh`, `~/.aws`, `.env`, ...) | medium |
+| `enableAllProjectMcpServers: true`; Gemini `trust: true` on a server | medium |
+| `skipDangerousModePermissionPrompt: true` | low |
+| Codex `sandbox_mode = "danger-full-access"` (with `approval_policy = "never"`: high) | medium |
+| A hook or status-line command that pipes a download into a shell (`curl ... \| sh`, `bash <(wget ...)`, `iex (iwr ...)`) | high |
+| Invisible characters (zero-width, bidi overrides, Unicode tag chars) in skills, commands, agents, plugin markdown, CLAUDE.md or an MCP server description | high |
+| An HTML comment holding instruction words in those files (hidden when rendered) | medium |
+| "Ignore previous instructions"-style phrases (low when quoted or the file is about prompt injection) | medium |
+| A config file that another user owns, or that is world-writable or writable by a group with other members (macOS/Linux) | medium |
+
+What it reads:
+
+- **Claude Code:** `~/.claude/settings.json`, `settings.local.json`, the
+  project's `.claude/settings.json` and `settings.local.json`, `.mcp.json`,
+  `~/.claude.json` (only `mcpServers` and `projects.*.mcpServers`), skills,
+  commands and agents (user and project), `CLAUDE.md` files, and installed
+  plugins (`installed_plugins.json`: their `.mcp.json`, `hooks/hooks.json`,
+  `plugin.json`, skills, commands, agents). Honours `CLAUDE_CONFIG_DIR`.
+- **Cursor:** `~/.cursor/mcp.json`, `<project>/.cursor/mcp.json`.
+- **VS Code (Copilot):** the user `mcp.json` and `<project>/.vscode/mcp.json`
+  (`servers`, comments allowed).
+- **Codex:** `$CODEX_HOME/config.toml` (default `~/.codex`), its `hooks.json`
+  and `<project>/.codex/config.toml`.
+- **Gemini CLI:** `~/.gemini/settings.json`, `<project>/.gemini/settings.json`.
+- **Cline:** `cline_mcp_settings.json` in the extension's store (VS Code,
+  Insiders, VSCodium, Cursor) and in `~/.cline/data/settings/`.
+
+Symlinks that leave the project (or your home folder) are not followed,
+symlinked folders are not entered, files over 2 MB are skipped (32 MB for
+`~/.claude.json`), and a file that can't be parsed is listed as skipped.
+Configs symlinked from outside your home folder (Nix, home-manager) are
+skipped and listed under Skipped, so check those files at their source.
+
+Exit codes: 0 = no findings, or only low ones; 1 = at least one medium;
+2 = at least one high. config-scan has no critical tier.
+Exit code 2 is also what Click returns for a usage error (a bad option or
+`--path`), so when the difference matters, read the `--json` output instead.
+
+```bash
+agentwatch config-scan || echo "Agent config needs a look"
+```
+
 ### Real-Time Monitoring
 
 ```bash
@@ -902,6 +967,7 @@ checked the result. Rotate any leaked key: hiding it does not make it safe.
 # Same tool, security-first defaults
 agentguard scan
 agentguard watch
+agentguard config-scan
 ```
 
 ## Exit Codes
@@ -914,6 +980,8 @@ agentguard watch
 
 `audit` uses the same codes by finding severity: 2 if any critical finding,
 1 if any high, otherwise 0. Medium, low and `--pii` findings never fail it.
+
+`config-scan`: 0 = nothing above low, 1 = a medium finding, 2 = a high finding.
 
 `check --security` also fails on security findings. Its exit code is the worse
 of the health code above and the `security-scan` code: 0 = secure (score 100),

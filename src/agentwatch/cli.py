@@ -2390,6 +2390,80 @@ def scrub(path: Path, secrets_only: bool, in_place: bool, dry_run: bool, json_ou
     sys.exit(1 if dry_run and r.redacted else 0)
 
 
+@cli.command("config-scan")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON (schema 1)")
+@click.option(
+    "--path", "project",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Project folder whose configs to check (default: current folder)",
+)
+def config_scan(json_output: bool, project: Path | None):
+    """Check AI agents' configs for risky settings. Offline and read-only.
+
+    \b
+    Reads MCP servers, hooks, the status line, permissions, skills,
+    commands, agents, plugins and CLAUDE.md of Claude Code, Cursor,
+    VS Code (Copilot), Codex, Gemini CLI and Cline: your user configs
+    and those of --path. Makes no network calls, needs no account,
+    changes nothing, and never prints secret values.
+
+    \b
+    Exit codes: 0 = nothing above low, 1 = at least one medium,
+    2 = at least one high.
+    """
+    from agentwatch import config_scan as cs
+
+    report = cs.scan(project or Path.cwd())
+    if json_output:
+        click.echo(json.dumps(report.to_json(), indent=2))
+    else:
+        _print_config_report(report)
+    sys.exit(report.exit_code())
+
+
+_SEVERITY_STYLE = {"high": "yellow", "medium": "blue", "low": "cyan"}
+
+
+def _print_config_report(report) -> None:
+    """Findings grouped by agent, then file; counts at the end."""
+    from agentwatch.agents import display_name
+
+    click.echo()
+    click.echo("=" * 54)
+    click.echo("  CONFIG SCAN")
+    click.echo("=" * 54)
+    agents = {f["agent"] for f in report.scanned}
+    click.echo(f"\n  Scanned {len(report.scanned)} file(s) for {len(agents)} agent(s)\n")
+    order = {s: i for i, s in enumerate(("high", "medium", "low"))}
+    by_agent: dict[str, dict[str, list]] = {}
+    for f in sorted(report.findings, key=lambda f: order[f.severity]):
+        by_agent.setdefault(f.agent, {}).setdefault(f.file, []).append(f)
+    for agent, files in by_agent.items():
+        click.echo("  " + click.style(display_name(agent), bold=True))
+        for file, findings in files.items():
+            click.echo(f"    {file}")
+            for f in findings:
+                sev = click.style(f"{f.severity.upper():<6}", fg=_SEVERITY_STYLE[f.severity],
+                                  bold=True)
+                click.echo(f"      {sev} {f.kind}  {f.location}")
+                click.echo(f"             {f.message}")
+                click.echo(click.style(f"             Why: {f.why}", dim=True))
+                click.echo(click.style(f"             Fix: {f.fix}", dim=True))
+        click.echo()
+    for skip in report.skipped:
+        click.echo(click.style(f"  Skipped {skip['file']}: {skip['reason']}", dim=True))
+    if report.skipped:
+        click.echo()
+    s = report.summary()
+    if not s["total"]:
+        click.echo(click.style("  No issues found.", fg="green", bold=True))
+    else:
+        click.echo(f"  {s['total']} finding(s): {s['high']} high, {s['medium']} medium, "
+                   f"{s['low']} low")
+    click.echo()
+
+
 def _print_audit_report(
     findings: list,
     sessions_scanned: int,
@@ -2574,6 +2648,15 @@ def _build_guard_cli():
             dry_run=dry_run,
             force=force,
         )
+
+    @guard_cli.command(name="config-scan")
+    @click.option("--json", "json_output", is_flag=True)
+    @click.option("--path", "project",
+                  type=click.Path(exists=True, file_okay=False, path_type=Path))
+    def guard_config_scan(json_output, project):
+        """Check agent configs (MCP, hooks, permissions, skills) offline."""
+        ctx = click.Context(config_scan)
+        ctx.invoke(config_scan, json_output=json_output, project=project)
 
     return guard_cli
 
