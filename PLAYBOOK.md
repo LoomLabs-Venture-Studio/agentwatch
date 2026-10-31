@@ -5331,3 +5331,30 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 |---|---|---|---|---|---|
 | 2026-10-27 | #189 | docs/site-redesign | docs | CTO review, QA PASS WITH NOTES (sonnet), round 1 fixed, board "go live" | -- |
 | 2026-10-27 | #190 | fix/codex-usage-loop | fix | CTO review, QA PASS WITH NOTES (sonnet), follow-ups fixed (011af8d); held until after the site promotion | -- |
+
+### Sprint 40 (cont.) -- config-scan (gap #6) (2026-10-31)
+
+Market gap #6: an offline audit of agent configs. Snyk agent-scan needs an
+account and calls home; Pillar is hosted. `agentwatch config-scan` is the
+config counterpart to `audit` (session logs) and `security-scan`.
+
+#### Acceptance criteria
+- [x] New command `agentwatch config-scan [--json] [--path DIR]`, also `agentguard config-scan`.
+- [x] Reads MCP servers, hooks, status line, permissions, skills, commands, agents, installed plugins and CLAUDE.md for Claude Code; MCP configs for Cursor, VS Code (Copilot), Codex, Gemini CLI and Cline. Formats checked against each tool's docs; root helpers reused (`CLAUDE_CONFIG_DIR`, `_codex_sessions_root`, `_gemini_dir`, `default_user_dir`, `cline_sessions_dir`, `_legacy_editors`).
+- [x] Checks: hard-coded secrets (high, masked), unpinned package runners / git refs (medium; docker untagged low), plain-http remote MCP (high with auth, else medium), bypassPermissions and broad or credential-path allow rules, pipe-to-shell hooks (high), hidden chars (high) / hidden comments / override phrases in tool-facing markdown, files writable by others (POSIX).
+- [x] Each finding: severity, kind, agent, file (home as ~), location, message, why, fix. JSON schema 1 with summary, files_scanned, files_skipped.
+- [x] Exit codes 0 / 1 (medium) / 2 (high), in `--help` and README.
+- [x] Read-only, no network, stdlib only (json, tomllib), no new env vars. Symlinks out of the root not followed; symlinked dirs not entered; > 2 MB skipped (~/.claude.json 32 MB); unparseable files listed as skipped.
+- [x] Tests drive the real CLI over fixture trees in tmp_path, including the false-positive cases.
+
+#### Result (2026-10-31)
+- `src/agentwatch/config_scan.py` (new), `cli.py` (`config-scan`, guard alias), `tests/test_config_scan.py` (55 tests). Full suite 2641 passed, 1 skipped; ruff clean.
+- Real run on the dev machine (`--path` agentwatch repo): 50 files (claude-code 46, codex 2, gemini 1, cline 1), 3 low findings, exit 0. The first run flagged a skill that quotes "ignore previous instructions" as a warning to the model (medium); quoted phrases are now low.
+- Exit code differs from the brief's suggestion: config-scan has no critical tier, so 2 = any high.
+
+#### Cut (not precise enough or not cheap)
+- The broad shared INJECTION_PATTERNS ("you are now", "act as a", "system:"): they match ordinary skill prompts. Only the high-confidence override phrases and ChatML tokens are used.
+- Cline `autoApprove`, Codex per-tool approval modes, Gemini `tools`/yolo settings, Claude `auto` mode: no clear "risky" line.
+- Hook `type: "http"` URLs, `headersHelper`/`http_headers_helper` commands, `apiKeyHelper`.
+- Managed settings files, VS Code Insiders' user mcp.json, Claude Desktop's `claude_desktop_config.json`, OpenCode/Kilo configs, Windsurf.
+- Docker images run through `docker compose` or wrapper scripts.
