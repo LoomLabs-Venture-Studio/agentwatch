@@ -178,6 +178,17 @@ def test_already_done_at_startup_is_baselined_then_next_turn_alerts(clock):
                      "waiting for your next prompt")]
 
 
+def test_lines_of_one_reply_alert_once(clock):
+    from agentwatch.parser.models import Action, ToolType
+
+    a, sent = _alerter(notify_existing=True)
+    first, second = (Action(None, "text_output", ToolType.UNKNOWN, True, message_id="m9",
+                            turn_end=True) for _ in range(2))
+    _pass(a, [first])
+    _pass(a, [first, second])
+    assert len(sent) == 1
+
+
 def test_done_off_by_default(clock):
     sent = []
     a = Alerter(notify=True, notify_existing=True)

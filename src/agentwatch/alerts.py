@@ -219,6 +219,13 @@ def _usd(v: float) -> str:
     return f"${v:,.2f}" if v >= 0.01 else f"${v:.4g}"
 
 
+def _same_turn(a: object, b: object) -> bool:
+    """The same turn end: one action, or lines of one API call (Claude Code
+    writes a line per content block, sharing message_id)."""
+    mid = getattr(a, "message_id", None)
+    return a is b or (mid is not None and mid == getattr(b, "message_id", None))
+
+
 def who(agent: str | None, project: str | None) -> str:
     """'Claude Code · myproj'. Both come from logs and process data, so they
     are cleaned like a message."""
@@ -310,7 +317,7 @@ class Alerter:
             s.baseline_until = now + BASELINE_S
         baseline = not self.notify_existing and (s.baseline_until is None or now < s.baseline_until)
         if self.notify_done:
-            if done is not None and done is not s.done and not baseline:
+            if done is not None and not _same_turn(done, s.done) and not baseline:
                 label = f"finished{_cost(cost) if cost else ''}"
                 if self.log is not None:
                     self.log(f"{datetime.now():%H:%M:%S} {'DONE':8} {name} {label}")
