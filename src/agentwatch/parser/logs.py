@@ -328,6 +328,9 @@ def _parse_claude_code(
                 context_window=context_window,
                 session_id=session_id,
                 raw={"type": "text", "text": joined[:500]},
+                # A text-only reply that ends the turn (each line of the
+                # message repeats its stop_reason).
+                turn_end=msg.get("stop_reason") == "end_turn",
                 **billing,
                 **call,
             ))

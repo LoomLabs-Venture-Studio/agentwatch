@@ -49,6 +49,7 @@ from agentwatch.net_sampler import (
     endpoint_summary,
 )
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
+from agentwatch.parser.models import turn_ended
 from agentwatch.statusline import _cost, state_dirs
 from agentwatch.themes import ascii_safe, get_current_theme_name, get_theme
 from agentwatch.ui import machine
@@ -1793,10 +1794,12 @@ class MultiAgentWatchApp(App):
         if self.alerter is None:
             return
         item = agent_data["item"]
-        stats = agent_data["buffer"].stats
+        buffer = agent_data["buffer"]
+        stats = buffer.stats
         self.alerter.observe(
             str(item.log_path), item.agent_type, item.project_name or item.log_path.name,
             warnings, report, actions=stats.action_count, cost=stats.estimated_cost,
+            done=turn_ended(reversed(buffer.actions)) if self.alerter.notify_done else None,
         )
 
     def _export_and_assess(self, agent_data: dict, warnings: list["Warning"]) -> None:

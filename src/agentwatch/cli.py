@@ -587,7 +587,15 @@ def _check_budget(ctx, param, value: float | None) -> float | None:
 
 
 def _alert_options(f):
-    """--notify / --notify-min / --webhook / --budget, shared by watch and watch-all."""
+    """--notify / --notify-min / --webhook / --budget / --notify-done, shared by
+    watch and watch-all."""
+    f = click.option(
+        "--notify-done",
+        is_flag=True,
+        help="Also alert each time a session finishes its turn and waits for "
+             "you (Claude Code, Codex, Copilot CLI and VS Code, OpenCode, Kilo "
+             "Code; turns on --notify unless --webhook is given)",
+    )(f)
     f = click.option(
         "--budget",
         type=float,
@@ -629,8 +637,9 @@ def _alert_options(f):
 
 
 def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook: str | None,
-                  budget: float | None = None, headless: bool = False):
-    if budget is not None and not webhook:
+                  budget: float | None = None, headless: bool = False,
+                  notify_done: bool = False):
+    if (budget is not None or notify_done) and not webhook:
         notify = True  # --budget alone needs a sink: desktop (board decision)
     if not (notify or webhook or headless):
         return None
@@ -638,7 +647,7 @@ def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook:
 
     return Alerter(notify=notify, notify_min=notify_min, webhook=webhook,
                    log=print_line if headless else None, notify_existing=notify_existing,
-                   budget=budget)
+                   budget=budget, notify_done=notify_done)
 
 
 @cli.command()
@@ -686,6 +695,7 @@ def watch(
     notify_existing: bool,
     webhook: str | None,
     budget: float | None,
+    notify_done: bool,
 ):
     """Watch one agent session in real-time (the watch-all dashboard, opened
     on that session)."""
@@ -711,7 +721,8 @@ def watch(
         siem_log=siem_log,
         llm=llm,
         llm_model=llm_model,
-        alerter=_make_alerter(notify, notify_min, notify_existing, webhook, budget),
+        alerter=_make_alerter(notify, notify_min, notify_existing, webhook, budget,
+                              notify_done=notify_done),
     )
     app.run()
 
@@ -1320,6 +1331,7 @@ def watch_all(
     notify_existing: bool,
     webhook: str | None,
     budget: float | None,
+    notify_done: bool,
 ):
     """Watch agent logs in real-time with a multi-agent dashboard.
 
@@ -1328,7 +1340,8 @@ def watch_all(
     """
     if since is not None and not all_logs:
         raise click.UsageError("--since applies to --all-logs only")
-    alerter = _make_alerter(notify, notify_min, notify_existing, webhook, budget, headless)
+    alerter = _make_alerter(notify, notify_min, notify_existing, webhook, budget, headless,
+                            notify_done)
     from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
     from agentwatch.ui.multi_app import MultiAgentWatchApp
 
