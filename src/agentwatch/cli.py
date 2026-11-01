@@ -2350,6 +2350,56 @@ def statusline(ok: bool):
     statusline_main(ok)
 
 
+def _check_events(ctx, param, value: str) -> list[str]:
+    from agentwatch.coach import NOTIFY_EVENTS
+
+    events = [e.strip() for e in value.split(",") if e.strip()]
+    if not events or set(events) - set(NOTIFY_EVENTS):
+        raise click.BadParameter(f"a comma list of: {', '.join(NOTIFY_EVENTS)}")
+    return list(dict.fromkeys(events))
+
+
+@cli.command()
+@click.argument("state", type=click.Choice(["on", "off", "status"]), default="status")
+@click.option("--webhook", callback=_check_webhook, default=None, metavar="URL",
+              help='Also POST each alert as JSON {"text": ...} (Slack-compatible). '
+                   "Stored in the settings file (0600) and never printed")
+@click.option("--events", callback=_check_events, default="needs-input,done",
+              show_default=True, help="Which alerts: needs-input, done")
+def notify(state: str, webhook: str | None, events: list[str]):
+    """Claude Code alerts when a session needs you or has finished.
+
+    `on` turns them on for every Claude Code session on this machine (needs
+    the agentwatch plugin's hook): a desktop notification, plus a webhook
+    post with --webhook. `on` again replaces the settings; `off` deletes them.
+    """
+    from agentwatch.alerts import mask_url, notify_command
+    from agentwatch.coach import load_notify, notify_path, save_notify
+
+    if state != "on" and (webhook or events != ["needs-input", "done"]):
+        raise click.UsageError("--webhook and --events go with `notify on`")
+    try:
+        if state == "on":
+            save_notify({"on": True, "events": events, **({"webhook": webhook} if webhook else {})})
+        elif state == "off":
+            save_notify(None)
+    except OSError as e:
+        click.echo(f"agentwatch: cannot write {notify_path()}: {e.strerror or e}", err=True)
+        sys.exit(1)
+    settings = load_notify()
+    if settings is None:
+        click.echo("agentwatch notify: off")
+        return
+    sinks = ["desktop" if notify_command("t", "b") else "desktop (no notifier found)"]
+    if isinstance(settings.get("webhook"), str):
+        sinks.append(f"webhook {mask_url(settings['webhook'])}")
+    shown = settings.get("events") if isinstance(settings.get("events"), list) else events
+    click.echo(f"agentwatch notify: on ({', '.join(map(str, shown))}) -> {', '.join(sinks)}")
+    click.echo(f"Settings: {notify_path()}")
+    click.echo("Alerts come from the agentwatch Claude Code plugin's hook "
+               "(/plugin install agentwatch@agentwatch).")
+
+
 @cli.command()
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--secrets-only", is_flag=True, help="Hide secrets only, not personal info")
