@@ -66,7 +66,10 @@ want a "fitness tracker + security guard" for those agents.
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
                        detect, net, list-detectors, security-scan, themes, stats,
-                       audit, scrub, report, history sync|prune|path. `scrub PATH` redacts secrets + PII in one
+                       audit, scrub, report, history sync|prune|path, notify on|off|status
+                       [--webhook URL] [--events needs-input,done] (the
+                       Claude Code hook's attention-alert settings; webhook
+                       masked). `scrub PATH` redacts secrets + PII in one
                        file (copy by default, `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
                        (output without `--pii` unchanged)
@@ -194,6 +197,21 @@ src/agentwatch/
                        (same id as LoopDetector) and denies the first match
                        once (permissionDecision deny, fixed reason).
                        LOOP_ALLOW Bash prefixes are never denied.
+                       Attention alerts (Sprint 40): Notification
+                       (permission_prompt, idle_prompt, elicitation_dialog,
+                       elicitation_url_dialog, agent_needs_input) and Stop,
+                       only when user_state_dir()/notify (no suffix, so never
+                       pruned; 0600; {on, events, webhook?}) is on; off = one
+                       file read. Title `agentwatch: Claude Code · <cwd
+                       name> — waiting for permission|waiting for your
+                       input|finished`; body = payload message or "N tool
+                       calls this turn, ~$x" (1 MB transcript tail back to
+                       the prompt). Desktop via alerts.notify_command,
+                       spawned detached; webhook 3 s. Dedup: state
+                       "attention" key; repeated idle and idle after done
+                       skipped; PostToolUse _save and Stop reset it;
+                       stop_hook_active skipped. Prints nothing, no decision.
+                       hooks.json runs both async
   statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
@@ -241,7 +259,12 @@ src/agentwatch/
                        (URL masked), beep on
                        Windows toast failure; TUIs route warn to a toast
                        (tui_warn). Headless = MultiAgentWatchApp.run(
-                       headless=True), the same engine
+                       headless=True), the same engine.
+                       --notify-done (Sprint 40): observe(done=) = parser.
+                       models.turn_ended(newest first) -> one "finished
+                       [~$x]" alert per turn end (same message_id = same),
+                       baselined like findings, not rate-limited; headless
+                       DONE line
   _entry.py            Console-script entry: `hook` and `statusline` go
                        straight to coach.py / statusline.py without
                        importing cli.py, the rest to cli.main. The package
@@ -300,7 +323,13 @@ src/agentwatch/
 
   parser/
     models.py           Action / ActionBuffer / SessionStats / ToolType /
-                       MetricResult data models
+                       MetricResult data models.
+                       Action.turn_end marks where an agent finished its turn
+                       (Claude Code end_turn text, Codex task_complete,
+                       Copilot CLI final assistant.turn_end, Copilot VS Code
+                       request Complete, OpenCode finish=stop); Codex and
+                       Copilot CLI emit a TURN_END record counted like a
+                       usage record (is_usage_record)
                        ActionBuffer merges a late tool result into its call
                        (`_sync_results`, `take_changed()`) and bumps
                        `revision` on any change (the dashboard's score cache
