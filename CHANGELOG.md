@@ -6,6 +6,19 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Added
+
+- Needs-input and done alerts. `agentwatch notify on [--webhook URL]
+  [--events needs-input,done]` turns on alerts from the Claude Code plugin's
+  hook: "waiting for permission" / "waiting for your input" (Notification)
+  and "finished" with the turn's tool calls and cost (Stop), as a desktop
+  notification and optional webhook post, once per state change. Off by
+  default; the settings file is 0600 and the webhook URL is never printed.
+  `watch`/`watch-all --notify-done` alerts when a Claude Code, Codex, Copilot
+  CLI, Copilot VS Code, OpenCode or Kilo Code session finishes its turn, from
+  the log's own turn-end marker (sessions already finished at startup are a
+  silent baseline).
+
 ### Fixed
 
 - Codex sessions (Codex CLI and the ChatGPT desktop app) no longer get a

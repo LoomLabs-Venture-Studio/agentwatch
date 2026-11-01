@@ -953,6 +953,35 @@ cp -r plugin/skills/agentwatch-scrub ~/.claude/skills/agentwatch-scrub
 
 Claude Code only.
 
+#### Done alerts
+
+```bash
+# One alert each time a session finishes its turn and waits for you
+agentwatch watch-all --notify-done
+agentwatch watch-all --headless --notify-done --webhook https://hooks.slack.com/services/...
+```
+
+The alert reads `agentwatch: Codex · myproj — finished` (with `~$0.42` when
+the session's cost is known) and `waiting for your next prompt` as its body;
+headless also prints one `DONE` line. It comes from the log's own turn-end
+marker, never from idle time:
+
+| Agent | Turn end in the log |
+|---|---|
+| Claude Code | a text-only reply with `stop_reason: "end_turn"` |
+| Codex CLI, ChatGPT app (Codex) | `task_complete` event |
+| Copilot CLI | the reply's last `assistant.turn_end` (its `assistant.message` asks for no tools) |
+| Copilot in VS Code | the request's `modelState` turns Complete |
+| OpenCode, Kilo Code | an assistant step with `finish: "stop"` |
+
+Aider, Cursor, Gemini CLI, Antigravity, Cline and Claude Desktop are not
+covered: their logs have no precise turn-end marker that AgentWatch reads.
+No agent's log shows "waiting for permission", so `watch-all` has no
+needs-input alert; for Claude Code use the plugin's `agentwatch notify`
+(below). A session that has already finished when AgentWatch first sees it
+is a silent baseline, like findings. `--notify-done` alone turns on
+`--notify`; with `--webhook` you get only the webhook.
+
 ## Claude Code plugin (coach)
 
 The `agentwatch` plugin coaches Claude Code while it works. After every tool
@@ -1019,6 +1048,51 @@ redirected into the app's private folder, so the state is really under
 agentwatch itself sees the same redirect, so this only matters when you look
 for the files by hand. This also applies to a pipx/venv install built on the
 Store Python; a python.org Python has no redirect.
+
+### Needs-input and done alerts
+
+The plugin can also tell you when a Claude Code session needs you or has
+finished, with a desktop notification and, if you like, a webhook post. It is
+off until you turn it on:
+
+```bash
+agentwatch notify on                                   # desktop
+agentwatch notify on --webhook https://hooks.slack.com/services/...   # desktop + webhook
+agentwatch notify on --events done                     # only "finished"
+agentwatch notify status
+agentwatch notify off
+```
+
+Alerts read:
+
+```text
+agentwatch: Claude Code · myproj — waiting for permission
+Claude needs your permission to use Bash
+
+agentwatch: Claude Code · myproj — waiting for your input
+Claude is waiting for your input
+
+agentwatch: Claude Code · myproj — finished
+4 tool calls this turn, ~$0.42
+```
+
+`needs-input` comes from Claude Code's `Notification` hook (permission
+prompts, the idle prompt about 60 seconds after a reply, MCP elicitation
+dialogs, and background sessions waiting on you); `done` from its `Stop`
+hook (not sent on an interrupt, or again when another stop hook made Claude
+go on). You get one alert per change: the repeating idle reminder is not
+re-sent, nor sent after a "finished" alert. A new tool call or a new turn
+resets it. The turn summary counts the tool calls since your last prompt;
+its cost is shown only when every call's model is priced. Message text is
+cleaned like other alerts (one line, secrets redacted).
+
+`on` writes `notify` in the per-user coach dir (`~/.cache/agentwatch/coach`,
+or `%LOCALAPPDATA%\agentwatch\coach`): file `0600`, dir `0700`. The webhook
+URL is stored there only when you pass one, and never printed (`status` shows
+`https://hooks.slack.com/***`). `on` again replaces the settings; `off` deletes
+the file. Both hooks run async, print nothing and never block or change a
+stop; with alerts off they only read that file (about 35 ms). The notifier is
+started without waiting for it; the webhook gets 3 seconds.
 
 ### Status line
 
