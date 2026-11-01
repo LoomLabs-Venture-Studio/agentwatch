@@ -1799,7 +1799,9 @@ class MultiAgentWatchApp(App):
         self.alerter.observe(
             str(item.log_path), item.agent_type, item.project_name or item.log_path.name,
             warnings, report, actions=stats.action_count, cost=stats.estimated_cost,
-            done=turn_ended(reversed(buffer.actions)) if self.alerter.notify_done else None,
+            # A subagent transcript finishing is not the user's wait.
+            done=turn_ended(reversed(buffer.actions))
+            if self.alerter.notify_done and item.log_path.parent.name != "subagents" else None,
         )
 
     def _export_and_assess(self, agent_data: dict, warnings: list["Warning"]) -> None:

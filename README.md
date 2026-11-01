@@ -1081,8 +1081,9 @@ prompts, the idle prompt about 60 seconds after a reply, MCP elicitation
 dialogs, and background sessions waiting on you); `done` from its `Stop`
 hook (not sent on an interrupt, or again when another stop hook made Claude
 go on). You get one alert per change: the repeating idle reminder is not
-re-sent, nor sent after a "finished" alert. A new tool call or a new turn
-resets it. The turn summary counts the tool calls since your last prompt;
+re-sent, nor sent after a "finished" alert; the next tool call or "finished"
+resets it. Every permission or elicitation prompt alerts, except the very same
+prompt again within 60 seconds. The turn summary counts the tool calls since your last prompt;
 its cost is shown only when every call's model is priced. Message text is
 cleaned like other alerts (one line, secrets redacted).
 

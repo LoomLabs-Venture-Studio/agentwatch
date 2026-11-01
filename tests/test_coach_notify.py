@@ -99,6 +99,33 @@ def test_repeat_idle_deduped_then_stop_and_new_wait_alert_again(tmp_path, sent):
     assert len(sent) == 3
 
 
+def test_different_permission_prompts_each_alert(tmp_path, sent, monkeypatch):
+    _on()
+    coach.run(_notif(tmp_path, "permission_prompt", "Claude needs your permission to use Bash"))
+    coach.run(_notif(tmp_path, "permission_prompt", "Claude needs your permission to use Write"))
+    assert len(sent) == 2
+    coach.run(_notif(tmp_path, "permission_prompt", "Claude needs your permission to use Write"))
+    assert len(sent) == 2  # the same prompt re-sent within REPEAT_S
+    now = coach.time.time()
+    monkeypatch.setattr(coach.time, "time", lambda: now + coach.REPEAT_S + 1)
+    coach.run(_notif(tmp_path, "permission_prompt", "Claude needs your permission to use Write"))
+    assert len(sent) == 3
+
+
+def test_repeated_idle_alerts_once(tmp_path, sent):
+    _on()
+    for _ in range(3):
+        coach.run(_notif(tmp_path))
+    assert len(sent) == 1
+
+
+def test_malformed_events_mean_none(tmp_path, sent):
+    _on(events="done")
+    coach.run(_ev(tmp_path, "Stop", stop_hook_active=False))
+    coach.run(_notif(tmp_path))
+    assert sent == []
+
+
 def test_post_tool_use_clears_waiting_state(tmp_path, sent):
     _on()
     coach.run(_notif(tmp_path, "permission_prompt", "needs permission"))

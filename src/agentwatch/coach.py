@@ -74,6 +74,7 @@ _WAITING = {
     "agent_needs_input": "waiting for your input",
 }
 WEBHOOK_TIMEOUT_S = 3.0  # inside BUDGET_S
+REPEAT_S = 60  # the same permission/elicitation prompt again within this: no alert
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # Context estimates (context_pressure) are not something the agent can act on
 # mid-task, and they fire on most long sessions; coach only loops, thrashing,
@@ -502,8 +503,8 @@ def _attention(payload: dict, session_id: str) -> None:
     settings = load_notify()
     if settings is None:
         return
-    events = settings.get("events")
-    events = events if isinstance(events, list) else NOTIFY_EVENTS
+    events = settings.get("events", NOTIFY_EVENTS)
+    events = events if isinstance(events, (list, tuple)) else ()  # malformed: none
     if payload["hook_event_name"] == "Stop":
         if payload.get("stop_hook_active") is True:
             return  # a stop hook made Claude go on; its first Stop already alerted
@@ -523,10 +524,22 @@ def _attention(payload: dict, session_id: str) -> None:
         state = state if isinstance(state, dict) else {}
     except (OSError, ValueError):
         state = {}
-    old = state.get("attention")
-    if new != "done" and (old == new or (new == "idle_prompt" and old == "done")):
-        return  # same wait (idle reminders repeat); "finished" already said it
+    import hashlib
+
+    old, now = state.get("attention"), time.time()
+    if new == "idle_prompt":
+        if old in ("idle_prompt", "done"):
+            return  # the reminder repeats; "finished" already said it
+    elif new != "done":
+        # Every prompt alerts (Bash, then Write: two), unless the very same
+        # one comes again within REPEAT_S.
+        message = str(payload.get("message"))
+        new = f"{new}:{hashlib.sha256(message.encode()).hexdigest()[:16]}"
+        at = state.get("attention_at")
+        if old == new and isinstance(at, (int, float)) and now - at < REPEAT_S:
+            return
     state["attention"] = new if wanted else None
+    state["attention_at"] = now
     state.setdefault("warnings", [])
     _atomic_write(path, json.dumps(state))
     if not wanted:

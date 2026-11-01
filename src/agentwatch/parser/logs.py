@@ -329,8 +329,10 @@ def _parse_claude_code(
                 session_id=session_id,
                 raw={"type": "text", "text": joined[:500]},
                 # A text-only reply that ends the turn (each line of the
-                # message repeats its stop_reason).
-                turn_end=msg.get("stop_reason") == "end_turn",
+                # message repeats its stop_reason). A subagent's reply
+                # (isSidechain, also every line under subagents/) is not.
+                turn_end=(msg.get("stop_reason") == "end_turn"
+                          and not entry.get("isSidechain")),
                 **billing,
                 **call,
             ))

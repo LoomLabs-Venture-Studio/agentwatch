@@ -109,6 +109,17 @@ class TestParsers:
         assert done is not None and done.tool_name == "text_output"
         assert acts[-1].tool_name == "system"  # skipped over
 
+    def test_claude_code_subagent_reply_is_not_done(self, tmp_path):
+        entries = [{**e, "isSidechain": True} for e in _claude("end_turn")]
+        log = tmp_path / "s.jsonl"
+        log.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+        acts = list(parse_file(log))
+        assert not any(a.turn_end for a in acts)
+        a, sent = _alerter(notify_existing=True)
+        a.observe("s", "claude-code", "p", [], SimpleNamespace(status=get_theme().level_0,
+                  overall_score=95), actions=len(acts), done=turn_ended(_newest_first(acts)))
+        assert sent == []
+
     def test_claude_code_streaming_or_tool_use_is_not_done(self, tmp_path):
         log = tmp_path / "s.jsonl"
         log.write_text("\n".join(json.dumps(e) for e in _claude(None)) + "\n")
