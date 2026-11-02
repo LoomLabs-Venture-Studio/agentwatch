@@ -815,18 +815,18 @@ agentwatch report: last 7 days (2026-10-11 to 2026-10-18)
     ...
 
   Cost by model
-    claude-opus-5-5        claude-code   569.6M tok   ~$420.05   cache 92%
-    claude-haiku-5-5       claude-code     582k tok     ~$0.03   cache 74%
-    (not logged)           gemini           65k tok        n/a   cache 39%
-  Cache: 92% of input read from cache (522.2M read, 44.1M written [37.5M 5m, 6.6M 1h], 223k uncached)
-  Cache saved ~$1,982.56 against the input rate (priced models)
+    claude-opus-5-5        claude-code    18.2M tok    ~$12.40   cache 91%
+    claude-haiku-5-5       claude-code     420k tok     ~$0.06   cache 70%
+    (not logged)           gemini           50k tok        n/a   cache 40%
+  Cache: 91% of input read from cache (16.0M read, 1.4M written [1.1M 5m, 300k 1h], 180k uncached)
+  Cache saved ~$58.20 against the input rate (priced models)
 
-  Errors by type: 126 failed calls in 65 sessions (50%)
-    nonzero_exit               83   49 sessions (37%)    +60 vs previous
-    file_not_found             14   13 sessions (10%)    +8 vs previous
-    blocked                     6   6 sessions (5%)      +6 vs previous
+  Errors by type: 40 failed calls in 12 sessions (60%)
+    nonzero_exit               22   9 sessions (45%)     +4 vs previous
+    file_not_found              8   5 sessions (25%)     +2 vs previous
+    blocked                     3   2 sessions (10%)     -1 vs previous
     ...
-    by tool: Bash 121, Agent 1, WebSearch 1
+    by tool: Bash 34, Edit 3, Read 3
 ```
 
 `--format csv` writes the `--json` report as one long table, one value per
@@ -839,14 +839,14 @@ Pivot it in a spreadsheet, or filter it with any CSV tool:
 ```
 table,rank,name,metric,value
 report,,,schema,1
-period,,,days,30
-totals,,,cost_usd,420.4036
+period,,,days,7
+totals,,,cost_usd,12.46
 models,1,claude-opus-5-5,agent,claude-code
-models,1,claude-opus-5-5,cost_usd,420.0535
-models,1,claude-opus-5-5,cache_saved_usd,1982.5268
-cache,,,hit_pct,92.2
-errors.by_kind,1,nonzero_exit,count,83
-errors.by_kind,1,nonzero_exit,sessions_pct,37.4
+models,1,claude-opus-5-5,cost_usd,12.4
+models,1,claude-opus-5-5,cache_saved_usd,58.2
+cache,,,hit_pct,91.0
+errors.by_kind,1,nonzero_exit,count,22
+errors.by_kind,1,nonzero_exit,sessions_pct,45.0
 ```
 
 - `report` syncs first (this period and the one before; `--no-sync` skips
