@@ -315,6 +315,7 @@ def test_real_entry_process_prints_ask(tmp_path):
         input=_payload({"command": "bash -c 'rm -rf ~'"}), capture_output=True, text=True,
         timeout=30, env={"PATH": "", "HOME": str(tmp_path), "XDG_CACHE_HOME": str(tmp_path),
                          "SYSTEMROOT": __import__("os").environ.get("SYSTEMROOT", "")},
+        cwd=tmp_path,
     )
     assert proc.returncode == 0
     assert _asks(proc.stdout, "home")
