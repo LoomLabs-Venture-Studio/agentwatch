@@ -5331,3 +5331,32 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 |---|---|---|---|---|---|
 | 2026-10-27 | #189 | docs/site-redesign | docs | CTO review, QA PASS WITH NOTES (sonnet), round 1 fixed, board "go live" | -- |
 | 2026-10-27 | #190 | fix/codex-usage-loop | fix | CTO review, QA PASS WITH NOTES (sonnet), follow-ups fixed (011af8d); held until after the site promotion | -- |
+
+### Sprint 40 (cont.) -- report breakdowns and CSV (gaps #7, #10, #9)
+**Type:** feature. Branch `feature/report-breakdowns` from develop 8e3b5fc.
+**Goal:** "where did my money and time go": errors by type (sniffly), cost per model and cache hit ratio (opcode, Grafana #25255), export (ccusage --json, claude-code-otel).
+**Placement:** all three live in `report` (history.db: cross-agent, periods, trend). `stats` (Claude Code only) gets `--format csv` through the same writer; no second cost or cache path.
+
+### Acceptance Criteria
+- [x] Errors by type: failed calls (the ones `check` counts) classified by fixed strings/regexes into `permission_denied`, `blocked`, `test_failure`, `timeout`, `edit_failed`, `command_not_found`, `file_not_found`, `network`, `nonzero_exit`, `other`, plus a count per tool name. Count, sessions affected and their share, delta vs the previous period.
+- [x] Only kind, tool name and count stored (`session_errors`); never error text. Tool/model names stored only if they look like an id (no paths).
+- [x] Cost by model (per model and agent): calls, tokens, USD; unpriced -> tokens and n/a.
+- [x] Cache: read vs written (5m/1h) vs uncached input, hit % = read / (read + written + uncached), USD saved = the call re-priced with its reads at the input rate minus its price (same `usage_cost_usd`, so the Haiku 5.5 long-prompt tier is respected), priced models only.
+- [x] Per-model USD and tokens sum exactly to each session's stored cost/tokens (same "largest copy of each call" rule as ActionBuffer).
+- [x] History schema 2 (`_MIGRATIONS[1]`): `session_models`, `session_errors` (IF NOT EXISTS, ON DELETE CASCADE), and `UPDATE sessions SET size = -1` so the next sync re-reads each log once. A session whose log is gone keeps no breakdown.
+- [x] `report --format csv` and `stats --format csv`: one long table, header `table,rank,name,metric,value`; formula-leading text gets `'`.
+- [x] `--json` schema stays 1 (README: "fields only added, never renamed"); adds `models`, `cache`, `errors`.
+- [x] Tests on the real path (fixture Claude Code + Codex logs -> sync -> report text/JSON/CSV), migration from a schema-1 DB, empty period, CSV header, JSON back-compat.
+- [x] No noticeable sync/report regression on real logs.
+
+### Result
+- **Coverage.** Claude Code: everything (model, every cache field, priced). Codex and Gemini CLI: tokens and cache hit % (cached input), no model id, no price. Cline (SDK store): its own logged cost, cache read/write, no model id, so no saving. Copilot CLI/VS Code, agy: tokens they log, unpriced. Errors by type: every agent whose parser fills `error_message`.
+- **Real machine (all history, 161 sessions).** Spend ~$450.58: claude-opus-5-5 ~$448.16 (648.8M tok), claude-sonnet-5 ~$2.07 (5.8M), claude-sonnet-5-5 ~$0.32 (80k), claude-haiku-5-5 ~$0.03 (582k), Gemini 65k tok n/a. Cache: 93% hit (605.6M read, 45.2M written: 39.2M 5m, 6.0M 1h; 225k uncached), ~$2,288 saved against the input rate. Errors: 165 failed calls in 78 sessions; nonzero_exit 105, blocked 28, file_not_found 20, command_not_found 5, permission_denied 2, test_failure 2, other 2, timeout 1; by tool Bash 157.
+- **Cross-check.** Per-model sums equal each session's stored cost and tokens exactly (0 mismatches over 162 sessions; `--agent claude-code` models sum $450.5846 = totals $450.5846). Against `stats --all` over the same 42 Claude Code sessions (148 log files incl. subagents): $474.09 vs $474.40, $0.31 (0.07%) apart, in 3 sessions: 2 have text-only or thinking-only assistant messages whose usage the Claude parser never attaches to an Action (pre-existing; `check` and history miss it too, `stats` counts it), 1 has streamed lines with differing usage (stats takes each field's max, history the largest copy). `stats --blocks` is not on develop (other Sprint 40 branch): not compared.
+- **Timing** (real logs, temp XDG_DATA_HOME, before = develop 8e3b5fc, interleaved, median of 5, machine load 5-26 from other work): `history sync` cold 65.4 s -> 67.6 s (+3%; the one low-load pair 23.0 -> 24.2 s), warm 1.10 -> 1.08 s, `report --no-sync` 0.87 -> 0.43 s, `report --days 30` 0.83 -> 0.98 s (noise). The first sync after upgrading costs one cold sync (logs in `--days` scope only for `report`).
+- **Cuts.** OpenTelemetry export (needs a dep or a hand-rolled OTLP schema). "unknown tool" (`No such tool available`) left in `other`. Exit codes beyond "non-zero" (no per-code buckets). Cost/cache per model in `stats` (report covers it; stats got CSV only). Codex model id (rollouts carry it in turn_context; the parser doesn't keep it). Cline legacy store cache split (only a combined cached count).
+- **Tests.** tests/test_report_breakdowns.py (fixture Claude Code + Codex logs -> sync -> report text/JSON/CSV; each kind, unpriced model, hand-computed cache $, schema-1 migration, CSV header, formula guard, empty period, rescan/cascade); test_report JSON back-compat. Full suite 2602 passed, 1 skipped, 5 wall-clock tests failed under load ~20 (test_secret_leak_sinks x3, test_hidden_instruction_detector x1, test_persistent_findings toggle/replay); all 202 in those files pass at load 3, and develop itself fails one of them under the same load.
+
+### Follow-ups
+- Claude parser: text-only and thinking-only assistant messages carry no usage on any Action, so `check`, history and report undercount them slightly ($0.31 of $474 here).
+- Codex: keep `turn_context.model` on usage records so cost by model can name it.
