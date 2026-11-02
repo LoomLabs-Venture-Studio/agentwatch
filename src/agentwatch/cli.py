@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import re
@@ -1614,6 +1615,13 @@ def themes():
     help="Output as JSON",
 )
 @click.option(
+    "--format", "fmt",
+    type=click.Choice(["text", "json", "csv"]),
+    default="text",
+    show_default=True,
+    help="csv: the --json output as one long table (table,rank,name,metric,value)",
+)
+@click.option(
     "--burn",
     is_flag=True,
     help="Show where tokens burn — trivial vs substantive breakdown",
@@ -1632,6 +1640,7 @@ def stats(
     all_projects: bool,
     session_id: str | None,
     json_output: bool,
+    fmt: str,
     burn: bool,
     list_trivial: bool,
     prompts: bool,
@@ -1668,8 +1677,14 @@ def stats(
             )
         sys.exit(1)
 
-    if json_output:
+    if json_output or fmt == "json":
         click.echo(json.dumps(report.to_dict(), indent=2))
+    elif fmt == "csv":
+        from agentwatch.report import write_csv
+
+        buf = io.StringIO()
+        write_csv(report.to_dict(), buf, root="stats")
+        click.echo(buf.getvalue(), nl=False)
     elif burn:
         _print_burn_report(report)
         if list_trivial:
@@ -2293,24 +2308,32 @@ def history_path():
 @click.option("--agent", default=None, help="Only this agent (e.g. claude-code)")
 @click.option("--project", default=None, help="Only this project folder name")
 @click.option("--no-sync", is_flag=True, help="Use the history DB as is")
+@click.option("--format", "fmt", type=click.Choice(["text", "json", "csv"]), default="text",
+              show_default=True, help="csv: one long table, table,rank,name,metric,value")
 def report(days: int, json_output: bool, agent: str | None, project: str | None,
-           no_sync: bool):
-    """What your agents cost you: spend, waste, costliest findings, trend.
+           no_sync: bool, fmt: str):
+    """What your agents cost you: spend, waste, costliest findings, trend,
+    cost by model, cache savings and errors by type.
 
     Syncs the history first (this period and the one before), then reports
     on sessions whose last action is in the last N days.
     """
     from agentwatch.history import sync
-    from agentwatch.report import build, render
+    from agentwatch.report import build, render, write_csv
 
+    fmt = "json" if json_output else fmt
     conn = _history_db()
     if not no_sync:
         counts = sync(conn, days=2 * days)
-        if counts["new"] + counts["updated"] and not json_output:
+        if counts["new"] + counts["updated"] and fmt == "text":
             click.echo(f"(synced {counts['new'] + counts['updated']} log(s))", err=True)
     rep = build(conn, days=days, agent=agent, project=project)
-    if json_output:
+    if fmt == "json":
         click.echo(json.dumps(rep, indent=2))
+    elif fmt == "csv":
+        buf = io.StringIO()
+        write_csv(rep, buf)
+        click.echo(buf.getvalue(), nl=False)
     else:
         click.echo("\n".join(render(rep)))
 
