@@ -146,3 +146,96 @@ def test_real_entry_process_with_guard_off_prints_nothing(tmp_path):
     )
     assert proc.returncode == 0
     assert proc.stdout == ""
+
+
+# The agent must not be able to turn its own guard off silently (CTO review).
+
+def _asks_off(out: str | None) -> bool:
+    if _decision(out) != "ask":
+        return False
+    reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+    return "turns off the agentwatch command guard" in reason
+
+
+@pytest.mark.parametrize("command", [
+    "agentwatch guard off",
+    "agentwatch --theme ascii guard off",
+    "/usr/local/bin/agentwatch guard off",
+    "agentwatch.exe guard off",
+    r'"C:\Python313\Scripts\agentwatch.exe" guard off',
+    "python -m agentwatch guard off",
+    "python3 -m agentwatch.cli guard off",
+    "py -3 -m agentwatch guard off",
+    "uvx --from agentwatch-monitor agentwatch guard off",
+    "uvx agentwatch-monitor guard off",
+    "pipx run agentwatch-monitor guard off",
+    "pipx run agentwatch-monitor==0.2.1 guard off",
+    "bash -c 'agentwatch guard off'",
+    "sudo agentwatch guard off",
+    "env X=1 agentwatch guard off",
+    "cd /tmp && agentwatch guard off",
+    "true; agentwatch guard off",
+    "echo $(agentwatch guard off)",
+    "agentwatch guard off && rm -rf ./build",
+])
+def test_turning_the_guard_off_asks(command):
+    assert _asks_off(coach.run(_payload({"command": command})))
+
+
+@pytest.mark.parametrize("path", [
+    "~/.cache/agentwatch/coach/guard",
+    "$HOME/.cache/agentwatch/coach/guard",
+    "/home/u/.cache/agentwatch/coach/../coach/guard",
+    "C:/Users/U/AppData/Local/AgentWatch/Coach/GUARD",
+])
+@pytest.mark.parametrize("template", [
+    "echo '{{\"on\": false}}' > {}",
+    "echo '{{\"on\": false}}' >> {}",
+    "printf x | tee -a {}",
+    "cp /tmp/off.json {}",
+    "mv /tmp/off.json {}",
+    "bash -c 'echo x > {}'",
+])
+def test_bash_writes_to_the_guard_file_ask(template, path):
+    assert _asks_off(coach.run(_payload({"command": template.format(path)})))
+
+
+def test_bash_write_to_the_real_guard_path_asks():
+    path = str(coach.guard_path())
+    assert _asks_off(coach.run(_payload({"command": f'echo x > "{path}"'})))
+
+
+@pytest.mark.parametrize("tool,key", [
+    ("Write", "file_path"), ("Edit", "file_path"), ("MultiEdit", "file_path"),
+    ("NotebookEdit", "notebook_path"),
+])
+def test_file_tools_on_the_guard_file_ask(tool, key):
+    for path in (str(coach.guard_path()), str(coach.guard_path()).upper()):
+        payload = json.loads(_payload({key: path, "content": '{"on": false}'}))
+        payload["tool_name"] = tool
+        assert _asks_off(coach.run(json.dumps(payload)))
+
+
+@pytest.mark.parametrize("command", [
+    "agentwatch guard",
+    "agentwatch guard on",
+    "agentwatch guard status",
+    'echo "agentwatch guard off"',
+    'git commit -m "agentwatch guard off"',
+    "echo x > /tmp/project/guard",
+    "cp a.json src/guard",
+    "cat ~/.cache/agentwatch/coach/guard",
+])
+def test_guard_look_alikes_pass(command):
+    assert coach.run(_payload({"command": command})) is None
+
+
+def test_write_to_an_unrelated_guard_file_passes(tmp_path):
+    for path in (str(tmp_path / "guard"), str(tmp_path / "coach" / "guard")):
+        payload = json.loads(_payload({"file_path": path, "content": "x"}))
+        payload["tool_name"] = "Write"
+        assert coach.run(json.dumps(payload)) is None
+
+
+def test_unparsable_guard_off_still_asks():
+    assert _asks_off(coach.run(_payload({"command": "agentwatch guard off 'oops"})))

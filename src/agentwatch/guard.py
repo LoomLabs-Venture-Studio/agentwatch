@@ -16,6 +16,10 @@ DESTRUCTIVE_PATTERNS instead. Commands over MAX_PARSE chars are split on `;`,
 guarded program or path is checked as above, longer pieces get the raw
 patterns on their first _PIECE chars.
 
+The guard also asks before it is turned off: `agentwatch guard off` (directly
+or through python -m / uvx / pipx), and Write/Edit or a Bash `>`, `tee`,
+`cp`/`mv` onto the settings file (coach.guard_path()).
+
 Stdlib only and imported on every PreToolUse: keep it cheap. It lives
 outside `agentwatch.parser`, whose package __init__ imports the watchers
 (~180 ms).
@@ -52,7 +56,7 @@ _PIECE = 500
 _SPLIT = re.compile(r"&&|\|\||[;\n]")
 # A piece without any of these cannot match a rule: skip its (~30 us) parse.
 _RELEVANT = re.compile(r"rm|git|mkfs|dd|chmod|curl|wget|/dev/|\.env|\.ssh|\.aws|netrc"
-                       r"|npmrc|pypirc|\.docker|\.kube|\.pem|\.key", re.IGNORECASE)
+                       r"|npmrc|pypirc|\.docker|\.kube|\.pem|\.key|agentwatch", re.IGNORECASE)
 # ponytail: wall-clock cap on the long-command path; past it the guard asks
 # instead of finishing. Raise it (under coach.BUDGET_S) if real commands hit it.
 _LONG_BUDGET_S = 1.0
@@ -70,6 +74,14 @@ _KEYWORDS = {"{", "}", "!", "if", "then", "elif", "else", "do", "while", "until"
              "fi", "done", "esac"}
 _SEPARATORS = set(";&|()`\n")
 _READERS = {"cat", "less", "more", "head", "tail", "cp", "scp", "bat"}
+# The guard's settings file is always <user_state_dir>/agentwatch/coach/guard
+# (coach.guard_path()); matching the tail also catches ~, $HOME and %VAR% spellings.
+_GUARD_FILE = "/agentwatch/coach/guard"
+_AW_NAMES = {"agentwatch", "agentwatch-monitor", "agentwatch.cli"}
+_LAUNCHERS = re.compile(r"python[\d.]*w?|py|uvx?|pipx")
+_GUARD_RAW = re.compile(r"\bguard\s+off\b|agentwatch[/\\]+coach[/\\]+guard\b", re.IGNORECASE)
+_FILE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path",
+               "NotebookEdit": "notebook_path"}
 
 REASONS = {
     "rm_root": "agentwatch: this command deletes the whole filesystem. Allow it?",
@@ -88,6 +100,7 @@ REASONS = {
     "destructive": "agentwatch: this command looks destructive. Allow it?",
     "too_long": "agentwatch: this command is too long to check. Allow it?",
     "secret": "agentwatch: this reads a file that may hold secrets ({}). Allow it?",
+    "guard_off": "agentwatch: this turns off the agentwatch command guard. Allow it?",
 }
 
 
@@ -112,6 +125,29 @@ def secret_label(path: str) -> str | None:
     if name.endswith((".pem", ".key")):
         return "private key"
     return None
+
+
+def is_guard_file(path: str) -> bool:
+    """True when *path* is the guard's settings file (case-insensitive)."""
+    p = posixpath.normpath(path.replace("\\", "/")).lower()
+    return ("/" + p).endswith(_GUARD_FILE)
+
+
+def _turns_guard_off(argv: list[str]) -> bool:
+    """`agentwatch [...] guard off`, also via python -m, uv/uvx and pipx run."""
+    def name(word: str) -> str:
+        word = word.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        return re.split(r"[@=<>\[]", word.removesuffix(".exe"), maxsplit=1)[0]
+
+    args = argv[1:]
+    if name(argv[0]) not in _AW_NAMES:
+        if not _LAUNCHERS.fullmatch(name(argv[0])):
+            return False
+        at = next((i for i, a in enumerate(args) if name(a) in _AW_NAMES), None)
+        if at is None:
+            return False
+        args = args[at + 1:]
+    return "guard" in args and "off" in args[args.index("guard") + 1:]
 
 
 def _simple_commands(tokens: list[str]) -> list[tuple[list[str], str]]:
@@ -188,8 +224,16 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
     for i, tok in enumerate(argv[:-1]):  # redirections, any program
         if tok in (">", ">>", ">|", "&>") and _DISK.match(argv[i + 1]):
             return REASONS["disk"]
+        if tok in (">", ">>", ">|", "&>") and is_guard_file(argv[i + 1]):
+            return REASONS["guard_off"]
         if tok == "<" and (label := secret_label(argv[i + 1])):
             return REASONS["secret"].format(label)
+    # ponytail: only direct writes to the guard file are caught (redirects, tee,
+    # cp/mv onto it, the file tools); `python -c`, scripts, `cd` + a relative
+    # path, ln/install/dd and other indirect writes are not. Upgrade: an
+    # integrity check on the file (owner-written marker) if agents try those.
+    if _turns_guard_off(argv):
+        return REASONS["guard_off"]
     if prog in _SHELLS:
         if piped_from & {"curl", "wget"}:
             return REASONS["pipe_shell"]
@@ -198,6 +242,9 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
                 return check_command(args[i + 1], depth + 1)
         return None
     flags, ops = _flags(args)
+    if prog in ("cp", "mv", "tee") and any(
+            is_guard_file(op) for op in (ops if prog == "tee" else ops[-1:])):
+        return REASONS["guard_off"]
     if prog == "rm" and flags & {"r", "R", "--recursive"}:
         for op in ops:
             if kind := _target(op):
@@ -250,6 +297,8 @@ def check_command(command: str, depth: int = 0) -> str | None:
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
+        if "agentwatch" in command.lower() and _GUARD_RAW.search(command):
+            return REASONS["guard_off"]
         return REASONS["destructive"] if _FALLBACK.search(command) else None
     pipeline: set[str] = set()  # programs earlier in the current pipeline
     for argv, sep in _simple_commands(tokens):
@@ -273,7 +322,10 @@ def _check_long(command: str, depth: int) -> str | None:
         if time.perf_counter() > deadline:
             return REASONS["too_long"]
         if len(piece) > _SMALL:
-            if _FALLBACK.search(piece.strip()[:_PIECE]):
+            head = piece.strip()[:_PIECE]
+            if "agentwatch" in head.lower() and _GUARD_RAW.search(head):
+                return REASONS["guard_off"]
+            if _FALLBACK.search(head):
                 return REASONS["destructive"]
         elif _RELEVANT.search(piece) and (reason := check_command(piece, depth)):
             return reason
@@ -287,6 +339,9 @@ def check(tool_name: str, tool_input: object) -> str | None:
         return None
     if tool_name == "Bash" and isinstance(tool_input.get("command"), str):
         return check_command(tool_input["command"])
+    path = tool_input.get(_FILE_TOOLS.get(tool_name, ""))
+    if isinstance(path, str) and is_guard_file(path):
+        return REASONS["guard_off"]
     if tool_name == "Read" and isinstance(tool_input.get("file_path"), str):
         label = secret_label(tool_input["file_path"])
         return REASONS["secret"].format(label) if label else None

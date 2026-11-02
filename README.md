@@ -995,7 +995,8 @@ agentwatch guard       # prints "agentwatch guard: on|off" and the file path
 The file is `%LOCALAPPDATA%\agentwatch\coach\guard` on Windows and
 `~/.cache/agentwatch/coach/guard` elsewhere (`$XDG_CACHE_HOME` if set). Any
 other content, or an unreadable file, leaves the guard on. The loop breaker
-is not affected.
+is not affected. The guard asks before `agentwatch guard off`; indirect
+writes (scripts) to the settings file are not caught.
 
 **Loop breaker.** When the same action has run 6 or more times in the last
 10 tool calls (a HIGH loop), the plugin's PreToolUse hook blocks the next
