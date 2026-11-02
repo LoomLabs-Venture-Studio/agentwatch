@@ -151,6 +151,28 @@ def test_projection_hidden_early_in_block_or_below_spend(home, monkeypatch):
     assert statusline.render(STDIN, cost=True) == "5h $21.00 · resets 2h45m"
 
 
+def _seed_cache(block):
+    cache = coach.user_state_dir() / statusline.BLOCK_CACHE
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps({"block": block}))
+    os.utime(cache, (NOW, NOW))
+
+
+def test_sub_cent_projection_hidden(home, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    _seed_cache({"end": NOW + 3 * 3600, "cost_usd": 0.004, "projected_cost_usd": 0.008})
+    assert statusline.render(STDIN, cost=True) == "5h <$0.01 · resets 3h00m"
+
+
+def test_null_or_missing_projection_keeps_the_segment(home, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    for block in ({"end": NOW + 3 * 3600, "cost_usd": 21.0, "projected_cost_usd": None},
+                  {"end": NOW + 3 * 3600, "cost_usd": 21.0},
+                  {"end": NOW + 3 * 3600, "cost_usd": 21.0, "projected_cost_usd": "x"}):
+        _seed_cache(block)
+        assert statusline.render(STDIN, cost=True) == "5h $21.00 · resets 3h00m", block
+
+
 def test_cost_off_never_imports_cc_stats(home):
     code = ("import sys\nfrom agentwatch import statusline\n"
             f"statusline.render({STDIN!r}, ok=True, cost=sys.argv[1] == '1')\n"

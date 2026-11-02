@@ -151,9 +151,10 @@ def _block_text() -> str:
         spent = _usd(block.get("cost_usd"), 1_000_000)
         if spent:  # unpriced model: no dollars, never a guess
             projected = _usd(block.get("projected_cost_usd"), 1_000_000)
-            if 5 * 3600 - left < PROJECT_AFTER_S or not (
-                block["projected_cost_usd"] >= block["cost_usd"]
-            ):
+            # A non-None _usd() means both raw values are finite numbers.
+            if (projected is None or projected.startswith("<")
+                    or 5 * 3600 - left < PROJECT_AFTER_S
+                    or block["projected_cost_usd"] < block["cost_usd"]):
                 projected = None
             text = f"{spent}{f' → ~{projected}' if projected else ''} · {text}"
         text = f"5h {text}"
