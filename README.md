@@ -973,17 +973,21 @@ bomb; and reading `.env`/`.env.*` (not `.example`/`.sample`/`.template`),
 `~/.pypirc`, `~/.docker/config.json`, `~/.kube/config` or `*.pem`/`*.key`
 with the Read tool, `cat`/`less`/`head`/`tail`/`cp`/`scp`, `curl -F @file`
 or `< file`. It also looks inside `bash -c '...'`, `script -c '...'`,
-`eval ...`, `cmd /c ...`, `powershell`/`pwsh -c|-Command ...`, `wsl ...`,
+`eval ...`, `cmd /c ...` (also `//c`, `/k` and `/c"..."`), `powershell`/`pwsh`
+(`-c`, `-Command` or a prefix from `-com`, or bare arguments), `wsl ...`,
 `sudo`, `env X=1`, `setsid`, `builtin` and chains (`&&`, `;`, `||`, `|`) and
-shell blocks (`if`, `while`, `{ ... }`), and a trailing `.exe` (`cmd.exe`,
-`bash.exe`) makes no difference.
+shell blocks (`if`, `while`, `{ ... }`). Program names are matched without
+case and without `.exe`, also by a quoted `C:\...\cmd.exe` path.
 Text passed to other programs is not checked, so `echo "rm -rf /"` runs.
 Not caught: other ways to read secrets (`grep`, `source .env`, the Edit and
-Write tools), `xargs rm`, `find -delete`, `curl ... | python`,
-`powershell -EncodedCommand` (not decoded), and scripts run from a file. Commands behind `watch` or `strace` are not unwrapped. In
-commands over 20,000 characters, parts longer than 2,000 characters get only
-a quick pattern check. It asks rather than blocks, so a false alarm
-costs one click.
+Write tools), `xargs rm`, `find -delete`, `curl ... | python` (or `| cmd`,
+`| powershell`), `powershell -EncodedCommand` (not decoded), `wsl
+--shell-type X`, `script --command=...`, wrappers nested more than 3 deep,
+unquoted backslash program paths, and scripts run from a file. Commands
+behind `watch` or `strace` are not unwrapped. In commands over 20,000
+characters, parts longer than 2,000 characters get only a quick pattern
+check, and words split by quotes (`r''m`) are missed. It asks rather than
+blocks, so a false alarm costs one click.
 
 The guard is on by default. Under `claude -p` (headless) Claude Code turns an
 ask into a deny, so a run that really needs `rm -rf build/` or `git reset

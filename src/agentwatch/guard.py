@@ -8,12 +8,17 @@ Bash commands are split with shlex into simple commands (on `;`, `&&`, `||`,
 `|`, `&`, newlines, `(`, `)`, backticks and `$(`), leading `sudo`, `env`,
 `VAR=value`, `timeout N`, `nohup`, `setsid`, `builtin`, `wsl [-d X] [-e]`, ...
 and shell keywords (`if`, `do`, `{`, `!`, ...) are skipped, and
-`bash/sh/zsh -c '<script>'`, `script -c '<cmd>'`, `eval ...`, `cmd /c ...` and
-`powershell/pwsh -c|-Command ...` are checked recursively (a trailing `.exe`
-is ignored). `powershell -EncodedCommand` is not decoded. Arguments of any
-other program are not inspected, so `echo "rm -rf /"` or `git commit -m
-"rm -rf /"` pass. When shlex cannot parse the command (unbalanced quotes), the
-raw string is matched against DESTRUCTIVE_PATTERNS instead. Commands over
+`bash/sh/zsh -c '<script>'`, `script -c '<cmd>'`, `eval ...`, `cmd /c|//c|/k ...`
+(also glued `/c"..."`) and `powershell/pwsh` (-c, -Command or a prefix from -com,
+or bare args) are checked recursively. Program names are lowercased, without
+`.exe` and directory (`/` or backslash). Not caught: `powershell -EncodedCommand`
+(not decoded), `wsl --shell-type X`, `script --command=...`, `curl | cmd` or
+`| powershell`, wrappers nested more than 3 deep, unquoted backslash program
+paths (shlex eats them), and quote-split words (`r''m`) inside commands over
+MAX_PARSE chars. Arguments of any other program are not inspected, so
+`echo "rm -rf /"` or `git commit -m "rm -rf /"` pass. When shlex cannot parse
+the command (unbalanced quotes), the raw string is matched against
+DESTRUCTIVE_PATTERNS instead. Commands over
 MAX_PARSE chars are split on `;`, `&&`, `||` and newlines first; each piece up
 to _SMALL chars that names a guarded program or path is checked as above,
 longer pieces get the raw patterns on their first _PIECE chars.
@@ -87,6 +92,12 @@ _AW_NAMES = {"agentwatch", "agentwatch-monitor", "agentwatch.cli", "agentguard"}
 _LAUNCHERS = re.compile(r"python[\d.]*w?|py|uvx?|pipx|xargs|npx")
 _AW_RAW = re.compile(r"agent(?:watch|guard)", re.IGNORECASE)
 _GUARD_RAW = re.compile(r"\bguard\s+off\b|agentwatch[/\\]+coach[/\\]+guard\b", re.IGNORECASE)
+# PowerShell options that take a value: matched as a prefix of the long name,
+# plus the aliases that are not prefixes.
+_PS_VALUE = ("windowstyle", "version", "workingdirectory", "outputformat", "inputformat",
+             "configurationname", "configurationfile", "psconsolefile", "settingsfile",
+             "custompipename")
+_PS_ALIASES = {"wd", "of", "if"}
 _FILE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path",
                "NotebookEdit": "notebook_path"}
 
@@ -141,9 +152,9 @@ def is_guard_file(path: str) -> bool:
 
 
 def _prog(word: str) -> str:
-    """Program name: the basename without a trailing .exe (`cmd.exe`, `bash.exe`)."""
-    word = word.rsplit("/", 1)[-1]
-    return word[:-4] if word.lower().endswith(".exe") else word
+    r"""Program name: the lowercased basename without .exe (`C:\...\CMD.exe` -> cmd)."""
+    word = word.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return word.removesuffix(".exe")
 
 
 def _rest(args: list[str], depth: int) -> str | None:
@@ -151,6 +162,36 @@ def _rest(args: list[str], depth: int) -> str | None:
     if not args:
         return None
     return check_command(args[0] if len(args) == 1 else shlex.join(args), depth + 1)
+
+
+def _cmd(args: list[str], depth: int) -> str | None:
+    """cmd /c, //c (Git Bash), /k, /r, also glued: /c"..."."""
+    for i, a in enumerate(args):
+        if m := re.match(r"/{1,2}[ckr]", a, re.IGNORECASE):
+            glued = a[m.end():]
+            return _rest(([glued] if glued else []) + args[i + 1:], depth)
+    return None
+
+
+def _powershell(args: list[str], depth: int) -> str | None:
+    """powershell/pwsh -c|-Command (or a prefix from -com), or bare args: 5.1
+    runs them as a command (pwsh 7 as -File; asked the same). -File and
+    -EncodedCommand return None."""
+    i = 0
+    while i < len(args):
+        if not args[i].startswith(("-", "/")):
+            return _rest(args[i:], depth)
+        o = args[i].lstrip("-/").lower()
+        if o == "c" or (len(o) >= 3 and "command".startswith(o)):
+            return _rest(args[i + 1:], depth)
+        if o in ("ex", "ep") or (len(o) > 1 and "executionpolicy".startswith(o)) or (
+                o in _PS_ALIASES or (o and any(n.startswith(o) for n in _PS_VALUE))):
+            i += 2
+        elif o.startswith("e") or (o and "file".startswith(o)):
+            return None  # -EncodedCommand (not decoded) or a script file
+        else:
+            i += 1  # a switch: -NoProfile, -NoLogo, -NonInteractive, ...
+    return None
 
 
 def _turns_guard_off(argv: list[str]) -> bool:
@@ -194,7 +235,7 @@ def _strip_prefixes(argv: list[str]) -> list[str]:
             i += 1
         elif word in _KEYWORDS:
             i += 1
-        elif (prefix := _prog(word).lower()) in _PREFIXES:
+        elif (prefix := _prog(word)) in _PREFIXES:
             i += 1
             while i < len(argv) and argv[i].startswith("-"):
                 i += 2 if argv[i] in _PREFIXES[prefix] else 1
@@ -266,11 +307,10 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
             if re.fullmatch(r"-[a-z]*c[a-z]*", a) or a == "--command":
                 return check_command(args[i + 1], depth + 1)
         return None
-    win = prog.lower()
-    if win in ("cmd", "powershell", "pwsh"):
-        run = ("/c", "/k") if win == "cmd" else ("-c", "-command")
-        at = next((i for i, a in enumerate(args) if a.lower() in run), None)
-        return None if at is None else _rest(args[at + 1:], depth)
+    if prog == "cmd":
+        return _cmd(args, depth)
+    if prog in ("powershell", "pwsh"):
+        return _powershell(args, depth)
     flags, ops = _flags(args)
     if prog in ("cp", "mv", "tee") and any(
             is_guard_file(op) for op in (ops if prog == "tee" else ops[-1:])):

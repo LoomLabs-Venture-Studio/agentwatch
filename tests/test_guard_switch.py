@@ -191,6 +191,9 @@ def _asks_off(out: str | None) -> bool:
     "wsl agentwatch guard off",
     "agentguard guard off 'oops",
     pytest.param("true;" * 4100 + "agentguard guard off", id="long-agentguard"),
+    # round 2
+    "cmd //c agentguard guard off",
+    "powershell -NoProfile agentguard guard off",
 ])
 def test_turning_the_guard_off_asks(command):
     assert _asks_off(coach.run(_payload({"command": command})))
@@ -283,6 +286,21 @@ def test_unparsable_guard_off_still_asks():
     "script --command 'git reset --hard'",
     'cmd /c bash -c "rm -rf /"',
     "bash.exe -c 'rm -rf /'",
+    # round 2: Git Bash `//c`, glued `/c"..."`, bare and short-form PowerShell
+    "cmd //c bash -c 'rm -rf /'",
+    "cmd /c\"bash -c 'rm -rf /'\"",
+    'cmd /k"git reset --hard"',
+    "cmd //C git push -f",
+    "powershell git reset --hard",
+    "pwsh -NoLogo -ExecutionPolicy Bypass rm -rf ~",
+    'powershell -comm "git reset --hard"',
+    "pwsh -Comm 'rm -rf /'",
+    "powershell -WindowStyle Hidden -Command git clean -fd",
+    # round 2: case-insensitive names, quoted backslash paths
+    "BASH -c 'rm -rf /'",
+    "GIT reset --hard",
+    "Bash.exe -c 'rm -rf /'",
+    r""""C:\Windows\System32\cmd.exe" /c bash -c 'rm -rf /'""",
 ])
 def test_wrapped_commands_ask(command):
     assert guard.check("Bash", {"command": command}) is not None
@@ -301,6 +319,17 @@ def test_wrapped_commands_ask(command):
     "wsl ls ~",
     "script session.log",
     'script -c "ls -la" /dev/null',
+    # round 2
+    "cmd /c echo git reset --hard",
+    "cmd //c dir",
+    "cmd /d /q",
+    "powershell -File x.ps1",
+    "pwsh -f build.ps1 git reset --hard",  # arguments to a script
+    "pwsh -Version",
+    "pwsh -v 7",
+    "powershell -ec cgBtACAALQByAGYAIAAvAA==",
+    "powershell -NoProfile Get-ChildItem",
+    "pwsh -co x",  # ambiguous in PowerShell: rejected, not a command
 ])
 def test_wrapper_look_alikes_pass(command):
     assert guard.check("Bash", {"command": command}) is None
