@@ -30,8 +30,10 @@ HIGH, so a new loop blocks again. AGENTWATCH_LOOP_BREAKER=off disables it.
 Command guard (runs first on PreToolUse, see guard.py): a catastrophic Bash
 command (rm -rf ~, git push --force, mkfs, curl | sh, ...) or a read of a
 secrets file (.env, SSH keys, cloud credentials) returns `"permissionDecision":
-"ask"` with a fixed reason, so Claude Code asks the user. No off switch: a
-false positive costs one click.
+"ask"` with a fixed reason, so Claude Code asks the user. On by default;
+`agentwatch guard off` writes {"on": false} to the per-user file GUARD in
+user_state_dir() and turns it off (board 2026-11-02: under `claude -p` an
+ask is a deny). Any other content, or no file, leaves it on.
 """
 
 from __future__ import annotations
@@ -58,6 +60,7 @@ STATE_MAX_AGE_S = 7 * 24 * 3600
 # File in user_state_dir() naming the dir the hook writes state to (no .json,
 # so never pruned).
 POINTER = "state-dir"
+GUARD = "guard"
 _MAX_LINE = 200
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # Context estimates (context_pressure) are not something the agent can act on
@@ -387,8 +390,36 @@ def _breaker(payload: dict, key: str) -> str | None:
     }})
 
 
+def guard_path() -> Path:
+    return user_state_dir() / GUARD
+
+
+def guard_enabled() -> bool:
+    """False only when the settings file is a dict with "on" exactly False;
+    a missing, unreadable or corrupt file leaves the guard on."""
+    try:
+        data = json.loads(guard_path().read_text(encoding="utf-8"))
+    except Exception:  # OSError, ValueError, RecursionError on deep nesting
+        return True
+    return not (isinstance(data, dict) and data.get("on") is False)
+
+
+def set_guard(on: bool) -> Path:
+    """On: delete the settings file. Off: write {"on": false} (0700 dir, atomic)."""
+    path = guard_path()
+    if on:
+        path.unlink(missing_ok=True)
+        return path
+    if not _private_dir(path.parent):
+        raise OSError(f"{path.parent} is not owned by this user")
+    _atomic_write(path, json.dumps({"on": False}))
+    return path
+
+
 def _guard(payload: dict) -> str | None:
     """PreToolUse: ask the user before a catastrophic command or a secrets read."""
+    if not guard_enabled():
+        return None
     from agentwatch.guard import check
 
     name = payload["tool_name"]

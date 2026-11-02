@@ -13,6 +13,9 @@ numbers refer to the GitHub repository.
   ...) or a read of a secrets file (`.env`, SSH keys, cloud credentials) the
   PreToolUse hook makes Claude Code ask you first, also when the command is
   wrapped in `bash -c`, `sudo` or `env` or chained.
+- `agentwatch guard off|on`: a per-user off switch for the command guard
+  (on by default). Under `claude -p` an ask is a deny, so headless runs can
+  turn it off. `agentwatch guard` prints the status.
 
 ### Fixed
 

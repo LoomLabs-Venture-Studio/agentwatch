@@ -2324,6 +2324,27 @@ def hook():
 
 
 @cli.command()
+@click.argument("state", type=click.Choice(["on", "off", "status"]), default="status")
+def guard(state: str):
+    """Turn the Claude Code command guard on or off (on by default).
+
+    The guard (the agentwatch plugin's hook) asks before catastrophic commands
+    and secrets reads. Under `claude -p` an ask becomes a deny, so `off` lets
+    headless runs through. `off` writes a per-user settings file; `on` deletes it.
+    """
+    from agentwatch.coach import guard_enabled, guard_path, set_guard
+
+    try:
+        if state != "status":
+            set_guard(state == "on")
+    except OSError as e:
+        click.echo(f"agentwatch: cannot write {guard_path()}: {e.strerror or e}", err=True)
+        sys.exit(1)
+    click.echo(f"agentwatch guard: {'on' if guard_enabled() else 'off'}")
+    click.echo(f"Settings: {guard_path()}")
+
+
+@cli.command()
 @click.option("--ok", is_flag=True, help="When healthy, print a dim check mark and 'agentwatch'")
 def statusline(ok: bool):
     """Claude Code status line: a short warning (loop ~$1.40) when unhealthy.

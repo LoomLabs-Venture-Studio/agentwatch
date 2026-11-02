@@ -980,7 +980,22 @@ Write tools), `xargs rm`, `find -delete`, `curl ... | python`, and scripts
 run from a file. Commands behind `watch` or `strace` are not unwrapped. In
 commands over 20,000 characters, parts longer than 2,000 characters get only
 a quick pattern check. It asks rather than blocks, so a false alarm
-costs one click. There is no off switch.
+costs one click.
+
+The guard is on by default. Under `claude -p` (headless) Claude Code turns an
+ask into a deny, so a run that really needs `rm -rf build/` or `git reset
+--hard` stops there. To turn the guard off for your user on this machine:
+
+```bash
+agentwatch guard off   # writes {"on": false} to the per-user settings file
+agentwatch guard on    # deletes it: the guard is on again
+agentwatch guard       # prints "agentwatch guard: on|off" and the file path
+```
+
+The file is `%LOCALAPPDATA%\agentwatch\coach\guard` on Windows and
+`~/.cache/agentwatch/coach/guard` elsewhere (`$XDG_CACHE_HOME` if set). Any
+other content, or an unreadable file, leaves the guard on. The loop breaker
+is not affected.
 
 **Loop breaker.** When the same action has run 6 or more times in the last
 10 tool calls (a HIGH loop), the plugin's PreToolUse hook blocks the next
