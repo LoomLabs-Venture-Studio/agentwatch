@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import re
+import subprocess
+import sys
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -27,11 +32,16 @@ def _line(msg_id, ts, model=SONNET, inp=2_000_000, out=1_000_000):
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
     for var in ("XDG_CACHE_HOME", "CLAUDE_PLUGIN_DATA", "CLAUDE_CONFIG_DIR", "NO_COLOR"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(statusline, "_now", lambda: NOW)
     pdir = tmp_path / ".claude" / "projects" / "-p"
     pdir.mkdir(parents=True)
+    # Other tests' monkeypatch.setattr of the lazy CLAUDE_PROJECTS_DIR leaves a
+    # global behind on undo (often the real ~/.claude/projects); setitem
+    # removes the key on undo instead.
+    monkeypatch.setitem(vars(cc_stats), "CLAUDE_PROJECTS_DIR", pdir.parent)
     return pdir
 
 
@@ -139,3 +149,58 @@ def test_projection_hidden_early_in_block_or_below_spend(home, monkeypatch):
         "end": NOW + 3 * 3600, "cost_usd": 21.0, "projected_cost_usd": 20.0}}))
     os.utime(cache, (NOW + 15 * 60, NOW + 15 * 60))
     assert statusline.render(STDIN, cost=True) == "5h $21.00 · resets 2h45m"
+
+
+def test_cost_off_never_imports_cc_stats(home):
+    code = ("import sys\nfrom agentwatch import statusline\n"
+            f"statusline.render({STDIN!r}, ok=True, cost=sys.argv[1] == '1')\n"
+            "print('agentwatch.cc_stats' in sys.modules)")
+    for cost, imported in (("0", "False"), ("1", "True")):
+        proc = subprocess.run([sys.executable, "-c", code, cost], capture_output=True,
+                              text=True, timeout=60, check=True)
+        assert proc.stdout.strip() == imported
+
+
+def test_entry_fast_path_cost(home, tmp_path):
+    now = time.time()
+    ts = datetime.fromtimestamp(now - 1800, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (home / "s.jsonl").write_text(_line("m1", ts) + "\n", encoding="utf-8")
+    # Reports on stderr whether the full CLI was imported, after main()'s sys.exit(0).
+    code = ("import atexit, sys\nfrom agentwatch._entry import main\n"
+            "atexit.register(lambda: sys.stderr.write(str('agentwatch.cli' in sys.modules)))\n"
+            "main()")
+    env = dict(os.environ, NO_COLOR="1", CLAUDE_PLUGIN_DATA=str(tmp_path / "plugin"),
+               CLAUDE_CONFIG_DIR=str(tmp_path / "no-config"))
+    proc = subprocess.run([sys.executable, "-c", code, "statusline", "--cost"],
+                          input=STDIN.encode(), capture_output=True, env=env, timeout=60)
+    assert (proc.returncode, proc.stderr) == (0, b"False")
+    assert re.fullmatch(r"5h \$21\.00 .*resets \dh\d\dm\n", proc.stdout.decode("utf-8"))
+
+
+def test_main_exits_0_on_errors(home, monkeypatch, capsys):
+    def boom(**_):
+        raise RuntimeError("scan failed")
+    monkeypatch.setattr(cc_stats, "compute_blocks", boom)
+    for stdin in (STDIN.encode(), b"\xff garbage"):
+        monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(stdin)))
+        with pytest.raises(SystemExit) as exc:
+            statusline.main(ok=True, cost=True)
+        assert exc.value.code == 0
+        assert capsys.readouterr() == ("", "")
+
+
+def test_cache_written_private_and_replaced(home):
+    _log(home, _line("m1", "2026-10-30T10:30:00Z"))
+    statusline.render(STDIN, cost=True)
+    directory = coach.user_state_dir()
+    cache = directory / statusline.BLOCK_CACHE
+    end = datetime(2026, 10, 30, 15, 0, tzinfo=UTC).timestamp()
+    assert json.loads(cache.read_text()) == {
+        "block": {"end": end, "cost_usd": 21.0, "projected_cost_usd": 52.5}}
+    if os.name == "posix":
+        assert directory.stat().st_mode & 0o777 == 0o700
+    _log(home, _line("m1", "2026-10-30T10:30:00Z"), _line("m2", "2026-10-30T11:00:00Z"))
+    os.utime(cache, (NOW - 100, NOW - 100))  # stale: the next render rescans
+    statusline.render(STDIN, cost=True)
+    assert json.loads(cache.read_text())["block"]["cost_usd"] == 42.0
+    assert [p.name for p in directory.iterdir()] == [statusline.BLOCK_CACHE]  # no *.tmp
