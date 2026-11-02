@@ -6,19 +6,22 @@ Code shows the user a permission prompt. A false positive costs one click.
 
 Bash commands are split with shlex into simple commands (on `;`, `&&`, `||`,
 `|`, `&`, newlines, `(`, `)`, backticks and `$(`), leading `sudo`, `env`,
-`VAR=value`, `timeout N`, `nohup`, ... and shell keywords (`if`, `do`, `{`,
-`!`, ...) are skipped and `bash/sh/zsh -c '<script>'` is
-checked recursively. Arguments of any other program are not inspected, so
-`echo "rm -rf /"` or `git commit -m "rm -rf /"` pass. When shlex cannot parse
-the command (unbalanced quotes), the raw string is matched against
-DESTRUCTIVE_PATTERNS instead. Commands over MAX_PARSE chars are split on `;`,
-`&&`, `||` and newlines first; each piece up to _SMALL chars that names a
-guarded program or path is checked as above, longer pieces get the raw
-patterns on their first _PIECE chars.
+`VAR=value`, `timeout N`, `nohup`, `setsid`, `builtin`, `wsl [-d X] [-e]`, ...
+and shell keywords (`if`, `do`, `{`, `!`, ...) are skipped, and
+`bash/sh/zsh -c '<script>'`, `script -c '<cmd>'`, `eval ...`, `cmd /c ...` and
+`powershell/pwsh -c|-Command ...` are checked recursively (a trailing `.exe`
+is ignored). `powershell -EncodedCommand` is not decoded. Arguments of any
+other program are not inspected, so `echo "rm -rf /"` or `git commit -m
+"rm -rf /"` pass. When shlex cannot parse the command (unbalanced quotes), the
+raw string is matched against DESTRUCTIVE_PATTERNS instead. Commands over
+MAX_PARSE chars are split on `;`, `&&`, `||` and newlines first; each piece up
+to _SMALL chars that names a guarded program or path is checked as above,
+longer pieces get the raw patterns on their first _PIECE chars.
 
-The guard also asks before it is turned off: `agentwatch guard off` (directly
-or through python -m / uvx / pipx), and Write/Edit or a Bash `>`, `tee`,
-`cp`/`mv` onto the settings file (coach.guard_path()).
+The guard also asks before it is turned off: `agentwatch guard off` or
+`agentguard guard off` (directly or through python -m / uvx / pipx / npx /
+xargs), and Write/Edit or a Bash `>`, `tee`, `cp`/`mv` onto the settings file
+(coach.guard_path()).
 
 Stdlib only and imported on every PreToolUse: keep it cheap. It lives
 outside `agentwatch.parser`, whose package __init__ imports the watchers
@@ -56,7 +59,8 @@ _PIECE = 500
 _SPLIT = re.compile(r"&&|\|\||[;\n]")
 # A piece without any of these cannot match a rule: skip its (~30 us) parse.
 _RELEVANT = re.compile(r"rm|git|mkfs|dd|chmod|curl|wget|/dev/|\.env|\.ssh|\.aws|netrc"
-                       r"|npmrc|pypirc|\.docker|\.kube|\.pem|\.key|agentwatch", re.IGNORECASE)
+                       r"|npmrc|pypirc|\.docker|\.kube|\.pem|\.key|agentwatch|agentguard",
+                       re.IGNORECASE)
 # ponytail: wall-clock cap on the long-command path; past it the guard asks
 # instead of finishing. Raise it (under coach.BUDGET_S) if real commands hit it.
 _LONG_BUDGET_S = 1.0
@@ -68,7 +72,9 @@ _SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 _PREFIXES = {"sudo": {"-u", "-g", "-C", "-h", "-p"}, "doas": {"-u", "-C"},
              "env": {"-u", "-C"}, "nice": {"-n"}, "ionice": {"-c", "-n", "-p"},
              "stdbuf": {"-i", "-o", "-e"}, "timeout": {"-s", "-k"}, "command": set(),
-             "exec": set(), "nohup": set(), "time": set(), "busybox": set()}
+             "exec": set(), "nohup": set(), "time": set(), "busybox": set(),
+             "builtin": set(), "setsid": set(),
+             "wsl": {"-d", "--distribution", "-u", "--user", "--cd"}}
 # Shell keywords and grouping words before a command; fi/done/esac/} stand alone.
 _KEYWORDS = {"{", "}", "!", "if", "then", "elif", "else", "do", "while", "until",
              "fi", "done", "esac"}
@@ -77,8 +83,9 @@ _READERS = {"cat", "less", "more", "head", "tail", "cp", "scp", "bat"}
 # The guard's settings file is always <user_state_dir>/agentwatch/coach/guard
 # (coach.guard_path()); matching the tail also catches ~, $HOME and %VAR% spellings.
 _GUARD_FILE = "/agentwatch/coach/guard"
-_AW_NAMES = {"agentwatch", "agentwatch-monitor", "agentwatch.cli"}
-_LAUNCHERS = re.compile(r"python[\d.]*w?|py|uvx?|pipx")
+_AW_NAMES = {"agentwatch", "agentwatch-monitor", "agentwatch.cli", "agentguard"}
+_LAUNCHERS = re.compile(r"python[\d.]*w?|py|uvx?|pipx|xargs|npx")
+_AW_RAW = re.compile(r"agent(?:watch|guard)", re.IGNORECASE)
 _GUARD_RAW = re.compile(r"\bguard\s+off\b|agentwatch[/\\]+coach[/\\]+guard\b", re.IGNORECASE)
 _FILE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path",
                "NotebookEdit": "notebook_path"}
@@ -133,8 +140,22 @@ def is_guard_file(path: str) -> bool:
     return ("/" + p).endswith(_GUARD_FILE)
 
 
+def _prog(word: str) -> str:
+    """Program name: the basename without a trailing .exe (`cmd.exe`, `bash.exe`)."""
+    word = word.rsplit("/", 1)[-1]
+    return word[:-4] if word.lower().endswith(".exe") else word
+
+
+def _rest(args: list[str], depth: int) -> str | None:
+    """cmd /c and powershell -Command run the rest of the line."""
+    if not args:
+        return None
+    return check_command(args[0] if len(args) == 1 else shlex.join(args), depth + 1)
+
+
 def _turns_guard_off(argv: list[str]) -> bool:
-    """`agentwatch [...] guard off`, also via python -m, uv/uvx and pipx run."""
+    """`agentwatch|agentguard [...] guard off`, also via python -m, uv/uvx, pipx,
+    npx and xargs."""
     def name(word: str) -> str:
         word = word.replace("\\", "/").rsplit("/", 1)[-1].lower()
         return re.split(r"[@=<>\[]", word.removesuffix(".exe"), maxsplit=1)[0]
@@ -173,7 +194,7 @@ def _strip_prefixes(argv: list[str]) -> list[str]:
             i += 1
         elif word in _KEYWORDS:
             i += 1
-        elif (prefix := word.rsplit("/", 1)[-1]) in _PREFIXES:
+        elif (prefix := _prog(word).lower()) in _PREFIXES:
             i += 1
             while i < len(argv) and argv[i].startswith("-"):
                 i += 2 if argv[i] in _PREFIXES[prefix] else 1
@@ -220,7 +241,7 @@ def _target(op: str) -> str | None:
 def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None:
     if not argv:
         return None
-    prog, args = argv[0].rsplit("/", 1)[-1], argv[1:]
+    prog, args = _prog(argv[0]), argv[1:]
     for i, tok in enumerate(argv[:-1]):  # redirections, any program
         if tok in (">", ">>", ">|", "&>") and _DISK.match(argv[i + 1]):
             return REASONS["disk"]
@@ -230,17 +251,26 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
             return REASONS["secret"].format(label)
     # ponytail: only direct writes to the guard file are caught (redirects, tee,
     # cp/mv onto it, the file tools); `python -c`, scripts, `cd` + a relative
-    # path, ln/install/dd and other indirect writes are not. Upgrade: an
-    # integrity check on the file (owner-written marker) if agents try those.
+    # path, Write/Edit through a relative path (`coach/guard` from inside the
+    # agentwatch state dir), ln/install/dd and other indirect writes are not.
+    # Upgrade: an integrity check on the file (owner-written marker) if agents
+    # try those.
     if _turns_guard_off(argv):
         return REASONS["guard_off"]
-    if prog in _SHELLS:
-        if piped_from & {"curl", "wget"}:
-            return REASONS["pipe_shell"]
+    if prog == "eval":  # bash joins eval's args and parses them again
+        return check_command(" ".join(args), depth + 1)
+    if prog in _SHELLS and piped_from & {"curl", "wget"}:
+        return REASONS["pipe_shell"]
+    if prog in _SHELLS or prog == "script":
         for i, a in enumerate(args[:-1]):
-            if re.fullmatch(r"-[a-z]*c[a-z]*", a):
+            if re.fullmatch(r"-[a-z]*c[a-z]*", a) or a == "--command":
                 return check_command(args[i + 1], depth + 1)
         return None
+    win = prog.lower()
+    if win in ("cmd", "powershell", "pwsh"):
+        run = ("/c", "/k") if win == "cmd" else ("-c", "-command")
+        at = next((i for i, a in enumerate(args) if a.lower() in run), None)
+        return None if at is None else _rest(args[at + 1:], depth)
     flags, ops = _flags(args)
     if prog in ("cp", "mv", "tee") and any(
             is_guard_file(op) for op in (ops if prog == "tee" else ops[-1:])):
@@ -297,7 +327,7 @@ def check_command(command: str, depth: int = 0) -> str | None:
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
-        if "agentwatch" in command.lower() and _GUARD_RAW.search(command):
+        if _AW_RAW.search(command) and _GUARD_RAW.search(command):
             return REASONS["guard_off"]
         return REASONS["destructive"] if _FALLBACK.search(command) else None
     pipeline: set[str] = set()  # programs earlier in the current pipeline
@@ -309,7 +339,7 @@ def check_command(command: str, depth: int = 0) -> str | None:
         if reason:
             return reason
         if argv:
-            pipeline.add(argv[0].rsplit("/", 1)[-1])
+            pipeline.add(_prog(argv[0]))
     return None
 
 
@@ -323,7 +353,7 @@ def _check_long(command: str, depth: int) -> str | None:
             return REASONS["too_long"]
         if len(piece) > _SMALL:
             head = piece.strip()[:_PIECE]
-            if "agentwatch" in head.lower() and _GUARD_RAW.search(head):
+            if _AW_RAW.search(head) and _GUARD_RAW.search(head):
                 return REASONS["guard_off"]
             if _FALLBACK.search(head):
                 return REASONS["destructive"]

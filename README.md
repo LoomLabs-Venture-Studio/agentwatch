@@ -972,12 +972,15 @@ bomb; and reading `.env`/`.env.*` (not `.example`/`.sample`/`.template`),
 `~/.ssh/id_*` (not `.pub`), `~/.aws/credentials`, `~/.netrc`, `~/.npmrc`,
 `~/.pypirc`, `~/.docker/config.json`, `~/.kube/config` or `*.pem`/`*.key`
 with the Read tool, `cat`/`less`/`head`/`tail`/`cp`/`scp`, `curl -F @file`
-or `< file`. It also looks inside `bash -c '...'`, `sudo`, `env X=1` and
-chains (`&&`, `;`, `||`, `|`) and shell blocks (`if`, `while`, `{ ... }`).
+or `< file`. It also looks inside `bash -c '...'`, `script -c '...'`,
+`eval ...`, `cmd /c ...`, `powershell`/`pwsh -c|-Command ...`, `wsl ...`,
+`sudo`, `env X=1`, `setsid`, `builtin` and chains (`&&`, `;`, `||`, `|`) and
+shell blocks (`if`, `while`, `{ ... }`), and a trailing `.exe` (`cmd.exe`,
+`bash.exe`) makes no difference.
 Text passed to other programs is not checked, so `echo "rm -rf /"` runs.
 Not caught: other ways to read secrets (`grep`, `source .env`, the Edit and
-Write tools), `xargs rm`, `find -delete`, `curl ... | python`, and scripts
-run from a file. Commands behind `watch` or `strace` are not unwrapped. In
+Write tools), `xargs rm`, `find -delete`, `curl ... | python`,
+`powershell -EncodedCommand` (not decoded), and scripts run from a file. Commands behind `watch` or `strace` are not unwrapped. In
 commands over 20,000 characters, parts longer than 2,000 characters get only
 a quick pattern check. It asks rather than blocks, so a false alarm
 costs one click.
@@ -995,8 +998,10 @@ agentwatch guard       # prints "agentwatch guard: on|off" and the file path
 The file is `%LOCALAPPDATA%\agentwatch\coach\guard` on Windows and
 `~/.cache/agentwatch/coach/guard` elsewhere (`$XDG_CACHE_HOME` if set). Any
 other content, or an unreadable file, leaves the guard on. The loop breaker
-is not affected. The guard asks before `agentwatch guard off`; indirect
-writes (scripts) to the settings file are not caught.
+is not affected. The guard asks before `agentwatch guard off` (or the
+`agentguard guard off` alias). Not caught: indirect writes (scripts) to the
+settings file, and Write/Edit or a Bash redirect onto it through a relative
+path (e.g. `coach/guard` from inside the agentwatch state dir).
 
 **Loop breaker.** When the same action has run 6 or more times in the last
 10 tool calls (a HIGH loop), the plugin's PreToolUse hook blocks the next

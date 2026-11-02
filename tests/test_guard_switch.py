@@ -11,7 +11,7 @@ import sys
 import pytest
 from click.testing import CliRunner
 
-from agentwatch import coach
+from agentwatch import coach, guard
 from agentwatch.cli import cli
 
 RM = {"command": "rm -rf ~"}
@@ -177,6 +177,20 @@ def _asks_off(out: str | None) -> bool:
     "true; agentwatch guard off",
     "echo $(agentwatch guard off)",
     "agentwatch guard off && rm -rf ./build",
+    # fix round: the agentguard alias, more launchers and wrappers
+    "agentguard guard off",
+    "agentguard.exe guard off",
+    "python -m agentguard guard off",
+    "uvx --from agentwatch-monitor agentguard guard off",
+    "xargs agentwatch guard off",
+    "npx agentwatch guard off",
+    "npx agentwatch-monitor guard off",
+    "eval agentguard guard off",
+    "cmd /c agentwatch guard off",
+    'pwsh -c "agentguard guard off"',
+    "wsl agentwatch guard off",
+    "agentguard guard off 'oops",
+    pytest.param("true;" * 4100 + "agentguard guard off", id="long-agentguard"),
 ])
 def test_turning_the_guard_off_asks(command):
     assert _asks_off(coach.run(_payload({"command": command})))
@@ -225,6 +239,11 @@ def test_file_tools_on_the_guard_file_ask(tool, key):
     "echo x > /tmp/project/guard",
     "cp a.json src/guard",
     "cat ~/.cache/agentwatch/coach/guard",
+    "echo agentguard guard off",
+    "agentguard guard",
+    "agentguard guard on",
+    "npx prettier --write .",
+    "xargs grep -l guard",
 ])
 def test_guard_look_alikes_pass(command):
     assert coach.run(_payload({"command": command})) is None
@@ -239,3 +258,49 @@ def test_write_to_an_unrelated_guard_file_passes(tmp_path):
 
 def test_unparsable_guard_off_still_asks():
     assert _asks_off(coach.run(_payload({"command": "agentwatch guard off 'oops"})))
+
+
+# Fix round (#193): wrappers that run their arguments as a command.
+
+@pytest.mark.parametrize("command", [
+    "eval rm -rf /",
+    'eval "rm -rf /"',
+    "builtin eval 'rm -rf ~'",
+    "builtin command rm -rf /",
+    "setsid rm -rf ~",
+    "setsid -f -w git reset --hard",
+    "cmd /c git reset --hard",
+    'cmd /c "git reset --hard"',
+    "cmd.exe /C rm -rf /",
+    'powershell -Command "git reset --hard"',
+    "powershell.exe -command git push --force",
+    "pwsh -c git reset --hard",
+    "wsl rm -rf ~",
+    "wsl -d Ubuntu rm -rf ~",
+    "wsl.exe -u root -e git reset --hard",
+    "wsl -- rm -rf /",
+    'script -q -c "rm -rf /" /dev/null',
+    "script --command 'git reset --hard'",
+    'cmd /c bash -c "rm -rf /"',
+    "bash.exe -c 'rm -rf /'",
+])
+def test_wrapped_commands_ask(command):
+    assert guard.check("Bash", {"command": command}) is not None
+
+
+@pytest.mark.parametrize("command", [
+    "cat eval.txt",
+    "echo eval rm -rf /",
+    "builtin echo rm -rf /",
+    "setsid sleep 1",
+    "cmd /c dir",
+    "pwsh -c Get-ChildItem",
+    "powershell -File build.ps1",
+    # -EncodedCommand is base64 and not decoded: a documented gap.
+    "powershell -EncodedCommand cgBtACAALQByAGYAIAAvAA==",
+    "wsl ls ~",
+    "script session.log",
+    'script -c "ls -la" /dev/null',
+])
+def test_wrapper_look_alikes_pass(command):
+    assert guard.check("Bash", {"command": command}) is None
