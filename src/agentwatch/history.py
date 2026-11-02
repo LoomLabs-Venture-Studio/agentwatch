@@ -21,6 +21,11 @@ tool output or full paths):
   findings only, the detector's message cut to 120 chars on one line with
   secrets redacted and paths cut to their last component (security messages
   can quote a command, so none is kept).
+- session_models: per session and model id, the API calls, their tokens
+  (input, output, cache write with its 1h part, cache read), USD and the USD
+  the cache reads saved against the input rate (NULL when unpriced).
+- session_errors: per session, failed calls counted by error kind
+  (``ERROR_KINDS``) and tool name. Never the error text.
 
 A log file is one session. Logs that disappear stay as history.
 """
@@ -77,6 +82,32 @@ _MIGRATIONS: list[list[str]] = [[
         first_seen REAL NOT NULL,
         PRIMARY KEY (log_hash, key_hash)
     )""",
+], [
+    """
+    CREATE TABLE IF NOT EXISTS session_models (
+        log_hash TEXT NOT NULL REFERENCES sessions(log_hash) ON DELETE CASCADE,
+        model TEXT NOT NULL,
+        calls INTEGER NOT NULL,
+        input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        cache_write_tokens INTEGER NOT NULL,
+        cache_write_1h_tokens INTEGER NOT NULL,
+        cache_read_tokens INTEGER NOT NULL,
+        cost_usd REAL,
+        cache_saved_usd REAL,
+        PRIMARY KEY (log_hash, model)
+    )""",
+    """
+    CREATE TABLE IF NOT EXISTS session_errors (
+        log_hash TEXT NOT NULL REFERENCES sessions(log_hash) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        count INTEGER NOT NULL,
+        PRIMARY KEY (log_hash, kind, tool)
+    )""",
+    # Rows synced before this version have no breakdown: make the next sync
+    # re-read their logs (a log no longer on disk keeps none).
+    "UPDATE sessions SET size = -1",
 ]]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -179,7 +210,145 @@ def _epoch(dt: Any) -> float | None:
     return dt.timestamp()
 
 
-_EMPTY: dict[str, Any] = {"actions": 0, "findings": {}}
+_EMPTY: dict[str, Any] = {"actions": 0, "findings": {}, "models": {}, "errors": {}}
+
+# Error kinds of a failed call, the first rule that matches wins. Matched on
+# the parser's error text (and the tail of a failed result, where a test
+# runner prints its summary); only the kind and a count are stored.
+ERROR_KINDS = (
+    "permission_denied", "blocked", "test_failure", "timeout", "edit_failed",
+    "command_not_found", "file_not_found", "network", "nonzero_exit", "other",
+)
+_DENIED = re.compile(  # the user or the permission system said no (Claude Code's wording)
+    r"doesn't want to proceed with this tool use|tool use was rejected"
+    r"|Permission for this action was denied", re.I)
+# A hook or the agent's own guard refused the call.
+_BLOCKED = re.compile(
+    r"\bhook error:|<tool_use_error>Blocked:|This agent is isolated in the worktree", re.I)
+_TEST_FAILED = re.compile(
+    r"\b\d+ (?:failed|failing)\b|^FAILED\b|\bFAILED \(|test result: FAILED|^--- FAIL"
+    r"|^FAIL\b|errors? during collection|ImportError while importing test module", re.M)
+_ERROR_RULES = [
+    ("timeout", re.compile(
+        r"\btimed out\b|\bTimeoutError\b|\bTimeoutExpired\b|\bETIMEDOUT\b"
+        r"|deadline exceeded", re.I)),
+    ("edit_failed", re.compile(
+        r"String to replace not found|Found \d+ matches of the string to replace"
+        r"|File has not been read yet|File has been (?:unexpectedly )?modified since"
+        r"|Failed to find expected lines|apply_patch verification failed"
+        r"|patch (?:does|did) not apply|error: patch failed", re.I)),
+    ("command_not_found", re.compile(
+        r"command not found|is not recognized as an internal or external command"
+        r"|is not recognized as the name of a cmdlet", re.I)),
+    ("file_not_found", re.compile(
+        r"No such file or directory|\bENOENT\b|File does not exist|Path does not exist"
+        r"|FileNotFoundError|cannot find the (?:path|file) specified", re.I)),
+    ("permission_denied", re.compile(
+        r"permission denied|\bEACCES\b|\bEPERM\b|operation not permitted|access is denied",
+        re.I)),
+    ("network", re.compile(
+        r"\bE(?:CONNREFUSED|CONNRESET|NOTFOUND|AI_AGAIN|NETUNREACH|HOSTUNREACH)\b"
+        r"|Connection (?:refused|reset)|Network is unreachable|Could not resolve host"
+        r"|Temporary failure in name resolution|Name or service not known|getaddrinfo"
+        r"|Failed to establish a new connection|certificate verify failed", re.I)),
+]
+# "Exit code 1" (Claude Code), "exit 1: ..." (Codex), "exit code 1" (others)
+_EXIT = re.compile(r"\s*exit(?: code| status)?[:\s]+-?\d+", re.I)
+# A model id or tool name; one "provider/" prefix at most, so never a path.
+_SAFE_NAME = re.compile(r"(?:[\w.:@-]{1,40}/)?[\w.:@\[\]-]{1,80}")
+_TAIL = 4000  # a test summary is at the end of the output
+
+
+def _is_test_command(command: str | None) -> bool:
+    from agentwatch.cc_stats import BashCategory, _split_shell_commands, classify_bash_command
+
+    return bool(command) and any(
+        classify_bash_command(c) is BashCategory.Testing for c in _split_shell_commands(command)
+    )
+
+
+def error_kind(action: Any) -> str:
+    """The ``ERROR_KINDS`` entry of a failed action."""
+    head = action.error_message or ""
+    if _DENIED.search(head):
+        return "permission_denied"
+    if _BLOCKED.search(head):
+        return "blocked"
+    text = head + "\n" + (action.incoming_message or "")[-_TAIL:]
+    if _is_test_command(action.command) and _TEST_FAILED.search(text):
+        return "test_failure"
+    for kind, rule in _ERROR_RULES:
+        if rule.search(text):
+            return kind
+    return "nonzero_exit" if _EXIT.match(head) else "other"
+
+
+def _name(value: str | None) -> str:
+    """A model id or tool name as stored: as logged if it looks like one."""
+    return value if value and _SAFE_NAME.fullmatch(value) else ("other" if value else "")
+
+
+class _Tap:
+    """Watches the actions a scan reads: each API call's largest copy (as
+    ActionBuffer bills it) and every action that can end up failed."""
+
+    def __init__(self) -> None:
+        self.calls: dict[Any, Any] = {}
+        self.maybe_failed: list[Any] = []
+
+    def __call__(self, actions):
+        from agentwatch.parser.models import call_tokens, is_tool_call
+
+        for a in actions:
+            tokens = call_tokens(a)
+            if tokens or a.cost_usd > 0:
+                key = a.message_id or id(a)
+                best = self.calls.get(key)
+                if best is None or tokens > call_tokens(best):
+                    self.calls[key] = a
+            if is_tool_call(a) or not a.success:
+                self.maybe_failed.append(a)
+            yield a
+
+    def models(self) -> dict[str, dict[str, Any]]:
+        from agentwatch.cc_stats import price_for, usage_cost_usd
+        from agentwatch.parser.models import call_cost
+
+        out: dict[str, dict[str, Any]] = {}
+        for a in self.calls.values():
+            m = out.setdefault(_name(a.model), {
+                "calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_write_tokens": 0,
+                "cache_write_1h_tokens": 0, "cache_read_tokens": 0, "cost_usd": 0.0,
+                "cache_saved_usd": 0.0,
+            })
+            m["calls"] += 1
+            m["input_tokens"] += a.tokens_in
+            m["output_tokens"] += a.tokens_out
+            m["cache_write_tokens"] += a.cache_creation_tokens
+            m["cache_write_1h_tokens"] += min(a.cache_creation_1h_tokens, a.cache_creation_tokens)
+            m["cache_read_tokens"] += a.cache_read_tokens
+            cost = call_cost(a)
+            m["cost_usd"] = None if cost is None or m["cost_usd"] is None else m["cost_usd"] + cost
+            saved = None
+            if not a.unpriced and price_for(a.model):
+                # The same call with its cache reads billed as fresh input.
+                usage = (a.tokens_out, a.cache_creation_tokens)
+                full = usage_cost_usd(a.model, a.tokens_in + a.cache_read_tokens, *usage,
+                                      0, a.cache_creation_1h_tokens)
+                billed = usage_cost_usd(a.model, a.tokens_in, *usage, a.cache_read_tokens,
+                                        a.cache_creation_1h_tokens)
+                saved = full - billed  # type: ignore[operator]
+            prev = m["cache_saved_usd"]
+            m["cache_saved_usd"] = None if saved is None or prev is None else prev + saved
+        return out
+
+    def errors(self) -> dict[tuple[str, str], int]:
+        out: dict[tuple[str, str], int] = {}
+        for a in self.maybe_failed:
+            if not a.success and a.error_message:  # what ActionBuffer counts as an error
+                key = (error_kind(a), _name(a.tool_name) or "other")
+                out[key] = out.get(key, 0) + 1
+        return out
 
 
 def scan_log(agent: str, path: str) -> dict[str, Any]:
@@ -201,7 +370,8 @@ def _scan(agent: str, path: str) -> dict[str, Any]:
     from agentwatch.themes import THEME_CLASSIC
 
     buffer = ActionBuffer()
-    warnings = create_registry(mode="all").scan(get(agent).parse_file(Path(path)), buffer)
+    tap = _Tap()
+    warnings = create_registry(mode="all").scan(tap(get(agent).parse_file(Path(path))), buffer)
     stats = buffer.stats
     if len(buffer) == 0:
         return _EMPTY
@@ -234,6 +404,8 @@ def _scan(agent: str, path: str) -> dict[str, Any]:
         "health_score": score,
         "status": THEME_CLASSIC.status_from_score(score),  # theme-independent
         "findings": findings,
+        "models": tap.models(),
+        "errors": tap.errors(),
     }
 
 
@@ -243,7 +415,8 @@ def _store(conn, h, agent, sid, project, st, res, now) -> None:
         first = dict(conn.execute(
             "SELECT key_hash, first_seen FROM findings WHERE log_hash = ?", (h,)
         ))
-        conn.execute("DELETE FROM findings WHERE log_hash = ?", (h,))
+        for table in ("findings", "session_models", "session_errors"):
+            conn.execute(f"DELETE FROM {table} WHERE log_hash = ?", (h,))
         conn.execute(
             """INSERT INTO sessions VALUES
                (:h, :agent, :sid, :project, :started, :ended, :actions, :tokens, :cost_usd,
@@ -271,6 +444,19 @@ def _store(conn, h, agent, sid, project, st, res, now) -> None:
                  f["cost_usd"], f["tokens"], first.get(k, ended))
                 for k, f in res["findings"].items()
             ],
+        )
+        conn.executemany(
+            "INSERT INTO session_models VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (h, model, m["calls"], m["input_tokens"], m["output_tokens"],
+                 m["cache_write_tokens"], m["cache_write_1h_tokens"], m["cache_read_tokens"],
+                 m["cost_usd"], m["cache_saved_usd"])
+                for model, m in res.get("models", {}).items()
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO session_errors VALUES (?, ?, ?, ?)",
+            [(h, kind, tool, n) for (kind, tool), n in res.get("errors", {}).items()],
         )
 
 
