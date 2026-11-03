@@ -683,3 +683,21 @@ def test_runner_with_a_path_or_launcher(tmp_path, command):
 def test_reading_runner_files_is_not_a_test_run(tmp_path, command):
     s = Session().run(command, ok=False, out="").edit("/repo/tests/test_auth.py", TEST_OLD, "")
     assert one(s.save(tmp_path)).severity.value == "low"
+@pytest.mark.parametrize("root", [
+    "/tmp/proj", "C:/Users/z/AppData/Local/Temp/proj", "/home/z/temp/proj",
+    "/home/z/coverage/proj", "/home/z/fixtures/proj",
+])
+def test_project_under_a_temp_dir_is_still_seen(tmp_path, root):
+    s = Session().run("pytest", ok=False).edit(f"{root}/tests/test_auth.py", SKIP_OLD, SKIP_NEW)
+    assert one(s.save(tmp_path)).severity.value == "high"
+
+
+@pytest.mark.parametrize("path", [
+    "/tmp/proj/tests/fixtures/x.py", "/tmp/proj/src/__snapshots__/a.test.ts",
+    "/tmp/proj/.pytest_cache/v/test_a.py", "C:/Users/z/AppData/Local/Temp/p/tests/tmp/test_a.py",
+    "/tmp/proj/node_modules/pkg/test/a.test.js",
+])
+def test_non_test_dirs_inside_a_temp_project(path):
+    assert not is_test_path(path)
+
+

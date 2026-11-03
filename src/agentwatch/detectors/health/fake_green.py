@@ -42,11 +42,19 @@ _TEST_PATH = re.compile(
 )
 # `rm -rf tests`: the whole test directory (rm only).
 _TEST_DIR = re.compile(r"(?:^|/)(?:tests?|__tests__)/?$", re.IGNORECASE)
+# Never a dir a project lives in: excluded anywhere in the path.
 _NOT_TEST = re.compile(
-    r"(?:^|/)(?:fixtures?|__snapshots__|snapshots?|testdata|golden|goldens|__pycache__"
-    r"|\.pytest_cache|node_modules|\.cache|coverage|htmlcov)(?:/|$)"
-    r"|\.(?:snap|golden|pyc)$|(?:^|/)tmp/|(?:^|/)temp/",
+    r"(?:^|/)(?:__snapshots__|testdata|golden|goldens|__pycache__"
+    r"|\.pytest_cache|node_modules|\.cache|htmlcov)(?:/|$)"
+    r"|\.(?:snap|golden|pyc)$",
     re.IGNORECASE,
+)
+# A project can live under these (/tmp/proj, %TEMP%\proj, ~/temp/proj): matched
+# only from the test path's own match (its test dir, else its file name) down.
+# ponytail: no session cwd reaches Action, so `/repo/tmp/test_x.py` (no test dir
+# above the file) counts; match against the path relative to cwd once parsers keep it.
+_NOT_TEST_BELOW = re.compile(
+    r"(?:^|/)(?:fixtures?|snapshots?|coverage|tmp|temp)(?:/|$)", re.IGNORECASE
 )
 _CONFIG_NAMES = frozenset({
     "pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini", "conftest.py", "package.json",
@@ -66,7 +74,10 @@ def is_test_path(path: str | None) -> bool:
     if not path:
         return False
     p = _norm(path)
-    return bool(_TEST_PATH.search(p)) and not _NOT_TEST.search(p)
+    m = _TEST_PATH.search(p)
+    if not m or _NOT_TEST.search(p):
+        return False
+    return not _NOT_TEST_BELOW.search(p[p.rfind("/", 0, m.start() + 1) + 1:])
 
 
 def _is_config(path: str) -> bool:
