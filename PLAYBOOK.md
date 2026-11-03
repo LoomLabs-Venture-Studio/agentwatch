@@ -5360,3 +5360,9 @@ Cut: needs-input in watch-all (Codex approval requests are transient, not persis
 ### Result (2026-11-01)
 - Latency (`agentwatch hook`, Linux, median of 10, 600-line transcript): PostToolUse 217 ms before, 212 ms after. Notification/Stop with notify off 36 ms (was 36 ms, ignored). Notify on: Stop 229 ms with a stub notifier, 230 ms when no notifier is found; a deduped idle repeat 46 ms. Both events run async, so none of it blocks Claude.
 - Live (temp HOME): `notify on`, then Notification and Stop payloads piped to `agentwatch hook`: exit 0, no stdout, state and settings 0600 in a 0700 dir. `notify-send` is not installed on this machine (libnotify-bin absent), so the real-notifier path found none and stayed silent. A PATH stand-in with notify-send's argv delivered over D-Bus with `gdbus ... Notifications.Notify` exited 0 (notification id 63).
+
+### CTO review round (2026-11-03)
+- Turn summary cost: `coach._turn_summary` now passes the 1-hour cache-write part (`usage.cache_creation.ephemeral_1h_input_tokens`, read as parser/logs.py does) to `usage_cost_usd`; 1h writes were priced at the 5m rate. Test: a Sonnet 4.5 turn with 600k 5m + 400k 1h writes reads `~$4.65` (was `~$3.75`).
+- README: Windows hook latency next to the Linux 35 ms. Windows 10, median of 5: Stop with alerts off 0.33 s, on (webhook + stub toast) 0.52 s; mostly Python start-up (~0.35-0.4 s).
+- Windows `_spawn` test: the real `coach._spawn` (Windows creationflags) with a child that sleeps 1 s then writes its stdin to a file returns in < 0.5 s and the file gets the bytes. Checked against two local mutations (wait for the child; drop stdin): both fail.
+- Suite (Windows 10): ruff clean; coach_notify + turn_end + coach 75 passed, 3 skipped, 1 error (known `test_state_dir_is_per_user_not_shared_tmp`); full 2613 passed, 7 skipped, 6 failed, 1 error, all known Windows failures on develop (symlink x5, `test_wrapped_detail_lines_keep_their_indent`).
