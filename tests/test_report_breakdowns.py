@@ -335,3 +335,20 @@ def test_rescan_replaces_breakdown_rows(env):
     ).fetchone()[0] == 2
     conn.execute("DELETE FROM sessions")  # prune: the breakdown goes with the session
     assert conn.execute("SELECT count(*) FROM session_errors").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("value", [
+    "claude-opus-5-5", "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "anthropic/claude-sonnet-4.5", "openrouter/claude-x", "claude-opus-4@20250514",
+    "mcp__pinger__ping", "view_file",
+])
+def test_name_keeps_model_ids_and_tool_names(value):
+    assert history._name(value) == value
+
+
+@pytest.mark.parametrize("value", [
+    "../etc", "a/../b", "user@example.com", "zaid@loomlabs.io",
+    "sk-ant-api03-" + "Ab3d" * 23 + "AA", SECRET, "home/zaid/x", "C:\\Users\\zaid",
+])
+def test_name_never_stores_paths_emails_or_secrets(value):
+    assert history._name(value) == "other"
