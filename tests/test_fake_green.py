@@ -701,3 +701,26 @@ def test_non_test_dirs_inside_a_temp_project(path):
     assert not is_test_path(path)
 
 
+@pytest.mark.parametrize("old,new", [
+    ("func TestX(t *testing.T) {\n\tif runtime.GOOS == \"windows\" {\n\t\tx()\n\t}",
+     "func TestX(t *testing.T) {\n\tif runtime.GOOS == \"windows\" {\n"
+     "\t\tt.Skip(\"no\")\n\t\tx()\n\t}"),
+    ("def test_login():\n    if sys.platform == 'win32':\n        x()\n",
+     "def test_login():\n    if sys.platform == 'win32':\n        pytest.skip('no')\n"
+     "        x()\n"),
+    ("def test_login():\n    if not have_db():\n        return\n",
+     "def test_login():\n    if not have_db():\n        pytest.skip('no db')\n"),
+])
+def test_skip_inside_an_existing_if(tmp_path, old, new):
+    path = "/repo/x_test.go" if "func" in old else "/repo/tests/test_auth.py"
+    s = Session().run("pytest", ok=False).edit(path, old, new)
+    none_fire(s, tmp_path)
+
+
+def test_unconditional_skip_in_body_still_fires(tmp_path):
+    s = Session().run("pytest", ok=False).edit(
+        "/repo/tests/test_auth.py", "def test_login():\n    if x:\n        y()\n    z()\n",
+        "def test_login():\n    if x:\n        y()\n    pytest.skip('flaky')\n    z()\n")
+    assert one(s.save(tmp_path)).severity.value == "high"
+
+

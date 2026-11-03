@@ -106,7 +106,7 @@ _CONDITIONAL = re.compile(
     r"|shutil\.which|cfg_attr|@(?:En|Dis)abled(?:On|If)"
 )
 _ALWAYS = re.compile(r"skipif\(\s*(?:True|1)\b")  # skipif(True, ...) is not conditional
-_IF_LINE = re.compile(r"^\s*(?:if|else if|elif)\b")
+_IF_LINE = re.compile(r"^\s*(?:\}\s*)?(?:if|else|elif)\b")
 _COMMENT = re.compile(r"^\s*(?:#(?![\[!])|//|/\*|\*)")  # `#[...]`/`#![...]`: Rust attributes
 _ASSERT = re.compile(
     r"^\s*assert\b|\bassert\w*!?\s*\(|\bexpect\s*\(|\b(?:assert|require)\.\w+\s*\("
@@ -133,7 +133,23 @@ def _def_names(lines) -> list[str]:
     return names
 
 
-def _skips(lines: list[str], marker: re.Pattern) -> list[str]:
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _under_if(line: str, text: list[str]) -> bool:
+    """*line* sits in an if/else block of *text* (the edit's whole new text,
+    where an unchanged `if` line is still present)."""
+    if line not in text:
+        return False
+    i = text.index(line)
+    for prev in reversed(text[:i]):
+        if prev.strip() and _indent(prev) < _indent(line):
+            return bool(_IF_LINE.match(prev))
+    return False
+
+
+def _skips(lines: list[str], marker: re.Pattern, text: list[str] = ()) -> list[str]:
     """Unconditional skip (or .only) markers in *lines*, as their match text."""
     found = []
     for i, line in enumerate(lines):
@@ -143,7 +159,7 @@ def _skips(lines: list[str], marker: re.Pattern) -> list[str]:
         if not m:
             continue
         conditional = _CONDITIONAL.search(line) and not _ALWAYS.search(line)
-        if conditional or (i and _IF_LINE.match(lines[i - 1])):
+        if conditional or (i and _IF_LINE.match(lines[i - 1])) or _under_if(line, text):
             continue
         found.append(m[0].rstrip("( ").strip())
     return found
@@ -615,10 +631,11 @@ class FakeGreenDetector(Detector):
         if not is_test_path(c.path):
             return None
 
-        skips_new, skips_old = _skips(c.added, _SKIP), _skips(c.removed, _SKIP)
+        text = c.new_text.splitlines()
+        skips_new, skips_old = _skips(c.added, _SKIP, text), _skips(c.removed, _SKIP)
         if len(skips_new) > len(skips_old):
             marker = skips_new[0]
-            names = _def_names(c.new_text.splitlines())
+            names = _def_names(text)
             what = f"added {marker}" + (f" to {names[0]}" if names else "")
             return self._finding(i, action, c.path, what, marker, after_failure, True, win)
         only_new, only_old = _skips(c.added, _ONLY), _skips(c.removed, _ONLY)
