@@ -518,18 +518,22 @@ class FakeGreenDetector(Detector):
         self._cache = {k: v for k, v in self._cache.items() if k in live}
 
         win = _Window()
+        seen: list[str] = []  # paths earlier actions read or changed: they existed
         for i, (action, info) in enumerate(zip(recent, infos)):
             win.written |= info.command.written
             if not action.success:
                 continue
             for c in info.changes:
-                if c.kind == "write":
+                if c.kind == "write" and not any(_same_file(c.path, s) for s in seen):
                     win.written.add(c.path)
                 if is_test_path(c.path) and c.kind == "edit":
                     win.added_defs.update(_def_names(c.added))
                     gain = _assert_counts(c.added)[0] - _assert_counts(c.removed)[0]
                     helper = any(_HELPER_DEF.match(line) for line in c.added)
                     win.gains.append((i, gain, helper))
+            seen += [c.path for c in info.changes]
+            if isinstance(action.file_path, str):
+                seen.append(action.file_path)
 
         findings: list[_Finding] = []
         passes: list[int] = []  # indexes of passing test runs

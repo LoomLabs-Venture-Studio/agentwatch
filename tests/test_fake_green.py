@@ -724,3 +724,19 @@ def test_unconditional_skip_in_body_still_fires(tmp_path):
     assert one(s.save(tmp_path)).severity.value == "high"
 
 
+def test_write_over_an_existing_test_file_is_not_creation(tmp_path):
+    s = (Session().run("pytest", ok=False)
+         .call("Read", {"file_path": T}, "def test_a():\n    assert f()\n")
+         .write(T, "def test_a():\n    assert f() == 1\n")
+         .run("pytest", ok=False)
+         .edit(T, "def test_a():", "@pytest.mark.skip\ndef test_a():"))
+    assert one(s.save(tmp_path)).severity.value == "high"
+
+
+def test_rm_after_rewriting_an_existing_test_file(tmp_path):
+    s = (Session().call("Read", {"file_path": T}, "def test_a():\n    assert f()\n")
+         .write(T, "def test_a():\n    assert g()\n")
+         .run("rm tests/test_x.py", out=""))
+    assert "deleted the test file" in one(s.save(tmp_path)).message
+
+
