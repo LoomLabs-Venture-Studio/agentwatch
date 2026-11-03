@@ -7,6 +7,7 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -238,6 +239,21 @@ def _hook(tmp_path, payload: str, env: dict) -> subprocess.CompletedProcess:
         [sys.executable, "-c", "from agentwatch._entry import main; main()", "hook"],
         input=payload, capture_output=True, text=True, timeout=60, env=env,
     )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows creationflags path")
+def test_real_spawn_returns_at_once_and_feeds_stdin_windows(tmp_path):
+    marker = tmp_path / "got.txt"
+    script = ("import sys, time; time.sleep(1); "
+              f"open({str(marker)!r}, 'wb').write(sys.stdin.buffer.read())")
+    start = time.monotonic()
+    coach._spawn([sys.executable, "-c", script], b"toast xml")
+    assert time.monotonic() - start < 0.5  # did not wait for the 1 s child
+    assert not marker.exists()
+    deadline = time.monotonic() + 30
+    while not (marker.exists() and marker.read_bytes()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert marker.read_bytes() == b"toast xml"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="fake notify-send is a shell script")
