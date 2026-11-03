@@ -232,6 +232,7 @@ _OLD_NEW = (
     ("oldString", "newString"), ("old_text", "new_text"),
 )
 _PATH_KEYS = ("file_path", "path", "filePath", "absolutePath")
+_APPLY_PATCH = re.compile(r"\bapply[_-]patch\b")
 
 
 def _args(action: "Action") -> dict:
@@ -263,9 +264,12 @@ def _args(action: "Action") -> dict:
 def _edit_changes(action: "Action") -> list[_Change]:
     args = _args(action)
     texts = [v for v in args.values() if isinstance(v, str)] + [action.command or ""]
-    patch = next((t for t in texts if "*** Begin Patch" in t), None)
-    if patch is not None:
-        return _patch_changes(patch)
+    # Only a patch tool, or a shell running apply_patch: a Write of a doc that
+    # quotes a patch is not one.
+    if "patch" in (action.tool_name or "").lower() or _APPLY_PATCH.search(action.command or ""):
+        patch = next((t for t in texts if "*** Begin Patch" in t), None)
+        if patch is not None:
+            return _patch_changes(patch)
     if not action.is_file_edit:
         return []
     path = next((args[k] for k in _PATH_KEYS if isinstance(args.get(k), str)), None)

@@ -740,3 +740,6 @@ def test_rm_after_rewriting_an_existing_test_file(tmp_path):
     assert "deleted the test file" in one(s.save(tmp_path)).message
 
 
+def test_write_of_a_doc_quoting_a_patch_is_not_a_patch(tmp_path):
+    doc = "Example:\n*** Begin Patch\n*** Delete File: tests/test_auth.py\n*** End Patch\n"
+    none_fire(Session().run("pytest", ok=False).write("/repo/docs/patch.md", doc), tmp_path)
