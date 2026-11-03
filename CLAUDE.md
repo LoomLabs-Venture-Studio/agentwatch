@@ -66,8 +66,8 @@ want a "fitness tracker + security guard" for those agents.
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
                        detect, net, list-detectors, security-scan, themes, stats,
-                       audit, scrub, report, history sync|prune|path.
-                       `report`/`stats` take --format text|json|csv.
+                       audit, scrub, report, tools, history sync|prune|path.
+                       `report`/`stats`/`tools` take --format text|json|csv.
                        `scrub PATH` redacts secrets + PII in one
                        file (copy by default, `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
@@ -288,6 +288,14 @@ src/agentwatch/
                        render() text; write_csv(): any JSON report as one
                        long table table,rank,name,metric,value (also
                        `stats --format csv`), formula-leading text quoted
+  tools_view.py        `agentwatch tools`: build() (JSON schema 1) over one
+                       parsed log's is_tool_call actions: per tool calls,
+                       failed, top history.error_kind, total/median ms
+                       (duration_ms, else completed_at - timestamp, else
+                       null); --calls rows: target = file name or command
+                       via one_line(80); never args/results/error text.
+                       Log picked by cli._default_log like `check`;
+                       csv via report.write_csv
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
