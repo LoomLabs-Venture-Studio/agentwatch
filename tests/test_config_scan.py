@@ -607,3 +607,29 @@ def test_mcp_command_pipe_to_shell(home):
     assert kinds(report) == [("high", "remote_script", f"mcpServers.{n}.command")
                              for n in "abcde"]
     assert "each time it starts" in report["findings"][0]["why"]
+
+
+def test_codex_profiles(home):
+    put(home / ".codex" / "config.toml", """
+approval_policy = "never"
+
+[profiles.yolo]
+sandbox_mode = "danger-full-access"
+
+[profiles.asks]
+sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
+
+[profiles.safe]
+sandbox_mode = "workspace-write"
+""")
+    put(home / "proj" / ".codex" / "config.toml", """
+[profiles.p]
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+""")
+    report, code = scan(home)
+    assert code == 2
+    assert kinds(report) == [("high", "permissions", "profiles.p.sandbox_mode"),
+                             ("high", "permissions", "profiles.yolo.sandbox_mode"),
+                             ("medium", "permissions", "profiles.asks.sandbox_mode")]

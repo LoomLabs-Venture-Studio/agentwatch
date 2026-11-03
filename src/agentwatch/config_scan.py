@@ -668,10 +668,15 @@ class Scanner:
         if not isinstance(data, dict):
             return
         self.mcp_servers(data.get("mcp_servers"), "codex", path, "mcp_servers")
-        if data.get("sandbox_mode") == "danger-full-access":
-            never = data.get("approval_policy") == "never"
+        profiles = data.get("profiles") if isinstance(data.get("profiles"), dict) else {}
+        # A profile's approval_policy falls back to the top-level one.
+        for prefix, t in [("", data), *((f"profiles.{n}.", t) for n, t in profiles.items()
+                                        if isinstance(t, dict))]:
+            if t.get("sandbox_mode") != "danger-full-access":
+                continue
+            never = t.get("approval_policy", data.get("approval_policy")) == "never"
             self.add("high" if never else "medium", "permissions", "codex", path,
-                     "sandbox_mode",
+                     f"{prefix}sandbox_mode",
                      "danger-full-access sandbox" + (" with approval_policy = never: commands "
                                                      "run unsandboxed and unasked" if never
                                                      else ": commands run unsandboxed"),
