@@ -775,8 +775,9 @@ agentwatch stats --session <SESSION_ID>
 # commands (git, ls, npm run dev) vs substantive AI work
 agentwatch stats --burn
 
-# JSON output
+# JSON output, or the same as CSV (one long table, see Weekly Report)
 agentwatch stats --json
+agentwatch stats --all --format csv > stats.csv
 ```
 
 ### Weekly Report
@@ -792,6 +793,7 @@ agentwatch report
 agentwatch report --days 30
 agentwatch report --agent claude-code --project web
 agentwatch report --json
+agentwatch report --days 30 --format csv > report.csv
 
 # The history behind it
 agentwatch history sync              # only new or changed logs are read
@@ -811,6 +813,41 @@ agentwatch report: last 7 days (2026-10-11 to 2026-10-18)
   Costliest findings
     exploration_stall      web                        ~$3.87  2026-10-18
     ...
+
+  Cost by model
+    claude-opus-5-5        claude-code    18.2M tok    ~$12.40   cache 91%
+    claude-haiku-5-5       claude-code     420k tok     ~$0.06   cache 70%
+    (not logged)           gemini           50k tok        n/a   cache 40%
+  Cache: 91% of input read from cache (16.0M read, 1.4M written [1.1M 5m, 300k 1h], 180k uncached)
+  Cache saved ~$58.20 against the input rate (priced models)
+
+  Errors by type: 40 failed calls in 12 sessions (60%)
+    nonzero_exit               22   9 sessions (45%)     +4 vs previous
+    file_not_found              8   5 sessions (25%)     +2 vs previous
+    blocked                     3   2 sessions (10%)     -1 vs previous
+    ...
+    by tool: Bash 34, Edit 3, Read 3
+```
+
+`--format csv` writes the `--json` report as one long table, one value per
+row, under a header that does not change: `table,rank,name,metric,value`.
+`table` is the JSON key (`totals`, `models`, `errors.by_kind`, ...), `rank`
+and `name` identify a row of a list (its position and first field: the
+model, agent, project, error kind or tool), and an empty `value` is null.
+`--json` with `--format csv`, or `stats --burn` with `--format csv`, is a
+usage error (exit 2). Pivot it in a spreadsheet, or filter it with any CSV tool:
+
+```
+table,rank,name,metric,value
+report,,,schema,1
+period,,,days,7
+totals,,,cost_usd,12.46
+models,1,claude-opus-5-5,agent,claude-code
+models,1,claude-opus-5-5,cost_usd,12.4
+models,1,claude-opus-5-5,cache_saved_usd,58.2
+cache,,,hit_pct,91.0
+errors.by_kind,1,nonzero_exit,count,22
+errors.by_kind,1,nonzero_exit,sessions_pct,45.0
 ```
 
 - `report` syncs first (this period and the one before; `--no-sync` skips
@@ -822,6 +859,26 @@ agentwatch report: last 7 days (2026-10-11 to 2026-10-18)
   once) summed over sessions. A session with no token data or an unlisted
   model is n/a: counted, but left out of spend and the waste %, never
   guessed.
+- Cost by model groups each API call (once, as spend counts it) by model id
+  and agent: tokens and USD, n/a when the model has no listed price. Cache:
+  hit % is cache read / (cache read + cache written + uncached input), per
+  model and overall; saved is what the cache reads would have cost at the
+  model's input rate minus what they cost, for priced models only. Claude
+  Code logs everything this needs. Codex and Gemini CLI log cached input but
+  no model id or price: tokens and hit % only. Cline logs its own cost, which
+  is used, but no cache price. Other agents show the tokens they log.
+- Errors by type sorts every failed call (the ones `check` counts as errors)
+  by the first kind its error text matches: `permission_denied` (you or the
+  permission system said no, or the OS refused), `blocked` (a hook or the
+  agent's own guard refused it), `test_failure` (a test runner command whose
+  output reports failed tests), `timeout`, `edit_failed` (the text to replace
+  was not found, the file was not read first, a patch did not apply),
+  `command_not_found`, `file_not_found`, `network` (refused, reset, DNS,
+  TLS), `nonzero_exit` (a command failed with no more specific cause) and
+  `other`. Each shows its count, the sessions it happened in (and their share
+  of the period's sessions) and the change vs the previous period; `by tool`
+  counts failures per tool name. Only the kind, tool name and count are
+  stored, never the error text.
 - Security counts findings, not secrets: leak findings (credential
   category; one secret can raise more than one, e.g. `secret_leak` and
   `secret_in_command`), egress (network, exfiltration), injection and other
@@ -837,7 +894,9 @@ on Windows, `$XDG_DATA_HOME/agentwatch/history.db` or
 POSIX). Per session: agent, session id, project folder name (the last part of
 the path only, `~` for the home folder), a hash of the log path, first/last action time, action count,
 tokens, USD (empty when unknown), the waste figure, health score and status,
-the log's size and mtime. Per finding: a hash of its identity, signal,
+the log's size and mtime. Per session and model: API calls, tokens (input,
+output, cache written and its 1h part, cache read), USD and USD saved by the
+cache. Per session, error kind and tool name: a count. Per finding: a hash of its identity, signal,
 severity, category, tokens, USD, first seen, and for health findings a short
 message (one line, at most 120 chars, secrets redacted, paths cut to the file
 name). No transcript text, prompts, commands, tool output or full paths.
@@ -860,8 +919,14 @@ a sync without `--days` re-reads pruned sessions whose logs are still on disk.
 | `top_findings` | up to 3: `signal`, `severity`, `agent`, `project`, `cost_usd`, `tokens`, `date` (UTC), `message` |
 | `by_agent`, `by_project` | `totals` fields plus `agent` / `project`, costliest first |
 | `security` | finding counts: `total`, `leaks`, `egress`, `injection`, `other` |
+| `models` | per model and agent, costliest first: `model` (null when the log has none), `agent`, `calls`, `input_tokens`, `output_tokens`, `cache_write_tokens`, `cache_write_1h_tokens`, `cache_read_tokens`, `tokens`, `cost_usd`, `cache_hit_pct`, `cache_saved_usd` |
+| `cache` | over all models: `input_tokens`, `cache_write_tokens`, `cache_write_1h_tokens`, `cache_read_tokens`, `hit_pct`, `saved_usd` (priced models only) |
+| `errors` | `failed_calls`, `sessions`, `sessions_pct`; `by_kind`: `kind`, `count`, `sessions`, `sessions_pct`, `previous`, `delta`; `by_tool`: `tool`, `count`, `sessions` |
 
 USD values are null when unknown (no priced session, or no previous period).
+`models`, `cache` and `errors` were added in Sprint 40. A history DB from
+an earlier release is upgraded on first use, and the next sync re-reads
+every log once to fill them in; a session whose log is gone has none.
 
 ### Scrub Secrets and Personal Info
 
