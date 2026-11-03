@@ -1093,8 +1093,8 @@ URL is stored there only when you pass one, and never printed (`status` shows
 `https://hooks.slack.com/***`). `on` again replaces the settings; `off` deletes
 the file. Both hooks run async, print nothing and never block or change a
 stop; with alerts off they only read that file (about 35 ms on Linux). On
-Windows 10 (median of 5) a Stop hook takes 0.33 s with alerts off and 0.52 s
-on (webhook + toast), mostly Python start-up (~0.35-0.4 s). The notifier is
+Windows 10 a Stop hook takes about 0.1-0.5 s with alerts off or on (webhook +
+toast), mostly Python start-up. The notifier is
 started without waiting for it; the webhook gets 3 seconds.
 
 ### Status line
