@@ -5331,3 +5331,6 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 |---|---|---|---|---|---|
 | 2026-10-27 | #189 | docs/site-redesign | docs | CTO review, QA PASS WITH NOTES (sonnet), round 1 fixed, board "go live" | -- |
 | 2026-10-27 | #190 | fix/codex-usage-loop | fix | CTO review, QA PASS WITH NOTES (sonnet), follow-ups fixed (011af8d); held until after the site promotion | -- |
+
+## Backlog
+- **Implement Ollama support** (added 2026-11-03). Scope not defined yet. Already in place: `detect` and `net` find the Ollama runtime by process name and port, and the opt-in Tier-2 LLM analysis can use a local Ollama model (`llm` extra). Not in place: watching Ollama activity the way agent sessions are watched (health and security scoring).
