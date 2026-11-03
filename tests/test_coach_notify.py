@@ -86,6 +86,23 @@ def test_stop_alerts_finished_with_turn_summary(tmp_path, sent):
     assert body.startswith("1 tool call this turn, ~$0.")
 
 
+def test_turn_summary_prices_1h_cache_writes_at_the_1h_rate(tmp_path):
+    usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_creation_input_tokens": 1_000_000,
+             "cache_creation": {"ephemeral_5m_input_tokens": 600_000,
+                                "ephemeral_1h_input_tokens": 400_000}}
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": "go"}},
+        {"type": "assistant", "message": {
+            "id": "m1", "role": "assistant", "model": "claude-sonnet-4-5", "usage": usage,
+            "content": [{"type": "text", "text": "Done."}]}},
+    ]
+    path = tmp_path / "sess.jsonl"
+    path.write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
+    # Sonnet 4.5: 5m writes $3.75/M, 1h writes $6/M -> 0.6 * 3.75 + 0.4 * 6
+    assert coach._turn_summary(path) == "0 tool calls this turn, ~$4.65"
+
+
 def test_repeat_idle_deduped_then_stop_and_new_wait_alert_again(tmp_path, sent):
     _on()
     coach.run(_notif(tmp_path))

@@ -459,9 +459,13 @@ def _turn_summary(transcript: Path) -> str:
             if isinstance(msg.get("id"), str) and isinstance(msg.get("usage"), dict):
                 usage.setdefault(msg["id"], (msg.get("model"), msg["usage"]))  # last line
     text = f"{calls} tool call{'' if calls == 1 else 's'} this turn"
+    def split_1h(u: dict) -> int:  # as parser/logs.py reads it
+        split = u.get("cache_creation")
+        return (split.get("ephemeral_1h_input_tokens") or 0) if isinstance(split, dict) else 0
+
     costs = [usage_cost_usd(model, u.get("input_tokens") or 0, u.get("output_tokens") or 0,
                             u.get("cache_creation_input_tokens") or 0,
-                            u.get("cache_read_input_tokens") or 0)
+                            u.get("cache_read_input_tokens") or 0, split_1h(u))
              for model, u in usage.values()]
     if costs and None not in costs:
         text += f", ~{_usd(sum(costs))}"
