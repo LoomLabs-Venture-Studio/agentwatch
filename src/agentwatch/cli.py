@@ -1663,6 +1663,10 @@ def stats(
         burn = True
     if prompts:
         list_trivial = True
+    if fmt == "csv" and json_output:
+        raise click.UsageError("--json and --format csv conflict; pick one")
+    if fmt == "csv" and burn:
+        raise click.UsageError("--burn (or --list/--prompts) has no --format csv output")
 
     report = compute_stats(all_projects=all_projects, session_id=session_id)
 
@@ -2321,6 +2325,8 @@ def report(days: int, json_output: bool, agent: str | None, project: str | None,
     from agentwatch.history import sync
     from agentwatch.report import build, render, write_csv
 
+    if fmt == "csv" and json_output:
+        raise click.UsageError("--json and --format csv conflict; pick one")
     fmt = "json" if json_output else fmt
     conn = _history_db()
     if not no_sync:

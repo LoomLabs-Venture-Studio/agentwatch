@@ -255,6 +255,27 @@ def test_stats_csv(env):
     assert "stats,,,sessions,2" in lines and any(r.startswith("by_tool,,Bash,") for r in lines)
 
 
+@pytest.mark.parametrize("args, msg", [
+    (["report", "--json", "--format", "csv"], "--json and --format csv"),
+    (["stats", "--all", "--json", "--format", "csv"], "--json and --format csv"),
+    (["stats", "--all", "--burn", "--format", "csv"], "--burn"),
+    (["stats", "--all", "--list", "--format", "csv"], "--burn"),  # --list implies --burn
+])
+def test_conflicting_flags_are_a_usage_error(env, args, msg):
+    out = CliRunner().invoke(cli, args)
+    assert out.exit_code == 2, out.output
+    assert msg in out.output and "--format csv" in out.output
+
+
+@pytest.mark.parametrize("cmd", [["report"], ["stats", "--all"]])
+@pytest.mark.parametrize("flags", [
+    ["--json"], ["--format", "json"], ["--json", "--format", "json"]])
+def test_json_flags_still_work(env, cmd, flags):
+    out = CliRunner().invoke(cli, [*cmd, *flags])
+    assert out.exit_code == 0, out.output
+    assert isinstance(json.loads(out.stdout), dict)
+
+
 def test_empty_period(env):
     conn = history.connect()
     history.sync(conn)
