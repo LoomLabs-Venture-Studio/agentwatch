@@ -226,7 +226,7 @@ _DENIED = re.compile(  # the user or the permission system said no (Claude Code'
 _BLOCKED = re.compile(
     r"\bhook error:|<tool_use_error>Blocked:|This agent is isolated in the worktree", re.I)
 _TEST_FAILED = re.compile(
-    r"\b\d+ (?:failed|failing)\b|^FAILED\b|\bFAILED \(|test result: FAILED|^--- FAIL"
+    r"\b[1-9]\d* (?:failed|failing)\b|^FAILED\b|\bFAILED \(|test result: FAILED|^--- FAIL"
     r"|^FAIL\b|errors? during collection|ImportError while importing test module", re.M)
 _ERROR_RULES = [
     ("timeout", re.compile(

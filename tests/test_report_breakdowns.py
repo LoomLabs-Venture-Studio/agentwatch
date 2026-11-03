@@ -155,6 +155,15 @@ def test_test_failure_needs_a_test_command_and_a_failure_line():
     assert history.error_kind(a) == "nonzero_exit"  # a test runner, no failed tests
 
 
+@pytest.mark.parametrize("text, kind", [
+    ("Exit code 1\n=== 5 passed, 0 failed in 0.5s ===", "nonzero_exit"),  # e.g. coverage gate
+    ("Exit code 1\n=== 1 failed, 3 passed in 0.5s ===", "test_failure"),
+])
+def test_zero_failed_is_not_a_test_failure(text, kind):
+    a = SimpleNamespace(error_message=text, incoming_message=text, command="python -m pytest")
+    assert history.error_kind(a) == kind
+
+
 def test_sync_then_report_json(env):
     rep = json.loads(_report("--json"))
     models = {(m["agent"], m["model"]): m for m in rep["models"]}
