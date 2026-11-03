@@ -96,7 +96,7 @@ _CONDITIONAL = re.compile(
 )
 _ALWAYS = re.compile(r"skipif\(\s*(?:True|1)\b")  # skipif(True, ...) is not conditional
 _IF_LINE = re.compile(r"^\s*(?:if|else if|elif)\b")
-_COMMENT = re.compile(r"^\s*(?:#|//|/\*|\*)")
+_COMMENT = re.compile(r"^\s*(?:#(?![\[!])|//|/\*|\*)")  # `#[...]`/`#![...]`: Rust attributes
 _ASSERT = re.compile(
     r"^\s*assert\b|\bassert\w*!?\s*\(|\bexpect\s*\(|\b(?:assert|require)\.\w+\s*\("
     r"|\bt\.(?:Error|Fatal)f?\s*\(|\bXCTAssert\w*\s*\(|\bpytest\.(?:raises|warns)\s*\("

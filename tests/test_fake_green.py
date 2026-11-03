@@ -640,3 +640,22 @@ def test_coach_evidence_is_marker_or_short_path(tmp_path):
     s = Session().run("pytest", ok=False).run("rm /home/u/repo/tests/test_auth.py", out="")
     note = coach.format_message(one(s.save(tmp_path, "rm.jsonl")))
     assert "/home/u" not in note and "tests/test_auth.py" in note
+
+
+# --- CTO review round (2026-11-03) ---------------------------------------------------
+
+
+def test_rust_ignore_attribute_is_a_skip(tmp_path):
+    s = (Session().run("cargo test", ok=False, out="test result: FAILED. 1 passed; 1 failed")
+         .edit("/repo/tests/it.rs", "#[test]\nfn it_works() {",
+               "#[ignore]\n#[test]\nfn it_works() {"))
+    w = one(s.save(tmp_path))
+    assert w.severity.value == "high" and "#[ignore" in w.message
+
+
+def test_python_hash_comment_still_counts_as_commented_assert(tmp_path):
+    s = Session().run("pytest", ok=False).edit(
+        "/repo/tests/test_auth.py", "    assert user.ok", "    # assert user.ok")
+    assert "commented out 1 assertion" in one(s.save(tmp_path)).message
+
+
