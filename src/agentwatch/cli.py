@@ -523,11 +523,7 @@ def check(
         )
 
     if json_output:
-        output = report.to_dict()
-        output["session_fallback"] = note
-        output["efficiency"] = efficiency.to_dict()
-        output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
-        output["waste"] = _waste(warnings, buffer.stats)
+        output = _check_json(report, efficiency, warnings, buffer, note, goal_alignment)
         click.echo(json.dumps(output, indent=2))
     else:
         print_health_report(
@@ -556,6 +552,16 @@ def check(
         # security tier also decides the exit code (the worse one wins).
         exit_code = max(exit_code, _security_exit_code(calculate_security_score(warnings)))
     sys.exit(exit_code)
+
+
+def _check_json(report, efficiency, warnings, buffer, note, goal_alignment=None) -> dict:
+    """`check --json` payload (also served by `agentwatch visual`)."""
+    output = report.to_dict()
+    output["session_fallback"] = note
+    output["efficiency"] = efficiency.to_dict()
+    output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
+    output["waste"] = _waste(warnings, buffer.stats)
+    return output
 
 
 def _check_webhook(ctx, param, value: str | None) -> str | None:
@@ -757,6 +763,35 @@ def _session_proc(log: Path):
                  if p.log_file and resolved(p.log_file) == target), None)
 
 
+def _ps_json(agents: list[AgentProcess]) -> list[dict]:
+    """`ps --json` payload (also served by `agentwatch visual`).
+
+    Always a flat list of agent objects, with or without sub-agents, so
+    scripts can rely on one shape. Rebuild the tree from parent_agent_pid,
+    depth and team_id.
+    """
+    team_names = {t.team_id: t.name for t in build_teams(agents)}
+    return [
+        {
+            "pid": a.pid,
+            "parent_pid": a.parent_pid,
+            "parent_agent_pid": a.parent_agent_pid,
+            "team_id": a.team_id,
+            "team_name": team_names.get(a.team_id),
+            "depth": a.depth,
+            "agent_type": a.agent_type,
+            "project": a.project_name,
+            "working_directory": str(a.working_directory) if a.working_directory else None,
+            "log_file": str(a.log_file) if a.log_file else None,
+            "session_id": a.session_id,
+            "cpu_percent": a.cpu_percent,
+            "memory_mb": round(a.memory_mb, 1),
+            "uptime": a.uptime,
+        }
+        for a in agents
+    ]
+
+
 @cli.command()
 @click.option(
     "--json", "json_output",
@@ -770,30 +805,7 @@ def ps(json_output: bool):
     has_subagents = any(a.depth > 0 for a in agents)
 
     if json_output:
-        # Always a flat list of agent objects, with or without sub-agents, so
-        # scripts can rely on one shape. Rebuild the tree from parent_agent_pid,
-        # depth and team_id.
-        team_names = {t.team_id: t.name for t in build_teams(agents)}
-        output = [
-            {
-                "pid": a.pid,
-                "parent_pid": a.parent_pid,
-                "parent_agent_pid": a.parent_agent_pid,
-                "team_id": a.team_id,
-                "team_name": team_names.get(a.team_id),
-                "depth": a.depth,
-                "agent_type": a.agent_type,
-                "project": a.project_name,
-                "working_directory": str(a.working_directory) if a.working_directory else None,
-                "log_file": str(a.log_file) if a.log_file else None,
-                "session_id": a.session_id,
-                "cpu_percent": a.cpu_percent,
-                "memory_mb": round(a.memory_mb, 1),
-                "uptime": a.uptime,
-            }
-            for a in agents
-        ]
-        click.echo(json.dumps(output, indent=2))
+        click.echo(json.dumps(_ps_json(agents), indent=2))
         return
 
     click.echo()
@@ -1503,27 +1515,10 @@ def security_scan(
     if siem_log is not None:
         _export_siem_log(siem_log, warnings, buffer, report_type="security", score=security_score)
 
-    # Raw per-action security-stat counters (SessionStats.credential_accesses
-    # / .privilege_commands / .network_connections / .injection_attempts --
-    # see the design-decision comment on SessionStats in parser/models.py:
-    # these are raw pattern-match counts, not "how many Warnings fired").
-    security_stats = {
-        "credential_accesses": buffer.stats.credential_accesses,
-        "privilege_commands": buffer.stats.privilege_commands,
-        "network_connections": buffer.stats.network_connections,
-        "injection_attempts": buffer.stats.injection_attempts,
-    }
+    security_stats = _security_stats(buffer)
 
     if json_output:
-        output = {
-            "security_score": security_score,
-            "status": security_tier_from_score(security_score),
-            "warnings": [w.to_dict() for w in warnings],
-            "action_count": len(buffer),
-            "security_stats": security_stats,
-            "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
-            "session_fallback": note,
-        }
+        output = _security_json(warnings, buffer, note, goal_alignment)
         click.echo(json.dumps(output, indent=2))
     else:
         click.echo()
@@ -1570,6 +1565,33 @@ def security_scan(
             _print_goal_alignment(goal_alignment)
 
     sys.exit(_security_exit_code(security_score))
+
+
+def _security_stats(buffer: ActionBuffer) -> dict:
+    # Raw per-action security-stat counters (SessionStats.credential_accesses
+    # / .privilege_commands / .network_connections / .injection_attempts --
+    # see the design-decision comment on SessionStats in parser/models.py:
+    # these are raw pattern-match counts, not "how many Warnings fired").
+    return {
+        "credential_accesses": buffer.stats.credential_accesses,
+        "privilege_commands": buffer.stats.privilege_commands,
+        "network_connections": buffer.stats.network_connections,
+        "injection_attempts": buffer.stats.injection_attempts,
+    }
+
+
+def _security_json(warnings, buffer: ActionBuffer, note, goal_alignment=None) -> dict:
+    """`security-scan --json` payload (also served by `agentwatch visual`)."""
+    security_score = calculate_security_score(warnings)
+    return {
+        "security_score": security_score,
+        "status": security_tier_from_score(security_score),
+        "warnings": [w.to_dict() for w in warnings],
+        "action_count": len(buffer),
+        "security_stats": _security_stats(buffer),
+        "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
+        "session_fallback": note,
+    }
 
 
 @cli.command()
@@ -2010,15 +2032,12 @@ def audit(
     from agentwatch.cc_stats import (
         cwd_to_project_dir,
         find_all_project_dirs,
-        project_dir_to_name,
     )
     from agentwatch.detectors.security.pii import _PII_PATTERNS
     from agentwatch.detectors.security.secret_scanner import (
         _SECRET_PATTERNS,
-        AuditFinding,
         LogBusyError,
         assess_impact,
-        audit_log_file,
         redact_log_file,
     )
 
@@ -2038,27 +2057,7 @@ def audit(
             sys.exit(1)
         dirs = [project_dir]
 
-    all_findings: list[AuditFinding] = []
-    sessions_scanned = 0
-    project_names: list[str] = []
-
-    for pdir in dirs:
-        proj_name = project_dir_to_name(pdir)
-        project_names.append(proj_name)
-
-        if session_id:
-            jsonl = pdir / f"{session_id}.jsonl"
-            files = [jsonl] if jsonl.is_file() else []
-        else:
-            files = sorted(pdir.glob("*.jsonl"))
-
-        for jsonl_path in files:
-            sessions_scanned += 1
-            try:
-                findings = audit_log_file(jsonl_path, project_name=proj_name, **pat)
-                all_findings.extend(findings)
-            except (OSError, json.JSONDecodeError, UnsupportedLogFormatError):
-                continue
+    all_findings, sessions_scanned, project_names = _audit_scan(dirs, session_id, pat)
 
     if sessions_scanned == 0:
         if all_projects:
@@ -2120,38 +2119,11 @@ def audit(
                 redact_errors.append({"log_file": str(fp), "error": str(exc)})
 
     if json_output:
-        finding_dicts = []
-        for f in all_findings:
-            d: dict = {
-                "secret_type": f.secret_type,
-                "channel": f.channel,
-                "severity": f.severity,
-                "file_path": f.file_path,
-                "matched_prefix": f.matched_prefix,
-                "log_file": f.log_file,
-                "session_id": f.session_id,
-                "project_name": f.project_name,
-                "remediation": f.remediation,
-                "timestamp": f.timestamp,
-            }
-            if f.impact:
-                d["is_active_session"] = f.impact.is_active_session
-                d["active_pid"] = f.impact.active_pid
-                d["still_in_source"] = f.impact.still_in_source
-                d["source_line"] = f.impact.source_line
-                d["env_var_matches"] = f.impact.env_var_matches
-            finding_dicts.append(d)
-
-        output: dict = {
-            "projects": project_names,
-            "sessions_scanned": sessions_scanned,
-            "total_findings": len(all_findings),
-            "redacted": redact_count if redact and not dry_run else None,
-            "skipped_active": sorted(set(skipped_active)) if skipped_active else [],
-            "backups": [str(b) for b in backups],
-            "redact_errors": redact_errors,
-            "findings": finding_dicts,
-        }
+        output = _audit_json(
+            all_findings, sessions_scanned, project_names,
+            redacted=redact_count if redact and not dry_run else None,
+            skipped_active=skipped_active, backups=backups, redact_errors=redact_errors,
+        )
         click.echo(json.dumps(output, indent=2))
     else:
         _print_audit_report(all_findings, sessions_scanned, project_names)
@@ -2213,6 +2185,79 @@ def audit(
     elif "high" in severities:
         sys.exit(1)
     sys.exit(0)
+
+
+def _audit_scan(dirs: list[Path], session_id: str | None, pat: dict) -> tuple[list, int, list[str]]:
+    """Audit every session log in *dirs*: (findings, sessions scanned, project names)."""
+    from agentwatch.cc_stats import project_dir_to_name
+    from agentwatch.detectors.security.secret_scanner import audit_log_file
+
+    all_findings: list = []
+    sessions_scanned = 0
+    project_names: list[str] = []
+
+    for pdir in dirs:
+        proj_name = project_dir_to_name(pdir)
+        project_names.append(proj_name)
+
+        if session_id:
+            jsonl = pdir / f"{session_id}.jsonl"
+            files = [jsonl] if jsonl.is_file() else []
+        else:
+            files = sorted(pdir.glob("*.jsonl"))
+
+        for jsonl_path in files:
+            sessions_scanned += 1
+            try:
+                findings = audit_log_file(jsonl_path, project_name=proj_name, **pat)
+                all_findings.extend(findings)
+            except (OSError, json.JSONDecodeError, UnsupportedLogFormatError):
+                continue
+    return all_findings, sessions_scanned, project_names
+
+
+def _audit_json(
+    all_findings: list,
+    sessions_scanned: int,
+    project_names: list[str],
+    redacted: int | None = None,
+    skipped_active=(),
+    backups=(),
+    redact_errors=(),
+) -> dict:
+    """`audit --json` payload (also served by `agentwatch visual`)."""
+    finding_dicts = []
+    for f in all_findings:
+        d: dict = {
+            "secret_type": f.secret_type,
+            "channel": f.channel,
+            "severity": f.severity,
+            "file_path": f.file_path,
+            "matched_prefix": f.matched_prefix,
+            "log_file": f.log_file,
+            "session_id": f.session_id,
+            "project_name": f.project_name,
+            "remediation": f.remediation,
+            "timestamp": f.timestamp,
+        }
+        if f.impact:
+            d["is_active_session"] = f.impact.is_active_session
+            d["active_pid"] = f.impact.active_pid
+            d["still_in_source"] = f.impact.still_in_source
+            d["source_line"] = f.impact.source_line
+            d["env_var_matches"] = f.impact.env_var_matches
+        finding_dicts.append(d)
+
+    return {
+        "projects": project_names,
+        "sessions_scanned": sessions_scanned,
+        "total_findings": len(all_findings),
+        "redacted": redacted,
+        "skipped_active": sorted(set(skipped_active)) if skipped_active else [],
+        "backups": [str(b) for b in backups],
+        "redact_errors": list(redact_errors),
+        "findings": finding_dicts,
+    }
 
 
 def _history_db():
