@@ -525,11 +525,17 @@ class Scanner:
         if isinstance(oauth, dict):
             self._secret_value("client_secret", oauth.get("client_secret"), agent, path,
                                f"{loc}.oauth.client_secret", label)
-        # 2. unpinned package runners
+        # 2. download-and-run commands, unpinned package runners
         cmd = srv.get("command")
         if isinstance(cmd, str):
             self._secret_value("", cmd, agent, path, f"{loc}.command", label)
             argv = [cmd, *(a for a in args if isinstance(a, str))]
+            line = " ".join(argv)
+            if _PIPE_TO_SHELL.search(line):
+                self.add("high", "remote_script", agent, path, f"{loc}.command",
+                         f"{label} downloads and runs a script: {one_line(line, 100)}",
+                         "It downloads code and runs it each time it starts; whoever controls "
+                         "that URL controls your machine.")
             if not args and " " in cmd.strip():
                 try:
                     argv = shlex.split(cmd)
