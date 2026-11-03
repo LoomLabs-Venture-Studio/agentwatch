@@ -5348,9 +5348,17 @@ config counterpart to `audit` (session logs) and `security-scan`.
 - [x] Tests drive the real CLI over fixture trees in tmp_path, including the false-positive cases.
 
 #### Result (2026-10-31)
-- `src/agentwatch/config_scan.py` (new), `cli.py` (`config-scan`, guard alias), `tests/test_config_scan.py` (55 tests). Full suite 2641 passed, 1 skipped; ruff clean.
-- Real run on the dev machine (`--path` agentwatch repo): 50 files (claude-code 46, codex 2, gemini 1, cline 1), 3 low findings, exit 0. The first run flagged a skill that quotes "ignore previous instructions" as a warning to the model (medium); quoted phrases are now low.
+- `src/agentwatch/config_scan.py` (new), `cli.py` (`config-scan`, guard alias), `tests/test_config_scan.py` (85 tests after the CTO review round: 82 pass and 3 POSIX/symlink skips on Windows). Full suite on Windows 2657 passed, 9 skipped, 6 failed + 1 error, all known pre-existing Windows failures on develop (4 symlink tests in test_redact_data_safety, test_resolve_helper_follows_symlinks, test_wrapped_detail_lines_keep_their_indent, the test_coach state-dir error); ruff clean.
+- Real run on the dev machine (`--path` agentwatch repo, 2026-10-31, QA round 1): 51 files (claude-code 47, codex 2, gemini 1, cline 1), 3 low findings, exit 0. The first run flagged a skill that quotes "ignore previous instructions" as a warning to the model (medium); quoted phrases are now low.
+- Re-run 2026-11-03 (after the CTO round, same machine, more plugins and skills installed since): 198 files (claude-code 196, codex 1, cline 1), 0 skipped, every path in `/` form. 3 low as before plus 1 high: a hard-coded bearer Authorization header in an MCP server under `~/.claude.json` `projects[...]` (masked in the output; a real finding on the machine, not a false positive).
 - Exit code differs from the brief's suggestion: config-scan has no critical tier, so 2 = any high.
+
+#### CTO review round (2026-11-03)
+- `show()` joined with `os.sep`, so on Windows every file and `projects["..."]` location came out as `~\.claude\settings.json` and 9 of the PR's own tests failed there. It now uses `relative_to` + `as_posix()` (`~/...` on every OS, case-insensitive home match on Windows). A `PureWindowsPath` unit test catches it on Linux CI too.
+- `cmd /c ...` / `cmd.exe /C ...` / `/k` (the Windows MCP form) is unwrapped before the unpinned-package check, so `cmd /c npx -y pkg` is medium and `cmd /c npx -y pkg@2.0.0` passes.
+- MCP server `command` + `args` (joined), or a single-string command, now go through the pipe-to-shell check: `bash -c "curl ... | sh"`, `sh -c "wget -qO- ... | bash"`, `powershell -Command "iwr ... | iex"`, `cmd /c "curl ... | sh"` are high `remote_script` at `<server>.command`; `npx -y pkg@1.0.0`, `node server.js`, `curl ... | jq` don't fire.
+- Codex `[profiles.<name>]` tables: `sandbox_mode = "danger-full-access"` is medium, high with `approval_policy = "never"` (the profile's, else the top-level one), at `profiles.<name>.sandbox_mode`.
+- Tests: 8 new (show unit test, 4 `cmd /c` unit cases, `cmd /c` via CLI, MCP pipe-to-shell via CLI, Codex profiles via CLI); each failed on ee29d21 first.
 
 #### Cut (not precise enough or not cheap)
 - The broad shared INJECTION_PATTERNS ("you are now", "act as a", "system:"): they match ordinary skill prompts. Only the high-confidence override phrases and ChatML tokens are used.
