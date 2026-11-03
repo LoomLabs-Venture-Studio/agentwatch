@@ -2360,6 +2360,23 @@ def report(days: int, json_output: bool, agent: str | None, project: str | None,
         click.echo("\n".join(render(rep)))
 
 
+@cli.command()
+@click.option("--port", type=click.IntRange(0, 65535), default=0, show_default=True,
+              help="Port on 127.0.0.1 (0 = any free port)")
+@click.option("--no-open", is_flag=True, help="Print the URL, don't open a browser")
+def visual(port: int, no_open: bool):
+    """The reports (ps, check, security-scan, audit, stats, report, history)
+    in a local browser page. Binds 127.0.0.1 only; the printed URL holds a
+    one-time token. Read only. Ctrl+C to stop."""
+    from agentwatch.visual import serve
+
+    try:
+        serve(port, open_browser=not no_open)
+    except OSError as e:
+        click.echo(f"Error: cannot listen on 127.0.0.1:{port}: {e}", err=True)
+        sys.exit(1)
+
+
 @cli.command(hidden=True)
 def hook():
     """Claude Code coach hook: reads hook JSON on stdin (see plugin/)."""

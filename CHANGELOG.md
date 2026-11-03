@@ -6,6 +6,16 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Added
+
+- `agentwatch visual [--port N] [--no-open]`: the reports in a local browser
+  page. Overview (`ps`, `check`), Security (`security-scan`, `audit` on a
+  button), Cost (`stats --all`, `report`), History (recorded sessions,
+  `history sync` on a button). stdlib server on 127.0.0.1 only, one inline
+  page, no CDN, no new dependency. Every request needs the token from the
+  printed URL and a `127.0.0.1`/`localhost` Host header; GET only; every
+  string sent is redacted.
+
 ### Fixed
 
 - Codex sessions (Codex CLI and the ChatGPT desktop app) no longer get a

@@ -863,6 +863,23 @@ a sync without `--days` re-reads pruned sessions whose logs are still on disk.
 
 USD values are null when unknown (no priced session, or no previous period).
 
+### Browser View
+
+The reports in a local web page: Overview (`ps`, `check`), Security
+(`security-scan`, `audit`), Cost (`stats --all`, `report`) and History
+(recorded sessions).
+
+```bash
+agentwatch visual             # opens the page in your browser
+agentwatch visual --no-open   # just print the URL
+agentwatch visual --port 8765 # fixed port (default: any free port)
+```
+
+It listens on 127.0.0.1 only and nothing leaves your machine (no CDN). The
+printed URL holds a one-time token every request needs. Read only: the audit
+and `history sync` run only when you press their button. Secrets are redacted
+from everything the page shows. Ctrl+C stops it.
+
 ### Scrub Secrets and Personal Info
 
 ```bash
