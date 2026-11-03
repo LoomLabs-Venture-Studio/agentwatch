@@ -555,3 +555,18 @@ def test_walk_cap_is_reported(home, monkeypatch):
     report, _ = scan(home)
     assert report["files_skipped"] == [{
         "file": "~/.claude/commands", "reason": "more than 2 files; the rest not scanned"}]
+
+
+# --- CTO review round (#196) -----------------------------------------------
+
+
+def test_show_uses_forward_slashes_and_tilde(monkeypatch):
+    from pathlib import PureWindowsPath
+
+    from agentwatch.config_scan import show
+
+    monkeypatch.setattr(Path, "home", lambda: PureWindowsPath(r"C:\Users\z"))
+    assert show(PureWindowsPath(r"C:\Users\z\.claude\settings.json")) == "~/.claude/settings.json"
+    assert show(r"C:\Users\z\proj") == "~/proj"
+    assert show(r"c:\users\Z") == "~"
+    assert show(r"D:\work\.mcp.json") == "D:/work/.mcp.json"

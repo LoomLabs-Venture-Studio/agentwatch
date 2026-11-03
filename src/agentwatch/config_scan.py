@@ -34,7 +34,7 @@ import stat
 import tomllib
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -92,12 +92,15 @@ class Report:
                 "files_skipped": self.skipped}
 
 
-def show(path: Path | str) -> str:
-    """*path* with the home dir shown as ~."""
-    s, home = str(path), str(Path.home())
-    if s == home or s.startswith(home + os.sep):
-        return "~" + s[len(home):]
-    return s
+def show(path: PurePath | str) -> str:
+    """*path* in / form on every OS, with the home dir shown as ~."""
+    home = Path.home()
+    p = type(home)(path)
+    try:
+        rel = p.relative_to(home)
+    except ValueError:
+        return p.as_posix()
+    return "~/" + rel.as_posix() if rel.parts else "~"
 
 
 # ---------------------------------------------------------------------------
