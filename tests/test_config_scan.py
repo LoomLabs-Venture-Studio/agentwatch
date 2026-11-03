@@ -570,3 +570,23 @@ def test_show_uses_forward_slashes_and_tilde(monkeypatch):
     assert show(r"C:\Users\z\proj") == "~/proj"
     assert show(r"c:\users\Z") == "~"
     assert show(r"D:\work\.mcp.json") == "D:/work/.mcp.json"
+
+
+@pytest.mark.parametrize("argv", [
+    ["cmd", "/c", "npx", "-y", "pkg"],
+    ["cmd.exe", "/C", "npx", "-y", "pkg"],
+    ["CMD", "/d", "/k", "uvx", "mcp-server-git"],
+    ["cmd", "/c", "npx -y pkg"],
+])
+def test_unpinned_under_cmd_c(argv):
+    assert _unpinned(argv)[0] == "medium"
+
+
+def test_cmd_c_via_cli(home):
+    put(home / "proj" / ".mcp.json", servers(
+        a={"command": "cmd", "args": ["/c", "npx", "-y", "pkg"]},
+        b={"command": "cmd", "args": ["/c", "npx", "-y", "pkg@2.0.0"]}))
+    report, code = scan(home)
+    assert code == 1
+    assert kinds(report) == [("medium", "unpinned_package", "mcpServers.a.command")]
+    assert "via npx" in report["findings"][0]["message"]

@@ -148,8 +148,26 @@ def _base(cmd: str) -> str:
     return re.sub(r"\.(cmd|exe|bat|ps1)$", "", name)
 
 
+def _unwrap_cmd(argv: list[str]) -> list[str]:
+    """*argv* without a leading ``cmd [/d /s ...] /c|/k``, the Windows MCP form."""
+    if argv and _base(argv[0]) == "cmd":
+        for i, a in enumerate(argv[1:], 1):
+            if a.lower() in ("/c", "/k"):
+                inner = argv[i + 1:]
+                if len(inner) == 1:  # cmd /c "npx -y pkg"
+                    try:
+                        inner = shlex.split(inner[0])
+                    except ValueError:
+                        pass
+                return _unwrap_cmd(inner)
+            if not a.startswith("/"):
+                break
+    return argv
+
+
 def _runner(argv: list[str]) -> tuple[str, list[str]] | None:
     """(ecosystem, args after the runner) for a package runner, else None."""
+    argv = _unwrap_cmd(argv)
     if not argv:
         return None
     b, rest = _base(argv[0]), argv[1:]
@@ -521,7 +539,8 @@ class Scanner:
             if hit:
                 sev, spec, reason = hit
                 self.add(sev, "unpinned_package", agent, path, f"{loc}.command",
-                         f"{label} runs {one_line(spec, 80)} via {_base(argv[0])}: {reason}",
+                         f"{label} runs {one_line(spec, 80)} via "
+                         f"{_base(_unwrap_cmd(argv)[0])}: {reason}",
                          fix="Pin an image digest or version tag." if sev == "low" else None)
         # 3. plain http to a remote host
         for key in ("url", "httpUrl"):
