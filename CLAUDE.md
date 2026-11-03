@@ -286,11 +286,19 @@ src/agentwatch/
                        _gemini_dir, default_user_dir, cline paths).
                        Checks: secrets via _SECRET_PATTERNS (masked; var
                        refs stripped), unpinned npx/uvx/pipx/... and git
-                       refs, docker untagged, plain-http remotes,
-                       bypassPermissions / allow-all / credential-path
-                       allow rules, pipe-to-shell hooks, hidden chars /
-                       hidden comments / override phrases in md, POSIX
-                       files writable by others. Symlinks must resolve
+                       refs (a Windows `cmd /c|/k` wrapper is unwrapped
+                       first, so `cmd /c npx -y pkg` counts), docker
+                       untagged, plain-http remotes, bypassPermissions /
+                       allow-all / credential-path allow rules, Codex
+                       sandbox_mode = "danger-full-access" at top level
+                       and in each [profiles.<name>] (high with
+                       approval_policy = "never", the profile's own else
+                       the top-level one), pipe-to-shell in hooks and in
+                       MCP server command + args (remote_script), hidden
+                       chars / hidden comments / override phrases in md,
+                       POSIX files writable by others. show(): paths in /
+                       form with home as ~ on every OS (Windows home
+                       match case-insensitive). Symlinks must resolve
                        inside the root (project, else home); symlinked
                        dirs not walked; > 2 MB skipped; unparseable ->
                        files_skipped. JSON schema 1. Exit 0 / 1 medium /
