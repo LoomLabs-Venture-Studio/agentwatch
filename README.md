@@ -834,7 +834,8 @@ row, under a header that does not change: `table,rank,name,metric,value`.
 `table` is the JSON key (`totals`, `models`, `errors.by_kind`, ...), `rank`
 and `name` identify a row of a list (its position and first field: the
 model, agent, project, error kind or tool), and an empty `value` is null.
-Pivot it in a spreadsheet, or filter it with any CSV tool:
+`--json` with `--format csv`, or `stats --burn` with `--format csv`, is a
+usage error (exit 2). Pivot it in a spreadsheet, or filter it with any CSV tool:
 
 ```
 table,rank,name,metric,value
