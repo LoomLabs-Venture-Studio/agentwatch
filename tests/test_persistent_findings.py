@@ -72,16 +72,13 @@ async def _replayed(app) -> None:
 
 
 def _assert_loop_kept_turning(gaps: list[float]) -> None:
-    """No single block of the loop is a large share of the whole run.
+    """No block of the event loop over 2 s.
 
-    Measured against the run's own length, not a fixed number of seconds, so
-    it holds on a slow or busy runner (a fixed 0.25-0.45 s limit flaked on
-    CI at 0.26-0.51 s). Work done in one go, the bug #185 fixed (6.75 s
-    history burst, 3.9 s toggle replay), is one gap of nearly the whole run.
+    A 0.25-0.45 s limit flaked on slow CI runners (0.26-0.51 s). The bug #185
+    fixed blocked for 3.9-6.75 s in one go, so 2 s still catches it.
     """
     assert gaps, "event loop never turned during the run"
-    assert max(gaps) < sum(gaps) / 4, (
-        f"event loop blocked for {max(gaps):.2f}s of a {sum(gaps):.2f}s run")
+    assert max(gaps) < 2.0, f"event loop blocked for {max(gaps):.2f}s"
 
 
 async def test_dashboard_keeps_finding_after_window_passes():
