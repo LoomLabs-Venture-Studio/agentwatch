@@ -15,8 +15,10 @@ numbers refer to the GitHub repository.
   and Cline, in your user configs and in the project given by `--path`
   (default: the current folder). It reports hard-coded secrets (masked),
   MCP servers run through npx/uvx/bunx/pipx without an exact version or from
-  a git ref, plain-http remote servers, `bypassPermissions` and allow-all
-  rules, hooks that pipe a download into a shell, hidden characters and
+  a git ref (also under `cmd /c`), plain-http remote servers,
+  `bypassPermissions`, allow-all rules and Codex `danger-full-access` (top
+  level and profiles), hooks and MCP server commands that pipe a download
+  into a shell, hidden characters and
   override phrases in tool-facing markdown, and config files other users can
   write. `--json` gives schema 1. Exit codes: 0 nothing above low, 1 a medium
   finding, 2 a high finding. No network calls, no account, nothing written.

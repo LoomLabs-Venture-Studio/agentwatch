@@ -319,15 +319,15 @@ Each finding names the agent, the file (home shown as `~`), the place in it
 | Check | Severity |
 | ----- | -------- |
 | Hard-coded secret in an MCP server's env, headers, args or URL, a settings `env` block, or a hook command (`${VAR}`, `$VAR`, `${env:VAR}`, `{env:VAR}`, `${input:id}` and placeholders are fine) | high |
-| MCP server started by npx / bunx / pnpm dlx / yarn dlx / npm exec / uvx / uv tool run / pipx run without an exact version (`@latest` and ranges count), or from a git ref or URL | medium |
+| MCP server started by npx / bunx / pnpm dlx / yarn dlx / npm exec / uvx / uv tool run / pipx run (also under `cmd /c`) without an exact version (`@latest` and ranges count), or from a git ref or URL | medium |
 | Docker MCP image with no tag or `:latest` | low |
 | Remote MCP server over plain `http://` to a non-loopback host: with a token or auth header / without | high / medium |
 | Claude Code `permissions.defaultMode: "bypassPermissions"` (user settings / project settings) | high / medium |
 | Allow rules that allow every call of Bash, PowerShell, Edit, Write, MultiEdit, NotebookEdit or WebFetch (`Bash`, `Bash(*)`), or that cover credential files (`~/.ssh`, `~/.aws`, `.env`, ...) | medium |
 | `enableAllProjectMcpServers: true`; Gemini `trust: true` on a server | medium |
 | `skipDangerousModePermissionPrompt: true` | low |
-| Codex `sandbox_mode = "danger-full-access"` (with `approval_policy = "never"`: high) | medium |
-| A hook or status-line command that pipes a download into a shell (`curl ... \| sh`, `bash <(wget ...)`, `iex (iwr ...)`) | high |
+| Codex `sandbox_mode = "danger-full-access"`, top level or in a `[profiles.<name>]` table (with `approval_policy = "never"`: high) | medium |
+| A hook, status-line or MCP server command that pipes a download into a shell (`curl ... \| sh`, `bash <(wget ...)`, `iex (iwr ...)`) | high |
 | Invisible characters (zero-width, bidi overrides, Unicode tag chars) in skills, commands, agents, plugin markdown, CLAUDE.md or an MCP server description | high |
 | An HTML comment holding instruction words in those files (hidden when rendered) | medium |
 | "Ignore previous instructions"-style phrases (low when quoted or the file is about prompt injection) | medium |
