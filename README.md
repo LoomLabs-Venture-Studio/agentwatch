@@ -983,7 +983,10 @@ Not caught: other ways to read secrets (`grep`, `source .env`, the Edit and
 Write tools), `xargs rm`, `find -delete`, `curl ... | python` (or `| cmd`,
 `| powershell`), `powershell -EncodedCommand` (not decoded), `wsl
 --shell-type X`, `script --command=...`, wrappers nested more than 3 deep,
-unquoted backslash program paths, and scripts run from a file. Commands
+unquoted backslash program paths, cmd's `^` escape (`cmd /c g^it reset
+--hard` runs), PowerShell syntax inside `-Command` (`& {...}`, `iex`) and
+scripts run from a file. PowerShell cmdlets (`Remove-Item -Recurse -Force`)
+and the PowerShell tool are not guarded yet. Commands
 behind `watch` or `strace` are not unwrapped. In commands over 20,000
 characters, parts longer than 2,000 characters get only a quick pattern
 check, and words split by quotes (`r''m`) are missed. It asks rather than

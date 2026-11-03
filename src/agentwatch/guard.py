@@ -14,8 +14,10 @@ or bare args) are checked recursively. Program names are lowercased, without
 `.exe` and directory (`/` or backslash). Not caught: `powershell -EncodedCommand`
 (not decoded), `wsl --shell-type X`, `script --command=...`, `curl | cmd` or
 `| powershell`, wrappers nested more than 3 deep, unquoted backslash program
-paths (shlex eats them), and quote-split words (`r''m`) inside commands over
-MAX_PARSE chars. Arguments of any other program are not inspected, so
+paths (shlex eats them), cmd's `^` escape (`g^it`), PowerShell syntax inside
+-Command (`& {...}`, `iex`, cmdlets such as `Remove-Item -Recurse -Force`; the
+PowerShell tool is not guarded either), and quote-split words (`r''m`) inside
+commands over MAX_PARSE chars. Arguments of any other program are not inspected, so
 `echo "rm -rf /"` or `git commit -m "rm -rf /"` pass. When shlex cannot parse
 the command (unbalanced quotes), the raw string is matched against
 DESTRUCTIVE_PATTERNS instead. Commands over
@@ -164,6 +166,9 @@ def _rest(args: list[str], depth: int) -> str | None:
     return check_command(args[0] if len(args) == 1 else shlex.join(args), depth + 1)
 
 
+# ponytail: cmd ^ escapes and PowerShell syntax inside -Command (& {...}, iex,
+# cmdlets) are not parsed; only commands they name as plain words are checked.
+# Upgrade: strip ^ for cmd and guard cmdlets / the PowerShell tool.
 def _cmd(args: list[str], depth: int) -> str | None:
     """cmd /c, //c (Git Bash), /k, /r, also glued: /c"..."."""
     for i, a in enumerate(args):
