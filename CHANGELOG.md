@@ -19,7 +19,8 @@ numbers refer to the GitHub repository.
   after a failed run (`|| true` right after the test runner: HIGH) and LOW
   otherwise. Platform/env skips, moved or renamed tests, fixtures,
   snapshots, non-source files in test dirs, and test files the agent created
-  itself in the window (shell or Write: at most LOW) are ignored. Not seen:
+  itself in the window (shell, or a Write to a path no earlier action
+  read or changed: at most LOW) are ignored. Not seen:
   in-place edits by shell (`sed -i '/assert/d'`). Edits are read for Claude Code, Codex,
   Copilot CLI, Gemini CLI, OpenCode/Kilo and Cline; test commands for every
   agent with a shell tool. The coach hook coaches on it, and the status line
