@@ -276,7 +276,11 @@ _PREFIX = re.compile(
     r"|time\s+|timeout\s+\S+\s+|sudo\s+)+"
 )
 _RUNNER = re.compile(
-    r"^(?:pytest|py\.test|python\d*(?:\.\d+)?\s+-m\s+(?:pytest|unittest)|jest|vitest|mocha"
+    # The program's directory, if any: `.venv/bin/`, `node_modules\.bin\`, or a
+    # quoted `"C:\Program Files\...\` (_PREFIX has already dropped the opening quote).
+    r"^(?:[^\s'\"]*[/\\]|[^'\"\n]*[/\\](?=[\w.-]+['\"]))?"
+    r"(?:(?:python\d*(?:\.\d+)?|py)(?:\.exe)?['\"]?(?:\s+-[\d.]+)?\s+-m\s+(?:pytest|unittest)"
+    r"|pytest|py\.test|jest|vitest|mocha"
     r"|go\s+test|cargo\s+(?:test|nextest)|(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?test"
     r"|rspec|phpunit|dotnet\s+test|mvn\s+test|gradlew?\s+test|\./gradlew\s+test|tox|nox"
     r"|make\s+test|ctest)\b"

@@ -659,3 +659,27 @@ def test_python_hash_comment_still_counts_as_commented_assert(tmp_path):
     assert "commented out 1 assertion" in one(s.save(tmp_path)).message
 
 
+@pytest.mark.parametrize("command", [
+    r".venv\Scripts\python -m pytest",
+    ".venv/bin/python -m pytest -q",
+    "py -m pytest",
+    "py -3.12 -m pytest tests",
+    r"C:\Users\z\AppData\Local\Programs\Python\Python312\python.exe -m pytest",
+    r'"C:\Program Files\Python312\python.exe" -m pytest',
+    "./node_modules/.bin/jest",
+    r"node_modules\.bin\jest --ci",
+])
+def test_runner_with_a_path_or_launcher(tmp_path, command):
+    s = (Session().run(command, ok=False)
+         .edit("/repo/tests/test_auth.py", SKIP_OLD, SKIP_NEW))
+    assert one(s.save(tmp_path)).severity.value == "high"
+
+
+
+
+@pytest.mark.parametrize("command", [
+    "cat pytest.ini", "cat tests/pytest.ini", "ls node_modules/.bin/", "pyright -m pytest",
+])
+def test_reading_runner_files_is_not_a_test_run(tmp_path, command):
+    s = Session().run(command, ok=False, out="").edit("/repo/tests/test_auth.py", TEST_OLD, "")
+    assert one(s.save(tmp_path)).severity.value == "low"
