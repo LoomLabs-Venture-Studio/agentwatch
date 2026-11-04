@@ -114,7 +114,9 @@ def test_json_schema(tmp_path, monkeypatch, conn):
     out = CliRunner().invoke(cli, ["report", "--no-sync", "--json", "--days", "30"])
     assert out.exit_code == 0, out.output
     rep = json.loads(out.stdout)
-    assert set(rep) == JSON_KEYS and rep["schema"] == report.JSON_SCHEMA == 1
+    # Schema 1 only grows: every key before Sprint 40 is unchanged.
+    assert set(rep) == JSON_KEYS | {"models", "cache", "errors"}
+    assert rep["schema"] == report.JSON_SCHEMA == 1
     assert set(rep["totals"]) == set(rep["previous"]) == TOTAL_KEYS
     assert set(rep["period"]) == {"days", "start", "end"}
     assert set(rep["filters"]) == {"agent", "project"}
