@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 import secrets
 import sqlite3
+import threading
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -26,6 +28,11 @@ from agentwatch.parser.logs import LogUnreadableError, UnsupportedLogFormatError
 from agentwatch.report import build
 
 _STR_LIMIT = 2000
+# audit and history sync each read every log: one at a time, a second request
+# waits (the sync after it is then cheap).
+# ponytail: one global lock, per-endpoint locks if audit and sync must overlap
+_RUN_LOCK = threading.Lock()
+_TOKEN_RE = re.compile(r"([?&]t=)[^&\s]*")
 
 
 class _NoDataError(Exception):
@@ -62,7 +69,8 @@ def _security(run: bool):
 def _audit(run: bool):
     if not run:
         return {"not_run": True}
-    findings, scanned, names = cli._audit_scan(find_all_project_dirs(), None, {})
+    with _RUN_LOCK:
+        findings, scanned, names = cli._audit_scan(find_all_project_dirs(), None, {})
     if scanned == 0:
         raise _NoDataError("No Claude Code session logs found.")
     assess_impact(findings)
@@ -83,7 +91,10 @@ def _report(run: bool):
 
 def _history(run: bool):
     with closing(connect()) as conn:
-        synced = sync(conn) if run else None
+        synced = None
+        if run:
+            with _RUN_LOCK:
+                synced = sync(conn)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT agent, session_id, project, started, ended, actions, tokens,"
@@ -105,14 +116,17 @@ API = {
 
 
 def redact(value: Any) -> Any:
-    """Every string (keys too) in *value* through redact_truncate."""
+    """Every string (keys too) in *value* through redact_truncate; any other
+    non-JSON value (Path, datetime, ...) becomes its str(), redacted."""
     if isinstance(value, str):
         return redact_truncate(value, _STR_LIMIT)
     if isinstance(value, dict):
         return {redact(k): redact(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [redact(v) for v in value]
-    return value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return redact(str(value))
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -164,12 +178,13 @@ class _Handler(BaseHTTPRequestHandler):
             data = {"error": str(e)}
         except Exception as e:  # never leak a traceback to the page
             code, data = 500, {"error": f"internal error ({type(e).__name__})"}
-        body = json.dumps(redact(data), default=str).encode()
+        body = json.dumps(redact(data)).encode()
         self._send(code, body, "application/json")
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
-        # The request line carries the token: mask it.
-        super().log_message("%s", (format % args).replace(self.server.token, "[token]"))
+        # The request line carries the token (maybe percent-encoded): mask the
+        # whole t= value.
+        super().log_message("%s", _TOKEN_RE.sub(r"\1[token]", format % args))
 
 
 class _Server(ThreadingHTTPServer):

@@ -945,6 +945,9 @@ printed URL holds a one-time token every request needs. Read only: the audit
 and `history sync` run only when you press their button. Secrets are redacted
 from everything the page shows. Ctrl+C stops it.
 
+On a shared computer, other users may see that key (in your browser history or
+the process list) while the server runs, so stop it when you are done.
+
 ### Scrub Secrets and Personal Info
 
 ```bash

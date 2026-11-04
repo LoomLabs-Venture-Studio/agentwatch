@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import threading
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -149,6 +150,58 @@ def test_log_lines_hide_token(server, capsys):
 def test_redact_walks_nested():
     out = visual.redact({"a": [SECRET, {"b": (SECRET, 1)}], SECRET: None})
     assert SECRET not in json.dumps(out)
+
+
+def test_redact_non_json_values_become_redacted_strings():
+    class Obj:
+        def __str__(self):
+            return f"obj {SECRET}"
+
+    when = datetime(2026, 11, 1, 10, 0)
+    out = visual.redact({"p": Path(f"/w/{SECRET}.jsonl"), "o": [Obj()], "d": when,
+                         "n": [1, 2.5, True, None]})
+    text = json.dumps(out)  # no default=: everything is JSON already
+    assert SECRET not in text
+    assert out["d"] == str(when) and out["n"] == [1, 2.5, True, None]
+
+
+def test_log_lines_hide_percent_encoded_token(server, capsys):
+    encoded = "".join(f"%{ord(c):02X}" for c in server.token)
+    r, _ = _get(server, f"/api/nope?t={encoded}&x=1", token=False)
+    assert r.status == 404  # parse_qs decodes it: the token is accepted
+    err = capsys.readouterr().err
+    assert encoded not in err and server.token not in err
+    assert "t=[token]&x=1" in err
+
+
+def test_concurrent_history_sync_runs_one_at_a_time(sandbox, monkeypatch):
+    active, peak, calls = [0], [0], []
+    gate = threading.Event()
+
+    def fake_sync(conn):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        gate.wait(0.3)
+        calls.append(1)
+        active[0] -= 1
+        return {"scanned": 0}
+
+    monkeypatch.setattr(visual, "sync", fake_sync)
+    threads = [threading.Thread(target=visual._history, args=(True,)) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len(calls) == 2 and peak[0] == 1
+
+
+def test_audit_run_shares_the_lock(sandbox, monkeypatch):
+    seen = []
+    monkeypatch.setattr(visual.cli, "_audit_scan",
+                        lambda *a: seen.append(visual._RUN_LOCK.locked()) or ([], 0, {}))
+    with pytest.raises(visual._NoDataError):
+        visual._audit(True)
+    assert seen == [True]
 
 
 # The commands' --json output is exactly the shared builders' output.
