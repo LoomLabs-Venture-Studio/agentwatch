@@ -67,7 +67,9 @@ src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
                        detect, net, list-detectors, security-scan, themes, stats,
                        visual,
-                       audit, scrub, report, history sync|prune|path. `scrub PATH` redacts secrets + PII in one
+                       audit, scrub, report, history sync|prune|path.
+                       `report`/`stats` take --format text|json|csv.
+                       `scrub PATH` redacts secrets + PII in one
                        file (copy by default, `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
                        (output without `--pii` unchanged)
@@ -253,10 +255,19 @@ src/agentwatch/
                        $XDG_DATA_HOME or ~/.local/share + agentwatch; dir via
                        coach._private_dir, 0700). PRAGMA user_version +
                        _MIGRATIONS (statement lists, IF NOT EXISTS) run
-                       under BEGIN IMMEDIATE, version re-read inside. sessions keyed by log_hash (sha256
+                       under BEGIN IMMEDIATE, version re-read inside.
+                       sessions keyed by log_hash (sha256
                        of the path, never the path), findings by (log_hash,
-                       sha256 of warning_dedup_key). sync(): every adapter's
-                       history_logs(), skip unchanged (size, mtime_ns),
+                       sha256 of warning_dedup_key); schema 2 adds
+                       session_models (per model id: calls, tokens incl.
+                       cache write/1h/read, USD, USD saved by cache reads;
+                       ActionBuffer's largest-copy-per-call rule, so they sum
+                       to the session cost) and session_errors (kind, tool,
+                       count; never error text). error_kind(): first match
+                       of fixed strings/regexes over error_message + the
+                       failed result's tail -> ERROR_KINDS. Migration 2
+                       sets size = -1 so the next sync re-reads every log.
+                       sync(): every adapter's history_logs(), skip unchanged (size, mtime_ns),
                        active (< 60 s) and --days; changed logs re-scanned
                        whole (registry "all", `check`'s health score and
                        waste_summary), findings replaced, first_seen kept;
@@ -277,10 +288,17 @@ src/agentwatch/
                        Token (?t=, compare_digest) + Host 127.0.0.1|localhost
                        :<port> or 403; non-GET 405; token masked in logs.
                        audit and history sync only with ?run=1
-  report.py            `agentwatch report`: build() (JSON schema 1) over
-                       sessions whose last action is in the period, plus the
-                       previous one for the trend; unpriced sessions counted
-                       but out of spend and waste %; render() text
+  report.py            `agentwatch report`: build() (JSON schema 1, fields
+                       only added) over sessions whose last action is in the
+                       period, plus the previous one for the trend; unpriced
+                       sessions counted but out of spend and waste %;
+                       models (per model+agent, USD null if any call
+                       unpriced), cache (hit % = read / (read + written +
+                       uncached), saved_usd priced models only), errors
+                       (by kind with sessions share and delta, by tool);
+                       render() text; write_csv(): any JSON report as one
+                       long table table,rank,name,metric,value (also
+                       `stats --format csv`), formula-leading text quoted
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess

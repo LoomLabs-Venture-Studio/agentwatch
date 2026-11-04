@@ -15,6 +15,24 @@ numbers refer to the GitHub repository.
   page, no CDN, no new dependency. Every request needs the token from the
   printed URL and a `127.0.0.1`/`localhost` Host header; GET only; every
   string sent is redacted.
+- `agentwatch report` breakdowns: where the money and time went. **Cost by
+  model** (per model and agent: calls, tokens, USD; unpriced models show
+  tokens and `n/a`, never a guess), **cache use** (cache read vs written, 5m
+  and 1h, vs uncached input; hit % = read / (read + written + uncached input);
+  USD saved = what the cache reads would have cost at the input rate, priced
+  models only) and **errors by type** (failed calls classified as
+  `permission_denied`, `blocked`, `test_failure`, `timeout`, `edit_failed`,
+  `command_not_found`, `file_not_found`, `network`, `nonzero_exit` or `other`,
+  with the share of sessions affected, the change vs the previous period and
+  a count per tool). Cost and cache cover Claude Code fully; Codex and Gemini
+  CLI get tokens and cache hit % (no price); Cline gets its own logged cost.
+  `--json` adds `models`, `cache` and `errors` (schema stays 1: fields are
+  only added). History schema 2 stores per-session model and error-kind
+  counts (never error text); the first sync after upgrading re-reads every
+  log once to fill them in.
+- `report --format csv` and `stats --format csv`: the JSON output as one long
+  table with a fixed header, `table,rank,name,metric,value`. Text a
+  spreadsheet would run as a formula gets a leading `'`.
 
 ### Fixed
 
