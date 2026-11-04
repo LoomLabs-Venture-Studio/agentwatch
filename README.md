@@ -120,8 +120,8 @@ Add `--help` to any command for all options. Full reference with examples:
 | `check` | Check one session once and print a health report. `--security`, `--json`. |
 | `security-scan` | Security checks only, with a verdict. `--json`, `--audit-log FILE`. |
 | `ps` | List the assistants running now. |
-| `report` | What your assistants cost over the last 7 days, and the trend. |
-| `stats` | Claude Code token use by tool. `--burn` shows tokens spent on trivial commands. |
+| `report` | What your assistants cost over the last 7 days, and the trend: cost by model, cache savings, errors by type. `--format csv`. |
+| `stats` | Claude Code token use by tool. `--burn` shows tokens spent on trivial commands. `--format csv`. |
 | `history sync\|prune\|path` | The local session history behind `report`. |
 | `audit` | Search past Claude Code logs for leaked secrets. `--pii`, `--redact`. |
 | `scrub FILE` | Write a copy of a file with secrets and personal info hidden. |
