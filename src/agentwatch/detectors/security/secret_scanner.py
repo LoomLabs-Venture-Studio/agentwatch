@@ -96,15 +96,25 @@ _p(
 _p(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", "private_key")
 _p(r"-----BEGIN PGP PRIVATE KEY BLOCK-----", "pgp_private_key")
 # The whole key: the header-only patterns above leave the body behind on
-# redaction. The body runs to the first "-----" (its footer, or the next
-# header) or '"' (end of a JSON string), possessive and bounded, so the scan
-# is linear. It needs no END: parsers and display windows cut long text
-# before the footer, and the cut body must still be masked. Any char counts,
-# so it spans real newlines, JSON "\n" escapes and Proc-Type headers.
+# redaction. The body is the lines a key body can hold: base64(url) runs and
+# "Name: value" headers (Proc-Type, DEK-Info, PGP Version/Comment), split by
+# newlines, JSON "\n" escapes or (one_line flattens) spaces. A run of 40+
+# chars is a full key line; a shorter run or a header must end its line (a
+# line break, '"', "-----" or the text end), so it stops at prose or at the
+# next "AWS=..." line. It needs no END: parsers and display windows cut long
+# text before the footer, and the cut body must still be masked. Possessive
+# and bounded, so the scan is linear.
+_KEY_SEP = r"(?:\s|\\r|\\n)"
+_KEY_CH = r"(?:[A-Za-z0-9+/_]|-(?!----))"
+_KEY_EOL = r"(?=[ \t]*+(?:\r?\n|\\r|\\n|\\?\"|-----|\Z))"
 _p(
     r"-----BEGIN (?P<kind>(?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?"
     r"PRIVATE KEY(?: BLOCK)?)-----"
-    r"(?P<secret>(?:[^\"-]|-(?!----)){1,20000}+)(?P<end>-----END (?P=kind)-----)?",
+    r"(?P<secret>(?:" + _KEY_SEP + r"*+(?>" + _KEY_CH + r"{40}" + _KEY_CH + r"*+=*+"
+    r"|(?:[A-Za-z][A-Za-z0-9-]*+: (?:[^\r\n\"\\-]|-(?!----))*+|" + _KEY_CH + r"++=*+)"
+    + _KEY_EOL + r")){1,1000}+"
+    r"(?:" + _KEY_SEP + r"*+(?=-----END (?P=kind)-----))?)"
+    r"(?P<end>-----END (?P=kind)-----)?",
     "private_key_block",
 )
 

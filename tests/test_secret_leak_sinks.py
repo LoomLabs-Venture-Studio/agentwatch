@@ -830,3 +830,41 @@ def test_private_key_body_not_in_check_json(tmp_path):
         out = CliRunner().invoke(cli, [*args, "--log", str(log), "--json"]).output
         assert "warnings" in out or "score" in out, out
         assert not _key_leaks(out), out
+
+
+def test_scrub_cut_key_keeps_following_lines(tmp_path):
+    """A key with no END masks its body lines only; later secrets and text stay."""
+    from agentwatch.detectors.security.secret_scanner import scrub_file
+
+    aws = "AKIA" + "Q7R2T5W8Y1B4D6F9"
+    path = tmp_path / "notes.txt"
+    path.write_text(
+        _pem("RSA PRIVATE KEY", end=False)[:900]
+        + f"\nAWS={aws}\nplain line one\nplain line two\n"
+    )
+    r = scrub_file(path)
+    out = r.output.read_text()
+    assert not _key_leaks(out)
+    assert aws not in out
+    assert "plain line one\nplain line two\n" in out
+    assert any(f["type"] == "aws_access_key" for f in r.findings), r.findings
+
+
+@pytest.mark.parametrize("text,kept", [
+    ("grep for '-----BEGIN PRIVATE KEY-----' in the repo and explain why",
+     "' in the repo and explain why"),
+    ("-----BEGIN PRIVATE KEY----- in the repo and explain why",
+     " in the repo and explain why"),
+    ("-----BEGIN PRIVATE KEY-----\nplease explain why\n", "please explain why\n"),
+])
+def test_key_header_in_prose_keeps_the_words(text, kept):
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    assert redact_secrets(text).endswith(kept)
+
+
+def test_private_key_body_rule_linear():
+    _assert_linear(
+        ["-----BEGIN PRIVATE KEY-----\nMIIE\n", "Proc-Type: 4\n", "ab ", "\\n", "a" * 39 + " "],
+        "redact_secrets",
+    )
