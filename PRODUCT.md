@@ -2,10 +2,6 @@
 
 <!-- impeccable:product-schema 1 -->
 
-> Written by Impeccable's `init` step without an interview: every fact below
-> comes from the repository (README.md, CLAUDE.md, docs/) and the Sprint 41
-> brief. Inferred items are marked *(inferred)*; confirm or correct them.
-
 ## Platform
 
 web
@@ -68,7 +64,7 @@ vocabulary of health and security findings.
 
 ## Evidence on Hand
 
-- Real screenshots: `docs/assets/images/dashboard.svg` (made-up sessions,
+- Screenshot: `docs/assets/images/dashboard.svg` (made-up sessions,
   labelled as such).
 - No testimonials, customer logos, usage numbers or benchmarks exist. Do not
   invent them.
