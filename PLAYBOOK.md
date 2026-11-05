@@ -5389,3 +5389,43 @@ Board asked for three things. Plan below; names in quotes are proposals awaiting
 **Board questions.** (a) Names: `visual` / `dashboard` / `web`? (b) `tools` / `calls`? (c) Tools tab in the `watch` TUI too: yes / later? (d) README: describe develop now and add Sprint 40 as it merges, or wait for Sprint 40 merges: now / wait?
 
 **Board decisions (2026-11-05).** Names `visual` and `tools`. Tools tab in `watch`: later. README: now. Visual page font: Atkinson Hyperlegible only when installed (no embed). Merge Sprint 40 + 41 into develop in order (squash, clean messages); hold #193 (guard default) and #205 (unfinished follow-up). Also: README cut to essentials with a banner; `visual` has a Commands footer.
+### Sprint 40 (cont.) -- statusline cost
+
+- `agentwatch statusline --cost` (gap #2), stacked on #192: the active
+  5-hour block's spend, projection and reset time after the warning
+  segment. `{"block": ...}` summary cached in `user_state_dir()/block.json`
+  (60 s TTL, coach `_private_dir` + `_atomic_write`); a miss runs
+  `compute_blocks(since=now - 24 h)`, cc_stats imported only then.
+- Limit: more than ~24 h of back-to-back blocks can start the active block
+  at a different hour than `stats --blocks` (`ponytail:` note in
+  statusline.py).
+- Fix round (board-approved, 2026-11-02): 15a775a (tests), 3c6d75e (fix).
+  1. `home` fixture in tests/test_statusline_cost.py also sets
+     `USERPROFILE` (Windows `Path.home()`); 6 tests had failed on Windows
+     reading the real `~/.claude`. Root cause beyond that: other tests
+     (`test_cc_stats`, `test_stats_blocks`, `test_history`) monkeypatch the
+     lazy `cc_stats.CLAUDE_PROJECTS_DIR` (module `__getattr__`); on undo
+     monkeypatch writes the read value back as a real module global, often
+     the real `~/.claude/projects`. The fixture pins it with
+     `monkeypatch.setitem(vars(cc_stats), "CLAUDE_PROJECTS_DIR", ...)`,
+     which removes the key on undo. QA audit hook: 0 real-home accesses.
+  2. New tests: cc_stats unimported without `--cost` (subprocess
+     `sys.modules`); `_entry` fast path with `--cost` (rc 0, 5h segment,
+     `agentwatch.cli` not imported); `main` exits 0 on scan error and
+     garbage stdin; `block.json` written, 0o700 on POSIX, replaced on a
+     stale miss, no `*.tmp` left. QA mutated the code for each: all fail.
+  3. A projection under $0.01 is hidden (was `→ ~<$0.01`).
+  4. A null/missing/non-numeric cached `projected_cost_usd` drops only the
+     projection; before, the `>=` raised and the whole segment vanished.
+- Tests (Windows, PYTHONPATH=src): 21 failed / 2589 passed / 6 skipped /
+  1 error, vs 26 / 2578 / 6 / 1 at a9192b0. The 6 statusline_cost failures
+  are gone; the other 20 + 1 error are pre-existing Windows-only (symlink,
+  multi_app layout, charmap, test_coach state_dir guard). New in the list:
+  `test_multi_app_narrow::test_footer_most_important_keys_first[80]`,
+  flaky (passes alone, failed in 1 of the engineer's 2 runs; no UI files
+  touched). Ruff clean; test_statusline*.py 78 passed. CTO PASS, QA PASS.
+- Leftovers: (P3) the 2c test never reaches `main`'s own try/except,
+  because `render()` swallows the injected errors; a test patching `render`
+  to raise would cover it. The `CLAUDE_PROJECTS_DIR` leak is not fixed at
+  its source: those tests still leave the stale global, so any later test
+  relying on `Path.home()` can read the real home (small follow-up ticket).

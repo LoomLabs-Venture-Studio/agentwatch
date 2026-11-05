@@ -39,6 +39,22 @@ numbers refer to the GitHub repository.
 - `report --format csv` and `stats --format csv`: the JSON output as one long
   table with a fixed header, `table,rank,name,metric,value`. Text a
   spreadsheet would run as a formula gets a leading `'`.
+- `agentwatch stats --blocks`: Claude Code usage per 5-hour window, the
+  period Claude subscription limits reset on (same rule as ccusage: a window
+  starts at its first message, floored to the UTC hour). Shows the last 10
+  windows (messages, tokens, cost, models) and, for the current one, when it
+  resets, the burn rate in tokens/min and $/hour, and the projected tokens
+  and cost at reset. The burn rate is measured from the window start
+  (ccusage measures from the first to the last message). Always covers every project, since limits are
+  account-wide; each message is counted once. An unpriced model shows its
+  cost as `-`. `--json` lists every window. No plan-limit estimate and no
+  live refresh yet.
+- `agentwatch statusline --cost`: adds the current 5-hour window to the
+  status line as `5h $4.12 → ~$9.80 · resets 2h13m` (spent, projected at reset,
+  time left), after any warning. Nothing when no window is active; only `5h resets …`
+  for an unpriced model. The summary is cached for 60 s and a refresh
+  reads only transcripts written in the last 24 hours, so a warm run costs
+  no more than plain `statusline`.
 
 ### Fixed
 
