@@ -65,13 +65,11 @@ want a "fitness tracker + security guard" for those agents.
 ```
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
-                       detect, net, list-detectors, security-scan, themes, stats,
+                       detect, net, list-detectors, security-scan, config-scan, themes, stats,
                        visual,
                        audit, scrub, report, tools, history sync|prune|path.
                        `report`/`stats`/`tools` take --format text|json|csv.
                        `scrub PATH` redacts secrets + PII in one
-                       detect, net, list-detectors, security-scan, config-scan, themes, stats,
-                       audit, scrub, report, history sync|prune|path. `scrub PATH` redacts secrets + PII in one
                        file (copy by default, `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
                        (output without `--pii` unchanged)
@@ -309,10 +307,6 @@ src/agentwatch/
                        via one_line(80); never args/results/error text.
                        Log picked by cli._default_log like `check`;
                        csv via report.write_csv
-  report.py            `agentwatch report`: build() (JSON schema 1) over
-                       sessions whose last action is in the period, plus the
-                       previous one for the trend; unpriced sessions counted
-                       but out of spend and waste %; render() text
   config_scan.py       `agentwatch config-scan [--json] [--path DIR]` (also
                        `agentguard config-scan`): offline, read-only audit
                        of agent configs. Claude Code settings(.local).json
