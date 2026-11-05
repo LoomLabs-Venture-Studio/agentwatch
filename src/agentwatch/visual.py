@@ -323,6 +323,15 @@ summary{cursor:pointer;min-height:44px;display:flex;align-items:center;color:var
 font-weight:700}
 details[open]>summary{margin-bottom:8px}
 details table{font-size:.875rem}
+footer{border-top:1px solid var(--rule);background:var(--bg-alt)}
+footer .wrap{max-width:72rem;margin:auto;padding:24px 16px 48px}
+footer h2{margin-bottom:4px}
+code{font-family:var(--mono);font-size:.875rem}
+.cmds{display:grid;grid-template-columns:repeat(auto-fill,minmax(20rem,1fr));gap:12px 32px;
+margin:16px 0 0}
+.cmds div{border-bottom:1px solid var(--rule);padding-bottom:10px}
+.cmds dt code{color:var(--acc);font-weight:700}
+.cmds dd{margin:2px 0 0;color:var(--mute);font-size:.9375rem}
 /* Phones: each table row becomes a short list of labelled values. */
 @media (max-width:44em){
   .bar{gap:0 12px}
@@ -346,6 +355,44 @@ details table{font-size:.875rem}
 <button class="btn quiet" id="theme" type="button">Dark theme</button>
 </div></header>
 <main><div id="panel" role="tabpanel"></div></main>
+<footer aria-labelledby="cmds"><div class="wrap">
+<h2 id="cmds">Commands</h2>
+<p class="mute">Run these in a terminal. Add <code>--help</code> to any command for its options.</p>
+<dl class="cmds">
+<div><dt><code>agentwatch watch-all</code></dt>
+  <dd>Live dashboard of every running assistant.</dd></div>
+<div><dt><code>agentwatch watch</code></dt>
+  <dd>The same dashboard for one session.</dd></div>
+<div><dt><code>agentwatch check</code></dt>
+  <dd>Health report for one session: loops, failures, stalls, cost. Overview tab.</dd></div>
+<div><dt><code>agentwatch security-scan</code></dt>
+  <dd>Security checks only, with a verdict: secure, at risk or compromised. Security tab.</dd></div>
+<div><dt><code>agentwatch audit</code></dt>
+  <dd>Searches all saved Claude Code logs for leaked passwords and keys. Security tab.</dd></div>
+<div><dt><code>agentwatch ps</code></dt>
+  <dd>Lists the AI assistants running right now. Overview tab.</dd></div>
+<div><dt><code>agentwatch tools</code></dt>
+  <dd>Every tool a session used: calls, failures, error types and time.</dd></div>
+<div><dt><code>agentwatch stats</code></dt>
+  <dd>Claude Code token use and estimated cost, by tool. Cost tab.</dd></div>
+<div><dt><code>agentwatch report</code></dt>
+  <dd>Cost, waste and findings over the last 7 days, with the trend. Cost tab.</dd></div>
+<div><dt><code>agentwatch history sync</code></dt>
+  <dd>Records past sessions in a local database for <code>report</code>. History tab.</dd></div>
+<div><dt><code>agentwatch scrub FILE</code></dt>
+  <dd>Writes a copy of a file with secrets and personal info hidden.</dd></div>
+<div><dt><code>agentwatch detect</code></dt>
+  <dd>Lists every program on this computer using AI right now.</dd></div>
+<div><dt><code>agentwatch net</code></dt>
+  <dd>Shows which servers local AI runtimes (Ollama, LM Studio, ...) talk to.</dd></div>
+<div><dt><code>agentwatch statusline</code></dt>
+  <dd>A short warning in Claude Code's status line when a session is in trouble.</dd></div>
+<div><dt><code>agentwatch list-detectors</code></dt>
+  <dd>Lists every check agentwatch runs.</dd></div>
+<div><dt><code>agentwatch visual</code></dt>
+  <dd>This page.</dd></div>
+</dl>
+</div></footer>
 <script>
 "use strict";
 const T = new URLSearchParams(location.search).get("t") || "";
