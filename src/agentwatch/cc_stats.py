@@ -1100,15 +1100,25 @@ def _usage_by_message(files: list[Path]) -> dict[str, dict]:
     return msgs
 
 
-def compute_blocks() -> list[UsageBlock]:
+def _modified_since(path: Path, since: float) -> bool:
+    try:
+        return path.stat().st_mtime >= since
+    except OSError:
+        return False
+
+
+def compute_blocks(since: float | None = None) -> list[UsageBlock]:
     """5-hour usage blocks across every project, oldest first.
 
     Limits are account-wide, so this always scans all projects (and their
     subagent transcripts); a message.id is counted once wherever it appears.
+    *since* (epoch seconds) reads only transcripts modified at or after it.
     """
     files: list[Path] = []
     for pdir in find_all_project_dirs():
         files += sorted(pdir.glob("*.jsonl")) + sorted(pdir.glob("*/subagents/*.jsonl"))
+    if since is not None:
+        files = [f for f in files if _modified_since(f, since)]
     blocks: list[UsageBlock] = []
     for md in sorted(_usage_by_message(files).values(), key=lambda m: m["ts"]):
         if not (md["in"] or md["out"] or md["cw"] or md["cr"]):
