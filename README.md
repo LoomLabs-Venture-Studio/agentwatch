@@ -51,6 +51,32 @@ Coaches Claude when it gets stuck and blocks a looping step:
 /plugin install agentwatch@agentwatch
 ```
 
+## What the scores mean
+
+Every session gets a **health score** from 0 to 100:
+
+| Score | | Meaning |
+| --- | --- | --- |
+| 80-100 | productive | Working normally |
+| 60-79 | struggling | Something is slowing it down |
+| 40-59 | spinning | Wasting effort, time to step in |
+| 0-39 | stuck | Not getting anywhere |
+
+The score blends three things:
+
+- **Health checks**: going in circles, failing over and over, no progress,
+  editing the same file back and forth.
+- **Context**: as the conversation fills up, assistants forget earlier work
+  and re-read files they already saw. AgentWatch tracks this "context rot"
+  over time.
+- **Efficiency**: estimated cost, and how much went on steps that led
+  nowhere.
+
+With `--security`, you also get a verdict (secure, at risk or compromised)
+from checks for leaked keys, prompt injection, dangerous commands and data
+sent somewhere unexpected. All checks are plain rules, not AI: free to run
+and the same answer every time.
+
 ## Privacy
 
 No server, no account, no telemetry. Your code and conversations stay on
