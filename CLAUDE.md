@@ -65,7 +65,7 @@ want a "fitness tracker + security guard" for those agents.
 ```
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
-                       detect, net, list-detectors, security-scan, themes, stats,
+                       detect, net, list-detectors, security-scan, config-scan, themes, stats,
                        visual,
                        audit, scrub, report, tools, history sync|prune|path, notify on|off|status
                        [--webhook URL] [--events needs-input,done] (the
@@ -178,7 +178,8 @@ src/agentwatch/
                        PostToolUseFailure hook. Tail (4 MB) of
                        transcript_path -> parse_claude_code_entry ->
                        health registry; new HIGH/CRITICAL PROGRESS/ERRORS
-                       warning -> hookSpecificOutput.additionalContext
+                       warning (includes `test_tampering`, Try line fixed)
+                       -> hookSpecificOutput.additionalContext
                        (<= 3 lines; evidence quoted with </> stripped, the
                        Try line is fixed text per signal). Subagent
                        payloads (agent_id) read <transcript>/subagents/
@@ -200,6 +201,7 @@ src/agentwatch/
                        (same id as LoopDetector) and denies the first match
                        once (permissionDecision deny, fixed reason).
                        LOOP_ALLOW Bash prefixes are never denied.
+  statusline.py        `agentwatch statusline [--ok] [--cost]`: Claude Code statusLine
                        Attention alerts (Sprint 40): Notification
                        (permission_prompt, idle_prompt, elicitation_dialog,
                        elicitation_url_dialog, agent_needs_input) and Stop,
@@ -223,12 +225,16 @@ src/agentwatch/
                        CLAUDE_PLUGIN_DATA), else <CLAUDE_CONFIG_DIR or
                        ~/.claude>/plugins/data/agentwatch-*/coach, and
                        user_state_dir; worst HIGH/CRITICAL of the mapped
-                       signals -> `⚠ loop|thrash|errors|stuck ~$x` (cost
+                       signals -> `⚠ loop|thrash|errors|stuck|tests weakened ~$x` (cost
                        only if finite, 0 <= x < 10k; < 0.01 -> `<$0.01`;
                        yellow/red, NO_COLOR). Healthy: nothing, `--ok` dim
                        `✓ agentwatch`. No state / > 10 min old / any error:
                        nothing, exit 0. No transcript parsing; imports only
-                       stdlib + coach (~150 ms on Windows)
+                       stdlib + coach (~150 ms on Windows). `--cost`: the
+                       active 5-hour block (spend -> projection · resets)
+                       from a 60 s cache (user_state_dir()/block.json); a
+                       miss imports cc_stats and scans transcripts modified
+                       in the last 24 h
   alerts.py            Alerter for `watch`/`watch-all` `--notify`,
                        `--webhook URL` (env AGENTWATCH_WEBHOOK) and
                        `watch-all --headless`. observe(session, agent,
@@ -330,6 +336,39 @@ src/agentwatch/
                        via one_line(80); never args/results/error text.
                        Log picked by cli._default_log like `check`;
                        csv via report.write_csv
+  config_scan.py       `agentwatch config-scan [--json] [--path DIR]` (also
+                       `agentguard config-scan`): offline, read-only audit
+                       of agent configs. Claude Code settings(.local).json
+                       (user + project; permissions, hooks, statusLine,
+                       env), .mcp.json, ~/.claude.json (mcpServers +
+                       projects.*.mcpServers only, <= 32 MB), skills/
+                       commands/agents md, CLAUDE.md, installed plugins
+                       (installed_plugins.json installPath); Cursor
+                       mcp.json; VS Code mcp.json (servers, JSONC); Codex
+                       config.toml + hooks.json; Gemini settings.json;
+                       Cline cline_mcp_settings.json (legacy store per
+                       editor + ~/.cline/data/settings). Root helpers
+                       reused (CLAUDE_CONFIG_DIR, _codex_sessions_root,
+                       _gemini_dir, default_user_dir, cline paths).
+                       Checks: secrets via _SECRET_PATTERNS (masked; var
+                       refs stripped), unpinned npx/uvx/pipx/... and git
+                       refs (a Windows `cmd /c|/k` wrapper is unwrapped
+                       first, so `cmd /c npx -y pkg` counts), docker
+                       untagged, plain-http remotes, bypassPermissions /
+                       allow-all / credential-path allow rules, Codex
+                       sandbox_mode = "danger-full-access" at top level
+                       and in each [profiles.<name>] (high with
+                       approval_policy = "never", the profile's own else
+                       the top-level one), pipe-to-shell in hooks and in
+                       MCP server command + args (remote_script), hidden
+                       chars / hidden comments / override phrases in md,
+                       POSIX files writable by others. show(): paths in /
+                       form with home as ~ on every OS (Windows home
+                       match case-insensitive). Symlinks must resolve
+                       inside the root (project, else home); symlinked
+                       dirs not walked; > 2 MB skipped; unparseable ->
+                       files_skipped. JSON schema 1. Exit 0 / 1 medium /
+                       2 high
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
@@ -354,7 +393,9 @@ src/agentwatch/
                        --all`. project_dir_to_name(dir, log): basename of
                        the transcripts' recorded cwd, else the dir-name
                        decode; project_name(): "~" for the home dir (also
-                       agents.base.folder_name, used by history)
+                       agents.base.folder_name, used by history).
+                       compute_blocks(): `stats --blocks` 5-hour usage
+                       windows (all projects, message.id once, ccusage rule)
   themes.py             Pluggable status-label/emoji/color themes shared by
                        CLI, health scoring, and the TUI
 
@@ -470,7 +511,11 @@ src/agentwatch/
                        action whose result lands after it left their window
     health/*.py          Health detectors: loops, tool_thrash, stall/stuck,
                        errors, context, repetition, behavioral, progress,
-                       constraints
+                       constraints, fake_green (`test_tampering`: tests
+                       skipped/weakened/deleted on test files only; HIGH when
+                       the last test run before it failed; edit text read
+                       from raw for Claude Code, Codex, Copilot CLI, Gemini,
+                       OpenCode/Kilo, Cline; commands for all)
     security/*.py        Security detectors: credentials, injection,
                        network, privilege, supply_chain, secret_scanner
                        (also redact_truncate and one_line, the shared

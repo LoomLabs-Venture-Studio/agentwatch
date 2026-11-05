@@ -1671,6 +1671,12 @@ def themes():
     is_flag=True,
     help="Include the user prompt that triggered each trivial call (use with --burn --list)",
 )
+@click.option(
+    "--blocks",
+    is_flag=True,
+    help="Usage per 5-hour billing window, with burn rate and projection "
+    "(always all projects: limits are account-wide)",
+)
 def stats(
     all_projects: bool,
     session_id: str | None,
@@ -1679,6 +1685,7 @@ def stats(
     burn: bool,
     list_trivial: bool,
     prompts: bool,
+    blocks: bool,
 ):
     """Show Claude Code token usage statistics.
 
@@ -1690,8 +1697,21 @@ def stats(
     (git, ls, npm run dev, etc.) that you could have run yourself.
     Use --burn --list to see every trivial command.
     Use --burn --list --prompts to also show what you said that triggered them.
+    Use --blocks for usage per 5-hour window (when Claude subscription limits
+    reset; a window starts at its first message floored to the UTC hour): the
+    last 10 windows, and for the current one its reset time, burn rate
+    (measured from the window start) and projected total. Scans all
+    projects; --json lists every window.
     """
     from agentwatch.cc_stats import compute_stats
+
+    if blocks:
+        if burn or list_trivial or prompts or session_id:
+            raise click.UsageError(
+                "--blocks can't be combined with --burn, --list, --prompts or --session"
+            )
+        _print_blocks(json_output)
+        return
 
     # --list / --prompts imply --burn
     if list_trivial or prompts:
@@ -1746,6 +1766,84 @@ def _fmt_tokens(n: int) -> str:
 def _usd(cost: float | None) -> str:
     """Dollar amount for `stats`; "n/a" when the model has no listed price."""
     return "n/a" if cost is None else f"${cost:,.2f}"
+
+
+def _print_blocks(json_output: bool) -> None:
+    """`stats --blocks`: 5-hour usage windows, all projects."""
+    from agentwatch import cc_stats
+
+    now = cc_stats._utcnow()
+    blocks = cc_stats.compute_blocks()
+    if json_output:
+        click.echo(json.dumps(cc_stats.blocks_to_dict(blocks, now), indent=2))
+        return
+    if not blocks:
+        click.echo("No Claude Code usage found.")
+        return
+
+    def short(model: str) -> str:
+        return re.sub(r"-\d{8}$", "", model.removeprefix("claude-"))
+
+    def local(dt) -> str:
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
+    def usd(cost: float | None) -> str:  # unpriced model: "-", never a guess
+        return "-" if cost is None else f"${cost:,.2f}"
+
+    click.echo()
+    click.echo("  USAGE BLOCKS (5-hour windows, all projects, local time)")
+    click.echo("  " + "\u2500" * 96)
+    click.echo(
+        f"  {'Start':<17} {'Msgs':>5} {'Input':>10} {'Output':>10} {'Cache wr':>12}"
+        f" {'Cache rd':>14} {'Total':>14} {'Cost':>9}  Models"
+    )
+    for b in blocks[-10:]:
+        u = b.usage
+        mark = " *" if b.is_active(now) else ""
+        click.echo(
+            f"  {local(b.start):<17} {u.call_count:>5,} {_fmt_tokens(u.input_tokens):>10}"
+            f" {_fmt_tokens(u.output_tokens):>10} {_fmt_tokens(u.cache_write_tokens):>12}"
+            f" {_fmt_tokens(u.cache_read_tokens):>14} {_fmt_tokens(u.total_tokens):>14}"
+            f" {usd(u.cost_usd):>9}  {', '.join(short(m) for m in sorted(b.models))}{mark}"
+        )
+    if len(blocks) > 10:
+        click.echo(f"  ({len(blocks) - 10} older blocks not shown; --json lists all)")
+    click.echo()
+
+    active = blocks[-1]
+    burn = active.burn(now)
+    if burn is None:
+        click.echo("  No active block: the next message starts a new 5-hour window.")
+        click.echo()
+        return
+    fraction = burn["elapsed_minutes"] / 300
+
+    def dur(minutes: float) -> str:
+        m = int(minutes)
+        return f"{m // 60}h {m % 60:02d}m"
+
+    click.echo("  ACTIVE BLOCK *")
+    click.echo("  " + "\u2500" * 50)
+    click.echo(
+        f"  Started:   {local(active.start)}    Resets: "
+        + click.style(active.end.astimezone().strftime("%H:%M"), bold=True)
+        + f" (in {dur(burn['remaining_minutes'])})"
+    )
+    click.echo(f"  Elapsed:   {dur(burn['elapsed_minutes'])}  {_make_bar(min(fraction, 1.0))}")
+    click.echo(
+        f"  Used:      {_fmt_tokens(active.usage.total_tokens)} tokens"
+        f"   {usd(active.usage.cost_usd)}"
+    )
+    rate = usd(burn["cost_per_hour_usd"])
+    click.echo(
+        f"  Burn rate: {_fmt_tokens(burn['tokens_per_minute'])} tokens/min"
+        f"   {rate}{'/h' if burn['cost_per_hour_usd'] is not None else ''}"
+    )
+    click.echo(
+        f"  Projected: {_fmt_tokens(burn['projected_tokens'])} tokens"
+        f"   {usd(burn['projected_cost_usd'])}  at reset"
+    )
+    click.echo()
 
 
 def _print_stats_report(report) -> None:
@@ -2475,7 +2573,12 @@ def hook():
 
 @cli.command()
 @click.option("--ok", is_flag=True, help="When healthy, print a dim check mark and 'agentwatch'")
-def statusline(ok: bool):
+@click.option(
+    "--cost", is_flag=True,
+    help="Add the current 5-hour block's spend, projected spend and reset time "
+    "(all projects; cached 60 s)",
+)
+def statusline(ok: bool, cost: bool):
     """Claude Code status line: a short warning (loop ~$1.40) when unhealthy.
 
     Reads the status line JSON on stdin and the coach's state for that
@@ -2484,7 +2587,7 @@ def statusline(ok: bool):
     """
     from agentwatch.statusline import main as statusline_main
 
-    statusline_main(ok)
+    statusline_main(ok, cost)
 
 
 def _check_events(ctx, param, value: str) -> list[str]:
@@ -2588,6 +2691,80 @@ def scrub(path: Path, secrets_only: bool, in_place: bool, dry_run: bool, json_ou
         for f in r.findings:
             click.echo(f"  line {f['line']:>5}  {f['type']:<24} {f['preview']}")
     sys.exit(1 if dry_run and r.redacted else 0)
+
+
+@cli.command("config-scan")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON (schema 1)")
+@click.option(
+    "--path", "project",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Project folder whose configs to check (default: current folder)",
+)
+def config_scan(json_output: bool, project: Path | None):
+    """Check AI agents' configs for risky settings. Offline and read-only.
+
+    \b
+    Reads MCP servers, hooks, the status line, permissions, skills,
+    commands, agents, plugins and CLAUDE.md of Claude Code, Cursor,
+    VS Code (Copilot), Codex, Gemini CLI and Cline: your user configs
+    and those of --path. Makes no network calls, needs no account,
+    changes nothing, and never prints secret values.
+
+    \b
+    Exit codes: 0 = nothing above low, 1 = at least one medium,
+    2 = at least one high.
+    """
+    from agentwatch import config_scan as cs
+
+    report = cs.scan(project or Path.cwd())
+    if json_output:
+        click.echo(json.dumps(report.to_json(), indent=2))
+    else:
+        _print_config_report(report)
+    sys.exit(report.exit_code())
+
+
+_SEVERITY_STYLE = {"high": "yellow", "medium": "blue", "low": "cyan"}
+
+
+def _print_config_report(report) -> None:
+    """Findings grouped by agent, then file; counts at the end."""
+    from agentwatch.agents import display_name
+
+    click.echo()
+    click.echo("=" * 54)
+    click.echo("  CONFIG SCAN")
+    click.echo("=" * 54)
+    agents = {f["agent"] for f in report.scanned}
+    click.echo(f"\n  Scanned {len(report.scanned)} file(s) for {len(agents)} agent(s)\n")
+    order = {s: i for i, s in enumerate(("high", "medium", "low"))}
+    by_agent: dict[str, dict[str, list]] = {}
+    for f in sorted(report.findings, key=lambda f: order[f.severity]):
+        by_agent.setdefault(f.agent, {}).setdefault(f.file, []).append(f)
+    for agent, files in by_agent.items():
+        click.echo("  " + click.style(display_name(agent), bold=True))
+        for file, findings in files.items():
+            click.echo(f"    {file}")
+            for f in findings:
+                sev = click.style(f"{f.severity.upper():<6}", fg=_SEVERITY_STYLE[f.severity],
+                                  bold=True)
+                click.echo(f"      {sev} {f.kind}  {f.location}")
+                click.echo(f"             {f.message}")
+                click.echo(click.style(f"             Why: {f.why}", dim=True))
+                click.echo(click.style(f"             Fix: {f.fix}", dim=True))
+        click.echo()
+    for skip in report.skipped:
+        click.echo(click.style(f"  Skipped {skip['file']}: {skip['reason']}", dim=True))
+    if report.skipped:
+        click.echo()
+    s = report.summary()
+    if not s["total"]:
+        click.echo(click.style("  No issues found.", fg="green", bold=True))
+    else:
+        click.echo(f"  {s['total']} finding(s): {s['high']} high, {s['medium']} medium, "
+                   f"{s['low']} low")
+    click.echo()
 
 
 def _print_audit_report(
@@ -2774,6 +2951,15 @@ def _build_guard_cli():
             dry_run=dry_run,
             force=force,
         )
+
+    @guard_cli.command(name="config-scan")
+    @click.option("--json", "json_output", is_flag=True)
+    @click.option("--path", "project",
+                  type=click.Path(exists=True, file_okay=False, path_type=Path))
+    def guard_config_scan(json_output, project):
+        """Check agent configs (MCP, hooks, permissions, skills) offline."""
+        ctx = click.Context(config_scan)
+        ctx.invoke(config_scan, json_output=json_output, project=project)
 
     return guard_cli
 
