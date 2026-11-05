@@ -5366,3 +5366,26 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 ### Follow-ups
 - Claude parser: text-only and thinking-only assistant messages carry no usage on any Action, so `check`, history and report undercount them slightly (0.07% here).
 - Codex: keep `turn_context.model` on usage records so cost by model can name it.
+### Sprint 41 -- visual, tools, README (planned 2026-11-03)
+Board asked for three things. Plan below; names in quotes are proposals awaiting the board.
+
+**1. `agentwatch visual`: the reports in a browser.**
+- One command starts a local web page: `agentwatch visual [--port N] [--no-open]`. Binds 127.0.0.1 only; there is no `--host` flag. stdlib `http.server` + one inline HTML page with vanilla JS. No new dependency.
+- Pages: Overview (`ps` + `check`), Security (`security-scan`, `audit`), Cost (`stats`, `report`), History (`history` sessions), Config (`config-scan`, once #196 merges), Tools (from task 2). Each page calls the same function the command's `--json` uses, in process. Slow ones (`audit`, `history sync`) run only when the user presses a button.
+- Safety: GET only, read only. A random token in the URL (printed once, opened in the browser) is required on every request, and the `Host` header must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding). Every string from logs goes through `secret_scanner.redact_truncate` before it is sent; HTML is built with `textContent`, never `innerHTML` on log text. No CORS headers.
+- Acceptance: page loads on Linux and Windows; refusing a wrong token or Host gives 403; a planted fake secret in a test log never appears in any response; no request leaves the machine (no CDN); ruff + pytest green.
+
+**2. `agentwatch tools`: what tools a session used.**
+- Exists already: `Action` (tool_name, success, file_path, command, error_message, duration_ms, timestamp), every parser, `check --log`'s session resolution, and #198's error classifier (kind per failed call).
+- New: `agentwatch tools [--log PATH] [--json] [--format csv] [--calls]`. Default is the newest session `check` would pick. Prints a table per tool: calls, failed, failure %, top error kind, total and median time; `--calls` adds the call list (time, tool, target = file name or command, cut to 80 and redacted, ok/fail, error kind). No raw arguments or results are shown; target only.
+- Stacked on #198 (reuses its classifier and `--format csv` writer). Retarget to develop after #198 merges.
+- Acceptance: counts equal `check`'s action count for the same log; one fixture per agent family (Claude Code, Codex, Aider); secrets in commands redacted; CSV uses #198's injection guard.
+- Not in scope: a Tools tab in the `watch` TUI (board question).
+
+**3. README refresh.** Own docs PR `docs/readme-refresh` from develop. Plain language, same voice and order as agentwatch.info (#189): what it is, install, quick start (3 commands), supported agents table (live-verified vs fixture-verified, matching CLAUDE.md), commands, the Claude Code plugin, privacy. Uses `docs/assets/images/dashboard.svg`. Long reference moves to docs/commands.md links instead of being repeated. Describes develop as it is; Sprint 40 features are added as each PR merges.
+
+**Order and fit with open PRs.** README and `visual` branch from develop now. `tools` stacks on #198. The `visual` Tools page and Config page land after `tools` and #196 merge. None of the three touch #192-#197's files except `cli.py` (new commands only; small conflicts expected, resolved at merge).
+
+**Board questions.** (a) Names: `visual` / `dashboard` / `web`? (b) `tools` / `calls`? (c) Tools tab in the `watch` TUI too: yes / later? (d) README: describe develop now and add Sprint 40 as it merges, or wait for Sprint 40 merges: now / wait?
+
+**Board decisions (2026-11-05).** Names `visual` and `tools`. Tools tab in `watch`: later. README: now. Visual page font: Atkinson Hyperlegible only when installed (no embed). Merge Sprint 40 + 41 into develop in order (squash, clean messages); hold #193 (guard default) and #205 (unfinished follow-up). Also: README cut to essentials with a banner; `visual` has a Commands footer.
