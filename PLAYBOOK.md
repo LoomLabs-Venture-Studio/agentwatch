@@ -5387,3 +5387,5 @@ Board asked for three things. Plan below; names in quotes are proposals awaiting
 **Order and fit with open PRs.** README and `visual` branch from develop now. `tools` stacks on #198. The `visual` Tools page and Config page land after `tools` and #196 merge. None of the three touch #192-#197's files except `cli.py` (new commands only; small conflicts expected, resolved at merge).
 
 **Board questions.** (a) Names: `visual` / `dashboard` / `web`? (b) `tools` / `calls`? (c) Tools tab in the `watch` TUI too: yes / later? (d) README: describe develop now and add Sprint 40 as it merges, or wait for Sprint 40 merges: now / wait?
+
+**Board decisions (2026-11-05).** Names `visual` and `tools`. Tools tab in `watch`: later. README: now. Visual page font: Atkinson Hyperlegible only when installed (no embed). Merge Sprint 40 + 41 into develop in order (squash, clean messages); hold #193 (guard default) and #205 (unfinished follow-up). Also: README cut to essentials with a banner; `visual` has a Commands footer.
