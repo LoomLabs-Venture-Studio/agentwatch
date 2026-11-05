@@ -59,7 +59,7 @@ _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _COACHED = ("progress", "errors")
 _SEVERE = ("high", "critical")
 _ERROR_KEYS = ("last_error", "error_pattern", "recent_errors", "sample_errors")
-_OTHER_KEYS = ("last_command", "path", "file_path")
+_OTHER_KEYS = ("evidence", "last_command", "path", "file_path")
 _TIPS = {
     "loop": "The same action keeps repeating. Stop and try a different approach.",
     "thrash": "Edits keep failing the same check. Stop editing, re-read the failure, "
@@ -77,6 +77,8 @@ _TIPS = {
                          "hypothesis and test it.",
     "error_class_persistence": "The same kind of error persists. Fix its cause instead "
                                "of retrying variants.",
+    "test_tampering": "A failing test was skipped, weakened or deleted. Restore it and "
+                      "fix the code it checks, or ask the user first.",
 }
 _DEFAULT_TIP = "Stop, re-read the goal, and change approach."
 # Bash commands that repeat on purpose (polling, test runs): warned, never blocked.
@@ -230,17 +232,16 @@ def _write_pointer(directory: Path) -> None:
         pass
 
 
-def _parse(entries):
-    from agentwatch.parser.logs import parse_claude_code_entry
+def _parse(entries, parser=None):
+    """Actions from Claude Code entries through ONE stateful parser, as `check`
+    reads a log: a tool_result merges into its call (a failed test run is a
+    failed Bash call, not a separate action)."""
+    from agentwatch.parser.logs import ClaudeCodeParser
 
+    parser = parser or ClaudeCodeParser()
     for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        result = parse_claude_code_entry(entry)
-        if isinstance(result, list):
-            yield from result
-        elif result:
-            yield result
+        if isinstance(entry, dict):
+            yield from parser.parse_entry(entry)
 
 
 def _tail_entries(transcript: Path):
@@ -258,12 +259,18 @@ def _tail_entries(transcript: Path):
             continue
 
 
-def _current_call(payload: dict, actions: list) -> list:
-    """The hook's own tool call, when the (async) transcript lacks it yet."""
+def _current_call(payload: dict, actions: list, parser=None) -> list:
+    """The hook's own tool call, when the (async) transcript lacks it yet.
+    *parser* is the one that read the transcript, so a synthesized failure
+    merges into a call it already saw."""
     tool_id, name = payload.get("tool_use_id"), payload.get("tool_name")
     if not isinstance(tool_id, str) or not isinstance(name, str):
         return []
     recent = [a.raw for a in actions[-50:] if isinstance(a.raw, dict)]
+    answered = any(
+        a.result_revision for a in actions[-50:]
+        if isinstance(a.raw, dict) and a.raw.get("id") == tool_id
+    )
     ts = next((a.timestamp.isoformat() for a in reversed(actions) if a.timestamp), None)
     entries = []
     if not any(r.get("id") == tool_id for r in recent):
@@ -273,7 +280,7 @@ def _current_call(payload: dict, actions: list) -> list:
                 "type": "tool_use", "id": tool_id, "name": name,
                 "input": tool_input if isinstance(tool_input, dict) else {},
             }]}})
-    if payload["hook_event_name"] == "PostToolUseFailure" and not any(
+    if payload["hook_event_name"] == "PostToolUseFailure" and not answered and not any(
         r.get("tool_use_id") == tool_id for r in recent
     ):
         entries.append({"type": "user", "timestamp": ts, "message": {
@@ -281,7 +288,7 @@ def _current_call(payload: dict, actions: list) -> list:
                 "type": "tool_result", "tool_use_id": tool_id, "is_error": True,
                 "content": str(payload.get("error") or "Tool error"),
             }]}})
-    return list(_parse(entries))
+    return list(_parse(entries, parser))
 
 
 def _last_line(text: object) -> str:
@@ -406,10 +413,12 @@ def run(stdin_text: str) -> str | None:
 
         from agentwatch.detectors.base import warning_dedup_key
         from agentwatch.detectors.registry import create_registry
+        from agentwatch.parser.logs import ClaudeCodeParser
         from agentwatch.parser.models import ActionBuffer
 
-        actions = list(_parse(_tail_entries(transcript)))
-        actions += _current_call(payload, actions)
+        parser = ClaudeCodeParser()
+        actions = list(_parse(_tail_entries(transcript), parser))
+        actions += _current_call(payload, actions, parser)
         buffer = ActionBuffer()
         for action in actions:
             buffer.add(action)
