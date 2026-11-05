@@ -67,13 +67,12 @@ src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
                        detect, net, list-detectors, security-scan, themes, stats,
                        visual,
-                       audit, scrub, report, tools, history sync|prune|path.
-                       `report`/`stats`/`tools` take --format text|json|csv.
-                       `scrub PATH` redacts secrets + PII in one
-                       audit, scrub, report, history sync|prune|path, notify on|off|status
+                       audit, scrub, report, tools, history sync|prune|path, notify on|off|status
                        [--webhook URL] [--events needs-input,done] (the
                        Claude Code hook's attention-alert settings; webhook
-                       masked). `scrub PATH` redacts secrets + PII in one
+                       masked).
+                       `report`/`stats`/`tools` take --format text|json|csv.
+                       `scrub PATH` redacts secrets + PII in one
                        file (copy by default, `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
                        (output without `--pii` unchanged)
