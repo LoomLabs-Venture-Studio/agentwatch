@@ -26,6 +26,15 @@ LoopDetector does, and if it is the armed loop's next call denies it once with
 "deny", "permissionDecisionReason": <fixed text>}}` (the reason is shown to
 Claude). The retry is allowed; the entry is dropped when the loop is no longer
 HIGH, so a new loop blocks again. AGENTWATCH_LOOP_BREAKER=off disables it.
+
+Attention alerts (`agentwatch notify on`): on Notification (permission_prompt,
+idle_prompt, elicitation_*, agent_needs_input) and Stop the hook sends a
+desktop notification and/or webhook post ("waiting for permission",
+"finished"). It reads only the small settings file NOTIFY in user_state_dir()
+and returns at once when it is absent or off. The session state's
+"attention" key holds the last alerted state, so a repeated idle reminder is
+not re-sent; Stop and every PostToolUse save (new activity) replace it. These
+events print nothing and never return a decision: a Stop is never blocked.
 """
 
 from __future__ import annotations
@@ -52,6 +61,20 @@ STATE_MAX_AGE_S = 7 * 24 * 3600
 # so never pruned).
 POINTER = "state-dir"
 _MAX_LINE = 200
+# Attention-alert settings in user_state_dir(); no .json suffix, so never pruned.
+NOTIFY = "notify"
+NOTIFY_EVENTS = ("needs-input", "done")
+# Notification types that mean the session waits on the user
+# (https://code.claude.com/docs/en/hooks#notification); others are ignored.
+_WAITING = {
+    "permission_prompt": "waiting for permission",
+    "idle_prompt": "waiting for your input",
+    "elicitation_dialog": "waiting for your input",
+    "elicitation_url_dialog": "waiting for your input",
+    "agent_needs_input": "waiting for your input",
+}
+WEBHOOK_TIMEOUT_S = 3.0  # inside BUDGET_S
+REPEAT_S = 60  # the same permission/elicitation prompt again within this: no alert
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # Context estimates (context_pressure) are not something the agent can act on
 # mid-task, and they fire on most long sessions; coach only loops, thrashing,
@@ -59,7 +82,7 @@ _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _COACHED = ("progress", "errors")
 _SEVERE = ("high", "critical")
 _ERROR_KEYS = ("last_error", "error_pattern", "recent_errors", "sample_errors")
-_OTHER_KEYS = ("last_command", "path", "file_path")
+_OTHER_KEYS = ("evidence", "last_command", "path", "file_path")
 _TIPS = {
     "loop": "The same action keeps repeating. Stop and try a different approach.",
     "thrash": "Edits keep failing the same check. Stop editing, re-read the failure, "
@@ -77,6 +100,8 @@ _TIPS = {
                          "hypothesis and test it.",
     "error_class_persistence": "The same kind of error persists. Fix its cause instead "
                                "of retrying variants.",
+    "test_tampering": "A failing test was skipped, weakened or deleted. Restore it and "
+                      "fix the code it checks, or ask the user first.",
 }
 _DEFAULT_TIP = "Stop, re-read the goal, and change approach."
 # Bash commands that repeat on purpose (polling, test runs): warned, never blocked.
@@ -230,17 +255,16 @@ def _write_pointer(directory: Path) -> None:
         pass
 
 
-def _parse(entries):
-    from agentwatch.parser.logs import parse_claude_code_entry
+def _parse(entries, parser=None):
+    """Actions from Claude Code entries through ONE stateful parser, as `check`
+    reads a log: a tool_result merges into its call (a failed test run is a
+    failed Bash call, not a separate action)."""
+    from agentwatch.parser.logs import ClaudeCodeParser
 
+    parser = parser or ClaudeCodeParser()
     for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        result = parse_claude_code_entry(entry)
-        if isinstance(result, list):
-            yield from result
-        elif result:
-            yield result
+        if isinstance(entry, dict):
+            yield from parser.parse_entry(entry)
 
 
 def _tail_entries(transcript: Path):
@@ -258,12 +282,18 @@ def _tail_entries(transcript: Path):
             continue
 
 
-def _current_call(payload: dict, actions: list) -> list:
-    """The hook's own tool call, when the (async) transcript lacks it yet."""
+def _current_call(payload: dict, actions: list, parser=None) -> list:
+    """The hook's own tool call, when the (async) transcript lacks it yet.
+    *parser* is the one that read the transcript, so a synthesized failure
+    merges into a call it already saw."""
     tool_id, name = payload.get("tool_use_id"), payload.get("tool_name")
     if not isinstance(tool_id, str) or not isinstance(name, str):
         return []
     recent = [a.raw for a in actions[-50:] if isinstance(a.raw, dict)]
+    answered = any(
+        a.result_revision for a in actions[-50:]
+        if isinstance(a.raw, dict) and a.raw.get("id") == tool_id
+    )
     ts = next((a.timestamp.isoformat() for a in reversed(actions) if a.timestamp), None)
     entries = []
     if not any(r.get("id") == tool_id for r in recent):
@@ -273,7 +303,7 @@ def _current_call(payload: dict, actions: list) -> list:
                 "type": "tool_use", "id": tool_id, "name": name,
                 "input": tool_input if isinstance(tool_input, dict) else {},
             }]}})
-    if payload["hook_event_name"] == "PostToolUseFailure" and not any(
+    if payload["hook_event_name"] == "PostToolUseFailure" and not answered and not any(
         r.get("tool_use_id") == tool_id for r in recent
     ):
         entries.append({"type": "user", "timestamp": ts, "message": {
@@ -281,7 +311,7 @@ def _current_call(payload: dict, actions: list) -> list:
                 "type": "tool_result", "tool_use_id": tool_id, "is_error": True,
                 "content": str(payload.get("error") or "Tool error"),
             }]}})
-    return list(_parse(entries))
+    return list(_parse(entries, parser))
 
 
 def _last_line(text: object) -> str:
@@ -380,6 +410,167 @@ def _breaker(payload: dict, key: str) -> str | None:
     }})
 
 
+def notify_path() -> Path:
+    return user_state_dir() / NOTIFY
+
+
+def load_notify() -> dict | None:
+    """The attention-alert settings when on, else None (absent, off or corrupt)."""
+    try:
+        data = json.loads(notify_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("on") is True else None
+
+
+def save_notify(settings: dict | None) -> Path:
+    """Write *settings* (None: delete them). The file may hold a webhook URL,
+    a secret: 0600 (mkstemp) in the 0700 per-user dir."""
+    path = notify_path()
+    if settings is None:
+        path.unlink(missing_ok=True)
+        return path
+    if not _private_dir(path.parent):
+        raise OSError(f"{path.parent} is not owned by this user")
+    _atomic_write(path, json.dumps(settings))
+    return path
+
+
+def _turn_summary(transcript: Path) -> str:
+    """'3 tool calls this turn' (+ cost when every call is priced), from the
+    transcript tail back to the prompt that started the turn. The transcript
+    can lag the hook, so this is a best effort."""
+    from agentwatch.alerts import _usd
+    from agentwatch.cc_stats import usage_cost_usd
+
+    with open(transcript, "rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        f.seek(max(0, size - 1_000_000))
+        lines = f.read().splitlines()
+    calls, usage = 0, {}
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        msg = entry.get("message") if isinstance(entry, dict) else None
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+        if entry.get("type") == "user":
+            if not any(b.get("type") == "tool_result" for b in blocks):
+                break  # the user's prompt: the turn starts here
+        elif entry.get("type") == "assistant":
+            calls += sum(b.get("type") == "tool_use" for b in blocks)
+            if isinstance(msg.get("id"), str) and isinstance(msg.get("usage"), dict):
+                usage.setdefault(msg["id"], (msg.get("model"), msg["usage"]))  # last line
+    text = f"{calls} tool call{'' if calls == 1 else 's'} this turn"
+    def split_1h(u: dict) -> int:  # as parser/logs.py reads it
+        split = u.get("cache_creation")
+        return (split.get("ephemeral_1h_input_tokens") or 0) if isinstance(split, dict) else 0
+
+    costs = [usage_cost_usd(model, u.get("input_tokens") or 0, u.get("output_tokens") or 0,
+                            u.get("cache_creation_input_tokens") or 0,
+                            u.get("cache_read_input_tokens") or 0, split_1h(u))
+             for model, u in usage.values()]
+    if costs and None not in costs:
+        text += f", ~{_usd(sum(costs))}"
+    return text
+
+
+def _spawn(argv: list[str], data: bytes | None) -> None:
+    """Start the notifier without waiting for it: the hook exits at once."""
+    import subprocess
+
+    if os.name == "nt":
+        flags = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
+                 | subprocess.CREATE_NO_WINDOW}
+    else:
+        flags = {"start_new_session": True}
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE if data else subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **flags)
+    if data:
+        proc.stdin.write(data)
+        proc.stdin.close()
+
+
+def _deliver(settings: dict, title: str, body: str) -> None:
+    from agentwatch.alerts import notify_command, post_webhook, slack_escape
+
+    try:
+        cmd = notify_command(title, body)
+        if cmd is not None:
+            _spawn(*cmd)
+    except Exception:
+        pass
+    url = settings.get("webhook")
+    if isinstance(url, str) and url:
+        post_webhook(url, slack_escape(f"{title}\n{body}"), timeout=WEBHOOK_TIMEOUT_S)
+
+
+def _attention(payload: dict, session_id: str) -> None:
+    """Notification / Stop: alert once per state change. Never prints."""
+    settings = load_notify()
+    if settings is None:
+        return
+    events = settings.get("events", NOTIFY_EVENTS)
+    events = events if isinstance(events, (list, tuple)) else ()  # malformed: none
+    if payload["hook_event_name"] == "Stop":
+        if payload.get("stop_hook_active") is True:
+            return  # a stop hook made Claude go on; its first Stop already alerted
+        new, label, wanted = "done", "finished", "done" in events
+    else:
+        new = payload.get("notification_type")
+        label = _WAITING.get(new) if isinstance(new, str) else None
+        if label is None or "needs-input" not in events:
+            return
+        wanted = True
+    directory = _writable_state_dir()
+    if directory is None:
+        return
+    path = state_path(directory, session_id)
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state = state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        state = {}
+    import hashlib
+
+    old, now = state.get("attention"), time.time()
+    if new == "idle_prompt":
+        if old in ("idle_prompt", "done"):
+            return  # the reminder repeats; "finished" already said it
+    elif new != "done":
+        # Every prompt alerts (Bash, then Write: two), unless the very same
+        # one comes again within REPEAT_S.
+        message = str(payload.get("message"))
+        new = f"{new}:{hashlib.sha256(message.encode()).hexdigest()[:16]}"
+        at = state.get("attention_at")
+        if old == new and isinstance(at, (int, float)) and now - at < REPEAT_S:
+            return
+    state["attention"] = new if wanted else None
+    state["attention_at"] = now
+    state.setdefault("warnings", [])
+    _atomic_write(path, json.dumps(state))
+    if not wanted:
+        return
+
+    from agentwatch.alerts import ascii_safe, who
+
+    cwd = payload.get("cwd")
+    project = Path(cwd).name if isinstance(cwd, str) and cwd else None
+    transcript = payload.get("transcript_path")
+    body = payload.get("message") if new != "done" else None
+    if new == "done" and isinstance(transcript, str):
+        try:
+            body = _turn_summary(Path(transcript))
+        except (OSError, ValueError):
+            body = None
+    title = f"agentwatch: {who('claude-code', project)} {ascii_safe('—', '-')} {label}"
+    _deliver(settings, title, _clean(body) if body else "")
+
+
 def run(stdin_text: str) -> str | None:
     """Return the hook's stdout JSON, or None to print nothing."""
     try:
@@ -394,6 +585,8 @@ def run(stdin_text: str) -> str | None:
             return None
         if event == "PreToolUse":
             return _breaker(payload, key)
+        if event in ("Notification", "Stop"):
+            return _attention(payload, session_id)
         transcript = Path(payload["transcript_path"])
         if event not in EVENTS:
             return None
@@ -406,10 +599,12 @@ def run(stdin_text: str) -> str | None:
 
         from agentwatch.detectors.base import warning_dedup_key
         from agentwatch.detectors.registry import create_registry
+        from agentwatch.parser.logs import ClaudeCodeParser
         from agentwatch.parser.models import ActionBuffer
 
-        actions = list(_parse(_tail_entries(transcript)))
-        actions += _current_call(payload, actions)
+        parser = ClaudeCodeParser()
+        actions = list(_parse(_tail_entries(transcript), parser))
+        actions += _current_call(payload, actions, parser)
         buffer = ActionBuffer()
         for action in actions:
             buffer.add(action)

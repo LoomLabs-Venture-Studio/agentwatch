@@ -18,6 +18,11 @@ history loads asynchronously (a pass can run before the log is read, or
 between a watcher's chunks). `notify_existing` turns it off. The headless log
 is not baselined: it prints the current warnings at start.
 
+`--notify-done`: one alert each time a session finishes its turn and waits
+for the user (`parser.models.turn_ended`: the log's own turn-end marker, not
+a guess from idle time). Baselined like findings: a session already waiting
+at start does not alert. Not rate-limited: each finished turn is new.
+
 `--budget USD`: one alert per session when its estimated cost first reaches
 the limit. Not baselined (a session already over budget alerts at start);
 unknown cost (unpriced agents) never alerts.
@@ -214,6 +219,13 @@ def _usd(v: float) -> str:
     return f"${v:,.2f}" if v >= 0.01 else f"${v:.4g}"
 
 
+def _same_turn(a: object, b: object) -> bool:
+    """The same turn end: one action, or lines of one API call (Claude Code
+    writes a line per content block, sharing message_id)."""
+    mid = getattr(a, "message_id", None)
+    return a is b or (mid is not None and mid == getattr(b, "message_id", None))
+
+
 def who(agent: str | None, project: str | None) -> str:
     """'Claude Code · myproj'. Both come from logs and process data, so they
     are cleaned like a message."""
@@ -230,6 +242,7 @@ class _Session:
     last_critical: float = float("-inf")
     baseline_until: float | None = None  # set at the first pass with actions
     budget_hit: bool = False
+    done: object = None  # the turn-end action last seen (alerted or baselined)
 
 
 class Alerter:
@@ -242,8 +255,10 @@ class Alerter:
         log: Callable[[str], None] | None = None,
         notify_existing: bool = False,
         budget: float | None = None,
+        notify_done: bool = False,
     ) -> None:
         self.notify = notify
+        self.notify_done = notify_done
         self.budget = budget
         self.notify_existing = notify_existing
         self.min_severity = NOTIFY_LEVELS[notify_min]
@@ -268,10 +283,12 @@ class Alerter:
         report: HealthReport,
         actions: int = 0,
         cost: float | None = None,
+        done: object = None,
     ) -> None:
         """Feed one scoring pass for *session* (*actions*: its buffer's action
         count, which starts the baseline clock; *cost*: its estimated cost,
-        None if unknown); emit whatever is new."""
+        None if unknown; *done*: the action that ended its turn while it waits
+        for the user, else None); emit whatever is new."""
         s = self._sessions.setdefault(session, _Session())
         name = who(agent, project)
         by_key = {warning_dedup_key(w): w for w in warnings}
@@ -298,7 +315,15 @@ class Alerter:
         now = _monotonic()
         if actions and s.baseline_until is None:
             s.baseline_until = now + BASELINE_S
-        if not self.notify_existing and (s.baseline_until is None or now < s.baseline_until):
+        baseline = not self.notify_existing and (s.baseline_until is None or now < s.baseline_until)
+        if self.notify_done:
+            if done is not None and not _same_turn(done, s.done) and not baseline:
+                label = f"finished{_cost(cost) if cost else ''}"
+                if self.log is not None:
+                    self.log(f"{datetime.now():%H:%M:%S} {'DONE':8} {name} {label}")
+                self._send(label, name, "waiting for your next prompt")
+            s.done = done
+        if baseline:
             s.alerted = set(hot)  # already there: not news
             s.critical = critical  # last_critical untouched: a recurrence alerts
             return

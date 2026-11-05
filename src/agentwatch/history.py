@@ -256,6 +256,8 @@ _ERROR_RULES = [
 _EXIT = re.compile(r"\s*exit(?: code| status)?[:\s]+-?\d+", re.I)
 # A model id or tool name; one "provider/" prefix at most, so never a path.
 _SAFE_NAME = re.compile(r"(?:[\w.:@-]{1,40}/)?[\w.:@\[\]-]{1,80}")
+# "user@host.tld"; a Vertex "model@20250514" version suffix has no dot.
+_EMAIL = re.compile(r"@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}")
 _TAIL = 4000  # a test summary is at the end of the output
 
 
@@ -285,7 +287,13 @@ def error_kind(action: Any) -> str:
 
 def _name(value: str | None) -> str:
     """A model id or tool name as stored: as logged if it looks like one."""
-    return value if value and _SAFE_NAME.fullmatch(value) else ("other" if value else "")
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    if not value:
+        return ""
+    safe = (_SAFE_NAME.fullmatch(value) and ".." not in value and not _EMAIL.search(value)
+            and redact_secrets(value) == value)
+    return value if safe else "other"
 
 
 class _Tap:
