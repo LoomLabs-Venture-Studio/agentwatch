@@ -7,6 +7,7 @@ from .errors import (
     HighErrorRateDetector,
     SyntaxLoopDetector,
 )
+from .fake_green import FakeGreenDetector
 from .loops import LoopDetector, RereadDetector, StallDetector, ThrashDetector
 from .stuck import (
     ErrorClassPersistenceDetector,
@@ -26,6 +27,7 @@ __all__ = [
     "FileChurnDetector",
     "ExplorationStallDetector",
     "ErrorClassPersistenceDetector",
+    "FakeGreenDetector",
     # Error detectors
     "ErrorSpiralDetector",
     "ErrorBlindnessDetector",
@@ -49,6 +51,7 @@ def get_all_health_detectors():
         FileChurnDetector(),
         ExplorationStallDetector(),
         ErrorClassPersistenceDetector(),
+        FakeGreenDetector(),
         ErrorSpiralDetector(),
         ErrorBlindnessDetector(),
         SyntaxLoopDetector(),

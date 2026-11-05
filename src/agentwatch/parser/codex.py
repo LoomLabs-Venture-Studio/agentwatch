@@ -124,7 +124,7 @@ from typing import Any
 
 from .logs import _redact_truncate, classify_tool
 from .logs import error_text as _error_text
-from .models import USAGE_RECORD, Action, ToolType
+from .models import TURN_END, USAGE_RECORD, Action, ToolType
 
 # Boundary between the "mid" and "new" (>=0.44) Codex rollout schema eras,
 # per codex-trace's README (three confirmed eras: new >=0.44, mid, oldest
@@ -793,6 +793,22 @@ class CodexParser:
         token_action = _extract_token_count(payload, self.session_id, entry)
         if token_action is not None:
             return [token_action]
+
+        # The turn is over: `EventMsg::TurnComplete`, serde name "task_complete"
+        # (alias "turn_complete"), persisted to the rollout (openai/codex @
+        # 67f0994, protocol/src/protocol.rs L1576-1578, rollout/src/policy.rs
+        # L139). Approval requests are not persisted (policy.rs L197-203).
+        if entry.get("type") == "event_msg" and payload.get("type") in (
+            "task_complete", "turn_complete"
+        ):
+            return [Action(
+                timestamp=_parse_codex_timestamp(entry),
+                tool_name=TURN_END,
+                tool_type=ToolType.UNKNOWN,
+                success=True,
+                session_id=self.session_id,
+                turn_end=True,
+            )]
 
         return []
 

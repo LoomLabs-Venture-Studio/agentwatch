@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import re
@@ -523,11 +524,7 @@ def check(
         )
 
     if json_output:
-        output = report.to_dict()
-        output["session_fallback"] = note
-        output["efficiency"] = efficiency.to_dict()
-        output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
-        output["waste"] = _waste(warnings, buffer.stats)
+        output = _check_json(report, efficiency, warnings, buffer, note, goal_alignment)
         click.echo(json.dumps(output, indent=2))
     else:
         print_health_report(
@@ -556,6 +553,16 @@ def check(
         # security tier also decides the exit code (the worse one wins).
         exit_code = max(exit_code, _security_exit_code(calculate_security_score(warnings)))
     sys.exit(exit_code)
+
+
+def _check_json(report, efficiency, warnings, buffer, note, goal_alignment=None) -> dict:
+    """`check --json` payload (also served by `agentwatch visual`)."""
+    output = report.to_dict()
+    output["session_fallback"] = note
+    output["efficiency"] = efficiency.to_dict()
+    output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
+    output["waste"] = _waste(warnings, buffer.stats)
+    return output
 
 
 def _check_webhook(ctx, param, value: str | None) -> str | None:
@@ -587,7 +594,15 @@ def _check_budget(ctx, param, value: float | None) -> float | None:
 
 
 def _alert_options(f):
-    """--notify / --notify-min / --webhook / --budget, shared by watch and watch-all."""
+    """--notify / --notify-min / --webhook / --budget / --notify-done, shared by
+    watch and watch-all."""
+    f = click.option(
+        "--notify-done",
+        is_flag=True,
+        help="Also alert each time a session finishes its turn and waits for "
+             "you (Claude Code, Codex, Copilot CLI and VS Code, OpenCode, Kilo "
+             "Code; turns on --notify unless --webhook is given)",
+    )(f)
     f = click.option(
         "--budget",
         type=float,
@@ -629,8 +644,9 @@ def _alert_options(f):
 
 
 def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook: str | None,
-                  budget: float | None = None, headless: bool = False):
-    if budget is not None and not webhook:
+                  budget: float | None = None, headless: bool = False,
+                  notify_done: bool = False):
+    if (budget is not None or notify_done) and not webhook:
         notify = True  # --budget alone needs a sink: desktop (board decision)
     if not (notify or webhook or headless):
         return None
@@ -638,7 +654,7 @@ def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook:
 
     return Alerter(notify=notify, notify_min=notify_min, webhook=webhook,
                    log=print_line if headless else None, notify_existing=notify_existing,
-                   budget=budget)
+                   budget=budget, notify_done=notify_done)
 
 
 @cli.command()
@@ -686,6 +702,7 @@ def watch(
     notify_existing: bool,
     webhook: str | None,
     budget: float | None,
+    notify_done: bool,
 ):
     """Watch one agent session in real-time (the watch-all dashboard, opened
     on that session)."""
@@ -711,7 +728,8 @@ def watch(
         siem_log=siem_log,
         llm=llm,
         llm_model=llm_model,
-        alerter=_make_alerter(notify, notify_min, notify_existing, webhook, budget),
+        alerter=_make_alerter(notify, notify_min, notify_existing, webhook, budget,
+                              notify_done=notify_done),
     )
     app.run()
 
@@ -757,6 +775,35 @@ def _session_proc(log: Path):
                  if p.log_file and resolved(p.log_file) == target), None)
 
 
+def _ps_json(agents: list[AgentProcess]) -> list[dict]:
+    """`ps --json` payload (also served by `agentwatch visual`).
+
+    Always a flat list of agent objects, with or without sub-agents, so
+    scripts can rely on one shape. Rebuild the tree from parent_agent_pid,
+    depth and team_id.
+    """
+    team_names = {t.team_id: t.name for t in build_teams(agents)}
+    return [
+        {
+            "pid": a.pid,
+            "parent_pid": a.parent_pid,
+            "parent_agent_pid": a.parent_agent_pid,
+            "team_id": a.team_id,
+            "team_name": team_names.get(a.team_id),
+            "depth": a.depth,
+            "agent_type": a.agent_type,
+            "project": a.project_name,
+            "working_directory": str(a.working_directory) if a.working_directory else None,
+            "log_file": str(a.log_file) if a.log_file else None,
+            "session_id": a.session_id,
+            "cpu_percent": a.cpu_percent,
+            "memory_mb": round(a.memory_mb, 1),
+            "uptime": a.uptime,
+        }
+        for a in agents
+    ]
+
+
 @cli.command()
 @click.option(
     "--json", "json_output",
@@ -770,30 +817,7 @@ def ps(json_output: bool):
     has_subagents = any(a.depth > 0 for a in agents)
 
     if json_output:
-        # Always a flat list of agent objects, with or without sub-agents, so
-        # scripts can rely on one shape. Rebuild the tree from parent_agent_pid,
-        # depth and team_id.
-        team_names = {t.team_id: t.name for t in build_teams(agents)}
-        output = [
-            {
-                "pid": a.pid,
-                "parent_pid": a.parent_pid,
-                "parent_agent_pid": a.parent_agent_pid,
-                "team_id": a.team_id,
-                "team_name": team_names.get(a.team_id),
-                "depth": a.depth,
-                "agent_type": a.agent_type,
-                "project": a.project_name,
-                "working_directory": str(a.working_directory) if a.working_directory else None,
-                "log_file": str(a.log_file) if a.log_file else None,
-                "session_id": a.session_id,
-                "cpu_percent": a.cpu_percent,
-                "memory_mb": round(a.memory_mb, 1),
-                "uptime": a.uptime,
-            }
-            for a in agents
-        ]
-        click.echo(json.dumps(output, indent=2))
+        click.echo(json.dumps(_ps_json(agents), indent=2))
         return
 
     click.echo()
@@ -1320,6 +1344,7 @@ def watch_all(
     notify_existing: bool,
     webhook: str | None,
     budget: float | None,
+    notify_done: bool,
 ):
     """Watch agent logs in real-time with a multi-agent dashboard.
 
@@ -1328,7 +1353,8 @@ def watch_all(
     """
     if since is not None and not all_logs:
         raise click.UsageError("--since applies to --all-logs only")
-    alerter = _make_alerter(notify, notify_min, notify_existing, webhook, budget, headless)
+    alerter = _make_alerter(notify, notify_min, notify_existing, webhook, budget, headless,
+                            notify_done)
     from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
     from agentwatch.ui.multi_app import MultiAgentWatchApp
 
@@ -1503,27 +1529,10 @@ def security_scan(
     if siem_log is not None:
         _export_siem_log(siem_log, warnings, buffer, report_type="security", score=security_score)
 
-    # Raw per-action security-stat counters (SessionStats.credential_accesses
-    # / .privilege_commands / .network_connections / .injection_attempts --
-    # see the design-decision comment on SessionStats in parser/models.py:
-    # these are raw pattern-match counts, not "how many Warnings fired").
-    security_stats = {
-        "credential_accesses": buffer.stats.credential_accesses,
-        "privilege_commands": buffer.stats.privilege_commands,
-        "network_connections": buffer.stats.network_connections,
-        "injection_attempts": buffer.stats.injection_attempts,
-    }
+    security_stats = _security_stats(buffer)
 
     if json_output:
-        output = {
-            "security_score": security_score,
-            "status": security_tier_from_score(security_score),
-            "warnings": [w.to_dict() for w in warnings],
-            "action_count": len(buffer),
-            "security_stats": security_stats,
-            "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
-            "session_fallback": note,
-        }
+        output = _security_json(warnings, buffer, note, goal_alignment)
         click.echo(json.dumps(output, indent=2))
     else:
         click.echo()
@@ -1572,6 +1581,33 @@ def security_scan(
     sys.exit(_security_exit_code(security_score))
 
 
+def _security_stats(buffer: ActionBuffer) -> dict:
+    # Raw per-action security-stat counters (SessionStats.credential_accesses
+    # / .privilege_commands / .network_connections / .injection_attempts --
+    # see the design-decision comment on SessionStats in parser/models.py:
+    # these are raw pattern-match counts, not "how many Warnings fired").
+    return {
+        "credential_accesses": buffer.stats.credential_accesses,
+        "privilege_commands": buffer.stats.privilege_commands,
+        "network_connections": buffer.stats.network_connections,
+        "injection_attempts": buffer.stats.injection_attempts,
+    }
+
+
+def _security_json(warnings, buffer: ActionBuffer, note, goal_alignment=None) -> dict:
+    """`security-scan --json` payload (also served by `agentwatch visual`)."""
+    security_score = calculate_security_score(warnings)
+    return {
+        "security_score": security_score,
+        "status": security_tier_from_score(security_score),
+        "warnings": [w.to_dict() for w in warnings],
+        "action_count": len(buffer),
+        "security_stats": _security_stats(buffer),
+        "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
+        "session_fallback": note,
+    }
+
+
 @cli.command()
 def themes():
     """List all available status themes."""
@@ -1614,6 +1650,13 @@ def themes():
     help="Output as JSON",
 )
 @click.option(
+    "--format", "fmt",
+    type=click.Choice(["text", "json", "csv"]),
+    default="text",
+    show_default=True,
+    help="csv: the --json output as one long table (table,rank,name,metric,value)",
+)
+@click.option(
     "--burn",
     is_flag=True,
     help="Show where tokens burn — trivial vs substantive breakdown",
@@ -1628,13 +1671,21 @@ def themes():
     is_flag=True,
     help="Include the user prompt that triggered each trivial call (use with --burn --list)",
 )
+@click.option(
+    "--blocks",
+    is_flag=True,
+    help="Usage per 5-hour billing window, with burn rate and projection "
+    "(always all projects: limits are account-wide)",
+)
 def stats(
     all_projects: bool,
     session_id: str | None,
     json_output: bool,
+    fmt: str,
     burn: bool,
     list_trivial: bool,
     prompts: bool,
+    blocks: bool,
 ):
     """Show Claude Code token usage statistics.
 
@@ -1646,14 +1697,31 @@ def stats(
     (git, ls, npm run dev, etc.) that you could have run yourself.
     Use --burn --list to see every trivial command.
     Use --burn --list --prompts to also show what you said that triggered them.
+    Use --blocks for usage per 5-hour window (when Claude subscription limits
+    reset; a window starts at its first message floored to the UTC hour): the
+    last 10 windows, and for the current one its reset time, burn rate
+    (measured from the window start) and projected total. Scans all
+    projects; --json lists every window.
     """
     from agentwatch.cc_stats import compute_stats
+
+    if blocks:
+        if burn or list_trivial or prompts or session_id:
+            raise click.UsageError(
+                "--blocks can't be combined with --burn, --list, --prompts or --session"
+            )
+        _print_blocks(json_output)
+        return
 
     # --list / --prompts imply --burn
     if list_trivial or prompts:
         burn = True
     if prompts:
         list_trivial = True
+    if fmt == "csv" and json_output:
+        raise click.UsageError("--json and --format csv conflict; pick one")
+    if fmt == "csv" and burn:
+        raise click.UsageError("--burn (or --list/--prompts) has no --format csv output")
 
     report = compute_stats(all_projects=all_projects, session_id=session_id)
 
@@ -1668,8 +1736,14 @@ def stats(
             )
         sys.exit(1)
 
-    if json_output:
+    if json_output or fmt == "json":
         click.echo(json.dumps(report.to_dict(), indent=2))
+    elif fmt == "csv":
+        from agentwatch.report import write_csv
+
+        buf = io.StringIO()
+        write_csv(report.to_dict(), buf, root="stats")
+        click.echo(buf.getvalue(), nl=False)
     elif burn:
         _print_burn_report(report)
         if list_trivial:
@@ -1692,6 +1766,84 @@ def _fmt_tokens(n: int) -> str:
 def _usd(cost: float | None) -> str:
     """Dollar amount for `stats`; "n/a" when the model has no listed price."""
     return "n/a" if cost is None else f"${cost:,.2f}"
+
+
+def _print_blocks(json_output: bool) -> None:
+    """`stats --blocks`: 5-hour usage windows, all projects."""
+    from agentwatch import cc_stats
+
+    now = cc_stats._utcnow()
+    blocks = cc_stats.compute_blocks()
+    if json_output:
+        click.echo(json.dumps(cc_stats.blocks_to_dict(blocks, now), indent=2))
+        return
+    if not blocks:
+        click.echo("No Claude Code usage found.")
+        return
+
+    def short(model: str) -> str:
+        return re.sub(r"-\d{8}$", "", model.removeprefix("claude-"))
+
+    def local(dt) -> str:
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
+    def usd(cost: float | None) -> str:  # unpriced model: "-", never a guess
+        return "-" if cost is None else f"${cost:,.2f}"
+
+    click.echo()
+    click.echo("  USAGE BLOCKS (5-hour windows, all projects, local time)")
+    click.echo("  " + "\u2500" * 96)
+    click.echo(
+        f"  {'Start':<17} {'Msgs':>5} {'Input':>10} {'Output':>10} {'Cache wr':>12}"
+        f" {'Cache rd':>14} {'Total':>14} {'Cost':>9}  Models"
+    )
+    for b in blocks[-10:]:
+        u = b.usage
+        mark = " *" if b.is_active(now) else ""
+        click.echo(
+            f"  {local(b.start):<17} {u.call_count:>5,} {_fmt_tokens(u.input_tokens):>10}"
+            f" {_fmt_tokens(u.output_tokens):>10} {_fmt_tokens(u.cache_write_tokens):>12}"
+            f" {_fmt_tokens(u.cache_read_tokens):>14} {_fmt_tokens(u.total_tokens):>14}"
+            f" {usd(u.cost_usd):>9}  {', '.join(short(m) for m in sorted(b.models))}{mark}"
+        )
+    if len(blocks) > 10:
+        click.echo(f"  ({len(blocks) - 10} older blocks not shown; --json lists all)")
+    click.echo()
+
+    active = blocks[-1]
+    burn = active.burn(now)
+    if burn is None:
+        click.echo("  No active block: the next message starts a new 5-hour window.")
+        click.echo()
+        return
+    fraction = burn["elapsed_minutes"] / 300
+
+    def dur(minutes: float) -> str:
+        m = int(minutes)
+        return f"{m // 60}h {m % 60:02d}m"
+
+    click.echo("  ACTIVE BLOCK *")
+    click.echo("  " + "\u2500" * 50)
+    click.echo(
+        f"  Started:   {local(active.start)}    Resets: "
+        + click.style(active.end.astimezone().strftime("%H:%M"), bold=True)
+        + f" (in {dur(burn['remaining_minutes'])})"
+    )
+    click.echo(f"  Elapsed:   {dur(burn['elapsed_minutes'])}  {_make_bar(min(fraction, 1.0))}")
+    click.echo(
+        f"  Used:      {_fmt_tokens(active.usage.total_tokens)} tokens"
+        f"   {usd(active.usage.cost_usd)}"
+    )
+    rate = usd(burn["cost_per_hour_usd"])
+    click.echo(
+        f"  Burn rate: {_fmt_tokens(burn['tokens_per_minute'])} tokens/min"
+        f"   {rate}{'/h' if burn['cost_per_hour_usd'] is not None else ''}"
+    )
+    click.echo(
+        f"  Projected: {_fmt_tokens(burn['projected_tokens'])} tokens"
+        f"   {usd(burn['projected_cost_usd'])}  at reset"
+    )
+    click.echo()
 
 
 def _print_stats_report(report) -> None:
@@ -2010,15 +2162,12 @@ def audit(
     from agentwatch.cc_stats import (
         cwd_to_project_dir,
         find_all_project_dirs,
-        project_dir_to_name,
     )
     from agentwatch.detectors.security.pii import _PII_PATTERNS
     from agentwatch.detectors.security.secret_scanner import (
         _SECRET_PATTERNS,
-        AuditFinding,
         LogBusyError,
         assess_impact,
-        audit_log_file,
         redact_log_file,
     )
 
@@ -2038,27 +2187,7 @@ def audit(
             sys.exit(1)
         dirs = [project_dir]
 
-    all_findings: list[AuditFinding] = []
-    sessions_scanned = 0
-    project_names: list[str] = []
-
-    for pdir in dirs:
-        proj_name = project_dir_to_name(pdir)
-        project_names.append(proj_name)
-
-        if session_id:
-            jsonl = pdir / f"{session_id}.jsonl"
-            files = [jsonl] if jsonl.is_file() else []
-        else:
-            files = sorted(pdir.glob("*.jsonl"))
-
-        for jsonl_path in files:
-            sessions_scanned += 1
-            try:
-                findings = audit_log_file(jsonl_path, project_name=proj_name, **pat)
-                all_findings.extend(findings)
-            except (OSError, json.JSONDecodeError, UnsupportedLogFormatError):
-                continue
+    all_findings, sessions_scanned, project_names = _audit_scan(dirs, session_id, pat)
 
     if sessions_scanned == 0:
         if all_projects:
@@ -2120,38 +2249,11 @@ def audit(
                 redact_errors.append({"log_file": str(fp), "error": str(exc)})
 
     if json_output:
-        finding_dicts = []
-        for f in all_findings:
-            d: dict = {
-                "secret_type": f.secret_type,
-                "channel": f.channel,
-                "severity": f.severity,
-                "file_path": f.file_path,
-                "matched_prefix": f.matched_prefix,
-                "log_file": f.log_file,
-                "session_id": f.session_id,
-                "project_name": f.project_name,
-                "remediation": f.remediation,
-                "timestamp": f.timestamp,
-            }
-            if f.impact:
-                d["is_active_session"] = f.impact.is_active_session
-                d["active_pid"] = f.impact.active_pid
-                d["still_in_source"] = f.impact.still_in_source
-                d["source_line"] = f.impact.source_line
-                d["env_var_matches"] = f.impact.env_var_matches
-            finding_dicts.append(d)
-
-        output: dict = {
-            "projects": project_names,
-            "sessions_scanned": sessions_scanned,
-            "total_findings": len(all_findings),
-            "redacted": redact_count if redact and not dry_run else None,
-            "skipped_active": sorted(set(skipped_active)) if skipped_active else [],
-            "backups": [str(b) for b in backups],
-            "redact_errors": redact_errors,
-            "findings": finding_dicts,
-        }
+        output = _audit_json(
+            all_findings, sessions_scanned, project_names,
+            redacted=redact_count if redact and not dry_run else None,
+            skipped_active=skipped_active, backups=backups, redact_errors=redact_errors,
+        )
         click.echo(json.dumps(output, indent=2))
     else:
         _print_audit_report(all_findings, sessions_scanned, project_names)
@@ -2213,6 +2315,79 @@ def audit(
     elif "high" in severities:
         sys.exit(1)
     sys.exit(0)
+
+
+def _audit_scan(dirs: list[Path], session_id: str | None, pat: dict) -> tuple[list, int, list[str]]:
+    """Audit every session log in *dirs*: (findings, sessions scanned, project names)."""
+    from agentwatch.cc_stats import project_dir_to_name
+    from agentwatch.detectors.security.secret_scanner import audit_log_file
+
+    all_findings: list = []
+    sessions_scanned = 0
+    project_names: list[str] = []
+
+    for pdir in dirs:
+        proj_name = project_dir_to_name(pdir)
+        project_names.append(proj_name)
+
+        if session_id:
+            jsonl = pdir / f"{session_id}.jsonl"
+            files = [jsonl] if jsonl.is_file() else []
+        else:
+            files = sorted(pdir.glob("*.jsonl"))
+
+        for jsonl_path in files:
+            sessions_scanned += 1
+            try:
+                findings = audit_log_file(jsonl_path, project_name=proj_name, **pat)
+                all_findings.extend(findings)
+            except (OSError, json.JSONDecodeError, UnsupportedLogFormatError):
+                continue
+    return all_findings, sessions_scanned, project_names
+
+
+def _audit_json(
+    all_findings: list,
+    sessions_scanned: int,
+    project_names: list[str],
+    redacted: int | None = None,
+    skipped_active=(),
+    backups=(),
+    redact_errors=(),
+) -> dict:
+    """`audit --json` payload (also served by `agentwatch visual`)."""
+    finding_dicts = []
+    for f in all_findings:
+        d: dict = {
+            "secret_type": f.secret_type,
+            "channel": f.channel,
+            "severity": f.severity,
+            "file_path": f.file_path,
+            "matched_prefix": f.matched_prefix,
+            "log_file": f.log_file,
+            "session_id": f.session_id,
+            "project_name": f.project_name,
+            "remediation": f.remediation,
+            "timestamp": f.timestamp,
+        }
+        if f.impact:
+            d["is_active_session"] = f.impact.is_active_session
+            d["active_pid"] = f.impact.active_pid
+            d["still_in_source"] = f.impact.still_in_source
+            d["source_line"] = f.impact.source_line
+            d["env_var_matches"] = f.impact.env_var_matches
+        finding_dicts.append(d)
+
+    return {
+        "projects": project_names,
+        "sessions_scanned": sessions_scanned,
+        "total_findings": len(all_findings),
+        "redacted": redacted,
+        "skipped_active": sorted(set(skipped_active)) if skipped_active else [],
+        "backups": [str(b) for b in backups],
+        "redact_errors": list(redact_errors),
+        "findings": finding_dicts,
+    }
 
 
 def _history_db():
@@ -2293,26 +2468,99 @@ def history_path():
 @click.option("--agent", default=None, help="Only this agent (e.g. claude-code)")
 @click.option("--project", default=None, help="Only this project folder name")
 @click.option("--no-sync", is_flag=True, help="Use the history DB as is")
+@click.option("--format", "fmt", type=click.Choice(["text", "json", "csv"]), default="text",
+              show_default=True, help="csv: one long table, table,rank,name,metric,value")
 def report(days: int, json_output: bool, agent: str | None, project: str | None,
-           no_sync: bool):
-    """What your agents cost you: spend, waste, costliest findings, trend.
+           no_sync: bool, fmt: str):
+    """What your agents cost you: spend, waste, costliest findings, trend,
+    cost by model, cache savings and errors by type.
 
     Syncs the history first (this period and the one before), then reports
     on sessions whose last action is in the last N days.
     """
     from agentwatch.history import sync
-    from agentwatch.report import build, render
+    from agentwatch.report import build, render, write_csv
 
+    if fmt == "csv" and json_output:
+        raise click.UsageError("--json and --format csv conflict; pick one")
+    fmt = "json" if json_output else fmt
     conn = _history_db()
     if not no_sync:
         counts = sync(conn, days=2 * days)
-        if counts["new"] + counts["updated"] and not json_output:
+        if counts["new"] + counts["updated"] and fmt == "text":
             click.echo(f"(synced {counts['new'] + counts['updated']} log(s))", err=True)
     rep = build(conn, days=days, agent=agent, project=project)
-    if json_output:
+    if fmt == "json":
         click.echo(json.dumps(rep, indent=2))
+    elif fmt == "csv":
+        buf = io.StringIO()
+        write_csv(rep, buf)
+        click.echo(buf.getvalue(), nl=False)
     else:
         click.echo("\n".join(render(rep)))
+
+
+@cli.command()
+@click.option("--port", type=click.IntRange(0, 65535), default=0, show_default=True,
+              help="Port on 127.0.0.1 (0 = any free port)")
+@click.option("--no-open", is_flag=True, help="Print the URL, don't open a browser")
+def visual(port: int, no_open: bool):
+    """The reports (ps, check, security-scan, audit, stats, report, history)
+    in a local browser page. Binds 127.0.0.1 only; the printed URL holds a
+    one-time token. Read only. Ctrl+C to stop."""
+    from agentwatch.visual import serve
+
+    try:
+        serve(port, open_browser=not no_open)
+    except OSError as e:
+        click.echo(f"Error: cannot listen on 127.0.0.1:{port}: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option("--log", "-l", type=_LOG_FILE,
+              help="Agent log file; default: the newest session, as `check` picks it")
+@click.option("--calls", "with_calls", is_flag=True, help="Also list every call")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option("--format", "fmt", type=click.Choice(["text", "json", "csv"]), default="text",
+              show_default=True, help="csv: one long table, table,rank,name,metric,value")
+def tools(log: Path | None, with_calls: bool, json_output: bool, fmt: str):
+    """Tools one session called: calls, failures, error kinds, time.
+
+    Shows only tool names, file names and commands (one line, secrets
+    redacted), never tool arguments, results or error text.
+    """
+    from agentwatch.report import write_csv
+    from agentwatch.tools_view import build, render
+
+    if fmt == "csv" and json_output:
+        raise click.UsageError("--json and --format csv conflict; pick one")
+    fmt = "json" if json_output else fmt
+    if log is None:
+        log, note = _default_log()
+        if log is None:
+            click.echo("No log files found. Specify a path with --log", err=True)
+            sys.exit(1)
+        click.echo(f"Using log: {log}", err=True)
+        if note:
+            click.echo(note, err=True)
+    try:
+        actions = list(parse_file(log))  # whole log: results merge into earlier calls
+    except (UnsupportedLogFormatError, LogUnreadableError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if not actions:
+        click.echo("No actions found in log file", err=True)
+        sys.exit(1)
+    data = build(actions, log.name, with_calls)
+    if fmt == "json":
+        click.echo(json.dumps(data, indent=2))
+    elif fmt == "csv":
+        buf = io.StringIO()
+        write_csv(data, buf, root="tools")
+        click.echo(buf.getvalue(), nl=False)
+    else:
+        click.echo("\n".join(render(data)))
 
 
 @cli.command(hidden=True)
@@ -2346,7 +2594,12 @@ def guard(state: str):
 
 @cli.command()
 @click.option("--ok", is_flag=True, help="When healthy, print a dim check mark and 'agentwatch'")
-def statusline(ok: bool):
+@click.option(
+    "--cost", is_flag=True,
+    help="Add the current 5-hour block's spend, projected spend and reset time "
+    "(all projects; cached 60 s)",
+)
+def statusline(ok: bool, cost: bool):
     """Claude Code status line: a short warning (loop ~$1.40) when unhealthy.
 
     Reads the status line JSON on stdin and the coach's state for that
@@ -2355,7 +2608,57 @@ def statusline(ok: bool):
     """
     from agentwatch.statusline import main as statusline_main
 
-    statusline_main(ok)
+    statusline_main(ok, cost)
+
+
+def _check_events(ctx, param, value: str) -> list[str]:
+    from agentwatch.coach import NOTIFY_EVENTS
+
+    events = [e.strip() for e in value.split(",") if e.strip()]
+    if not events or set(events) - set(NOTIFY_EVENTS):
+        raise click.BadParameter(f"a comma list of: {', '.join(NOTIFY_EVENTS)}")
+    return list(dict.fromkeys(events))
+
+
+@cli.command()
+@click.argument("state", type=click.Choice(["on", "off", "status"]), default="status")
+@click.option("--webhook", callback=_check_webhook, default=None, metavar="URL",
+              help='Also POST each alert as JSON {"text": ...} (Slack-compatible). '
+                   "Stored in the settings file (0600) and never printed")
+@click.option("--events", callback=_check_events, default="needs-input,done",
+              show_default=True, help="Which alerts: needs-input, done")
+def notify(state: str, webhook: str | None, events: list[str]):
+    """Claude Code alerts when a session needs you or has finished.
+
+    `on` turns them on for every Claude Code session on this machine (needs
+    the agentwatch plugin's hook): a desktop notification, plus a webhook
+    post with --webhook. `on` again replaces the settings; `off` deletes them.
+    """
+    from agentwatch.alerts import mask_url, notify_command
+    from agentwatch.coach import load_notify, notify_path, save_notify
+
+    if state != "on" and (webhook or events != ["needs-input", "done"]):
+        raise click.UsageError("--webhook and --events go with `notify on`")
+    try:
+        if state == "on":
+            save_notify({"on": True, "events": events, **({"webhook": webhook} if webhook else {})})
+        elif state == "off":
+            save_notify(None)
+    except OSError as e:
+        click.echo(f"agentwatch: cannot write {notify_path()}: {e.strerror or e}", err=True)
+        sys.exit(1)
+    settings = load_notify()
+    if settings is None:
+        click.echo("agentwatch notify: off")
+        return
+    sinks = ["desktop" if notify_command("t", "b") else "desktop (no notifier found)"]
+    if isinstance(settings.get("webhook"), str):
+        sinks.append(f"webhook {mask_url(settings['webhook'])}")
+    shown = settings.get("events") if isinstance(settings.get("events"), list) else events
+    click.echo(f"agentwatch notify: on ({', '.join(map(str, shown))}) -> {', '.join(sinks)}")
+    click.echo(f"Settings: {notify_path()}")
+    click.echo("Alerts come from the agentwatch Claude Code plugin's hook "
+               "(/plugin install agentwatch@agentwatch).")
 
 
 @cli.command()
@@ -2409,6 +2712,80 @@ def scrub(path: Path, secrets_only: bool, in_place: bool, dry_run: bool, json_ou
         for f in r.findings:
             click.echo(f"  line {f['line']:>5}  {f['type']:<24} {f['preview']}")
     sys.exit(1 if dry_run and r.redacted else 0)
+
+
+@cli.command("config-scan")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON (schema 1)")
+@click.option(
+    "--path", "project",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Project folder whose configs to check (default: current folder)",
+)
+def config_scan(json_output: bool, project: Path | None):
+    """Check AI agents' configs for risky settings. Offline and read-only.
+
+    \b
+    Reads MCP servers, hooks, the status line, permissions, skills,
+    commands, agents, plugins and CLAUDE.md of Claude Code, Cursor,
+    VS Code (Copilot), Codex, Gemini CLI and Cline: your user configs
+    and those of --path. Makes no network calls, needs no account,
+    changes nothing, and never prints secret values.
+
+    \b
+    Exit codes: 0 = nothing above low, 1 = at least one medium,
+    2 = at least one high.
+    """
+    from agentwatch import config_scan as cs
+
+    report = cs.scan(project or Path.cwd())
+    if json_output:
+        click.echo(json.dumps(report.to_json(), indent=2))
+    else:
+        _print_config_report(report)
+    sys.exit(report.exit_code())
+
+
+_SEVERITY_STYLE = {"high": "yellow", "medium": "blue", "low": "cyan"}
+
+
+def _print_config_report(report) -> None:
+    """Findings grouped by agent, then file; counts at the end."""
+    from agentwatch.agents import display_name
+
+    click.echo()
+    click.echo("=" * 54)
+    click.echo("  CONFIG SCAN")
+    click.echo("=" * 54)
+    agents = {f["agent"] for f in report.scanned}
+    click.echo(f"\n  Scanned {len(report.scanned)} file(s) for {len(agents)} agent(s)\n")
+    order = {s: i for i, s in enumerate(("high", "medium", "low"))}
+    by_agent: dict[str, dict[str, list]] = {}
+    for f in sorted(report.findings, key=lambda f: order[f.severity]):
+        by_agent.setdefault(f.agent, {}).setdefault(f.file, []).append(f)
+    for agent, files in by_agent.items():
+        click.echo("  " + click.style(display_name(agent), bold=True))
+        for file, findings in files.items():
+            click.echo(f"    {file}")
+            for f in findings:
+                sev = click.style(f"{f.severity.upper():<6}", fg=_SEVERITY_STYLE[f.severity],
+                                  bold=True)
+                click.echo(f"      {sev} {f.kind}  {f.location}")
+                click.echo(f"             {f.message}")
+                click.echo(click.style(f"             Why: {f.why}", dim=True))
+                click.echo(click.style(f"             Fix: {f.fix}", dim=True))
+        click.echo()
+    for skip in report.skipped:
+        click.echo(click.style(f"  Skipped {skip['file']}: {skip['reason']}", dim=True))
+    if report.skipped:
+        click.echo()
+    s = report.summary()
+    if not s["total"]:
+        click.echo(click.style("  No issues found.", fg="green", bold=True))
+    else:
+        click.echo(f"  {s['total']} finding(s): {s['high']} high, {s['medium']} medium, "
+                   f"{s['low']} low")
+    click.echo()
 
 
 def _print_audit_report(
@@ -2595,6 +2972,15 @@ def _build_guard_cli():
             dry_run=dry_run,
             force=force,
         )
+
+    @guard_cli.command(name="config-scan")
+    @click.option("--json", "json_output", is_flag=True)
+    @click.option("--path", "project",
+                  type=click.Path(exists=True, file_okay=False, path_type=Path))
+    def guard_config_scan(json_output, project):
+        """Check agent configs (MCP, hooks, permissions, skills) offline."""
+        ctx = click.Context(config_scan)
+        ctx.invoke(config_scan, json_output=json_output, project=project)
 
     return guard_cli
 

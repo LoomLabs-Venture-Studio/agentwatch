@@ -8,6 +8,94 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- `agentwatch visual [--port N] [--no-open]`: the reports in a local browser
+  page. Overview (`ps`, `check`), Security (`security-scan`, `audit` on a
+  button), Cost (`stats --all`, `report`), History (recorded sessions,
+  `history sync` on a button). stdlib server on 127.0.0.1 only, one inline
+  page, no CDN, no new dependency. Every request needs the token from the
+  printed URL and a `127.0.0.1`/`localhost` Host header; GET only; every
+  string sent is redacted.
+- `agentwatch tools [--log PATH] [--calls] [--json] [--format text|json|csv]`:
+  the tools one session called. Per tool: calls, failed, failure %, top error
+  kind, total and median time (`-` when the agent logs none; Claude Code's is
+  call to result). `--calls` lists each call: time, tool, target (file name or
+  command, one line, secrets redacted, cut to 80), ok/FAIL and error kind.
+  Never tool arguments, results or error text. CSV is `report`'s long table.
+- `agentwatch report` breakdowns: where the money and time went. **Cost by
+  model** (per model and agent: calls, tokens, USD; unpriced models show
+  tokens and `n/a`, never a guess), **cache use** (cache read vs written, 5m
+  and 1h, vs uncached input; hit % = read / (read + written + uncached input);
+  USD saved = what the cache reads would have cost at the input rate, priced
+  models only) and **errors by type** (failed calls classified as
+  `permission_denied`, `blocked`, `test_failure`, `timeout`, `edit_failed`,
+  `command_not_found`, `file_not_found`, `network`, `nonzero_exit` or `other`,
+  with the share of sessions affected, the change vs the previous period and
+  a count per tool). Cost and cache cover Claude Code fully; Codex and Gemini
+  CLI get tokens and cache hit % (no price); Cline gets its own logged cost.
+  `--json` adds `models`, `cache` and `errors` (schema stays 1: fields are
+  only added). History schema 2 stores per-session model and error-kind
+  counts (never error text); the first sync after upgrading re-reads every
+  log once to fill them in.
+- `report --format csv` and `stats --format csv`: the JSON output as one long
+  table with a fixed header, `table,rank,name,metric,value`. Text a
+  spreadsheet would run as a formula gets a leading `'`.
+- `agentwatch stats --blocks`: Claude Code usage per 5-hour window, the
+  period Claude subscription limits reset on (same rule as ccusage: a window
+  starts at its first message, floored to the UTC hour). Shows the last 10
+  windows (messages, tokens, cost, models) and, for the current one, when it
+  resets, the burn rate in tokens/min and $/hour, and the projected tokens
+  and cost at reset. The burn rate is measured from the window start
+  (ccusage measures from the first to the last message). Always covers every project, since limits are
+  account-wide; each message is counted once. An unpriced model shows its
+  cost as `-`. `--json` lists every window. No plan-limit estimate and no
+  live refresh yet.
+- `agentwatch statusline --cost`: adds the current 5-hour window to the
+  status line as `5h $4.12 → ~$9.80 · resets 2h13m` (spent, projected at reset,
+  time left), after any warning. Nothing when no window is active; only `5h resets …`
+  for an unpriced model. The summary is cached for 60 s and a refresh
+  reads only transcripts written in the last 24 hours, so a warm run costs
+  no more than plain `statusline`.
+- `test_tampering` health detector ("fake green"): flags an agent making
+  failing tests pass by skipping, weakening or deleting them instead of
+  fixing the code. It catches new unconditional skip/xfail markers, `.only`,
+  removed, commented-out or trivialised assertions, deleted test functions
+  and test files, test-config exclusions, and test commands that hide
+  failures (`|| true`, `--deselect`, `-k "not ..."`, `--passWithNoTests`,
+  `-skip`/`--skip`). An edit is HIGH when the last test run before it failed,
+  otherwise MEDIUM (skip, `.only`, config) or LOW. Command flags are MEDIUM
+  after a failed run (`|| true` right after the test runner: HIGH) and LOW
+  otherwise. Platform/env skips, moved or renamed tests, fixtures,
+  snapshots, non-source files in test dirs, and test files the agent created
+  itself in the window (shell, or a Write to a path no earlier action
+  read or changed: at most LOW) are ignored. Not seen:
+  in-place edits by shell (`sed -i '/assert/d'`). Edits are read for Claude Code, Codex,
+  Copilot CLI, Gemini CLI, OpenCode/Kilo and Cline; test commands for every
+  agent with a shell tool. The coach hook coaches on it, and the status line
+  shows `⚠ tests weakened`.
+- `agentwatch config-scan` (also `agentguard config-scan`): an offline,
+  read-only audit of AI agents' configs. It checks the MCP servers, hooks,
+  status line, permissions, skills, commands, agents, installed plugins and
+  CLAUDE.md files of Claude Code, Cursor, VS Code (Copilot), Codex, Gemini CLI
+  and Cline, in your user configs and in the project given by `--path`
+  (default: the current folder). It reports hard-coded secrets (masked),
+  MCP servers run through npx/uvx/bunx/pipx without an exact version or from
+  a git ref (also under `cmd /c`), plain-http remote servers,
+  `bypassPermissions`, allow-all rules and Codex `danger-full-access` (top
+  level and profiles), hooks and MCP server commands that pipe a download
+  into a shell, hidden characters and
+  override phrases in tool-facing markdown, and config files other users can
+  write. `--json` gives schema 1. Exit codes: 0 nothing above low, 1 a medium
+  finding, 2 a high finding. No network calls, no account, nothing written.
+- Needs-input and done alerts. `agentwatch notify on [--webhook URL]
+  [--events needs-input,done]` turns on alerts from the Claude Code plugin's
+  hook: "waiting for permission" / "waiting for your input" (Notification)
+  and "finished" with the turn's tool calls and cost (Stop), as a desktop
+  notification and optional webhook post, once per state change. Off by
+  default; the settings file is 0600 and the webhook URL is never printed.
+  `watch`/`watch-all --notify-done` alerts when a Claude Code, Codex, Copilot
+  CLI, Copilot VS Code, OpenCode or Kilo Code session finishes its turn, from
+  the log's own turn-end marker (sessions already finished at startup are a
+  silent baseline).
 - Command guard in the Claude Code plugin: before a catastrophic command
   (`rm -rf ~`, `git push --force`, `git reset --hard`, `mkfs`, `curl | sh`,
   ...) or a read of a secrets file (`.env`, SSH keys, cloud credentials) the

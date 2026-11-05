@@ -174,6 +174,10 @@ def message_actions(
             session_id=session_id,
             raw={"type": "text"},
         )]
+    if actions and message.get("finish") == "stop":
+        # The reply's last step ("tool-calls" steps go on); fixture from a real
+        # 1.18.34 session. Permission prompts are not stored in these rows.
+        actions[-1].turn_end = True
     if actions:
         # The step's usage goes on its first action, like Claude Code's outgoing_data.
         first = actions[0]
