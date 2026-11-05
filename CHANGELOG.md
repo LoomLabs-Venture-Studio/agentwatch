@@ -8,6 +8,13 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- `agentwatch visual [--port N] [--no-open]`: the reports in a local browser
+  page. Overview (`ps`, `check`), Security (`security-scan`, `audit` on a
+  button), Cost (`stats --all`, `report`), History (recorded sessions,
+  `history sync` on a button). stdlib server on 127.0.0.1 only, one inline
+  page, no CDN, no new dependency. Every request needs the token from the
+  printed URL and a `127.0.0.1`/`localhost` Host header; GET only; every
+  string sent is redacted.
 - `agentwatch report` breakdowns: where the money and time went. **Cost by
   model** (per model and agent: calls, tokens, USD; unpriced models show
   tokens and `n/a`, never a guess), **cache use** (cache read vs written, 5m
