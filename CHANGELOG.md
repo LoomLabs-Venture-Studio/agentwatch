@@ -96,6 +96,14 @@ numbers refer to the GitHub repository.
   CLI, Copilot VS Code, OpenCode or Kilo Code session finishes its turn, from
   the log's own turn-end marker (sessions already finished at startup are a
   silent baseline).
+- Command guard in the Claude Code plugin: before a catastrophic command
+  (`rm -rf ~`, `git push --force`, `git reset --hard`, `mkfs`, `curl | sh`,
+  ...) or a read of a secrets file (`.env`, SSH keys, cloud credentials) the
+  PreToolUse hook makes Claude Code ask you first, also when the command is
+  wrapped in `bash -c`, `sudo` or `env` or chained.
+- `agentwatch guard off|on`: a per-user off switch for the command guard
+  (on by default). Under `claude -p` an ask is a deny, so headless runs can
+  turn it off. `agentwatch guard` prints the status.
 
 ### Fixed
 

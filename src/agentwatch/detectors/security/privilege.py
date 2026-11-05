@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from agentwatch.guard import DESTRUCTIVE_PATTERNS
 from agentwatch.parser.models import ActionBuffer
 from agentwatch.parser.security_patterns import (
     PRIVILEGE_COMMAND_PATTERNS,
@@ -57,13 +58,8 @@ class DangerousCommandDetector(SecurityDetector):
     description = "Potentially dangerous command detected"
 
     DANGEROUS_PATTERNS = [
-        # Destructive operations
-        r"rm\s+-rf\s+[/~]",
-        r"rm\s+-rf\s+\*",
-        r"rm\s+-rf\s+\.",
-        r">\s*/dev/sd[a-z]",  # Overwrite disk
-        r"mkfs\.",
-        r"dd\s+if=.+of=/dev",
+        # Destructive operations, shared with the coach hook's command guard
+        *DESTRUCTIVE_PATTERNS,
 
         # Fork bombs and resource exhaustion
         r":\(\)\{:\|:&\};:",  # Classic fork bomb

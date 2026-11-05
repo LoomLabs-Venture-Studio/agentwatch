@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
+> **Latest: Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -5539,3 +5539,43 @@ Cut: needs-input in watch-all (Codex approval requests are transient, not persis
 - README: Windows hook latency next to the Linux 35 ms. Windows 10, median of 5: Stop with alerts off 0.33 s, on (webhook + stub toast) 0.52 s; mostly Python start-up (~0.35-0.4 s).
 - Windows `_spawn` test: the real `coach._spawn` (Windows creationflags) with a child that sleeps 1 s then writes its stdin to a file returns in < 0.5 s and the file gets the bytes. Checked against two local mutations (wait for the child; drop stdin): both fail.
 - Suite (Windows 10): ruff clean; coach_notify + turn_end + coach 75 passed, 3 skipped, 1 error (known `test_state_dir_is_per_user_not_shared_tmp`); full 2613 passed, 7 skipped, 6 failed, 1 error, all known Windows failures on develop (symlink x5, `test_wrapped_detail_lines_keep_their_indent`).
+### Sprint 40 -- market-gap features (2026-10-30)
+**Goal:** close the top gaps from a 2026-10-30 market survey of agent monitoring and safety tools.
+
+**Ranked gaps:**
+1. 5-hour block / quota tracking (ccusage 19.3k stars, Claude-Code-Usage-Monitor 8.8k).
+2. Statusline cost/quota segment (ccusage, ccstatusline 13.5k).
+3. Destructive-command guard before execution (destructive_command_guard 6.2k, cc-safety-net 1.9k).
+4. Protect secrets before they are read (karanb192/claude-code-hooks).
+5. "Fake green" test-tampering detector (karanb192 protect-tests).
+6. Offline MCP/skills/config audit (Snyk agent-scan 3.2k, needs an account; Pillar).
+7. Error taxonomy in `report` (sniffly).
+8. Needs-input/done alerts (notification hooks).
+9. CSV/OTLP export (ccusage --json, claude-code-otel).
+10. Cache efficiency and per-model breakdown (opcode, Grafana #25255).
+
+**Picked:** A, command guard (items 3 and 4, branch `feature/command-guard`); B, `stats --blocks` (item 1, branch `feature/stats-blocks`).
+
+### Acceptance criteria
+**A: command guard**
+- [ ] The coach hook's PreToolUse returns `permissionDecision: "ask"` with a fixed reason for: `rm -r` of `/`, `~`, `$HOME`, `*`, `.`, `..`; `git push --force`/`-f` (not `--force-with-lease`); `git reset --hard`; `git clean -fd`/`-fdx`; `mkfs.*`; `dd of=/dev/...`; `> /dev/sdX`; `curl`/`wget | sh`; `chmod -R 777 /`; fork bomb.
+- [ ] The same for secrets reads (Read tool, `cat`/`less`/`head`/`tail`/`cp`/`scp`, `curl -F @`): `.env`/`.env.*` (not `.example`/`.sample`/`.template`), `~/.ssh/id_*` (not `.pub`), `~/.aws/credentials`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.docker/config.json`, `~/.kube/config`, `*.pem`/`*.key`.
+- [ ] Caught inside `bash -c`/`sh -c`, `sudo`, `env X=1` and `&&`/`;`/`||`/`|` chains; unparsable commands fall back to the raw patterns.
+- [ ] Safe look-alikes pass with no output (`rm -rf ./build`, `rm -rf node_modules`, `git push --force-with-lease`, `cat .env.example`, `echo "rm -rf /"`).
+- [ ] Runs before the loop breaker, which is unchanged; any error fails open; no detector registry import on PreToolUse; hook latency measured.
+- [ ] No new env vars or dependencies. hooks.json, README, CHANGELOG and CLAUDE.md updated. Tests through `coach.run()` and the real `_entry` process.
+
+**B: `stats --blocks`**
+- [ ] 5-hour blocks computed from Claude Code logs.
+- [ ] The active block shows elapsed and remaining time, burn rate and projected cost.
+- [ ] `--json` output.
+- [ ] Tests from a JSONL fixture.
+
+### Board questions
+- (a) The guard is on by default with `ask` and has no off switch. OK?
+  **Board 2026-11-02: guard stays on by default; per-user off switch `agentwatch guard off` added** (writes `{"on": false}` to `user_state_dir()/guard`; anything else, or no file, leaves it on). Reason: under `claude -p` an ask becomes a deny, so headless runs that legitimately `rm -rf build/` or `git reset --hard` had no escape.
+- (b) Does `ask` still prompt under `bypassPermissions` mode? **Verified live 2026-11-02: a hook `ask` IS enforced under `bypassPermissions`. Under `claude -p`, both bypass and default mode denied a `.env` read with the hook's reason. The interactive prompt itself is unverified.**
+
+**#193 fix round (board-approved 2026-11-02):** the guard now also unwraps `eval` (quoted or not), `setsid`, `builtin`, `cmd /c`, `powershell`/`pwsh -c|-Command`, `wsl [-d X] [-e|--]` and `script -c`, ignores a trailing `.exe`, and catches `agentguard guard off` (the alias entry point) and the `npx`/`xargs` launchers. Documented gaps: `powershell -EncodedCommand`, and Write/Edit or a redirect onto the guard file through a relative path (`coach/guard`).
+
+**#193 round 2 (board-approved 2026-11-02):** now also asks on `cmd //c ...` (Git Bash), `cmd /c"..."`/`/k"..."` (glued), `/r`; PowerShell bare positional args (5.1 runs them as a command; `pwsh` asked the same), `-c`/`-Command` and its prefixes from `-com`, after skipping switches and value options (`-ExecutionPolicy`, `-WindowStyle`, ...); `-File` and `-EncodedCommand` still pass. Program names are case-insensitive (`BASH -c`, `GIT reset --hard`) and a quoted `C:\...\cmd.exe` path works. Documented gaps: `wsl --shell-type X`, `script --command=...`, `curl | cmd`/`| powershell`, wrappers nested more than 3 deep, unquoted backslash program paths, quote-split words (`r''m`) in commands over 20,000 chars.

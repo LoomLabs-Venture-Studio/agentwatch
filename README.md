@@ -46,7 +46,9 @@ Some are tested against sample logs only. See
 
 ## Claude Code plugin
 
-Coaches Claude when it gets stuck and blocks a looping step:
+Coaches Claude when it gets stuck, blocks a looping step, and asks you
+before a catastrophic command or a read of your secrets files
+(`agentwatch guard off` turns that off):
 
 ```text
 /plugin marketplace add LoomLabs-Venture-Studio/agentwatch

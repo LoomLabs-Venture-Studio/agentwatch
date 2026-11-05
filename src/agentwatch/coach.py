@@ -27,6 +27,14 @@ LoopDetector does, and if it is the armed loop's next call denies it once with
 Claude). The retry is allowed; the entry is dropped when the loop is no longer
 HIGH, so a new loop blocks again. AGENTWATCH_LOOP_BREAKER=off disables it.
 
+Command guard (runs first on PreToolUse, see guard.py): a catastrophic Bash
+command (rm -rf ~, git push --force, mkfs, curl | sh, ...) or a read of a
+secrets file (.env, SSH keys, cloud credentials) returns `"permissionDecision":
+"ask"` with a fixed reason, so Claude Code asks the user. On by default;
+`agentwatch guard off` writes {"on": false} to the per-user file GUARD in
+user_state_dir() and turns it off (board 2026-11-02: under `claude -p` an
+ask is a deny). Any other content, or no file, leaves it on.
+
 Attention alerts (`agentwatch notify on`): on Notification (permission_prompt,
 idle_prompt, elicitation_*, agent_needs_input) and Stop the hook sends a
 desktop notification and/or webhook post ("waiting for permission",
@@ -51,8 +59,9 @@ from pathlib import Path
 # imports this module for its state helpers on every status line update.
 
 EVENTS = ("PostToolUse", "PostToolUseFailure")
-# Seconds before the watchdog exits 0 silently. hooks.json allows 10.
-BUDGET_S = 5.0
+# Seconds before the watchdog exits 0 silently: under hooks.json's PreToolUse
+# timeout (5 s; PostToolUse allows 10).
+BUDGET_S = 4.0
 # ponytail: fixed byte tail of the transcript. ActionBuffer keeps only the last
 # 500 actions anyway; widen if a detector ever needs older history.
 TAIL_BYTES = 4_000_000
@@ -60,6 +69,7 @@ STATE_MAX_AGE_S = 7 * 24 * 3600
 # File in user_state_dir() naming the dir the hook writes state to (no .json,
 # so never pruned).
 POINTER = "state-dir"
+GUARD = "guard"
 _MAX_LINE = 200
 # Attention-alert settings in user_state_dir(); no .json suffix, so never pruned.
 NOTIFY = "notify"
@@ -410,6 +420,49 @@ def _breaker(payload: dict, key: str) -> str | None:
     }})
 
 
+def guard_path() -> Path:
+    return user_state_dir() / GUARD
+
+
+def guard_enabled() -> bool:
+    """False only when the settings file is a dict with "on" exactly False;
+    a missing, unreadable or corrupt file leaves the guard on."""
+    try:
+        data = json.loads(guard_path().read_text(encoding="utf-8"))
+    except Exception:  # OSError, ValueError, RecursionError on deep nesting
+        return True
+    return not (isinstance(data, dict) and data.get("on") is False)
+
+
+def set_guard(on: bool) -> Path:
+    """On: delete the settings file. Off: write {"on": false} (0700 dir, atomic)."""
+    path = guard_path()
+    if on:
+        path.unlink(missing_ok=True)
+        return path
+    if not _private_dir(path.parent):
+        raise OSError(f"{path.parent} is not owned by this user")
+    _atomic_write(path, json.dumps({"on": False}))
+    return path
+
+
+def _guard(payload: dict) -> str | None:
+    """PreToolUse: ask the user before a catastrophic command or a secrets read."""
+    if not guard_enabled():
+        return None
+    from agentwatch.guard import check
+
+    name = payload["tool_name"]
+    reason = check(name, payload.get("tool_input")) if isinstance(name, str) else None
+    if reason is None:
+        return None
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "ask",
+        "permissionDecisionReason": reason,
+    }})
+
+
 def notify_path() -> Path:
     return user_state_dir() / NOTIFY
 
@@ -584,7 +637,7 @@ def run(stdin_text: str) -> str | None:
         if agent_id is not None and (not isinstance(agent_id, str) or not _ID.fullmatch(agent_id)):
             return None
         if event == "PreToolUse":
-            return _breaker(payload, key)
+            return _guard(payload) or _breaker(payload, key)
         if event in ("Notification", "Stop"):
             return _attention(payload, session_id)
         transcript = Path(payload["transcript_path"])

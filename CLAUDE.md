@@ -216,6 +216,14 @@ src/agentwatch/
                        skipped; PostToolUse _save and Stop reset it;
                        stop_hook_active skipped. Prints nothing, no decision.
                        hooks.json runs both async
+                       Command guard (guard.py, stdlib only, runs before
+                       the breaker): catastrophic Bash (rm -rf ~, push -f,
+                       mkfs, curl|sh, ...; shlex-split, sudo/env/bash -c
+                       unwrapped) or a secrets read (.env, SSH keys, cloud
+                       creds) -> permissionDecision ask, fixed reason.
+                       `agentwatch guard off` writes {"on": false} to
+                       user_state_dir()/guard (coach.GUARD); only that
+                       exact value turns it off (`on` deletes the file)
   statusline.py        `agentwatch statusline [--ok] [--cost]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
