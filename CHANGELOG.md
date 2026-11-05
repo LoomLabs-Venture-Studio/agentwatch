@@ -15,6 +15,12 @@ numbers refer to the GitHub repository.
   page, no CDN, no new dependency. Every request needs the token from the
   printed URL and a `127.0.0.1`/`localhost` Host header; GET only; every
   string sent is redacted.
+- `agentwatch tools [--log PATH] [--calls] [--json] [--format text|json|csv]`:
+  the tools one session called. Per tool: calls, failed, failure %, top error
+  kind, total and median time (`-` when the agent logs none; Claude Code's is
+  call to result). `--calls` lists each call: time, tool, target (file name or
+  command, one line, secrets redacted, cut to 80), ok/FAIL and error kind.
+  Never tool arguments, results or error text. CSV is `report`'s long table.
 - `agentwatch report` breakdowns: where the money and time went. **Cost by
   model** (per model and agent: calls, tokens, USD; unpriced models show
   tokens and `n/a`, never a guess), **cache use** (cache read vs written, 5m
