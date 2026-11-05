@@ -65,7 +65,7 @@ Every session gets a **health score** from 0 to 100:
 The score blends three things:
 
 - **Health checks**: going in circles, failing over and over, no progress,
-  editing the same file back and forth.
+  editing the same file over and over.
 - **Context**: as the conversation fills up, assistants forget earlier work
   and re-read files they already saw. AgentWatch tracks this "context rot"
   over time.
