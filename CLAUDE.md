@@ -201,7 +201,6 @@ src/agentwatch/
                        (same id as LoopDetector) and denies the first match
                        once (permissionDecision deny, fixed reason).
                        LOOP_ALLOW Bash prefixes are never denied.
-  statusline.py        `agentwatch statusline [--ok] [--cost]`: Claude Code statusLine
                        Attention alerts (Sprint 40): Notification
                        (permission_prompt, idle_prompt, elicitation_dialog,
                        elicitation_url_dialog, agent_needs_input) and Stop,
@@ -217,7 +216,7 @@ src/agentwatch/
                        skipped; PostToolUse _save and Stop reset it;
                        stop_hook_active skipped. Prints nothing, no decision.
                        hooks.json runs both async
-  statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
+  statusline.py        `agentwatch statusline [--ok] [--cost]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
                        user_state_dir()/state-dir (coach.POINTER, written
