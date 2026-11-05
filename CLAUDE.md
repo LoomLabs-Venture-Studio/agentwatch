@@ -175,7 +175,8 @@ src/agentwatch/
                        PostToolUseFailure hook. Tail (4 MB) of
                        transcript_path -> parse_claude_code_entry ->
                        health registry; new HIGH/CRITICAL PROGRESS/ERRORS
-                       warning -> hookSpecificOutput.additionalContext
+                       warning (includes `test_tampering`, Try line fixed)
+                       -> hookSpecificOutput.additionalContext
                        (<= 3 lines; evidence quoted with </> stripped, the
                        Try line is fixed text per signal). Subagent
                        payloads (agent_id) read <transcript>/subagents/
@@ -197,7 +198,7 @@ src/agentwatch/
                        (same id as LoopDetector) and denies the first match
                        once (permissionDecision deny, fixed reason).
                        LOOP_ALLOW Bash prefixes are never denied.
-  statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
+  statusline.py        `agentwatch statusline [--ok] [--cost]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
                        user_state_dir()/state-dir (coach.POINTER, written
@@ -205,12 +206,16 @@ src/agentwatch/
                        CLAUDE_PLUGIN_DATA), else <CLAUDE_CONFIG_DIR or
                        ~/.claude>/plugins/data/agentwatch-*/coach, and
                        user_state_dir; worst HIGH/CRITICAL of the mapped
-                       signals -> `⚠ loop|thrash|errors|stuck ~$x` (cost
+                       signals -> `⚠ loop|thrash|errors|stuck|tests weakened ~$x` (cost
                        only if finite, 0 <= x < 10k; < 0.01 -> `<$0.01`;
                        yellow/red, NO_COLOR). Healthy: nothing, `--ok` dim
                        `✓ agentwatch`. No state / > 10 min old / any error:
                        nothing, exit 0. No transcript parsing; imports only
-                       stdlib + coach (~150 ms on Windows)
+                       stdlib + coach (~150 ms on Windows). `--cost`: the
+                       active 5-hour block (spend -> projection · resets)
+                       from a 60 s cache (user_state_dir()/block.json); a
+                       miss imports cc_stats and scans transcripts modified
+                       in the last 24 h
   alerts.py            Alerter for `watch`/`watch-all` `--notify`,
                        `--webhook URL` (env AGENTWATCH_WEBHOOK) and
                        `watch-all --headless`. observe(session, agent,
@@ -364,7 +369,9 @@ src/agentwatch/
                        --all`. project_dir_to_name(dir, log): basename of
                        the transcripts' recorded cwd, else the dir-name
                        decode; project_name(): "~" for the home dir (also
-                       agents.base.folder_name, used by history)
+                       agents.base.folder_name, used by history).
+                       compute_blocks(): `stats --blocks` 5-hour usage
+                       windows (all projects, message.id once, ccusage rule)
   themes.py             Pluggable status-label/emoji/color themes shared by
                        CLI, health scoring, and the TUI
 
@@ -474,7 +481,11 @@ src/agentwatch/
                        action whose result lands after it left their window
     health/*.py          Health detectors: loops, tool_thrash, stall/stuck,
                        errors, context, repetition, behavioral, progress,
-                       constraints
+                       constraints, fake_green (`test_tampering`: tests
+                       skipped/weakened/deleted on test files only; HIGH when
+                       the last test run before it failed; edit text read
+                       from raw for Claude Code, Codex, Copilot CLI, Gemini,
+                       OpenCode/Kilo, Cline; commands for all)
     security/*.py        Security detectors: credentials, injection,
                        network, privilege, supply_chain, secret_scanner
                        (also redact_truncate and one_line, the shared

@@ -39,6 +39,39 @@ numbers refer to the GitHub repository.
 - `report --format csv` and `stats --format csv`: the JSON output as one long
   table with a fixed header, `table,rank,name,metric,value`. Text a
   spreadsheet would run as a formula gets a leading `'`.
+- `agentwatch stats --blocks`: Claude Code usage per 5-hour window, the
+  period Claude subscription limits reset on (same rule as ccusage: a window
+  starts at its first message, floored to the UTC hour). Shows the last 10
+  windows (messages, tokens, cost, models) and, for the current one, when it
+  resets, the burn rate in tokens/min and $/hour, and the projected tokens
+  and cost at reset. The burn rate is measured from the window start
+  (ccusage measures from the first to the last message). Always covers every project, since limits are
+  account-wide; each message is counted once. An unpriced model shows its
+  cost as `-`. `--json` lists every window. No plan-limit estimate and no
+  live refresh yet.
+- `agentwatch statusline --cost`: adds the current 5-hour window to the
+  status line as `5h $4.12 → ~$9.80 · resets 2h13m` (spent, projected at reset,
+  time left), after any warning. Nothing when no window is active; only `5h resets …`
+  for an unpriced model. The summary is cached for 60 s and a refresh
+  reads only transcripts written in the last 24 hours, so a warm run costs
+  no more than plain `statusline`.
+- `test_tampering` health detector ("fake green"): flags an agent making
+  failing tests pass by skipping, weakening or deleting them instead of
+  fixing the code. It catches new unconditional skip/xfail markers, `.only`,
+  removed, commented-out or trivialised assertions, deleted test functions
+  and test files, test-config exclusions, and test commands that hide
+  failures (`|| true`, `--deselect`, `-k "not ..."`, `--passWithNoTests`,
+  `-skip`/`--skip`). An edit is HIGH when the last test run before it failed,
+  otherwise MEDIUM (skip, `.only`, config) or LOW. Command flags are MEDIUM
+  after a failed run (`|| true` right after the test runner: HIGH) and LOW
+  otherwise. Platform/env skips, moved or renamed tests, fixtures,
+  snapshots, non-source files in test dirs, and test files the agent created
+  itself in the window (shell, or a Write to a path no earlier action
+  read or changed: at most LOW) are ignored. Not seen:
+  in-place edits by shell (`sed -i '/assert/d'`). Edits are read for Claude Code, Codex,
+  Copilot CLI, Gemini CLI, OpenCode/Kilo and Cline; test commands for every
+  agent with a shell tool. The coach hook coaches on it, and the status line
+  shows `⚠ tests weakened`.
 - `agentwatch config-scan` (also `agentguard config-scan`): an offline,
   read-only audit of AI agents' configs. It checks the MCP servers, hooks,
   status line, permissions, skills, commands, agents, installed plugins and

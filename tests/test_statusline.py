@@ -61,6 +61,7 @@ def _plain(text: str) -> str:
     ("error_spiral", "errors"), ("error_blindness", "errors"),
     ("high_error_rate", "errors"), ("error_class_persistence", "errors"),
     ("stall", "stuck"), ("same_outcome", "stuck"), ("exploration_stall", "stuck"),
+    ("test_tampering", "tests weakened"),
 ])
 def test_label_mapping(tmp_path, signal, label):
     _state(tmp_path, [_w(signal)])
