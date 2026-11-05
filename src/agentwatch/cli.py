@@ -2406,6 +2406,52 @@ def visual(port: int, no_open: bool):
         sys.exit(1)
 
 
+@cli.command()
+@click.option("--log", "-l", type=_LOG_FILE,
+              help="Agent log file; default: the newest session, as `check` picks it")
+@click.option("--calls", "with_calls", is_flag=True, help="Also list every call")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option("--format", "fmt", type=click.Choice(["text", "json", "csv"]), default="text",
+              show_default=True, help="csv: one long table, table,rank,name,metric,value")
+def tools(log: Path | None, with_calls: bool, json_output: bool, fmt: str):
+    """Tools one session called: calls, failures, error kinds, time.
+
+    Shows only tool names, file names and commands (one line, secrets
+    redacted), never tool arguments, results or error text.
+    """
+    from agentwatch.report import write_csv
+    from agentwatch.tools_view import build, render
+
+    if fmt == "csv" and json_output:
+        raise click.UsageError("--json and --format csv conflict; pick one")
+    fmt = "json" if json_output else fmt
+    if log is None:
+        log, note = _default_log()
+        if log is None:
+            click.echo("No log files found. Specify a path with --log", err=True)
+            sys.exit(1)
+        click.echo(f"Using log: {log}", err=True)
+        if note:
+            click.echo(note, err=True)
+    try:
+        actions = list(parse_file(log))  # whole log: results merge into earlier calls
+    except (UnsupportedLogFormatError, LogUnreadableError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if not actions:
+        click.echo("No actions found in log file", err=True)
+        sys.exit(1)
+    data = build(actions, log.name, with_calls)
+    if fmt == "json":
+        click.echo(json.dumps(data, indent=2))
+    elif fmt == "csv":
+        buf = io.StringIO()
+        write_csv(data, buf, root="tools")
+        click.echo(buf.getvalue(), nl=False)
+    else:
+        click.echo("\n".join(render(data)))
+
+
 @cli.command(hidden=True)
 def hook():
     """Claude Code coach hook: reads hook JSON on stdin (see plugin/)."""

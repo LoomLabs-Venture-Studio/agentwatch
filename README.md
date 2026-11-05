@@ -70,6 +70,10 @@ agentwatch stats --burn
 
 # What your agents cost you this week (spend, waste, trend)
 agentwatch report
+
+# Which tools one session called, how often they failed and why
+agentwatch tools            # newest session, as `check` picks it
+agentwatch tools --calls    # plus every call (file name or command, redacted)
 ```
 
 ## Scoring System
