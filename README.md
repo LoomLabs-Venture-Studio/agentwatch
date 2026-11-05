@@ -29,6 +29,7 @@ pipx install agentwatch-monitor
 agentwatch check           # check your latest session
 agentwatch watch-all       # live dashboard of every running assistant
 agentwatch security-scan   # leaked keys, prompt injection, risky commands
+agentwatch visual          # all the reports in your browser
 ```
 
 Run `agentwatch --help` for all commands, or see
