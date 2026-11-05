@@ -932,6 +932,26 @@ USD values are null when unknown (no priced session, or no previous period).
 an earlier release is upgraded on first use, and the next sync re-reads
 every log once to fill them in; a session whose log is gone has none.
 
+### Browser View
+
+The reports in a local web page: Overview (`ps`, `check`), Security
+(`security-scan`, `audit`), Cost (`stats --all`, `report`) and History
+(recorded sessions).
+
+```bash
+agentwatch visual             # opens the page in your browser
+agentwatch visual --no-open   # just print the URL
+agentwatch visual --port 8765 # fixed port (default: any free port)
+```
+
+It listens on 127.0.0.1 only and nothing leaves your machine (no CDN). The
+printed URL holds a one-time token every request needs. Read only: the audit
+and `history sync` run only when you press their button. Secrets are redacted
+from everything the page shows. Ctrl+C stops it.
+
+On a shared computer, other users may see that key (in your browser history or
+the process list) while the server runs, so stop it when you are done.
+
 ### Scrub Secrets and Personal Info
 
 ```bash

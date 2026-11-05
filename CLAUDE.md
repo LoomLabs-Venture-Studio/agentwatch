@@ -66,6 +66,7 @@ want a "fitness tracker + security guard" for those agents.
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
                        detect, net, list-detectors, security-scan, themes, stats,
+                       visual,
                        audit, scrub, report, tools, history sync|prune|path.
                        `report`/`stats`/`tools` take --format text|json|csv.
                        `scrub PATH` redacts secrets + PII in one
@@ -277,6 +278,16 @@ src/agentwatch/
                        last part; secret mask tail dropped; 120); security
                        messages not stored.
                        Deleted logs stay; prune(days)
+  visual.py            `agentwatch visual`: ThreadingHTTPServer on
+                       127.0.0.1 (--port, 0 = free) + one inline vanilla-JS
+                       page (textContent only, CSP, no CDN). GET /api/<name>
+                       (ps, check, security-scan, audit, stats, report,
+                       history) calls cli.py's --json builders (_ps_json,
+                       _check_json, _security_json, _audit_scan/_audit_json)
+                       in process; every string through redact_truncate.
+                       Token (?t=, compare_digest) + Host 127.0.0.1|localhost
+                       :<port> or 403; non-GET 405; token masked in logs.
+                       audit and history sync only with ?run=1
   report.py            `agentwatch report`: build() (JSON schema 1, fields
                        only added) over sessions whose last action is in the
                        period, plus the previous one for the trend; unpriced
