@@ -961,7 +961,6 @@ class TestCustomToolCall:
             {"type": "world_state", "payload": {"k": "v"}},
             {"type": "token_usage_record", "payload": {"k": 1}},
             {"type": "event_msg", "payload": {"type": "task_started"}},
-            {"type": "event_msg", "payload": {"type": "task_complete"}},
             {
                 "type": "event_msg",
                 "payload": {

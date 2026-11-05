@@ -594,7 +594,15 @@ def _check_budget(ctx, param, value: float | None) -> float | None:
 
 
 def _alert_options(f):
-    """--notify / --notify-min / --webhook / --budget, shared by watch and watch-all."""
+    """--notify / --notify-min / --webhook / --budget / --notify-done, shared by
+    watch and watch-all."""
+    f = click.option(
+        "--notify-done",
+        is_flag=True,
+        help="Also alert each time a session finishes its turn and waits for "
+             "you (Claude Code, Codex, Copilot CLI and VS Code, OpenCode, Kilo "
+             "Code; turns on --notify unless --webhook is given)",
+    )(f)
     f = click.option(
         "--budget",
         type=float,
@@ -636,8 +644,9 @@ def _alert_options(f):
 
 
 def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook: str | None,
-                  budget: float | None = None, headless: bool = False):
-    if budget is not None and not webhook:
+                  budget: float | None = None, headless: bool = False,
+                  notify_done: bool = False):
+    if (budget is not None or notify_done) and not webhook:
         notify = True  # --budget alone needs a sink: desktop (board decision)
     if not (notify or webhook or headless):
         return None
@@ -645,7 +654,7 @@ def _make_alerter(notify: bool, notify_min: str, notify_existing: bool, webhook:
 
     return Alerter(notify=notify, notify_min=notify_min, webhook=webhook,
                    log=print_line if headless else None, notify_existing=notify_existing,
-                   budget=budget)
+                   budget=budget, notify_done=notify_done)
 
 
 @cli.command()
@@ -693,6 +702,7 @@ def watch(
     notify_existing: bool,
     webhook: str | None,
     budget: float | None,
+    notify_done: bool,
 ):
     """Watch one agent session in real-time (the watch-all dashboard, opened
     on that session)."""
@@ -718,7 +728,8 @@ def watch(
         siem_log=siem_log,
         llm=llm,
         llm_model=llm_model,
-        alerter=_make_alerter(notify, notify_min, notify_existing, webhook, budget),
+        alerter=_make_alerter(notify, notify_min, notify_existing, webhook, budget,
+                              notify_done=notify_done),
     )
     app.run()
 
@@ -1333,6 +1344,7 @@ def watch_all(
     notify_existing: bool,
     webhook: str | None,
     budget: float | None,
+    notify_done: bool,
 ):
     """Watch agent logs in real-time with a multi-agent dashboard.
 
@@ -1341,7 +1353,8 @@ def watch_all(
     """
     if since is not None and not all_logs:
         raise click.UsageError("--since applies to --all-logs only")
-    alerter = _make_alerter(notify, notify_min, notify_existing, webhook, budget, headless)
+    alerter = _make_alerter(notify, notify_min, notify_existing, webhook, budget, headless,
+                            notify_done)
     from agentwatch.parser.logs import DEFAULT_SEARCH_PATHS
     from agentwatch.ui.multi_app import MultiAgentWatchApp
 
@@ -2575,6 +2588,56 @@ def statusline(ok: bool, cost: bool):
     from agentwatch.statusline import main as statusline_main
 
     statusline_main(ok, cost)
+
+
+def _check_events(ctx, param, value: str) -> list[str]:
+    from agentwatch.coach import NOTIFY_EVENTS
+
+    events = [e.strip() for e in value.split(",") if e.strip()]
+    if not events or set(events) - set(NOTIFY_EVENTS):
+        raise click.BadParameter(f"a comma list of: {', '.join(NOTIFY_EVENTS)}")
+    return list(dict.fromkeys(events))
+
+
+@cli.command()
+@click.argument("state", type=click.Choice(["on", "off", "status"]), default="status")
+@click.option("--webhook", callback=_check_webhook, default=None, metavar="URL",
+              help='Also POST each alert as JSON {"text": ...} (Slack-compatible). '
+                   "Stored in the settings file (0600) and never printed")
+@click.option("--events", callback=_check_events, default="needs-input,done",
+              show_default=True, help="Which alerts: needs-input, done")
+def notify(state: str, webhook: str | None, events: list[str]):
+    """Claude Code alerts when a session needs you or has finished.
+
+    `on` turns them on for every Claude Code session on this machine (needs
+    the agentwatch plugin's hook): a desktop notification, plus a webhook
+    post with --webhook. `on` again replaces the settings; `off` deletes them.
+    """
+    from agentwatch.alerts import mask_url, notify_command
+    from agentwatch.coach import load_notify, notify_path, save_notify
+
+    if state != "on" and (webhook or events != ["needs-input", "done"]):
+        raise click.UsageError("--webhook and --events go with `notify on`")
+    try:
+        if state == "on":
+            save_notify({"on": True, "events": events, **({"webhook": webhook} if webhook else {})})
+        elif state == "off":
+            save_notify(None)
+    except OSError as e:
+        click.echo(f"agentwatch: cannot write {notify_path()}: {e.strerror or e}", err=True)
+        sys.exit(1)
+    settings = load_notify()
+    if settings is None:
+        click.echo("agentwatch notify: off")
+        return
+    sinks = ["desktop" if notify_command("t", "b") else "desktop (no notifier found)"]
+    if isinstance(settings.get("webhook"), str):
+        sinks.append(f"webhook {mask_url(settings['webhook'])}")
+    shown = settings.get("events") if isinstance(settings.get("events"), list) else events
+    click.echo(f"agentwatch notify: on ({', '.join(map(str, shown))}) -> {', '.join(sinks)}")
+    click.echo(f"Settings: {notify_path()}")
+    click.echo("Alerts come from the agentwatch Claude Code plugin's hook "
+               "(/plugin install agentwatch@agentwatch).")
 
 
 @cli.command()

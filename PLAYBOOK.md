@@ -5505,3 +5505,37 @@ config counterpart to `audit` (session logs) and `security-scan`.
 - Hook `type: "http"` URLs, `headersHelper`/`http_headers_helper` commands, `apiKeyHelper`.
 - Managed settings files, VS Code Insiders' user mcp.json, Claude Desktop's `claude_desktop_config.json`, OpenCode/Kilo configs, Windsurf.
 - Docker images run through `docker compose` or wrapper scripts.
+### Sprint 40 (cont.) -- needs-input and done alerts (gap #8)
+**Type:** feature. Branch `feature/attention-alerts` from develop 8e3b5fc.
+**Goal:** a developer running agents in the background learns when one is waiting on them or has finished, without watching a terminal (as claude-code-notifier / claude-remote-approver do for Claude Code).
+
+### Acceptance Criteria
+- [x] Claude Code: the plugin hook handles `Notification` (permission_prompt, idle_prompt, elicitation_dialog, elicitation_url_dialog, agent_needs_input) and `Stop`, per https://code.claude.com/docs/en/hooks (#notification, #stop, #run-hooks-in-the-background). Prints nothing, never returns a decision, never blocks a stop.
+- [x] Opt-in with no new env var: `agentwatch notify on|off|status [--webhook URL] [--events needs-input,done]` writes `notify` (no suffix, so the 7-day prune skips it) in `coach.user_state_dir()`, 0600 in a 0700 dir. The webhook URL is stored only if given and shown masked.
+- [x] Off = one small file read and exit (no transcript read, no state write).
+- [x] Delivery reuses alerts.py (`notify_command`, `post_webhook`, `slack_escape`, `who`, `one_line` via coach `_clean`). Desktop notifier spawned detached; webhook 3 s inside the 5 s watchdog. Fail quiet.
+- [x] Debounce: session state `attention` key. A repeated idle reminder is not re-sent, nor idle after "finished"; PostToolUse (its `_save` rewrites the state) and Stop reset it. Permission/elicitation prompts all alert, except the same message (sha256) within 60 s (QA F1). Subagent replies (`isSidechain`, `subagents/` logs) never mark a turn end (QA F2). `stop_hook_active` Stops are skipped.
+- [x] hooks.json: Notification (matcher = the five types) and Stop, `async: true`, timeout 10. PreToolUse/PostToolUse unchanged (synchronous).
+- [x] watch/watch-all `--notify-done`: parsers mark the action that ends a turn (`Action.turn_end`); `turn_ended()` reports it while nothing newer than Claude Code `system` lines or usage records follows. Codex / Copilot CLI get a `turn_end` record counted like a usage record (activity counts and detectors unchanged). Alerter: baselined like findings, once per turn end, `DONE` headless line.
+- [x] Tests: hook payload -> coach.run and the real console path (fake notify-send on PATH), dedup, Stop then new wait, corrupt settings/state; `notify` CLI perms + masking; per-agent parser markers from fixtures; Alerter baseline/state change/no repeat; headless engine end to end.
+
+### Coverage (watch-all `--notify-done`)
+| Agent | Signal | Source |
+|---|---|---|
+| Claude Code | text-only assistant entry, `stop_reason: "end_turn"` | real local transcripts (end_turn lines share a message_id with the reply's thinking line; one alert per message_id) |
+| Codex CLI / ChatGPT app | `event_msg` `task_complete` (alias `turn_complete`) | openai/codex @ 67f0994: protocol/src/protocol.rs L1576-1578, rollout/src/policy.rs L139 |
+| Copilot CLI | `assistant.turn_end` after an `assistant.message` with `toolRequests: []` | 3 real 1.0.90 sessions in ~/.copilot/session-state |
+| Copilot VS Code | request `modelState.value == 1` (Complete) | real 1.140 fixture |
+| OpenCode / Kilo 7.x | assistant step `finish: "stop"` (done once `time.completed`) | real 1.18.34 fixture |
+
+Cut: needs-input in watch-all (Codex approval requests are transient, not persisted: policy.rs L197-203; Copilot CLI and OpenCode permission prompts are not in the rows read; VS Code's unconfirmed tool parts can be held for minutes in a background window). Gemini (fixture-only, no turn-end marker beyond re-appended messages), Cline (ask types live in ui_messages.json, not read; fixture-only), Aider, Cursor, agy, Claude Desktop. No 10-minute rate limit on done: each finished turn is new; the per-state dedup and >3 coalescing cover bursts. SubagentStop not hooked (subagents finishing are not the user's wait).
+
+### Result (2026-11-01)
+- Latency (`agentwatch hook`, Linux, median of 10, 600-line transcript): PostToolUse 217 ms before, 212 ms after. Notification/Stop with notify off 36 ms (was 36 ms, ignored). Notify on: Stop 229 ms with a stub notifier, 230 ms when no notifier is found; a deduped idle repeat 46 ms. Both events run async, so none of it blocks Claude.
+- Live (temp HOME): `notify on`, then Notification and Stop payloads piped to `agentwatch hook`: exit 0, no stdout, state and settings 0600 in a 0700 dir. `notify-send` is not installed on this machine (libnotify-bin absent), so the real-notifier path found none and stayed silent. A PATH stand-in with notify-send's argv delivered over D-Bus with `gdbus ... Notifications.Notify` exited 0 (notification id 63).
+
+### CTO review round (2026-11-03)
+- Turn summary cost: `coach._turn_summary` now passes the 1-hour cache-write part (`usage.cache_creation.ephemeral_1h_input_tokens`, read as parser/logs.py does) to `usage_cost_usd`; 1h writes were priced at the 5m rate. Test: a Sonnet 4.5 turn with 600k 5m + 400k 1h writes reads `~$4.65` (was `~$3.75`).
+- README: Windows hook latency next to the Linux 35 ms. Windows 10, median of 5: Stop with alerts off 0.33 s, on (webhook + stub toast) 0.52 s; mostly Python start-up (~0.35-0.4 s).
+- Windows `_spawn` test: the real `coach._spawn` (Windows creationflags) with a child that sleeps 1 s then writes its stdin to a file returns in < 0.5 s and the file gets the bytes. Checked against two local mutations (wait for the child; drop stdin): both fail.
+- Suite (Windows 10): ruff clean; coach_notify + turn_end + coach 75 passed, 3 skipped, 1 error (known `test_state_dir_is_per_user_not_shared_tmp`); full 2613 passed, 7 skipped, 6 failed, 1 error, all known Windows failures on develop (symlink x5, `test_wrapped_detail_lines_keep_their_indent`).

@@ -1,5 +1,5 @@
 {
-  "description": "agentwatch coach: health check after each tool call, and a one-time block of a call that repeats a HIGH loop (PreToolUse; AGENTWATCH_LOOP_BREAKER=off disables it). `; exit 0` keeps the hook a silent no-op (no hook-error notice) when agentwatch is not on PATH; it works in both Git Bash and PowerShell.",
+  "description": "agentwatch coach: health check after each tool call, and a one-time block of a call that repeats a HIGH loop (PreToolUse; AGENTWATCH_LOOP_BREAKER=off disables it). Notification and Stop send a desktop/webhook alert when the session needs you or has finished, only after `agentwatch notify on`; they run async, print nothing and never block a stop. `; exit 0` keeps the hook a silent no-op (no hook-error notice) when agentwatch is not on PATH; it works in both Git Bash and PowerShell.",
   "hooks": {
     "PreToolUse": [
       { "hooks": [ { "type": "command", "command": "agentwatch hook; exit 0", "timeout": 5 } ] }
@@ -9,6 +9,13 @@
     ],
     "PostToolUseFailure": [
       { "hooks": [ { "type": "command", "command": "agentwatch hook; exit 0", "timeout": 10 } ] }
+    ],
+    "Notification": [
+      { "matcher": "permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input",
+        "hooks": [ { "type": "command", "command": "agentwatch hook; exit 0", "timeout": 10, "async": true } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "agentwatch hook; exit 0", "timeout": 10, "async": true } ] }
     ]
   }
 }
