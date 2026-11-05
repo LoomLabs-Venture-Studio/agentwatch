@@ -1658,6 +1658,12 @@ def themes():
     is_flag=True,
     help="Include the user prompt that triggered each trivial call (use with --burn --list)",
 )
+@click.option(
+    "--blocks",
+    is_flag=True,
+    help="Usage per 5-hour billing window, with burn rate and projection "
+    "(always all projects: limits are account-wide)",
+)
 def stats(
     all_projects: bool,
     session_id: str | None,
@@ -1666,6 +1672,7 @@ def stats(
     burn: bool,
     list_trivial: bool,
     prompts: bool,
+    blocks: bool,
 ):
     """Show Claude Code token usage statistics.
 
@@ -1677,8 +1684,21 @@ def stats(
     (git, ls, npm run dev, etc.) that you could have run yourself.
     Use --burn --list to see every trivial command.
     Use --burn --list --prompts to also show what you said that triggered them.
+    Use --blocks for usage per 5-hour window (when Claude subscription limits
+    reset; a window starts at its first message floored to the UTC hour): the
+    last 10 windows, and for the current one its reset time, burn rate
+    (measured from the window start) and projected total. Scans all
+    projects; --json lists every window.
     """
     from agentwatch.cc_stats import compute_stats
+
+    if blocks:
+        if burn or list_trivial or prompts or session_id:
+            raise click.UsageError(
+                "--blocks can't be combined with --burn, --list, --prompts or --session"
+            )
+        _print_blocks(json_output)
+        return
 
     # --list / --prompts imply --burn
     if list_trivial or prompts:
@@ -1733,6 +1753,84 @@ def _fmt_tokens(n: int) -> str:
 def _usd(cost: float | None) -> str:
     """Dollar amount for `stats`; "n/a" when the model has no listed price."""
     return "n/a" if cost is None else f"${cost:,.2f}"
+
+
+def _print_blocks(json_output: bool) -> None:
+    """`stats --blocks`: 5-hour usage windows, all projects."""
+    from agentwatch import cc_stats
+
+    now = cc_stats._utcnow()
+    blocks = cc_stats.compute_blocks()
+    if json_output:
+        click.echo(json.dumps(cc_stats.blocks_to_dict(blocks, now), indent=2))
+        return
+    if not blocks:
+        click.echo("No Claude Code usage found.")
+        return
+
+    def short(model: str) -> str:
+        return re.sub(r"-\d{8}$", "", model.removeprefix("claude-"))
+
+    def local(dt) -> str:
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
+    def usd(cost: float | None) -> str:  # unpriced model: "-", never a guess
+        return "-" if cost is None else f"${cost:,.2f}"
+
+    click.echo()
+    click.echo("  USAGE BLOCKS (5-hour windows, all projects, local time)")
+    click.echo("  " + "\u2500" * 96)
+    click.echo(
+        f"  {'Start':<17} {'Msgs':>5} {'Input':>10} {'Output':>10} {'Cache wr':>12}"
+        f" {'Cache rd':>14} {'Total':>14} {'Cost':>9}  Models"
+    )
+    for b in blocks[-10:]:
+        u = b.usage
+        mark = " *" if b.is_active(now) else ""
+        click.echo(
+            f"  {local(b.start):<17} {u.call_count:>5,} {_fmt_tokens(u.input_tokens):>10}"
+            f" {_fmt_tokens(u.output_tokens):>10} {_fmt_tokens(u.cache_write_tokens):>12}"
+            f" {_fmt_tokens(u.cache_read_tokens):>14} {_fmt_tokens(u.total_tokens):>14}"
+            f" {usd(u.cost_usd):>9}  {', '.join(short(m) for m in sorted(b.models))}{mark}"
+        )
+    if len(blocks) > 10:
+        click.echo(f"  ({len(blocks) - 10} older blocks not shown; --json lists all)")
+    click.echo()
+
+    active = blocks[-1]
+    burn = active.burn(now)
+    if burn is None:
+        click.echo("  No active block: the next message starts a new 5-hour window.")
+        click.echo()
+        return
+    fraction = burn["elapsed_minutes"] / 300
+
+    def dur(minutes: float) -> str:
+        m = int(minutes)
+        return f"{m // 60}h {m % 60:02d}m"
+
+    click.echo("  ACTIVE BLOCK *")
+    click.echo("  " + "\u2500" * 50)
+    click.echo(
+        f"  Started:   {local(active.start)}    Resets: "
+        + click.style(active.end.astimezone().strftime("%H:%M"), bold=True)
+        + f" (in {dur(burn['remaining_minutes'])})"
+    )
+    click.echo(f"  Elapsed:   {dur(burn['elapsed_minutes'])}  {_make_bar(min(fraction, 1.0))}")
+    click.echo(
+        f"  Used:      {_fmt_tokens(active.usage.total_tokens)} tokens"
+        f"   {usd(active.usage.cost_usd)}"
+    )
+    rate = usd(burn["cost_per_hour_usd"])
+    click.echo(
+        f"  Burn rate: {_fmt_tokens(burn['tokens_per_minute'])} tokens/min"
+        f"   {rate}{'/h' if burn['cost_per_hour_usd'] is not None else ''}"
+    )
+    click.echo(
+        f"  Projected: {_fmt_tokens(burn['projected_tokens'])} tokens"
+        f"   {usd(burn['projected_cost_usd'])}  at reset"
+    )
+    click.echo()
 
 
 def _print_stats_report(report) -> None:
@@ -2462,7 +2560,12 @@ def hook():
 
 @cli.command()
 @click.option("--ok", is_flag=True, help="When healthy, print a dim check mark and 'agentwatch'")
-def statusline(ok: bool):
+@click.option(
+    "--cost", is_flag=True,
+    help="Add the current 5-hour block's spend, projected spend and reset time "
+    "(all projects; cached 60 s)",
+)
+def statusline(ok: bool, cost: bool):
     """Claude Code status line: a short warning (loop ~$1.40) when unhealthy.
 
     Reads the status line JSON on stdin and the coach's state for that
@@ -2471,7 +2574,7 @@ def statusline(ok: bool):
     """
     from agentwatch.statusline import main as statusline_main
 
-    statusline_main(ok)
+    statusline_main(ok, cost)
 
 
 @cli.command()
