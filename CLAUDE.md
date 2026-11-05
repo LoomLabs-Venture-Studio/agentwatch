@@ -65,7 +65,7 @@ want a "fitness tracker + security guard" for those agents.
 ```
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
-                       detect, net, list-detectors, security-scan, themes, stats,
+                       detect, net, list-detectors, security-scan, config-scan, themes, stats,
                        visual,
                        audit, scrub, report, tools, history sync|prune|path.
                        `report`/`stats`/`tools` take --format text|json|csv.
@@ -312,6 +312,39 @@ src/agentwatch/
                        via one_line(80); never args/results/error text.
                        Log picked by cli._default_log like `check`;
                        csv via report.write_csv
+  config_scan.py       `agentwatch config-scan [--json] [--path DIR]` (also
+                       `agentguard config-scan`): offline, read-only audit
+                       of agent configs. Claude Code settings(.local).json
+                       (user + project; permissions, hooks, statusLine,
+                       env), .mcp.json, ~/.claude.json (mcpServers +
+                       projects.*.mcpServers only, <= 32 MB), skills/
+                       commands/agents md, CLAUDE.md, installed plugins
+                       (installed_plugins.json installPath); Cursor
+                       mcp.json; VS Code mcp.json (servers, JSONC); Codex
+                       config.toml + hooks.json; Gemini settings.json;
+                       Cline cline_mcp_settings.json (legacy store per
+                       editor + ~/.cline/data/settings). Root helpers
+                       reused (CLAUDE_CONFIG_DIR, _codex_sessions_root,
+                       _gemini_dir, default_user_dir, cline paths).
+                       Checks: secrets via _SECRET_PATTERNS (masked; var
+                       refs stripped), unpinned npx/uvx/pipx/... and git
+                       refs (a Windows `cmd /c|/k` wrapper is unwrapped
+                       first, so `cmd /c npx -y pkg` counts), docker
+                       untagged, plain-http remotes, bypassPermissions /
+                       allow-all / credential-path allow rules, Codex
+                       sandbox_mode = "danger-full-access" at top level
+                       and in each [profiles.<name>] (high with
+                       approval_policy = "never", the profile's own else
+                       the top-level one), pipe-to-shell in hooks and in
+                       MCP server command + args (remote_script), hidden
+                       chars / hidden comments / override phrases in md,
+                       POSIX files writable by others. show(): paths in /
+                       form with home as ~ on every OS (Windows home
+                       match case-insensitive). Symlinks must resolve
+                       inside the root (project, else home); symlinked
+                       dirs not walked; > 2 MB skipped; unparseable ->
+                       files_skipped. JSON schema 1. Exit 0 / 1 medium /
+                       2 high
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess

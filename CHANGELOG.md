@@ -72,6 +72,20 @@ numbers refer to the GitHub repository.
   Copilot CLI, Gemini CLI, OpenCode/Kilo and Cline; test commands for every
   agent with a shell tool. The coach hook coaches on it, and the status line
   shows `⚠ tests weakened`.
+- `agentwatch config-scan` (also `agentguard config-scan`): an offline,
+  read-only audit of AI agents' configs. It checks the MCP servers, hooks,
+  status line, permissions, skills, commands, agents, installed plugins and
+  CLAUDE.md files of Claude Code, Cursor, VS Code (Copilot), Codex, Gemini CLI
+  and Cline, in your user configs and in the project given by `--path`
+  (default: the current folder). It reports hard-coded secrets (masked),
+  MCP servers run through npx/uvx/bunx/pipx without an exact version or from
+  a git ref (also under `cmd /c`), plain-http remote servers,
+  `bypassPermissions`, allow-all rules and Codex `danger-full-access` (top
+  level and profiles), hooks and MCP server commands that pipe a download
+  into a shell, hidden characters and
+  override phrases in tool-facing markdown, and config files other users can
+  write. `--json` gives schema 1. Exit codes: 0 nothing above low, 1 a medium
+  finding, 2 a high finding. No network calls, no account, nothing written.
 
 ### Fixed
 

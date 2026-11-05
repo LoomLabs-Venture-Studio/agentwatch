@@ -5471,3 +5471,37 @@ Market gap #5 (cf. karanb192/claude-code-hooks "protect-tests"): flag an agent t
 - A Write counts as creating a file only if no earlier action in the window read or changed that path, so overwriting an existing test file and then skipping is HIGH after a failed run, and a later `rm` is flagged.
 - V4A patch text is read only from patch tools (`*patch*` tool names) and shell commands running `apply_patch`; a Write of a doc that quotes a patch is not a patch.
 - Tests: 112 in `tests/test_fake_green.py` (31 new; each new bug test failed before its fix). Targeted (`test_fake_green`, `test_coach`, `test_statusline`): 213 passed, 2 skipped, 1 known error. Full suite: 2688 passed, 6 skipped, 6 failed + 1 error, all known Windows failures (5 symlink tests, `test_multi_app_detail::test_wrapped_detail_lines_keep_their_indent`, error `test_coach::test_state_dir_is_per_user_not_shared_tmp`). Ruff clean.
+### Sprint 40 (cont.) -- config-scan (gap #6) (2026-10-31)
+
+Market gap #6: an offline audit of agent configs. Snyk agent-scan needs an
+account and calls home; Pillar is hosted. `agentwatch config-scan` is the
+config counterpart to `audit` (session logs) and `security-scan`.
+
+#### Acceptance criteria
+- [x] New command `agentwatch config-scan [--json] [--path DIR]`, also `agentguard config-scan`.
+- [x] Reads MCP servers, hooks, status line, permissions, skills, commands, agents, installed plugins and CLAUDE.md for Claude Code; MCP configs for Cursor, VS Code (Copilot), Codex, Gemini CLI and Cline. Formats checked against each tool's docs; root helpers reused (`CLAUDE_CONFIG_DIR`, `_codex_sessions_root`, `_gemini_dir`, `default_user_dir`, `cline_sessions_dir`, `_legacy_editors`).
+- [x] Checks: hard-coded secrets (high, masked), unpinned package runners / git refs (medium; docker untagged low), plain-http remote MCP (high with auth, else medium), bypassPermissions and broad or credential-path allow rules, pipe-to-shell hooks (high), hidden chars (high) / hidden comments / override phrases in tool-facing markdown, files writable by others (POSIX).
+- [x] Each finding: severity, kind, agent, file (home as ~), location, message, why, fix. JSON schema 1 with summary, files_scanned, files_skipped.
+- [x] Exit codes 0 / 1 (medium) / 2 (high), in `--help` and README.
+- [x] Read-only, no network, stdlib only (json, tomllib), no new env vars. Symlinks out of the root not followed; symlinked dirs not entered; > 2 MB skipped (~/.claude.json 32 MB); unparseable files listed as skipped.
+- [x] Tests drive the real CLI over fixture trees in tmp_path, including the false-positive cases.
+
+#### Result (2026-10-31)
+- `src/agentwatch/config_scan.py` (new), `cli.py` (`config-scan`, guard alias), `tests/test_config_scan.py` (85 tests after the CTO review round: 82 pass and 3 POSIX/symlink skips on Windows). Full suite on Windows 2657 passed, 9 skipped, 6 failed + 1 error, all known pre-existing Windows failures on develop (4 symlink tests in test_redact_data_safety, test_resolve_helper_follows_symlinks, test_wrapped_detail_lines_keep_their_indent, the test_coach state-dir error); ruff clean.
+- Real run on the dev machine (`--path` agentwatch repo, 2026-10-31, QA round 1): 51 files (claude-code 47, codex 2, gemini 1, cline 1), 3 low findings, exit 0. The first run flagged a skill that quotes "ignore previous instructions" as a warning to the model (medium); quoted phrases are now low.
+- Re-run 2026-11-03 (after the CTO round, same machine, more plugins and skills installed since): 198 files (claude-code 196, codex 1, cline 1), 0 skipped, every path in `/` form. 3 low as before plus 1 high: a hard-coded bearer Authorization header in an MCP server under `~/.claude.json` `projects[...]` (masked in the output; a real finding on the machine, not a false positive).
+- Exit code differs from the brief's suggestion: config-scan has no critical tier, so 2 = any high.
+
+#### CTO review round (2026-11-03)
+- `show()` joined with `os.sep`, so on Windows every file and `projects["..."]` location came out as `~\.claude\settings.json` and 9 of the PR's own tests failed there. It now uses `relative_to` + `as_posix()` (`~/...` on every OS, case-insensitive home match on Windows). A `PureWindowsPath` unit test catches it on Linux CI too.
+- `cmd /c ...` / `cmd.exe /C ...` / `/k` (the Windows MCP form) is unwrapped before the unpinned-package check, so `cmd /c npx -y pkg` is medium and `cmd /c npx -y pkg@2.0.0` passes.
+- MCP server `command` + `args` (joined), or a single-string command, now go through the pipe-to-shell check: `bash -c "curl ... | sh"`, `sh -c "wget -qO- ... | bash"`, `powershell -Command "iwr ... | iex"`, `cmd /c "curl ... | sh"` are high `remote_script` at `<server>.command`; `npx -y pkg@1.0.0`, `node server.js`, `curl ... | jq` don't fire.
+- Codex `[profiles.<name>]` tables: `sandbox_mode = "danger-full-access"` is medium, high with `approval_policy = "never"` (the profile's, else the top-level one), at `profiles.<name>.sandbox_mode`.
+- Tests: 8 new (show unit test, 4 `cmd /c` unit cases, `cmd /c` via CLI, MCP pipe-to-shell via CLI, Codex profiles via CLI); each failed on ee29d21 first.
+
+#### Cut (not precise enough or not cheap)
+- The broad shared INJECTION_PATTERNS ("you are now", "act as a", "system:"): they match ordinary skill prompts. Only the high-confidence override phrases and ChatML tokens are used.
+- Cline `autoApprove`, Codex per-tool approval modes, Gemini `tools`/yolo settings, Claude `auto` mode: no clear "risky" line.
+- Hook `type: "http"` URLs, `headersHelper`/`http_headers_helper` commands, `apiKeyHelper`.
+- Managed settings files, VS Code Insiders' user mcp.json, Claude Desktop's `claude_desktop_config.json`, OpenCode/Kilo configs, Windsurf.
+- Docker images run through `docker compose` or wrapper scripts.
