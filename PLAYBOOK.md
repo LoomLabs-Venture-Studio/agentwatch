@@ -5332,6 +5332,63 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 | 2026-10-27 | #189 | docs/site-redesign | docs | CTO review, QA PASS WITH NOTES (sonnet), round 1 fixed, board "go live" | -- |
 | 2026-10-27 | #190 | fix/codex-usage-loop | fix | CTO review, QA PASS WITH NOTES (sonnet), follow-ups fixed (011af8d); held until after the site promotion | -- |
 
+### Sprint 40 (cont.) -- report breakdowns and CSV (gaps #7, #10, #9)
+**Type:** feature. Branch `feature/report-breakdowns` from develop 8e3b5fc.
+**Goal:** "where did my money and time go": errors by type (sniffly), cost per model and cache hit ratio (opcode, Grafana #25255), export (ccusage --json, claude-code-otel).
+**Placement:** all three live in `report` (history.db: cross-agent, periods, trend). `stats` (Claude Code only) gets `--format csv` through the same writer; no second cost or cache path.
+
+### Acceptance Criteria
+- [x] Errors by type: failed calls (the ones `check` counts) classified by fixed strings/regexes into `permission_denied`, `blocked`, `test_failure`, `timeout`, `edit_failed`, `command_not_found`, `file_not_found`, `network`, `nonzero_exit`, `other`, plus a count per tool name. Count, sessions affected and their share, delta vs the previous period.
+- [x] Only kind, tool name and count stored (`session_errors`); never error text. Tool/model names stored only if they look like an id (no paths).
+- [x] Cost by model (per model and agent): calls, tokens, USD; unpriced -> tokens and n/a.
+- [x] Cache: read vs written (5m/1h) vs uncached input, hit % = read / (read + written + uncached), USD saved = the call re-priced with its reads at the input rate minus its price (same `usage_cost_usd`, so the Haiku 5.5 long-prompt tier is respected), priced models only.
+- [x] Per-model USD and tokens sum exactly to each session's stored cost/tokens (same "largest copy of each call" rule as ActionBuffer).
+- [x] History schema 2 (`_MIGRATIONS[1]`): `session_models`, `session_errors` (IF NOT EXISTS, ON DELETE CASCADE), and `UPDATE sessions SET size = -1` so the next sync re-reads each log once. A session whose log is gone keeps no breakdown.
+- [x] `report --format csv` and `stats --format csv`: one long table, header `table,rank,name,metric,value`; formula-leading text gets `'`.
+- [x] `--json` schema stays 1 (README: "fields only added, never renamed"); adds `models`, `cache`, `errors`.
+- [x] Tests on the real path (fixture Claude Code + Codex logs -> sync -> report text/JSON/CSV), migration from a schema-1 DB, empty period, CSV header, JSON back-compat.
+- [x] No noticeable sync/report regression on real logs.
+
+### Result
+- **Coverage.** Claude Code: everything (model, every cache field, priced). Codex and Gemini CLI: tokens and cache hit % (cached input), no model id, no price. Cline (SDK store): its own logged cost, cache read/write, no model id, so no saving. Copilot CLI/VS Code, agy: tokens they log, unpriced. Errors by type: every agent whose parser fills `error_message`.
+- **Real machine (all history, 161 sessions; rough figures only, the repo is public).** claude-opus-5-5 is ~99% of spend; the other Claude models and Gemini (unpriced) are the rest. Cache hit 93%, with 5m writes ~6x the 1h writes; cache reads saved ~5x the actual spend against the input rate. Errors: failed calls in ~half the sessions; nonzero_exit 105, blocked 28, file_not_found 20, command_not_found 5, permission_denied 2, test_failure 2, other 2, timeout 1; by tool, Bash ~95%.
+- **Cross-check.** Per-model sums equal each session's stored cost and tokens exactly (0 mismatches over 162 sessions; for `--agent claude-code` the model rows sum to the totals to the cent). Against `stats --all` over the same 42 Claude Code sessions (148 log files incl. subagents): 0.07% apart, in 3 sessions: 2 have text-only or thinking-only assistant messages whose usage the Claude parser never attaches to an Action (pre-existing; `check` and history miss it too, `stats` counts it), 1 has streamed lines with differing usage (stats takes each field's max, history the largest copy). `stats --blocks` is not on develop (other Sprint 40 branch): not compared.
+- **Timing** (real logs, temp XDG_DATA_HOME, before = develop 8e3b5fc, interleaved, median of 5, machine load 5-26 from other work): `history sync` cold 65.4 s -> 67.6 s (+3%; the one low-load pair 23.0 -> 24.2 s), warm 1.10 -> 1.08 s, `report --no-sync` 0.87 -> 0.43 s, `report --days 30` 0.83 -> 0.98 s (noise). The first sync after upgrading costs one cold sync (logs in `--days` scope only for `report`).
+- **Cuts.** OpenTelemetry export (needs a dep or a hand-rolled OTLP schema). "unknown tool" (`No such tool available`) left in `other`. Exit codes beyond "non-zero" (no per-code buckets). Cost/cache per model in `stats` (report covers it; stats got CSV only). Codex model id (rollouts carry it in turn_context; the parser doesn't keep it). Cline legacy store cache split (only a combined cached count).
+- **Tests.** tests/test_report_breakdowns.py (fixture Claude Code + Codex logs -> sync -> report text/JSON/CSV; each kind, unpriced model, hand-computed cache $, schema-1 migration, CSV header, formula guard, empty period, rescan/cascade); test_report JSON back-compat. Full suite 2602 passed, 1 skipped, 5 wall-clock tests failed under load ~20 (test_secret_leak_sinks x3, test_hidden_instruction_detector x1, test_persistent_findings toggle/replay); all 202 in those files pass at load 3, and develop itself fails one of them under the same load.
+
+### CTO review round (2026-11-03)
+- **`0 failed` is not a test failure.** `history._TEST_FAILED` matched `\b\d+ (?:failed|failing)\b`, so a test command exiting non-zero for another reason (coverage gate) with "5 passed, 0 failed" was `test_failure`; now `[1-9]\d*`, so it is `nonzero_exit`. Test: `test_zero_failed_is_not_a_test_failure` (0 failed -> nonzero_exit, 1 failed -> test_failure).
+- **Conflicting flags are a usage error.** `report`/`stats` `--json --format csv` (--json used to win silently) and `stats --burn --format csv` (--burn, or --list/--prompts which imply it, used to be dropped silently) now raise `click.UsageError` (exit 2), checked before any log or DB is read. `--json`, `--format json` and both together still print JSON. Tests: `test_conflicting_flags_are_a_usage_error` x4, `test_json_flags_still_work` x6. README notes it.
+- **CLAUDE.md** history.py (schema 2), report.py and cli.py (`--format`) entries committed.
+- New tests failed on the old code first (1 + 4; the 6 JSON ones pass before and after). Targeted (test_report_breakdowns, test_report, test_history, test_cc_stats): 161 passed, 1 skipped. Full suite: 2608 passed, 6 skipped, 6 failed + 1 error, all known Windows-only on develop (symlink privilege x5, multi_app_detail indent, coach state dir). `ruff check .` clean.
+
+### Follow-ups
+- Claude parser: text-only and thinking-only assistant messages carry no usage on any Action, so `check`, history and report undercount them slightly (0.07% here).
+- Codex: keep `turn_context.model` on usage records so cost by model can name it.
+### Sprint 41 -- visual, tools, README (planned 2026-11-03)
+Board asked for three things. Plan below; names in quotes are proposals awaiting the board.
+
+**1. `agentwatch visual`: the reports in a browser.**
+- One command starts a local web page: `agentwatch visual [--port N] [--no-open]`. Binds 127.0.0.1 only; there is no `--host` flag. stdlib `http.server` + one inline HTML page with vanilla JS. No new dependency.
+- Pages: Overview (`ps` + `check`), Security (`security-scan`, `audit`), Cost (`stats`, `report`), History (`history` sessions), Config (`config-scan`, once #196 merges), Tools (from task 2). Each page calls the same function the command's `--json` uses, in process. Slow ones (`audit`, `history sync`) run only when the user presses a button.
+- Safety: GET only, read only. A random token in the URL (printed once, opened in the browser) is required on every request, and the `Host` header must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding). Every string from logs goes through `secret_scanner.redact_truncate` before it is sent; HTML is built with `textContent`, never `innerHTML` on log text. No CORS headers.
+- Acceptance: page loads on Linux and Windows; refusing a wrong token or Host gives 403; a planted fake secret in a test log never appears in any response; no request leaves the machine (no CDN); ruff + pytest green.
+
+**2. `agentwatch tools`: what tools a session used.**
+- Exists already: `Action` (tool_name, success, file_path, command, error_message, duration_ms, timestamp), every parser, `check --log`'s session resolution, and #198's error classifier (kind per failed call).
+- New: `agentwatch tools [--log PATH] [--json] [--format csv] [--calls]`. Default is the newest session `check` would pick. Prints a table per tool: calls, failed, failure %, top error kind, total and median time; `--calls` adds the call list (time, tool, target = file name or command, cut to 80 and redacted, ok/fail, error kind). No raw arguments or results are shown; target only.
+- Stacked on #198 (reuses its classifier and `--format csv` writer). Retarget to develop after #198 merges.
+- Acceptance: counts equal `check`'s action count for the same log; one fixture per agent family (Claude Code, Codex, Aider); secrets in commands redacted; CSV uses #198's injection guard.
+- Not in scope: a Tools tab in the `watch` TUI (board question).
+
+**3. README refresh.** Own docs PR `docs/readme-refresh` from develop. Plain language, same voice and order as agentwatch.info (#189): what it is, install, quick start (3 commands), supported agents table (live-verified vs fixture-verified, matching CLAUDE.md), commands, the Claude Code plugin, privacy. Uses `docs/assets/images/dashboard.svg`. Long reference moves to docs/commands.md links instead of being repeated. Describes develop as it is; Sprint 40 features are added as each PR merges.
+
+**Order and fit with open PRs.** README and `visual` branch from develop now. `tools` stacks on #198. The `visual` Tools page and Config page land after `tools` and #196 merge. None of the three touch #192-#197's files except `cli.py` (new commands only; small conflicts expected, resolved at merge).
+
+**Board questions.** (a) Names: `visual` / `dashboard` / `web`? (b) `tools` / `calls`? (c) Tools tab in the `watch` TUI too: yes / later? (d) README: describe develop now and add Sprint 40 as it merges, or wait for Sprint 40 merges: now / wait?
+
+**Board decisions (2026-11-05).** Names `visual` and `tools`. Tools tab in `watch`: later. README: now. Visual page font: Atkinson Hyperlegible only when installed (no embed). Merge Sprint 40 + 41 into develop in order (squash, clean messages); hold #193 (guard default) and #205 (unfinished follow-up). Also: README cut to essentials with a banner; `visual` has a Commands footer.
 ### Sprint 40 (cont.) -- config-scan (gap #6) (2026-10-31)
 
 Market gap #6: an offline audit of agent configs. Snyk agent-scan needs an

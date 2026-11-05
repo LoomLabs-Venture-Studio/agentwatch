@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import re
@@ -523,11 +524,7 @@ def check(
         )
 
     if json_output:
-        output = report.to_dict()
-        output["session_fallback"] = note
-        output["efficiency"] = efficiency.to_dict()
-        output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
-        output["waste"] = _waste(warnings, buffer.stats)
+        output = _check_json(report, efficiency, warnings, buffer, note, goal_alignment)
         click.echo(json.dumps(output, indent=2))
     else:
         print_health_report(
@@ -556,6 +553,16 @@ def check(
         # security tier also decides the exit code (the worse one wins).
         exit_code = max(exit_code, _security_exit_code(calculate_security_score(warnings)))
     sys.exit(exit_code)
+
+
+def _check_json(report, efficiency, warnings, buffer, note, goal_alignment=None) -> dict:
+    """`check --json` payload (also served by `agentwatch visual`)."""
+    output = report.to_dict()
+    output["session_fallback"] = note
+    output["efficiency"] = efficiency.to_dict()
+    output["goal_alignment"] = goal_alignment.to_dict() if goal_alignment else None
+    output["waste"] = _waste(warnings, buffer.stats)
+    return output
 
 
 def _check_webhook(ctx, param, value: str | None) -> str | None:
@@ -757,6 +764,35 @@ def _session_proc(log: Path):
                  if p.log_file and resolved(p.log_file) == target), None)
 
 
+def _ps_json(agents: list[AgentProcess]) -> list[dict]:
+    """`ps --json` payload (also served by `agentwatch visual`).
+
+    Always a flat list of agent objects, with or without sub-agents, so
+    scripts can rely on one shape. Rebuild the tree from parent_agent_pid,
+    depth and team_id.
+    """
+    team_names = {t.team_id: t.name for t in build_teams(agents)}
+    return [
+        {
+            "pid": a.pid,
+            "parent_pid": a.parent_pid,
+            "parent_agent_pid": a.parent_agent_pid,
+            "team_id": a.team_id,
+            "team_name": team_names.get(a.team_id),
+            "depth": a.depth,
+            "agent_type": a.agent_type,
+            "project": a.project_name,
+            "working_directory": str(a.working_directory) if a.working_directory else None,
+            "log_file": str(a.log_file) if a.log_file else None,
+            "session_id": a.session_id,
+            "cpu_percent": a.cpu_percent,
+            "memory_mb": round(a.memory_mb, 1),
+            "uptime": a.uptime,
+        }
+        for a in agents
+    ]
+
+
 @cli.command()
 @click.option(
     "--json", "json_output",
@@ -770,30 +806,7 @@ def ps(json_output: bool):
     has_subagents = any(a.depth > 0 for a in agents)
 
     if json_output:
-        # Always a flat list of agent objects, with or without sub-agents, so
-        # scripts can rely on one shape. Rebuild the tree from parent_agent_pid,
-        # depth and team_id.
-        team_names = {t.team_id: t.name for t in build_teams(agents)}
-        output = [
-            {
-                "pid": a.pid,
-                "parent_pid": a.parent_pid,
-                "parent_agent_pid": a.parent_agent_pid,
-                "team_id": a.team_id,
-                "team_name": team_names.get(a.team_id),
-                "depth": a.depth,
-                "agent_type": a.agent_type,
-                "project": a.project_name,
-                "working_directory": str(a.working_directory) if a.working_directory else None,
-                "log_file": str(a.log_file) if a.log_file else None,
-                "session_id": a.session_id,
-                "cpu_percent": a.cpu_percent,
-                "memory_mb": round(a.memory_mb, 1),
-                "uptime": a.uptime,
-            }
-            for a in agents
-        ]
-        click.echo(json.dumps(output, indent=2))
+        click.echo(json.dumps(_ps_json(agents), indent=2))
         return
 
     click.echo()
@@ -1503,27 +1516,10 @@ def security_scan(
     if siem_log is not None:
         _export_siem_log(siem_log, warnings, buffer, report_type="security", score=security_score)
 
-    # Raw per-action security-stat counters (SessionStats.credential_accesses
-    # / .privilege_commands / .network_connections / .injection_attempts --
-    # see the design-decision comment on SessionStats in parser/models.py:
-    # these are raw pattern-match counts, not "how many Warnings fired").
-    security_stats = {
-        "credential_accesses": buffer.stats.credential_accesses,
-        "privilege_commands": buffer.stats.privilege_commands,
-        "network_connections": buffer.stats.network_connections,
-        "injection_attempts": buffer.stats.injection_attempts,
-    }
+    security_stats = _security_stats(buffer)
 
     if json_output:
-        output = {
-            "security_score": security_score,
-            "status": security_tier_from_score(security_score),
-            "warnings": [w.to_dict() for w in warnings],
-            "action_count": len(buffer),
-            "security_stats": security_stats,
-            "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
-            "session_fallback": note,
-        }
+        output = _security_json(warnings, buffer, note, goal_alignment)
         click.echo(json.dumps(output, indent=2))
     else:
         click.echo()
@@ -1572,6 +1568,33 @@ def security_scan(
     sys.exit(_security_exit_code(security_score))
 
 
+def _security_stats(buffer: ActionBuffer) -> dict:
+    # Raw per-action security-stat counters (SessionStats.credential_accesses
+    # / .privilege_commands / .network_connections / .injection_attempts --
+    # see the design-decision comment on SessionStats in parser/models.py:
+    # these are raw pattern-match counts, not "how many Warnings fired").
+    return {
+        "credential_accesses": buffer.stats.credential_accesses,
+        "privilege_commands": buffer.stats.privilege_commands,
+        "network_connections": buffer.stats.network_connections,
+        "injection_attempts": buffer.stats.injection_attempts,
+    }
+
+
+def _security_json(warnings, buffer: ActionBuffer, note, goal_alignment=None) -> dict:
+    """`security-scan --json` payload (also served by `agentwatch visual`)."""
+    security_score = calculate_security_score(warnings)
+    return {
+        "security_score": security_score,
+        "status": security_tier_from_score(security_score),
+        "warnings": [w.to_dict() for w in warnings],
+        "action_count": len(buffer),
+        "security_stats": _security_stats(buffer),
+        "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
+        "session_fallback": note,
+    }
+
+
 @cli.command()
 def themes():
     """List all available status themes."""
@@ -1614,6 +1637,13 @@ def themes():
     help="Output as JSON",
 )
 @click.option(
+    "--format", "fmt",
+    type=click.Choice(["text", "json", "csv"]),
+    default="text",
+    show_default=True,
+    help="csv: the --json output as one long table (table,rank,name,metric,value)",
+)
+@click.option(
     "--burn",
     is_flag=True,
     help="Show where tokens burn — trivial vs substantive breakdown",
@@ -1632,6 +1662,7 @@ def stats(
     all_projects: bool,
     session_id: str | None,
     json_output: bool,
+    fmt: str,
     burn: bool,
     list_trivial: bool,
     prompts: bool,
@@ -1654,6 +1685,10 @@ def stats(
         burn = True
     if prompts:
         list_trivial = True
+    if fmt == "csv" and json_output:
+        raise click.UsageError("--json and --format csv conflict; pick one")
+    if fmt == "csv" and burn:
+        raise click.UsageError("--burn (or --list/--prompts) has no --format csv output")
 
     report = compute_stats(all_projects=all_projects, session_id=session_id)
 
@@ -1668,8 +1703,14 @@ def stats(
             )
         sys.exit(1)
 
-    if json_output:
+    if json_output or fmt == "json":
         click.echo(json.dumps(report.to_dict(), indent=2))
+    elif fmt == "csv":
+        from agentwatch.report import write_csv
+
+        buf = io.StringIO()
+        write_csv(report.to_dict(), buf, root="stats")
+        click.echo(buf.getvalue(), nl=False)
     elif burn:
         _print_burn_report(report)
         if list_trivial:
@@ -2010,15 +2051,12 @@ def audit(
     from agentwatch.cc_stats import (
         cwd_to_project_dir,
         find_all_project_dirs,
-        project_dir_to_name,
     )
     from agentwatch.detectors.security.pii import _PII_PATTERNS
     from agentwatch.detectors.security.secret_scanner import (
         _SECRET_PATTERNS,
-        AuditFinding,
         LogBusyError,
         assess_impact,
-        audit_log_file,
         redact_log_file,
     )
 
@@ -2038,27 +2076,7 @@ def audit(
             sys.exit(1)
         dirs = [project_dir]
 
-    all_findings: list[AuditFinding] = []
-    sessions_scanned = 0
-    project_names: list[str] = []
-
-    for pdir in dirs:
-        proj_name = project_dir_to_name(pdir)
-        project_names.append(proj_name)
-
-        if session_id:
-            jsonl = pdir / f"{session_id}.jsonl"
-            files = [jsonl] if jsonl.is_file() else []
-        else:
-            files = sorted(pdir.glob("*.jsonl"))
-
-        for jsonl_path in files:
-            sessions_scanned += 1
-            try:
-                findings = audit_log_file(jsonl_path, project_name=proj_name, **pat)
-                all_findings.extend(findings)
-            except (OSError, json.JSONDecodeError, UnsupportedLogFormatError):
-                continue
+    all_findings, sessions_scanned, project_names = _audit_scan(dirs, session_id, pat)
 
     if sessions_scanned == 0:
         if all_projects:
@@ -2120,38 +2138,11 @@ def audit(
                 redact_errors.append({"log_file": str(fp), "error": str(exc)})
 
     if json_output:
-        finding_dicts = []
-        for f in all_findings:
-            d: dict = {
-                "secret_type": f.secret_type,
-                "channel": f.channel,
-                "severity": f.severity,
-                "file_path": f.file_path,
-                "matched_prefix": f.matched_prefix,
-                "log_file": f.log_file,
-                "session_id": f.session_id,
-                "project_name": f.project_name,
-                "remediation": f.remediation,
-                "timestamp": f.timestamp,
-            }
-            if f.impact:
-                d["is_active_session"] = f.impact.is_active_session
-                d["active_pid"] = f.impact.active_pid
-                d["still_in_source"] = f.impact.still_in_source
-                d["source_line"] = f.impact.source_line
-                d["env_var_matches"] = f.impact.env_var_matches
-            finding_dicts.append(d)
-
-        output: dict = {
-            "projects": project_names,
-            "sessions_scanned": sessions_scanned,
-            "total_findings": len(all_findings),
-            "redacted": redact_count if redact and not dry_run else None,
-            "skipped_active": sorted(set(skipped_active)) if skipped_active else [],
-            "backups": [str(b) for b in backups],
-            "redact_errors": redact_errors,
-            "findings": finding_dicts,
-        }
+        output = _audit_json(
+            all_findings, sessions_scanned, project_names,
+            redacted=redact_count if redact and not dry_run else None,
+            skipped_active=skipped_active, backups=backups, redact_errors=redact_errors,
+        )
         click.echo(json.dumps(output, indent=2))
     else:
         _print_audit_report(all_findings, sessions_scanned, project_names)
@@ -2213,6 +2204,79 @@ def audit(
     elif "high" in severities:
         sys.exit(1)
     sys.exit(0)
+
+
+def _audit_scan(dirs: list[Path], session_id: str | None, pat: dict) -> tuple[list, int, list[str]]:
+    """Audit every session log in *dirs*: (findings, sessions scanned, project names)."""
+    from agentwatch.cc_stats import project_dir_to_name
+    from agentwatch.detectors.security.secret_scanner import audit_log_file
+
+    all_findings: list = []
+    sessions_scanned = 0
+    project_names: list[str] = []
+
+    for pdir in dirs:
+        proj_name = project_dir_to_name(pdir)
+        project_names.append(proj_name)
+
+        if session_id:
+            jsonl = pdir / f"{session_id}.jsonl"
+            files = [jsonl] if jsonl.is_file() else []
+        else:
+            files = sorted(pdir.glob("*.jsonl"))
+
+        for jsonl_path in files:
+            sessions_scanned += 1
+            try:
+                findings = audit_log_file(jsonl_path, project_name=proj_name, **pat)
+                all_findings.extend(findings)
+            except (OSError, json.JSONDecodeError, UnsupportedLogFormatError):
+                continue
+    return all_findings, sessions_scanned, project_names
+
+
+def _audit_json(
+    all_findings: list,
+    sessions_scanned: int,
+    project_names: list[str],
+    redacted: int | None = None,
+    skipped_active=(),
+    backups=(),
+    redact_errors=(),
+) -> dict:
+    """`audit --json` payload (also served by `agentwatch visual`)."""
+    finding_dicts = []
+    for f in all_findings:
+        d: dict = {
+            "secret_type": f.secret_type,
+            "channel": f.channel,
+            "severity": f.severity,
+            "file_path": f.file_path,
+            "matched_prefix": f.matched_prefix,
+            "log_file": f.log_file,
+            "session_id": f.session_id,
+            "project_name": f.project_name,
+            "remediation": f.remediation,
+            "timestamp": f.timestamp,
+        }
+        if f.impact:
+            d["is_active_session"] = f.impact.is_active_session
+            d["active_pid"] = f.impact.active_pid
+            d["still_in_source"] = f.impact.still_in_source
+            d["source_line"] = f.impact.source_line
+            d["env_var_matches"] = f.impact.env_var_matches
+        finding_dicts.append(d)
+
+    return {
+        "projects": project_names,
+        "sessions_scanned": sessions_scanned,
+        "total_findings": len(all_findings),
+        "redacted": redacted,
+        "skipped_active": sorted(set(skipped_active)) if skipped_active else [],
+        "backups": [str(b) for b in backups],
+        "redact_errors": list(redact_errors),
+        "findings": finding_dicts,
+    }
 
 
 def _history_db():
@@ -2293,26 +2357,99 @@ def history_path():
 @click.option("--agent", default=None, help="Only this agent (e.g. claude-code)")
 @click.option("--project", default=None, help="Only this project folder name")
 @click.option("--no-sync", is_flag=True, help="Use the history DB as is")
+@click.option("--format", "fmt", type=click.Choice(["text", "json", "csv"]), default="text",
+              show_default=True, help="csv: one long table, table,rank,name,metric,value")
 def report(days: int, json_output: bool, agent: str | None, project: str | None,
-           no_sync: bool):
-    """What your agents cost you: spend, waste, costliest findings, trend.
+           no_sync: bool, fmt: str):
+    """What your agents cost you: spend, waste, costliest findings, trend,
+    cost by model, cache savings and errors by type.
 
     Syncs the history first (this period and the one before), then reports
     on sessions whose last action is in the last N days.
     """
     from agentwatch.history import sync
-    from agentwatch.report import build, render
+    from agentwatch.report import build, render, write_csv
 
+    if fmt == "csv" and json_output:
+        raise click.UsageError("--json and --format csv conflict; pick one")
+    fmt = "json" if json_output else fmt
     conn = _history_db()
     if not no_sync:
         counts = sync(conn, days=2 * days)
-        if counts["new"] + counts["updated"] and not json_output:
+        if counts["new"] + counts["updated"] and fmt == "text":
             click.echo(f"(synced {counts['new'] + counts['updated']} log(s))", err=True)
     rep = build(conn, days=days, agent=agent, project=project)
-    if json_output:
+    if fmt == "json":
         click.echo(json.dumps(rep, indent=2))
+    elif fmt == "csv":
+        buf = io.StringIO()
+        write_csv(rep, buf)
+        click.echo(buf.getvalue(), nl=False)
     else:
         click.echo("\n".join(render(rep)))
+
+
+@cli.command()
+@click.option("--port", type=click.IntRange(0, 65535), default=0, show_default=True,
+              help="Port on 127.0.0.1 (0 = any free port)")
+@click.option("--no-open", is_flag=True, help="Print the URL, don't open a browser")
+def visual(port: int, no_open: bool):
+    """The reports (ps, check, security-scan, audit, stats, report, history)
+    in a local browser page. Binds 127.0.0.1 only; the printed URL holds a
+    one-time token. Read only. Ctrl+C to stop."""
+    from agentwatch.visual import serve
+
+    try:
+        serve(port, open_browser=not no_open)
+    except OSError as e:
+        click.echo(f"Error: cannot listen on 127.0.0.1:{port}: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option("--log", "-l", type=_LOG_FILE,
+              help="Agent log file; default: the newest session, as `check` picks it")
+@click.option("--calls", "with_calls", is_flag=True, help="Also list every call")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option("--format", "fmt", type=click.Choice(["text", "json", "csv"]), default="text",
+              show_default=True, help="csv: one long table, table,rank,name,metric,value")
+def tools(log: Path | None, with_calls: bool, json_output: bool, fmt: str):
+    """Tools one session called: calls, failures, error kinds, time.
+
+    Shows only tool names, file names and commands (one line, secrets
+    redacted), never tool arguments, results or error text.
+    """
+    from agentwatch.report import write_csv
+    from agentwatch.tools_view import build, render
+
+    if fmt == "csv" and json_output:
+        raise click.UsageError("--json and --format csv conflict; pick one")
+    fmt = "json" if json_output else fmt
+    if log is None:
+        log, note = _default_log()
+        if log is None:
+            click.echo("No log files found. Specify a path with --log", err=True)
+            sys.exit(1)
+        click.echo(f"Using log: {log}", err=True)
+        if note:
+            click.echo(note, err=True)
+    try:
+        actions = list(parse_file(log))  # whole log: results merge into earlier calls
+    except (UnsupportedLogFormatError, LogUnreadableError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if not actions:
+        click.echo("No actions found in log file", err=True)
+        sys.exit(1)
+    data = build(actions, log.name, with_calls)
+    if fmt == "json":
+        click.echo(json.dumps(data, indent=2))
+    elif fmt == "csv":
+        buf = io.StringIO()
+        write_csv(data, buf, root="tools")
+        click.echo(buf.getvalue(), nl=False)
+    else:
+        click.echo("\n".join(render(data)))
 
 
 @cli.command(hidden=True)
