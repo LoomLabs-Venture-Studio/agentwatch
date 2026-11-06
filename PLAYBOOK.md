@@ -5598,3 +5598,24 @@ Clear the Sprint 40/41 follow-ups, then prepare 0.2.2 on `develop`. Out of scope
 - ~~Subagents are not shown in the `watch-all` dashboard yet~~ Done in #213: `subagents.with_subagents()` adds each active subagent log to process-mode discovery, nested under the log that started it.
 - ~~`error_kind`: a Node.js crash prints its `Error: ENOENT ...` mid-output (first line `node:internal/...`, last `Node.js vN`), so it is now `nonzero_exit` rather than `file_not_found`; consider also reading a leading `Error:` line. Add tests for a 500-char head with a longer result, `incoming_message=None`, CRLF and a Node stack trace.~~ Done in #215 (closes #206): the first output line that starts with `Error:` / `<Name>Error:` (or `Error [CODE]:`) is read along with the first and last lines; tests for all four cases plus the #206 grep regression.
 - ~~No test that `report --days 10000` itself succeeds (checked by hand).~~ Done in the same PR: `test_days_at_max_succeeds` (empty data dir, no agent logs).
+
+### Sprint 43 -- security precision (planned 2026-11-06)
+
+Clear the 0.2.1 security follow-ups (Sprint 38). All PRs target `develop`; nothing touches `main` (user rule 2026-11-06). 0.2.2 (#214) stays as is.
+
+**A. Fewer prompt-injection false positives** (`fix/injection-doc-fp`)
+- [ ] Reading a local file that only discusses injection (docs `.md`/`.rst`/`.txt`, `docs/`, test files, the agent's own CLAUDE.md/skills) no longer scores security 0 on its own: at most MEDIUM, never CRITICAL.
+- [ ] The same text in a web fetch result, an MCP tool result, a non-doc source file or a user prompt keeps today's severity.
+- [ ] Before/after counts on real logs under `~/.claude/projects`: CRITICAL injection findings drop, none of the dropped ones is a real attack (spot-checked).
+- [ ] Tests: doc read -> not CRITICAL; web fetch with the same text -> CRITICAL; test file; README.
+
+**B. Secret findings: one per secret, own channel** (`fix/secret-fingerprint`)
+- [ ] Two different secrets of the same type in the same channel and file are two findings; the same secret seen twice is one. The dedup key holds a short hash of the secret, never the value.
+- [ ] Tool-result text is labelled channel `tool_result`, not `user_message`; SIEM, audit, history and alerts handle the new label (same severity as before unless argued otherwise).
+- [ ] History: findings keyed by the new dedup key re-sync without duplicates (note in CHANGELOG if old rows change).
+
+**C. Honest counts** (`fix/scan-counts`)
+- [ ] `security-scan` "Analyzed N actions" and JSON `action_count` give the number of actions scanned, not the buffer size.
+- [ ] `error_spiral` reports the real number of consecutive failures, not one capped at its look-back window.
+
+**Later:** literal-prefix pre-check in the secret scanner (speed; after B, same file); Claude Code user text blocks; consumers serialising a call before its result lands.
