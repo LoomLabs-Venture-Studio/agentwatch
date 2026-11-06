@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
 import json
 import math
 import os
@@ -437,6 +439,12 @@ def _url_host(rest: str) -> str:
 # Channel extraction
 # ---------------------------------------------------------------------------
 
+# Actions whose incoming_message is a person's prompt, not a tool's output:
+# the role-label sentinels (Cursor, Copilot CLI, agy, Gemini, OpenCode),
+# Aider's prompt action and Moltbot's user/incoming/message entries.
+_PROMPT_TOOL_NAMES = frozenset({"user_message", "aider_prompt", "user", "incoming", "message"})
+
+
 def extract_scannable_content(action: Any) -> list[tuple[str, str, str | None]]:
     """Extract (text, channel, file_path) tuples from all channels of an action.
 
@@ -452,9 +460,14 @@ def extract_scannable_content(action: Any) -> list[tuple[str, str, str | None]]:
     if getattr(action, "command", None):
         results.append((action.command, "bash_command", None))
 
-    # 3. User / incoming messages
+    # 3. Incoming text: a prompt (a role-label action) or the text of the
+    # tool result merged into a call (Claude Code, Codex, Cline, ...).
     if getattr(action, "incoming_message", None):
-        results.append((action.incoming_message, "user_message", None))
+        channel = (
+            "user_message" if getattr(action, "tool_name", None) in _PROMPT_TOOL_NAMES
+            else "tool_result"
+        )
+        results.append((action.incoming_message, channel, None))
 
     # 4. Dig into action.raw for Write/Edit tool inputs
     raw = getattr(action, "raw", None) or {}
@@ -494,6 +507,7 @@ _CHANNEL_SEVERITY: dict[str, Severity] = {
     "model_output": Severity.CRITICAL,
     "bash_command": Severity.HIGH,
     "tool_output": Severity.MEDIUM,
+    "tool_result": Severity.MEDIUM,
     "user_message": Severity.MEDIUM,
 }
 
@@ -643,6 +657,73 @@ def _mask_match(m: re.Match, label: str) -> str:
 _BLOCKS_FIRST = sorted(_SECRET_PATTERNS, key=lambda p: p[1] != "private_key_block")
 
 
+# ---------------------------------------------------------------------------
+# Secret fingerprint
+# ---------------------------------------------------------------------------
+
+_FINGERPRINT_KEY_FILE = "secret-fingerprint.key"
+_FINGERPRINT_KEY_BYTES = 32
+_FINGERPRINT_HEX = 12
+_fingerprint_key: bytes | None = None
+
+
+def _load_fingerprint_key() -> bytes | None:
+    """This user's fingerprint key: 32 random bytes in history.data_dir()
+    (0700 dir, 0600 file), created on first use. None if it cannot be read
+    or created."""
+    try:
+        from agentwatch.coach import _private_dir
+        from agentwatch.history import data_dir
+
+        directory = data_dir()
+        if not _private_dir(directory):
+            return None  # not ours (POSIX)
+        path = directory / _FINGERPRINT_KEY_FILE
+        with contextlib.suppress(FileExistsError):
+            _create_exclusive(path, os.urandom(_FINGERPRINT_KEY_BYTES), 0o600)
+        if path.is_symlink():
+            return None
+        for _ in range(5):  # another process may be writing it right now
+            key = path.read_bytes()
+            if len(key) == _FINGERPRINT_KEY_BYTES:
+                return key
+            time.sleep(0.02)
+    except Exception:
+        pass
+    return None
+
+
+def secret_fingerprint(value: str) -> str:
+    """Short, non-reversible identity of a secret value, so two different
+    secrets of one type are two findings and the same secret seen twice is one.
+
+    HMAC-SHA256 under a per-user random key (``_load_fingerprint_key``), first
+    12 hex chars. A plain hash would let anyone holding a fingerprint (an
+    export, a SIEM log, history.db's key hashes) test guesses offline, and a
+    short password, SSN or card number falls to that quickly. The key file is
+    stable, so fingerprints match across runs and history syncs on this
+    machine. If it cannot be stored, a random key for this process is used:
+    still deduplicated within the run, but not across runs.
+    """
+    global _fingerprint_key
+    if _fingerprint_key is None:
+        _fingerprint_key = _load_fingerprint_key() or os.urandom(_FINGERPRINT_KEY_BYTES)
+    data = value.encode("utf-8", "surrogatepass")
+    return hmac.new(_fingerprint_key, data, hashlib.sha256).hexdigest()[:_FINGERPRINT_HEX]
+
+
+_KEY_BLOCK_SPACE_RE = re.compile(r"\s+|\\[nr]")
+
+
+def _match_fingerprint(m: re.Match, label: str) -> str:
+    """Fingerprint of a match's secret value (a key block: its whole text,
+    whitespace and JSON-escaped newlines removed)."""
+    if label == "private_key_block":
+        return secret_fingerprint(_KEY_BLOCK_SPACE_RE.sub("", m.group(0)))
+    start, end = _value_span(m, label)
+    return secret_fingerprint(m.string[start:end])
+
+
 def redact_secrets(text: str) -> str:
     """Replace every ``_SECRET_PATTERNS`` match in *text* with its masked form.
 
@@ -728,7 +809,8 @@ class SecretLeakScanner(SecurityDetector):
         self._memo: OrderedDict[int, tuple[Any, int, list[Warning]]] = OrderedDict()
 
     def check_many(self, buffer: ActionBuffer) -> list[Warning]:
-        """Every distinct (secret type, channel, file) in the last 5 actions.
+        """Every distinct (secret type, channel, file, fingerprint) in the
+        last 5 actions.
 
         Reported on every call: nothing is suppressed because it was seen
         before (notification dedup lives in the UI and the exporters). One
@@ -739,7 +821,7 @@ class SecretLeakScanner(SecurityDetector):
         for action in buffer.last(5):
             for warning in self._action_findings(action):
                 d = warning.details
-                key = (d["secret_type"], d["channel"], d["file_path"])
+                key = (d["secret_type"], d["channel"], d["file_path"], d["fingerprint"])
                 if key not in found or warning.severity.score_impact > (
                     found[key].severity.score_impact
                 ):
@@ -769,7 +851,7 @@ class SecretLeakScanner(SecurityDetector):
             # generic"), so a value matched by two patterns (a Neon URL is
             # also a database URL) is reported as the first one only.
             for pattern, secret_type in _BLOCKS_FIRST:
-                m = None
+                firsts: dict[str, re.Match] = {}  # fingerprint -> its first match
                 spans: list[tuple[int, int]] = []
                 for cand in _iter_matches(pattern, secret_type, text):
                     if _is_redacted_value(cand, secret_type) or _is_placeholder(
@@ -788,16 +870,16 @@ class SecretLeakScanner(SecurityDetector):
                     if any(lo < t_hi and t_lo < hi for t_lo, t_hi in taken):
                         continue
                     spans.append((lo, hi))  # every occurrence is explained by this pattern
-                    if m is None:
-                        m = cand  # but one finding per pattern and text
+                    # but one finding per pattern, text and distinct secret
+                    firsts.setdefault(_match_fingerprint(cand, secret_type), cand)
                 taken.extend(spans)
-                if m is None:
+                if not firsts:
                     continue
 
                 remediation = _REMEDIATION.get(
                     secret_type, "Remove from file, use env var, rotate if committed to git"
                 )
-                warnings.append(Warning(
+                warnings.extend(Warning(
                     category=self.category,
                     severity=severity,
                     signal="secret_leak",
@@ -809,9 +891,10 @@ class SecretLeakScanner(SecurityDetector):
                         "file_path": file_path,
                         "tool": tool_name,
                         "matched_prefix": _mask_match_value(m, secret_type),
+                        "fingerprint": fingerprint,
                         "remediation": remediation,
                     },
-                ))
+                ) for fingerprint, m in firsts.items())
         return warnings
 
 
@@ -853,6 +936,7 @@ class AuditFinding:
     remediation: str
     timestamp: str | None
     impact: ImpactAssessment | None = None
+    fingerprint: str = ""  # secret_fingerprint() of the value, never the value
 
 
 def audit_log_file(
@@ -866,43 +950,56 @@ def audit_log_file(
 
     session_id = log_path.stem
     findings: list[AuditFinding] = []
-    seen: set[str] = set()  # dedup: (secret_type, channel, file_path) per session
+    # dedup: (secret_type, channel, file_path, fingerprint) per session
+    seen: set[tuple[str, str, str, str]] = set()
 
     def _scan(items: list[tuple[str, str, str | None]], ts_str: str | None) -> None:
         for text, channel, file_path in items:
             for pattern, secret_type in patterns:
-                m = _first_live_match(pattern, secret_type, text, file_path)
-                if m is None:
-                    continue
+                for m in _iter_matches(pattern, secret_type, text):
+                    if _is_redacted_value(m, secret_type) or _is_placeholder(
+                        m, secret_type, file_path
+                    ):
+                        continue
+                    fingerprint = _match_fingerprint(m, secret_type)
+                    dedup_key = (secret_type, channel, file_path or "", fingerprint)
+                    if dedup_key in seen:
+                        continue
+                    seen.add(dedup_key)
+                    _add(m, secret_type, channel, file_path, fingerprint, ts_str)
 
-                dedup_key = f"{secret_type}:{channel}:{file_path or ''}"
-                if dedup_key in seen:
-                    continue
-                seen.add(dedup_key)
+    def _add(
+        m: re.Match,
+        secret_type: str,
+        channel: str,
+        file_path: str | None,
+        fingerprint: str,
+        ts_str: str | None,
+    ) -> None:
+        severity = _CHANNEL_SEVERITY.get(channel, Severity.MEDIUM)
+        remediation = _REMEDIATION.get(
+            secret_type,
+            "Remove from file, use env var, rotate if committed to git",
+        )
+        if secret_type in PII_LABELS:
+            severity = Severity.LOW
+            remediation = "Personal info; remove it before sharing this log"
 
-                severity = _CHANNEL_SEVERITY.get(channel, Severity.MEDIUM)
-                remediation = _REMEDIATION.get(
-                    secret_type,
-                    "Remove from file, use env var, rotate if committed to git",
-                )
-                if secret_type in PII_LABELS:
-                    severity = Severity.LOW
-                    remediation = "Personal info; remove it before sharing this log"
-
-                findings.append(
-                    AuditFinding(
-                        secret_type=secret_type,
-                        channel=channel,
-                        file_path=file_path,
-                        log_file=log_path.name,
-                        session_id=session_id,
-                        project_name=project_name,
-                        matched_prefix=_mask_match_value(m, secret_type),
-                        severity=_SEVERITY_LABEL.get(severity, "medium"),
-                        remediation=remediation,
-                        timestamp=ts_str,
-                    )
-                )
+        findings.append(
+            AuditFinding(
+                secret_type=secret_type,
+                channel=channel,
+                file_path=file_path,
+                log_file=log_path.name,
+                session_id=session_id,
+                project_name=project_name,
+                matched_prefix=_mask_match_value(m, secret_type),
+                severity=_SEVERITY_LABEL.get(severity, "medium"),
+                remediation=remediation,
+                timestamp=ts_str,
+                fingerprint=fingerprint,
+            )
+        )
 
     for action in parse_file(log_path):
         ts = getattr(action, "timestamp", None)
@@ -922,8 +1019,9 @@ def _claude_user_entries(
     log_path: Path,
 ) -> Iterator[tuple[str | None, list[tuple[str, str, str | None]]]]:
     """(timestamp, [(text, channel, None)]) for each Claude Code user entry of
-    a JSONL log: prompt text is ``user_message``, a ``tool_result`` is
-    ``tool_output``. Unparseable lines and other shapes are skipped."""
+    a JSONL log: prompt text is ``user_message``, a ``tool_result`` block is
+    ``tool_result`` (the live scanner's label for the same text). Unparseable
+    lines and other shapes are skipped."""
     with log_path.open("rb") as fh:
         for raw_line in fh:
             # Cheap pre-filter: most lines are assistant entries.
@@ -955,7 +1053,7 @@ def _user_content_items(
                 _user_content_items(block, channel, items)
             elif isinstance(block, dict):
                 if block.get("type") == "tool_result":
-                    _user_content_items(block.get("content"), "tool_output", items)
+                    _user_content_items(block.get("content"), "tool_result", items)
                 elif isinstance(block.get("text"), str):
                     _user_content_items(block["text"], channel, items)
 
