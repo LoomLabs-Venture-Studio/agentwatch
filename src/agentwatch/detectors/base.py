@@ -246,6 +246,7 @@ _IDENTITY_DETAIL_KEYS = (
     "last_error",
     "endpoint",
     "loop_id",
+    "origin",  # "local_doc": a downgraded injection finding (detectors/security/injection.py)
 )
 
 # Error text in a key is normalized first: its durations, pids, temp paths
