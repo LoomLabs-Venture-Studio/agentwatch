@@ -2563,6 +2563,36 @@ def tools(log: Path | None, with_calls: bool, json_output: bool, fmt: str):
         click.echo("\n".join(render(data)))
 
 
+@cli.command()
+@click.option("--log", "-l", type=_LOG_FILE,
+              help="A Claude Code session log (or one of its subagent logs); "
+                   "default: the newest session, as `check` picks it")
+@click.option("--all", "show_all", is_flag=True, help="Every subagent, not just the newest 10")
+@click.option("--active", "active_only", is_flag=True,
+              help="Only subagents that wrote in the last 10 minutes")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+def subagents(log: Path | None, show_all: bool, active_only: bool, json_output: bool):
+    """Health of each subagent (cto, engineer, qa, ...) of a Claude Code session.
+
+    Each subagent's log is scored like `check`. Newest first; HIGH and
+    CRITICAL health warnings are listed under their subagent.
+    """
+    from agentwatch.subagents import build, render, session_of
+
+    if log is None:
+        log, note = _default_log()
+        if log is None:
+            click.echo("No log files found. Specify a path with --log", err=True)
+            sys.exit(1)
+        if note:
+            click.echo(note, err=True)
+    data = build(session_of(log), show_all, active_only)
+    if json_output:
+        click.echo(json.dumps(data, indent=2))
+    else:
+        click.echo("\n".join(render(data)))
+
+
 @cli.command(hidden=True)
 def hook():
     """Claude Code coach hook: reads hook JSON on stdin (see plugin/)."""
