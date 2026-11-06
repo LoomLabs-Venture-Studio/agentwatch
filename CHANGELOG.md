@@ -107,6 +107,10 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- `report`/`tools` error kinds: a failed command is classified by its first and
+  last output lines, not by "timed out" or "No such file" anywhere in its
+  output, and Claude Code API errors count as tool `api`, not `system` (#206).
+  Rows already in `history.db` change when their log next changes.
 - Codex sessions (Codex CLI and the ChatGPT desktop app) no longer get a
   false "Repeated action: token_count" loop warning. The `token_count` usage
   record Codex writes after every turn no longer counts as an agent action in

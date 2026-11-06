@@ -272,17 +272,28 @@ def _is_test_command(command: str | None) -> bool:
 def error_kind(action: Any) -> str:
     """The ``ERROR_KINDS`` entry of a failed action."""
     head = action.error_message or ""
-    if _DENIED.search(head):
-        return "permission_denied"
-    if _BLOCKED.search(head):
-        return "blocked"
     text = head + "\n" + (action.incoming_message or "")[-_TAIL:]
+    exited = _EXIT.match(head)
+    if exited:
+        # A command that ran and exited nonzero: its output is free text, so
+        # only its own error counts -- the first and last output lines. On
+        # real Claude Code logs the error is one of them: a tool's message
+        # leads ("ls: cannot access ...") or stderr, appended after stdout,
+        # ends it ("bash: x: command not found", a traceback's last line).
+        lines = [ln for ln in text.splitlines() if ln.strip() and not _EXIT.fullmatch(ln)]
+        envelope = "\n".join(lines[:1] + lines[-1:])
+    else:
+        envelope = head
+    if _DENIED.search(envelope):
+        return "permission_denied"
+    if _BLOCKED.search(envelope):
+        return "blocked"
     if _is_test_command(action.command) and _TEST_FAILED.search(text):
         return "test_failure"
     for kind, rule in _ERROR_RULES:
-        if rule.search(text):
+        if rule.search(envelope if exited else text):
             return kind
-    return "nonzero_exit" if _EXIT.match(head) else "other"
+    return "nonzero_exit" if exited else "other"
 
 
 def _name(value: str | None) -> str:
@@ -354,7 +365,10 @@ class _Tap:
         out: dict[tuple[str, str], int] = {}
         for a in self.maybe_failed:
             if not a.success and a.error_message:  # what ActionBuffer counts as an error
-                key = (error_kind(a), _name(a.tool_name) or "other")
+                # Claude Code logs a failed model request ("Request timed
+                # out.") as a "system" entry: not a tool.
+                tool = "api" if a.tool_name == "system" else _name(a.tool_name)
+                key = (error_kind(a), tool or "other")
                 out[key] = out.get(key, 0) + 1
         return out
 
