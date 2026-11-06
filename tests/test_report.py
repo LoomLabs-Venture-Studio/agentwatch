@@ -116,6 +116,17 @@ def test_days_above_max_is_usage_error():
     assert "Traceback" not in out.output and "--days" in out.output
 
 
+def test_days_at_max_succeeds(tmp_path, monkeypatch):
+    # an empty data dir and no agent logs: the sync and the report both run
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr("agentwatch.agents.ADAPTERS", [])
+    out = CliRunner().invoke(cli, ["report", "--days", "10000"])
+    assert out.exit_code == 0, out.output
+    assert "Traceback" not in out.output
+    assert (tmp_path / "data" / "agentwatch" / "history.db").exists()
+
+
 def test_json_schema(tmp_path, monkeypatch, conn):
     monkeypatch.setattr(history, "db_path", lambda: tmp_path / "h.db")
     out = CliRunner().invoke(cli, ["report", "--no-sync", "--json", "--days", "30"])

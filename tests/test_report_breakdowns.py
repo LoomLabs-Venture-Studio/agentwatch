@@ -183,6 +183,98 @@ def test_failed_command_is_classified_by_its_error_not_its_output(text, kind):
     assert history.error_kind(a) == kind
 
 
+NODE_ENOENT = """Exit code 1
+node:internal/fs/utils:351
+    throw err;
+    ^
+
+Error: ENOENT: no such file or directory, open '/w/config.json'
+    at Object.openSync (node:fs:596:3)
+    at Object.readFileSync (node:fs:464:35)
+    at Object.<anonymous> (/w/index.js:2:16) {
+  errno: -2,
+  syscall: 'open',
+  code: 'ENOENT',
+  path: '/w/config.json'
+}
+
+Node.js v20.11.0"""
+
+
+def _failed(text, incoming=..., command="node index.js"):
+    """A failed call as the Claude Code parser leaves it: error_message is
+    the result's first 500 chars, incoming_message the whole result."""
+    return SimpleNamespace(error_message=text[:500],
+                           incoming_message=text if incoming is ... else incoming,
+                           command=command)
+
+
+@pytest.mark.parametrize("text, kind", [
+    (NODE_ENOENT, "file_not_found"),
+    ("Exit code 1\n/w/a.js:3\n  x.y()\n\nTypeError: x.y is not a function\n"
+     "    at /w/a.js:3:5\n\nNode.js v22.1.0", "nonzero_exit"),  # read, no rule matches
+    ("Exit code 1\nnode:internal/modules/esm/resolve:873\n"
+     "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'x'\nNode.js v22.1.0",
+     "nonzero_exit"),
+    ("Exit code 1\nstart\nError: connect ECONNREFUSED 127.0.0.1:5432\n    at x\nend",
+     "network"),
+])
+def test_a_leading_error_line_counts(text, kind):
+    assert history.error_kind(_failed(text)) == kind
+
+
+@pytest.mark.parametrize("line", [
+    "  Error: ENOENT: no such file or directory",  # indented: output, not the error
+    "log: Error: ENOENT: no such file or directory",  # not at the start of the line
+    "error: ENOENT: no such file or directory",  # lowercase
+    "Errors: ENOENT: no such file or directory",
+])
+def test_an_error_phrase_inside_output_still_does_not_count(line):
+    text = f"Exit code 1\nmatch 1\n{line}\nmatch 3"
+    assert history.error_kind(_failed(text, command="grep -r x .")) == "nonzero_exit"
+
+
+def test_issue_206_grep_output_is_not_the_error():
+    # #206: a failed grep whose matches mention a timeout and a missing file
+    middle = [f"src/a{i}.py:{i}: # request timed out; No such file or directory"
+              for i in range(1, 50)]
+    out = "\n".join(["Exit code 1", "src/a0.py:1: def run():", *middle, "src/z.py:9: pass"])
+    assert history.error_kind(_failed(out, command="grep -rn timed src")) == "nonzero_exit"
+
+
+def test_long_result_reads_past_the_500_char_head():
+    # error_message keeps 500 chars; the deciding lines come from the result
+    filler = "\n".join(f"step {i} ok" for i in range(200))  # ~2,000 chars
+    assert len(filler) > 500
+    last = f"Exit code 127\n{filler}\nbash: frob: command not found"
+    assert history.error_kind(_failed(last)) == "command_not_found"
+    node = f"Exit code 1\n{filler}\nError: ENOENT: no such file, open 'a'\n{filler}\nNode.js v20"
+    assert history.error_kind(_failed(node)) == "file_not_found"
+    # beyond the head and before the 4,000-char tail: not read, by design
+    far = f"Exit code 1\n{filler}\nError: ENOENT: open 'a'\n{filler * 3}\ndone"
+    assert history.error_kind(_failed(far)) == "nonzero_exit"
+    # the same text without the result: only the head is read
+    assert history.error_kind(_failed(last, incoming=None)) == "nonzero_exit"
+
+
+def test_no_result_text():
+    assert history.error_kind(_failed(NODE_ENOENT, incoming=None)) == "file_not_found"
+    a = SimpleNamespace(error_message="Exit code 2", incoming_message=None, command="x")
+    assert history.error_kind(a) == "nonzero_exit"
+    a = SimpleNamespace(error_message=None, incoming_message=None, command=None)
+    assert history.error_kind(a) == "other"
+
+
+@pytest.mark.parametrize("text, kind", [
+    (NODE_ENOENT.replace("\n", "\r\n"), "file_not_found"),
+    ("Exit code 127\r\nstep 1 ok\r\nbash: foo: command not found\r\n", "command_not_found"),
+    ("Exit code 1\r\nmatch 1\r\nNo such file or directory: x.py\r\nmatch 3\r\n",
+     "nonzero_exit"),
+])
+def test_crlf_output(text, kind):
+    assert history.error_kind(_failed(text)) == kind
+
+
 def test_api_error_is_not_a_tool():
     from agentwatch.parser.models import Action, ToolType
 

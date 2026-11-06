@@ -259,6 +259,9 @@ _SAFE_NAME = re.compile(r"(?:[\w.:@-]{1,40}/)?[\w.:@\[\]-]{1,80}")
 # "user@host.tld"; a Vertex "model@20250514" version suffix has no dot.
 _EMAIL = re.compile(r"@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}")
 _TAIL = 4000  # a test summary is at the end of the output
+# A line that leads with an error's name: "Error: ENOENT: ...", "TypeError: x",
+# "Error [ERR_MODULE_NOT_FOUND]: ..." (Node prints it mid-output).
+_ERROR_LINE = re.compile(r"(?:[A-Z][A-Za-z0-9_]*)?Error(?: \[\w+\])?: ")
 
 
 def _is_test_command(command: str | None) -> bool:
@@ -276,12 +279,16 @@ def error_kind(action: Any) -> str:
     exited = _EXIT.match(head)
     if exited:
         # A command that ran and exited nonzero: its output is free text, so
-        # only its own error counts -- the first and last output lines. On
-        # real Claude Code logs the error is one of them: a tool's message
-        # leads ("ls: cannot access ...") or stderr, appended after stdout,
-        # ends it ("bash: x: command not found", a traceback's last line).
+        # only its own error counts -- the first and last output lines, and
+        # the first line that leads with "Error:" / "<Name>Error:". On real
+        # Claude Code logs the error is one of them: a tool's message leads
+        # ("ls: cannot access ...") or stderr, appended after stdout, ends it
+        # ("bash: x: command not found", a traceback's last line); a Node
+        # crash prints "Error: ENOENT ..." between its stack's first line
+        # and "Node.js vN".
         lines = [ln for ln in text.splitlines() if ln.strip() and not _EXIT.fullmatch(ln)]
-        envelope = "\n".join(lines[:1] + lines[-1:])
+        error_line = next((ln for ln in lines if _ERROR_LINE.match(ln)), None)
+        envelope = "\n".join(lines[:1] + lines[-1:] + ([error_line] if error_line else []))
     else:
         envelope = head
     if _DENIED.search(envelope):
