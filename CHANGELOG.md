@@ -12,6 +12,21 @@ numbers refer to the GitHub repository.
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
   now read along with its first and last output lines (#206).
+- Secret findings: two different secrets of the same type in the same
+  channel and file are now two findings, and the same secret seen twice is
+  still one. Each finding carries a `fingerprint`: the first 12 hex chars of
+  an HMAC-SHA256 of the value under a random per-user key
+  (`secret-fingerprint.key` in the history data dir, created on first use,
+  0600), never the value. The fingerprint is in the warning details, the
+  dedup key, `security-scan --json`, SIEM export and `audit --json`.
+- Secrets in a tool's result text are reported in channel `tool_result`
+  (same severity as before), not `user_message`, which now means a prompt.
+  `audit` uses `tool_result` for Claude Code `tool_result` blocks too
+  (was `tool_output`).
+- History: secret findings now have new keys. A log that changed is
+  re-scanned and its findings replaced, so its secret findings get a new
+  first-seen time once; logs that did not change keep their old rows until
+  they change.
 
 ## [0.2.2] - 2026-11-06
 

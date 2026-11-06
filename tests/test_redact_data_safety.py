@@ -446,13 +446,13 @@ def test_audit_finds_secret_in_user_prompt_text_block(tmp_path):
 def test_audit_finds_secret_in_tool_result_string(tmp_path):
     p = _write_log(tmp_path, [_tool_result(f"output: {OAI}\n")])
     found = sc.audit_log_file(p)
-    assert [(f.secret_type, f.channel) for f in found] == [("openai_project_key", "tool_output")]
+    assert [(f.secret_type, f.channel) for f in found] == [("openai_project_key", "tool_result")]
 
 
 def test_audit_finds_secret_in_tool_result_block_list(tmp_path):
     p = _write_log(tmp_path, [_tool_result([{"type": "text", "text": f"output {HF}"}])])
     found = sc.audit_log_file(p)
-    assert [(f.secret_type, f.channel) for f in found] == [("huggingface_token", "tool_output")]
+    assert [(f.secret_type, f.channel) for f in found] == [("huggingface_token", "tool_result")]
 
 
 def test_audit_reports_each_user_channel_secret_exactly_once(tmp_path):
@@ -468,8 +468,8 @@ def test_audit_reports_each_user_channel_secret_exactly_once(tmp_path):
     assert got == sorted([
         ("github_pat", "user_message"),
         ("github_pat", "model_output"),
-        ("openai_project_key", "tool_output"),
-        ("huggingface_token", "tool_output"),
+        ("openai_project_key", "tool_result"),
+        ("huggingface_token", "tool_result"),
     ])
 
 
@@ -492,7 +492,7 @@ def test_audit_cli_reports_user_channels_and_redact_removes_them(tmp_path, monke
     runner = CliRunner()
     res = runner.invoke(cli, ["audit", "--all", "--json"])
     channels = sorted(f["channel"] for f in json.loads(res.stdout)["findings"])
-    assert channels == ["tool_output", "user_message"]
+    assert channels == ["tool_result", "user_message"]
 
     runner.invoke(cli, ["audit", "--all", "--redact", "--json"])
     text = log.read_text()

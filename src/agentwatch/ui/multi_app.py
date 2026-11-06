@@ -1920,7 +1920,8 @@ class MultiAgentWatchApp(App):
             d = w.details
             key = (
                 f"secret_leak:{d.get('secret_type', '')}:"
-                f"{d.get('channel', '')}:{d.get('file_path', '')}:{agent_label}"
+                f"{d.get('channel', '')}:{d.get('file_path', '')}:"
+                f"{d.get('fingerprint', '')}:{agent_label}"
             )
             if key in self._alerted_signals:
                 continue
