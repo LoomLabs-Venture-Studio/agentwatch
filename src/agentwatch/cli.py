@@ -1376,7 +1376,9 @@ def watch_all(
         )
     else:
         # Process-based discovery
-        agents = build_agent_tree(find_running_agents())
+        from agentwatch.subagents import with_subagents
+
+        agents = with_subagents(build_agent_tree(find_running_agents()))
         if not agents and not headless:
             click.echo("No running agent processes found.", err=True)
             click.echo("Use --all-logs to scan all log directories instead.", err=True)

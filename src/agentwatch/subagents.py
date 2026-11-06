@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.security.secret_scanner import one_line
+from agentwatch.discovery import AgentProcess
 from agentwatch.health.score import calculate_efficiency, calculate_health
 from agentwatch.parser import parse_file
 from agentwatch.parser.models import ActionBuffer
@@ -50,13 +52,65 @@ def _meta(log: Path) -> dict[str, Any]:
     return meta if isinstance(meta, dict) else {}
 
 
+def kind(log: Path, default: str = "subagent") -> str:
+    """The subagent's type (cto, engineer, ...) from its meta, one line."""
+    return one_line(_meta(log).get("agentType") or default, 40)
+
+
+_PARENTS: dict[Path, Path] = {}
+
+
+def parent_log(log: Path) -> Path:
+    """The log that started subagent *log*: the subagent log holding its
+    meta's toolUseId (a nested subagent), else the main session log."""
+    if log in _PARENTS:
+        return _PARENTS[log]
+    session = session_of(log)
+    tool_use = _meta(log).get("toolUseId")
+    if isinstance(tool_use, str) and tool_use:
+        needle = f'"id":"{tool_use}"'.encode()
+        for other in log.parent.glob("agent-*.jsonl"):
+            try:
+                # ponytail: reads whole sibling logs (MBs) once per nested
+                # subagent; cached, so only on its first sighting
+                if other != log and needle in other.read_bytes():
+                    _PARENTS[log] = other
+                    return other
+            except OSError:
+                continue
+    _PARENTS[log] = session  # the parent's tool_use is written before the subagent starts
+    return session
+
+
+def with_subagents(processes: list[AgentProcess]) -> list[AgentProcess]:
+    """*processes* plus one entry per active subagent log of each Claude Code
+    session, for `watch-all`. Subagents run inside their session's process,
+    so an entry shares its pid and team; depth is its session's plus its
+    meta's spawnDepth (1 if none)."""
+    now = time.time()
+    extra = []
+    for proc in processes:
+        if proc.agent_type != "claude-code" or proc.log_file is None:
+            continue
+        try:
+            subs = [p for p in logs(proc.log_file) if now - p.stat().st_mtime < ACTIVE_S]
+        except OSError:
+            continue
+        for p in subs:
+            spawn = _meta(p).get("spawnDepth")
+            depth = proc.depth + (spawn if isinstance(spawn, int) and spawn > 0 else 1)
+            extra.append(replace(proc, log_file=p, depth=depth, parent_agent_pid=None,
+                                 cpu_percent=0.0, memory_mb=0.0, command="subagent"))
+    return processes + extra
+
+
 def _row(log: Path, now: float) -> dict[str, Any]:
     meta = _meta(log)
     st = log.stat()
     mtime = st.st_mtime
     row: dict[str, Any] = {
         "id": log.stem.removeprefix("agent-"),
-        "type": one_line(meta.get("agentType") or "subagent", 40),
+        "type": kind(log),
         "description": one_line(meta.get("description") or "", 80),
         "depth": meta.get("spawnDepth") if isinstance(meta.get("spawnDepth"), int) else None,
         "active": now - mtime < ACTIVE_S,

@@ -21,6 +21,10 @@ numbers refer to the GitHub repository.
   of each subagent (cto, engineer, qa, ...) of a Claude Code session, at any
   depth: type, task, health score, status, cost, actions, last activity and
   HIGH/CRITICAL warnings. Also live on `agentwatch visual`'s Overview tab.
+- `agentwatch watch-all` shows each active subagent of a Claude Code session
+  (written to in the last 10 minutes) as its own row under the session or
+  subagent that started it, named by its type (`└ sub cto`), with its own
+  health, cost and alerts.
 - `agentwatch tools [--log PATH] [--calls] [--json] [--format text|json|csv]`:
   the tools one session called. Per tool: calls, failed, failure %, top error
   kind, total and median time (`-` when the agent logs none; Claude Code's is
