@@ -55,6 +55,37 @@ NON_TOOL_ROLE_LABELS = frozenset({
 # detection), but they are not agent activity: `activity_count` and
 # actions-per-turn leave them out (#82).
 USAGE_RECORD = "token_count"
+# Turn-end records (Codex `task_complete`, Copilot CLI's last `assistant.turn_end`
+# of a reply): the agent finished and waits for the user. Counted like usage
+# records: in the buffer, not agent activity. `Action.turn_end` is set on them.
+TURN_END = "turn_end"
+_RECORDS = frozenset({USAGE_RECORD, TURN_END})
+# Bookkeeping actions Claude Code writes after a turn ends (stop-hook summary,
+# turn duration): they do not end the waiting state that `turn_ended` reports.
+_AFTER_TURN = frozenset({USAGE_RECORD, "system"})
+
+
+def is_usage_record(action: "Action") -> bool:
+    """True for a token-usage or turn-end record (not something the agent did)."""
+    return action.tool_name in _RECORDS
+
+
+def turn_ended(actions: "Iterable[Action]") -> "Action | None":
+    """The action that ended the agent's turn, when nothing has happened since
+    (the session waits for the user); else None. Takes actions newest first."""
+    for action in actions:
+        if action.turn_end:
+            return action
+        if action.tool_name not in _AFTER_TURN:
+            return None
+    return None
+
+
+def is_tool_call(action: "Action") -> bool:
+    """True when *action* is an agent tool invocation: not a role label
+    (``NON_TOOL_ROLE_LABELS``) and not a usage record. Repetition, window and
+    streak checks in the health detectors count only these."""
+    return action.tool_name not in NON_TOOL_ROLE_LABELS and action.tool_name not in _RECORDS
 
 
 @dataclass
@@ -88,6 +119,8 @@ class Action:
     # a scan that cached its findings can tell the Action has changed.
     result_revision: int = 0
     completed_at: datetime | None = None  # when the merged tool result was logged
+    # The agent finished its turn here and waits for the user (see turn_ended).
+    turn_end: bool = False
 
     # Security-relevant fields
     incoming_message: str | None = None  # For prompt injection detection
@@ -135,7 +168,7 @@ class SessionStats:
     start_time: datetime | None = None
     last_action_time: datetime | None = None
     action_count: int = 0
-    usage_records: int = 0  # USAGE_RECORD entries included in action_count
+    usage_records: int = 0  # usage/turn-end records (is_usage_record) in action_count
     context_window: int = 0  # latest log-reported window; 0 = infer
     unpriced: bool = False
     total_tokens: int = 0
@@ -325,7 +358,7 @@ class ActionBuffer:
 
         # Update stats
         self._stats.action_count += 1
-        if action.tool_name == USAGE_RECORD:
+        if is_usage_record(action):
             self._stats.usage_records += 1
         if action.context_window:
             self._stats.context_window = action.context_window
@@ -465,14 +498,33 @@ class ActionBuffer:
         on this so merging results does not delay their first warning."""
         return len(self.actions) + sum(a.error_merged for a in self.actions)
 
-    def last(self, n: int) -> list[Action]:
-        """Get the last n actions (chronological order)."""
+    @property
+    def activity_len(self) -> int:
+        """``len(self)`` without usage records."""
+        return len(self.actions) - sum(is_usage_record(a) for a in self.actions)
+
+    @property
+    def activity_history_len(self) -> int:
+        """``history_len`` without usage records, so a detector's "enough
+        history" gate counts only what the agent did (Codex writes a
+        ``token_count`` after every turn)."""
+        return self.history_len - sum(is_usage_record(a) for a in self.actions)
+
+    def last(self, n: int, *, activity: bool = False) -> list[Action]:
+        """Get the last n actions (chronological order). ``activity=True``
+        skips usage records, so they take no window slots."""
         if n <= 0:
             return []
-        return list(reversed(list(islice(reversed(self.actions), n))))
+        source = (
+            (a for a in reversed(self.actions) if not is_usage_record(a))
+            if activity else reversed(self.actions)
+        )
+        return list(reversed(list(islice(source, n))))
 
-    def first(self, n: int) -> list[Action]:
-        """Get the first n actions."""
+    def first(self, n: int, *, activity: bool = False) -> list[Action]:
+        """Get the first n actions (``activity=True``: without usage records)."""
+        if activity:
+            return [a for a in self.actions if not is_usage_record(a)][:n]
         return list(self.actions)[:n]
 
     @property
@@ -484,9 +536,9 @@ class ActionBuffer:
         """How many times a file has been accessed."""
         return self._file_access_counts.get(path, 0)
 
-    def files_in_window(self, n: int) -> set[str]:
+    def files_in_window(self, n: int, *, activity: bool = False) -> set[str]:
         """Get unique files accessed in last n actions."""
-        return {a.file_path for a in self.last(n) if a.file_path}
+        return {a.file_path for a in self.last(n, activity=activity) if a.file_path}
 
     def early_files(self, n: int) -> set[str]:
         """Get unique files from first n actions."""

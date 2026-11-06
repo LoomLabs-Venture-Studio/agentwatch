@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
+> **Latest: Sprint 42, follow-ups and 0.2.2 release prep (2026-11-06), at the end of this file; before it Sprint 41 (visual, tools, README) and Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -5331,3 +5331,270 @@ Rules for every task: branch from `origin/develop`, draft PR to `develop`, add o
 |---|---|---|---|---|---|
 | 2026-10-27 | #189 | docs/site-redesign | docs | CTO review, QA PASS WITH NOTES (sonnet), round 1 fixed, board "go live" | -- |
 | 2026-10-27 | #190 | fix/codex-usage-loop | fix | CTO review, QA PASS WITH NOTES (sonnet), follow-ups fixed (011af8d); held until after the site promotion | -- |
+
+### Sprint 40 (cont.) -- report breakdowns and CSV (gaps #7, #10, #9)
+**Type:** feature. Branch `feature/report-breakdowns` from develop 8e3b5fc.
+**Goal:** "where did my money and time go": errors by type (sniffly), cost per model and cache hit ratio (opcode, Grafana #25255), export (ccusage --json, claude-code-otel).
+**Placement:** all three live in `report` (history.db: cross-agent, periods, trend). `stats` (Claude Code only) gets `--format csv` through the same writer; no second cost or cache path.
+
+### Acceptance Criteria
+- [x] Errors by type: failed calls (the ones `check` counts) classified by fixed strings/regexes into `permission_denied`, `blocked`, `test_failure`, `timeout`, `edit_failed`, `command_not_found`, `file_not_found`, `network`, `nonzero_exit`, `other`, plus a count per tool name. Count, sessions affected and their share, delta vs the previous period.
+- [x] Only kind, tool name and count stored (`session_errors`); never error text. Tool/model names stored only if they look like an id (no paths).
+- [x] Cost by model (per model and agent): calls, tokens, USD; unpriced -> tokens and n/a.
+- [x] Cache: read vs written (5m/1h) vs uncached input, hit % = read / (read + written + uncached), USD saved = the call re-priced with its reads at the input rate minus its price (same `usage_cost_usd`, so the Haiku 5.5 long-prompt tier is respected), priced models only.
+- [x] Per-model USD and tokens sum exactly to each session's stored cost/tokens (same "largest copy of each call" rule as ActionBuffer).
+- [x] History schema 2 (`_MIGRATIONS[1]`): `session_models`, `session_errors` (IF NOT EXISTS, ON DELETE CASCADE), and `UPDATE sessions SET size = -1` so the next sync re-reads each log once. A session whose log is gone keeps no breakdown.
+- [x] `report --format csv` and `stats --format csv`: one long table, header `table,rank,name,metric,value`; formula-leading text gets `'`.
+- [x] `--json` schema stays 1 (README: "fields only added, never renamed"); adds `models`, `cache`, `errors`.
+- [x] Tests on the real path (fixture Claude Code + Codex logs -> sync -> report text/JSON/CSV), migration from a schema-1 DB, empty period, CSV header, JSON back-compat.
+- [x] No noticeable sync/report regression on real logs.
+
+### Result
+- **Coverage.** Claude Code: everything (model, every cache field, priced). Codex and Gemini CLI: tokens and cache hit % (cached input), no model id, no price. Cline (SDK store): its own logged cost, cache read/write, no model id, so no saving. Copilot CLI/VS Code, agy: tokens they log, unpriced. Errors by type: every agent whose parser fills `error_message`.
+- **Real machine (all history, 161 sessions; rough figures only, the repo is public).** claude-opus-5-5 is ~99% of spend; the other Claude models and Gemini (unpriced) are the rest. Cache hit 93%, with 5m writes ~6x the 1h writes; cache reads saved ~5x the actual spend against the input rate. Errors: failed calls in ~half the sessions; nonzero_exit 105, blocked 28, file_not_found 20, command_not_found 5, permission_denied 2, test_failure 2, other 2, timeout 1; by tool, Bash ~95%.
+- **Cross-check.** Per-model sums equal each session's stored cost and tokens exactly (0 mismatches over 162 sessions; for `--agent claude-code` the model rows sum to the totals to the cent). Against `stats --all` over the same 42 Claude Code sessions (148 log files incl. subagents): 0.07% apart, in 3 sessions: 2 have text-only or thinking-only assistant messages whose usage the Claude parser never attaches to an Action (pre-existing; `check` and history miss it too, `stats` counts it), 1 has streamed lines with differing usage (stats takes each field's max, history the largest copy). `stats --blocks` is not on develop (other Sprint 40 branch): not compared.
+- **Timing** (real logs, temp XDG_DATA_HOME, before = develop 8e3b5fc, interleaved, median of 5, machine load 5-26 from other work): `history sync` cold 65.4 s -> 67.6 s (+3%; the one low-load pair 23.0 -> 24.2 s), warm 1.10 -> 1.08 s, `report --no-sync` 0.87 -> 0.43 s, `report --days 30` 0.83 -> 0.98 s (noise). The first sync after upgrading costs one cold sync (logs in `--days` scope only for `report`).
+- **Cuts.** OpenTelemetry export (needs a dep or a hand-rolled OTLP schema). "unknown tool" (`No such tool available`) left in `other`. Exit codes beyond "non-zero" (no per-code buckets). Cost/cache per model in `stats` (report covers it; stats got CSV only). Codex model id (rollouts carry it in turn_context; the parser doesn't keep it). Cline legacy store cache split (only a combined cached count).
+- **Tests.** tests/test_report_breakdowns.py (fixture Claude Code + Codex logs -> sync -> report text/JSON/CSV; each kind, unpriced model, hand-computed cache $, schema-1 migration, CSV header, formula guard, empty period, rescan/cascade); test_report JSON back-compat. Full suite 2602 passed, 1 skipped, 5 wall-clock tests failed under load ~20 (test_secret_leak_sinks x3, test_hidden_instruction_detector x1, test_persistent_findings toggle/replay); all 202 in those files pass at load 3, and develop itself fails one of them under the same load.
+
+### CTO review round (2026-11-03)
+- **`0 failed` is not a test failure.** `history._TEST_FAILED` matched `\b\d+ (?:failed|failing)\b`, so a test command exiting non-zero for another reason (coverage gate) with "5 passed, 0 failed" was `test_failure`; now `[1-9]\d*`, so it is `nonzero_exit`. Test: `test_zero_failed_is_not_a_test_failure` (0 failed -> nonzero_exit, 1 failed -> test_failure).
+- **Conflicting flags are a usage error.** `report`/`stats` `--json --format csv` (--json used to win silently) and `stats --burn --format csv` (--burn, or --list/--prompts which imply it, used to be dropped silently) now raise `click.UsageError` (exit 2), checked before any log or DB is read. `--json`, `--format json` and both together still print JSON. Tests: `test_conflicting_flags_are_a_usage_error` x4, `test_json_flags_still_work` x6. README notes it.
+- **CLAUDE.md** history.py (schema 2), report.py and cli.py (`--format`) entries committed.
+- New tests failed on the old code first (1 + 4; the 6 JSON ones pass before and after). Targeted (test_report_breakdowns, test_report, test_history, test_cc_stats): 161 passed, 1 skipped. Full suite: 2608 passed, 6 skipped, 6 failed + 1 error, all known Windows-only on develop (symlink privilege x5, multi_app_detail indent, coach state dir). `ruff check .` clean.
+
+### Follow-ups
+- Claude parser: text-only and thinking-only assistant messages carry no usage on any Action, so `check`, history and report undercount them slightly (0.07% here).
+- Codex: keep `turn_context.model` on usage records so cost by model can name it.
+### Sprint 41 -- visual, tools, README (planned 2026-11-03)
+Board asked for three things. Plan below; names in quotes are proposals awaiting the board.
+
+**1. `agentwatch visual`: the reports in a browser.**
+- One command starts a local web page: `agentwatch visual [--port N] [--no-open]`. Binds 127.0.0.1 only; there is no `--host` flag. stdlib `http.server` + one inline HTML page with vanilla JS. No new dependency.
+- Pages: Overview (`ps` + `check`), Security (`security-scan`, `audit`), Cost (`stats`, `report`), History (`history` sessions), Config (`config-scan`, once #196 merges), Tools (from task 2). Each page calls the same function the command's `--json` uses, in process. Slow ones (`audit`, `history sync`) run only when the user presses a button.
+- Safety: GET only, read only. A random token in the URL (printed once, opened in the browser) is required on every request, and the `Host` header must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding). Every string from logs goes through `secret_scanner.redact_truncate` before it is sent; HTML is built with `textContent`, never `innerHTML` on log text. No CORS headers.
+- Acceptance: page loads on Linux and Windows; refusing a wrong token or Host gives 403; a planted fake secret in a test log never appears in any response; no request leaves the machine (no CDN); ruff + pytest green.
+
+**2. `agentwatch tools`: what tools a session used.**
+- Exists already: `Action` (tool_name, success, file_path, command, error_message, duration_ms, timestamp), every parser, `check --log`'s session resolution, and #198's error classifier (kind per failed call).
+- New: `agentwatch tools [--log PATH] [--json] [--format csv] [--calls]`. Default is the newest session `check` would pick. Prints a table per tool: calls, failed, failure %, top error kind, total and median time; `--calls` adds the call list (time, tool, target = file name or command, cut to 80 and redacted, ok/fail, error kind). No raw arguments or results are shown; target only.
+- Stacked on #198 (reuses its classifier and `--format csv` writer). Retarget to develop after #198 merges.
+- Acceptance: counts equal `check`'s action count for the same log; one fixture per agent family (Claude Code, Codex, Aider); secrets in commands redacted; CSV uses #198's injection guard.
+- Not in scope: a Tools tab in the `watch` TUI (board question).
+
+**3. README refresh.** Own docs PR `docs/readme-refresh` from develop. Plain language, same voice and order as agentwatch.info (#189): what it is, install, quick start (3 commands), supported agents table (live-verified vs fixture-verified, matching CLAUDE.md), commands, the Claude Code plugin, privacy. Uses `docs/assets/images/dashboard.svg`. Long reference moves to docs/commands.md links instead of being repeated. Describes develop as it is; Sprint 40 features are added as each PR merges.
+
+**Order and fit with open PRs.** README and `visual` branch from develop now. `tools` stacks on #198. The `visual` Tools page and Config page land after `tools` and #196 merge. None of the three touch #192-#197's files except `cli.py` (new commands only; small conflicts expected, resolved at merge).
+
+**Board questions.** (a) Names: `visual` / `dashboard` / `web`? (b) `tools` / `calls`? (c) Tools tab in the `watch` TUI too: yes / later? (d) README: describe develop now and add Sprint 40 as it merges, or wait for Sprint 40 merges: now / wait?
+
+**Board decisions (2026-11-05).** Names `visual` and `tools`. Tools tab in `watch`: later. README: now. Visual page font: Atkinson Hyperlegible only when installed (no embed). Merge Sprint 40 + 41 into develop in order (squash, clean messages); hold #193 (guard default) and #205 (unfinished follow-up). Also: README cut to essentials with a banner; `visual` has a Commands footer.
+### Sprint 40 (cont.) -- statusline cost
+
+- `agentwatch statusline --cost` (gap #2), stacked on #192: the active
+  5-hour block's spend, projection and reset time after the warning
+  segment. `{"block": ...}` summary cached in `user_state_dir()/block.json`
+  (60 s TTL, coach `_private_dir` + `_atomic_write`); a miss runs
+  `compute_blocks(since=now - 24 h)`, cc_stats imported only then.
+- Limit: more than ~24 h of back-to-back blocks can start the active block
+  at a different hour than `stats --blocks` (`ponytail:` note in
+  statusline.py).
+- Fix round (board-approved, 2026-11-02): 15a775a (tests), 3c6d75e (fix).
+  1. `home` fixture in tests/test_statusline_cost.py also sets
+     `USERPROFILE` (Windows `Path.home()`); 6 tests had failed on Windows
+     reading the real `~/.claude`. Root cause beyond that: other tests
+     (`test_cc_stats`, `test_stats_blocks`, `test_history`) monkeypatch the
+     lazy `cc_stats.CLAUDE_PROJECTS_DIR` (module `__getattr__`); on undo
+     monkeypatch writes the read value back as a real module global, often
+     the real `~/.claude/projects`. The fixture pins it with
+     `monkeypatch.setitem(vars(cc_stats), "CLAUDE_PROJECTS_DIR", ...)`,
+     which removes the key on undo. QA audit hook: 0 real-home accesses.
+  2. New tests: cc_stats unimported without `--cost` (subprocess
+     `sys.modules`); `_entry` fast path with `--cost` (rc 0, 5h segment,
+     `agentwatch.cli` not imported); `main` exits 0 on scan error and
+     garbage stdin; `block.json` written, 0o700 on POSIX, replaced on a
+     stale miss, no `*.tmp` left. QA mutated the code for each: all fail.
+  3. A projection under $0.01 is hidden (was `→ ~<$0.01`).
+  4. A null/missing/non-numeric cached `projected_cost_usd` drops only the
+     projection; before, the `>=` raised and the whole segment vanished.
+- Tests (Windows, PYTHONPATH=src): 21 failed / 2589 passed / 6 skipped /
+  1 error, vs 26 / 2578 / 6 / 1 at a9192b0. The 6 statusline_cost failures
+  are gone; the other 20 + 1 error are pre-existing Windows-only (symlink,
+  multi_app layout, charmap, test_coach state_dir guard). New in the list:
+  `test_multi_app_narrow::test_footer_most_important_keys_first[80]`,
+  flaky (passes alone, failed in 1 of the engineer's 2 runs; no UI files
+  touched). Ruff clean; test_statusline*.py 78 passed. CTO PASS, QA PASS.
+- Leftovers: (P3) the 2c test never reaches `main`'s own try/except,
+  because `render()` swallows the injected errors; a test patching `render`
+  to raise would cover it. The `CLAUDE_PROJECTS_DIR` leak is not fixed at
+  its source: those tests still leave the stale global, so any later test
+  relying on `Path.home()` can read the real home (small follow-up ticket).
+### Sprint 40 (cont.) -- fake-green detector (2026-10-30)
+Market gap #5 (cf. karanb192/claude-code-hooks "protect-tests"): flag an agent that makes failing tests pass by skipping, weakening or deleting them instead of fixing the code.
+
+**Acceptance criteria**
+- [x] New health detector `test_tampering` (`detectors/health/fake_green.py`, `FakeGreenDetector`, Category PROGRESS, no new Category), auto-collected by `get_all_health_detectors()`, so it shows in `check`, `watch`, `watch-all`, `history` and `report`.
+- [x] Signals on test files only (fixtures, snapshots, golden files, caches and temp dirs inside the project excluded; a project that itself lives under `/tmp`, `%TEMP%`, `~/temp`, a `coverage/` or `fixtures/` dir is still checked): new unconditional skip/xfail markers, `.only`/`fit`, removed, commented-out or trivialised assertions, deleted test functions, deleted or emptied test files, test-config exclusions (`testPathIgnorePatterns`, `collect_ignore`, `addopts` with `--ignore`/`--deselect`/`-k`), and test commands that hide failures (`|| true`, `--deselect`, `-k "not ..."`, `--passWithNoTests`, `-skip`, `--skip`).
+- [x] HIGH when the last test run before the change failed (a failure is a failed call or failing output, so `pytest | tail` counts); "(then tests passed)" when a later run passed. Otherwise MEDIUM (skip, `.only`, config) or LOW (assertions, deletions, command flags).
+- [x] No finding for: platform/env skips (and skips under an `if`), moved tests (same name re-added in the window), renamed tests, fixture/snapshot edits, assertions moved into a helper (window assertion count level), new tests, non-test edits after a failure, `rm -rf .pytest_cache`, deleting a test file the agent wrote itself, failed edits.
+- [x] Coach coaches it (PROGRESS, HIGH) with a fixed Try line; status line label `tests weakened`.
+- [x] Real-path tests (JSONL -> parser -> registry / `check --log`), per-agent parser tests, full suite and ruff green.
+
+**Result**
+- Edit text read for Claude Code (Edit, MultiEdit, Write), Codex (apply_patch V4A, also via shell heredoc), Copilot CLI (edit/create), Gemini CLI (replace/write_file), OpenCode and Kilo (edit/write/apply_patch), Cline (legacy replace_in_file SEARCH/REPLACE and write_to_file, SDK editor). Test commands for every agent with a shell tool.
+- Not covered for edits: Aider (no per-edit old/new text in the chat history), Cursor (bubbles carry no tool input), Copilot in VS Code (the part has no patch text), Antigravity (only the replacement text is kept), Claude Desktop Cowork host-loop sessions follow Claude Code.
+- Timing, `agentwatch check --log` on the largest local Claude Code log (7.6 MB), median of 5: 0.33 s before, 0.35-0.38 s after across three runs.
+  The detector itself: ~6.5 ms module import (regex compile) and 3.3 ms per one-shot check; 120 us per check when run after every action. Edit analysis is cached per action.
+  After QA round 1: 0.33-0.35 s before (develop 8e3b5fc), 0.35 s after, three median-of-5 runs each; 5.2 ms one-shot check, 156 us per check live.
+- Precision sweep: 42 real local Claude Code sessions, checked after every action: 0 findings.
+- Tests: 2632 passed, 1 skipped (45 new in `tests/test_fake_green.py`, 1 in `tests/test_statusline.py`). After QA round 1: 2660 passed, 1 skipped (73 in `tests/test_fake_green.py`).
+
+**Known limits**
+- Health detectors look at the last 100 actions, so in `check`/`history` a tampering far back in a long session is not reported.
+- A Write that rewrites a whole existing test file is not diffed (no old text); only an empty Write counts.
+- Rust `#[test]` and Java `@Test` deletions are not counted (no name on the same line); their skip markers are.
+- In-place shell edits are not read: `sed -i '/assert/d' tests/test_x.py` or a Python one-liner rewriting a test file goes unseen.
+
+**QA round 1 (FAIL on b0c8718) and fixes**
+- The coach parsed each transcript line with a fresh parser, so a tool result never merged into its call: a failed `pytest` stayed a successful Bash call plus a separate result, and `test_tampering` never reached HIGH in the coach. The coach now reads the tail with one `ClaudeCodeParser`, as `check` does. Effect on other coached warnings: consecutive failing calls now raise `error_spiral` (HIGH) in the coach too, as `check` already reported. Two coach tests changed for that: the 8x failing loop gives 3 HIGH notes instead of 2, and the fold-in test uses 2 failed calls (below error_spiral's 3) instead of 5. Loop breaker and `call_loop_id` unchanged.
+- `|| true` counts only right after the test-runner pipeline, and hiding flags only on that pipeline. Commands are split outside quotes (a commit message is not a command). Heredoc bodies are dropped.
+- Files the shell writes (`>`, `>>`, `tee`, `cp`/`mv` destination) count as the agent's own, like Write. Edits to the agent's own new test file are at most LOW.
+- Under `tests/`, `spec/`, `__tests__/` and `src/test/` only source files count (`rm -rf tests/` still does). `pytest.raises`/`warns` and `toThrow` count as assertions. Removed assertions are offset only by assertions added later in the window or in a helper function.
+- Older Codex output (`{"output", "metadata": {"exit_code"}}`) is decoded.
+- Precision sweep: 141 real Claude Code logs (42 sessions + 99 subagent logs), checked after every action. One finding: a subagent `git rm` of 5 test files while rebuilding a superseded PR, no failing run before it, LOW. Judged a legitimate cleanup and correctly kept at LOW. (Before the fixes: 4 findings, one HIGH: scratch tests created by shell, and a quoted commit message.)
+
+**CTO review round (2026-11-03)**
+- Rust `#[ignore]` (and any `#[...]`/`#![...]` attribute) is no longer read as a comment, so it counts as a skip. `# assert x` still counts as a commented-out assertion.
+- Test runs are recognised with a program path or launcher: `.venv\Scripts\python -m pytest`, `.venv/bin/python -m pytest`, `py [-3.12] -m pytest`, a full or quoted `C:\...\python.exe -m pytest`, `./node_modules/.bin/jest`, `node_modules\.bin\jest`. `grep pytest`, `cat pytest.ini`, `cat tests/pytest.ini` still are not runs.
+- A project under `/tmp`, `%TEMP%`, `~/temp` or a dir named `coverage`/`fixtures`/`snapshots` was invisible (the exclusion matched the absolute path). No parser puts the session cwd on `Action` (Claude Code keeps only the tool_use block in `raw`; Codex drops `session_meta.cwd`), so the fallback is: those names exclude only from the test path's own match down (its test dir, else its file name). Never-a-project dirs (`node_modules`, `__pycache__`, `.pytest_cache`, `.cache`, `htmlcov`, `__snapshots__`, `testdata`, `golden(s)`) and `.snap`/`.golden`/`.pyc` still exclude anywhere. Known limit: a test file directly in a project's `tmp/` or `fixtures/` dir (no test dir above it) now counts.
+- A skip added inside an `if`/`elif`/`else` block that was already there (unchanged context, so not in the added lines) is ignored: the nearest less-indented line of the edit's whole new text is checked.
+- A Write counts as creating a file only if no earlier action in the window read or changed that path, so overwriting an existing test file and then skipping is HIGH after a failed run, and a later `rm` is flagged.
+- V4A patch text is read only from patch tools (`*patch*` tool names) and shell commands running `apply_patch`; a Write of a doc that quotes a patch is not a patch.
+- Tests: 112 in `tests/test_fake_green.py` (31 new; each new bug test failed before its fix). Targeted (`test_fake_green`, `test_coach`, `test_statusline`): 213 passed, 2 skipped, 1 known error. Full suite: 2688 passed, 6 skipped, 6 failed + 1 error, all known Windows failures (5 symlink tests, `test_multi_app_detail::test_wrapped_detail_lines_keep_their_indent`, error `test_coach::test_state_dir_is_per_user_not_shared_tmp`). Ruff clean.
+### Sprint 40 (cont.) -- config-scan (gap #6) (2026-10-31)
+
+Market gap #6: an offline audit of agent configs. Snyk agent-scan needs an
+account and calls home; Pillar is hosted. `agentwatch config-scan` is the
+config counterpart to `audit` (session logs) and `security-scan`.
+
+#### Acceptance criteria
+- [x] New command `agentwatch config-scan [--json] [--path DIR]`, also `agentguard config-scan`.
+- [x] Reads MCP servers, hooks, status line, permissions, skills, commands, agents, installed plugins and CLAUDE.md for Claude Code; MCP configs for Cursor, VS Code (Copilot), Codex, Gemini CLI and Cline. Formats checked against each tool's docs; root helpers reused (`CLAUDE_CONFIG_DIR`, `_codex_sessions_root`, `_gemini_dir`, `default_user_dir`, `cline_sessions_dir`, `_legacy_editors`).
+- [x] Checks: hard-coded secrets (high, masked), unpinned package runners / git refs (medium; docker untagged low), plain-http remote MCP (high with auth, else medium), bypassPermissions and broad or credential-path allow rules, pipe-to-shell hooks (high), hidden chars (high) / hidden comments / override phrases in tool-facing markdown, files writable by others (POSIX).
+- [x] Each finding: severity, kind, agent, file (home as ~), location, message, why, fix. JSON schema 1 with summary, files_scanned, files_skipped.
+- [x] Exit codes 0 / 1 (medium) / 2 (high), in `--help` and README.
+- [x] Read-only, no network, stdlib only (json, tomllib), no new env vars. Symlinks out of the root not followed; symlinked dirs not entered; > 2 MB skipped (~/.claude.json 32 MB); unparseable files listed as skipped.
+- [x] Tests drive the real CLI over fixture trees in tmp_path, including the false-positive cases.
+
+#### Result (2026-10-31)
+- `src/agentwatch/config_scan.py` (new), `cli.py` (`config-scan`, guard alias), `tests/test_config_scan.py` (85 tests after the CTO review round: 82 pass and 3 POSIX/symlink skips on Windows). Full suite on Windows 2657 passed, 9 skipped, 6 failed + 1 error, all known pre-existing Windows failures on develop (4 symlink tests in test_redact_data_safety, test_resolve_helper_follows_symlinks, test_wrapped_detail_lines_keep_their_indent, the test_coach state-dir error); ruff clean.
+- Real run on the dev machine (`--path` agentwatch repo, 2026-10-31, QA round 1): 51 files (claude-code 47, codex 2, gemini 1, cline 1), 3 low findings, exit 0. The first run flagged a skill that quotes "ignore previous instructions" as a warning to the model (medium); quoted phrases are now low.
+- Re-run 2026-11-03 (after the CTO round, same machine, more plugins and skills installed since): 198 files (claude-code 196, codex 1, cline 1), 0 skipped, every path in `/` form. 3 low as before plus 1 high: a hard-coded bearer Authorization header in an MCP server under `~/.claude.json` `projects[...]` (masked in the output; a real finding on the machine, not a false positive).
+- Exit code differs from the brief's suggestion: config-scan has no critical tier, so 2 = any high.
+
+#### CTO review round (2026-11-03)
+- `show()` joined with `os.sep`, so on Windows every file and `projects["..."]` location came out as `~\.claude\settings.json` and 9 of the PR's own tests failed there. It now uses `relative_to` + `as_posix()` (`~/...` on every OS, case-insensitive home match on Windows). A `PureWindowsPath` unit test catches it on Linux CI too.
+- `cmd /c ...` / `cmd.exe /C ...` / `/k` (the Windows MCP form) is unwrapped before the unpinned-package check, so `cmd /c npx -y pkg` is medium and `cmd /c npx -y pkg@2.0.0` passes.
+- MCP server `command` + `args` (joined), or a single-string command, now go through the pipe-to-shell check: `bash -c "curl ... | sh"`, `sh -c "wget -qO- ... | bash"`, `powershell -Command "iwr ... | iex"`, `cmd /c "curl ... | sh"` are high `remote_script` at `<server>.command`; `npx -y pkg@1.0.0`, `node server.js`, `curl ... | jq` don't fire.
+- Codex `[profiles.<name>]` tables: `sandbox_mode = "danger-full-access"` is medium, high with `approval_policy = "never"` (the profile's, else the top-level one), at `profiles.<name>.sandbox_mode`.
+- Tests: 8 new (show unit test, 4 `cmd /c` unit cases, `cmd /c` via CLI, MCP pipe-to-shell via CLI, Codex profiles via CLI); each failed on ee29d21 first.
+
+#### Cut (not precise enough or not cheap)
+- The broad shared INJECTION_PATTERNS ("you are now", "act as a", "system:"): they match ordinary skill prompts. Only the high-confidence override phrases and ChatML tokens are used.
+- Cline `autoApprove`, Codex per-tool approval modes, Gemini `tools`/yolo settings, Claude `auto` mode: no clear "risky" line.
+- Hook `type: "http"` URLs, `headersHelper`/`http_headers_helper` commands, `apiKeyHelper`.
+- Managed settings files, VS Code Insiders' user mcp.json, Claude Desktop's `claude_desktop_config.json`, OpenCode/Kilo configs, Windsurf.
+- Docker images run through `docker compose` or wrapper scripts.
+### Sprint 40 (cont.) -- needs-input and done alerts (gap #8)
+**Type:** feature. Branch `feature/attention-alerts` from develop 8e3b5fc.
+**Goal:** a developer running agents in the background learns when one is waiting on them or has finished, without watching a terminal (as claude-code-notifier / claude-remote-approver do for Claude Code).
+
+### Acceptance Criteria
+- [x] Claude Code: the plugin hook handles `Notification` (permission_prompt, idle_prompt, elicitation_dialog, elicitation_url_dialog, agent_needs_input) and `Stop`, per https://code.claude.com/docs/en/hooks (#notification, #stop, #run-hooks-in-the-background). Prints nothing, never returns a decision, never blocks a stop.
+- [x] Opt-in with no new env var: `agentwatch notify on|off|status [--webhook URL] [--events needs-input,done]` writes `notify` (no suffix, so the 7-day prune skips it) in `coach.user_state_dir()`, 0600 in a 0700 dir. The webhook URL is stored only if given and shown masked.
+- [x] Off = one small file read and exit (no transcript read, no state write).
+- [x] Delivery reuses alerts.py (`notify_command`, `post_webhook`, `slack_escape`, `who`, `one_line` via coach `_clean`). Desktop notifier spawned detached; webhook 3 s inside the 5 s watchdog. Fail quiet.
+- [x] Debounce: session state `attention` key. A repeated idle reminder is not re-sent, nor idle after "finished"; PostToolUse (its `_save` rewrites the state) and Stop reset it. Permission/elicitation prompts all alert, except the same message (sha256) within 60 s (QA F1). Subagent replies (`isSidechain`, `subagents/` logs) never mark a turn end (QA F2). `stop_hook_active` Stops are skipped.
+- [x] hooks.json: Notification (matcher = the five types) and Stop, `async: true`, timeout 10. PreToolUse/PostToolUse unchanged (synchronous).
+- [x] watch/watch-all `--notify-done`: parsers mark the action that ends a turn (`Action.turn_end`); `turn_ended()` reports it while nothing newer than Claude Code `system` lines or usage records follows. Codex / Copilot CLI get a `turn_end` record counted like a usage record (activity counts and detectors unchanged). Alerter: baselined like findings, once per turn end, `DONE` headless line.
+- [x] Tests: hook payload -> coach.run and the real console path (fake notify-send on PATH), dedup, Stop then new wait, corrupt settings/state; `notify` CLI perms + masking; per-agent parser markers from fixtures; Alerter baseline/state change/no repeat; headless engine end to end.
+
+### Coverage (watch-all `--notify-done`)
+| Agent | Signal | Source |
+|---|---|---|
+| Claude Code | text-only assistant entry, `stop_reason: "end_turn"` | real local transcripts (end_turn lines share a message_id with the reply's thinking line; one alert per message_id) |
+| Codex CLI / ChatGPT app | `event_msg` `task_complete` (alias `turn_complete`) | openai/codex @ 67f0994: protocol/src/protocol.rs L1576-1578, rollout/src/policy.rs L139 |
+| Copilot CLI | `assistant.turn_end` after an `assistant.message` with `toolRequests: []` | 3 real 1.0.90 sessions in ~/.copilot/session-state |
+| Copilot VS Code | request `modelState.value == 1` (Complete) | real 1.140 fixture |
+| OpenCode / Kilo 7.x | assistant step `finish: "stop"` (done once `time.completed`) | real 1.18.34 fixture |
+
+Cut: needs-input in watch-all (Codex approval requests are transient, not persisted: policy.rs L197-203; Copilot CLI and OpenCode permission prompts are not in the rows read; VS Code's unconfirmed tool parts can be held for minutes in a background window). Gemini (fixture-only, no turn-end marker beyond re-appended messages), Cline (ask types live in ui_messages.json, not read; fixture-only), Aider, Cursor, agy, Claude Desktop. No 10-minute rate limit on done: each finished turn is new; the per-state dedup and >3 coalescing cover bursts. SubagentStop not hooked (subagents finishing are not the user's wait).
+
+### Result (2026-11-01)
+- Latency (`agentwatch hook`, Linux, median of 10, 600-line transcript): PostToolUse 217 ms before, 212 ms after. Notification/Stop with notify off 36 ms (was 36 ms, ignored). Notify on: Stop 229 ms with a stub notifier, 230 ms when no notifier is found; a deduped idle repeat 46 ms. Both events run async, so none of it blocks Claude.
+- Live (temp HOME): `notify on`, then Notification and Stop payloads piped to `agentwatch hook`: exit 0, no stdout, state and settings 0600 in a 0700 dir. `notify-send` is not installed on this machine (libnotify-bin absent), so the real-notifier path found none and stayed silent. A PATH stand-in with notify-send's argv delivered over D-Bus with `gdbus ... Notifications.Notify` exited 0 (notification id 63).
+
+### CTO review round (2026-11-03)
+- Turn summary cost: `coach._turn_summary` now passes the 1-hour cache-write part (`usage.cache_creation.ephemeral_1h_input_tokens`, read as parser/logs.py does) to `usage_cost_usd`; 1h writes were priced at the 5m rate. Test: a Sonnet 4.5 turn with 600k 5m + 400k 1h writes reads `~$4.65` (was `~$3.75`).
+- README: Windows hook latency next to the Linux 35 ms. Windows 10, median of 5: Stop with alerts off 0.33 s, on (webhook + stub toast) 0.52 s; mostly Python start-up (~0.35-0.4 s).
+- Windows `_spawn` test: the real `coach._spawn` (Windows creationflags) with a child that sleeps 1 s then writes its stdin to a file returns in < 0.5 s and the file gets the bytes. Checked against two local mutations (wait for the child; drop stdin): both fail.
+- Suite (Windows 10): ruff clean; coach_notify + turn_end + coach 75 passed, 3 skipped, 1 error (known `test_state_dir_is_per_user_not_shared_tmp`); full 2613 passed, 7 skipped, 6 failed, 1 error, all known Windows failures on develop (symlink x5, `test_wrapped_detail_lines_keep_their_indent`).
+### Sprint 40 -- market-gap features (2026-10-30)
+**Goal:** close the top gaps from a 2026-10-30 market survey of agent monitoring and safety tools.
+
+**Ranked gaps:**
+1. 5-hour block / quota tracking (ccusage 19.3k stars, Claude-Code-Usage-Monitor 8.8k).
+2. Statusline cost/quota segment (ccusage, ccstatusline 13.5k).
+3. Destructive-command guard before execution (destructive_command_guard 6.2k, cc-safety-net 1.9k).
+4. Protect secrets before they are read (karanb192/claude-code-hooks).
+5. "Fake green" test-tampering detector (karanb192 protect-tests).
+6. Offline MCP/skills/config audit (Snyk agent-scan 3.2k, needs an account; Pillar).
+7. Error taxonomy in `report` (sniffly).
+8. Needs-input/done alerts (notification hooks).
+9. CSV/OTLP export (ccusage --json, claude-code-otel).
+10. Cache efficiency and per-model breakdown (opcode, Grafana #25255).
+
+**Picked:** A, command guard (items 3 and 4, branch `feature/command-guard`); B, `stats --blocks` (item 1, branch `feature/stats-blocks`).
+
+### Acceptance criteria
+**A: command guard**
+- [ ] The coach hook's PreToolUse returns `permissionDecision: "ask"` with a fixed reason for: `rm -r` of `/`, `~`, `$HOME`, `*`, `.`, `..`; `git push --force`/`-f` (not `--force-with-lease`); `git reset --hard`; `git clean -fd`/`-fdx`; `mkfs.*`; `dd of=/dev/...`; `> /dev/sdX`; `curl`/`wget | sh`; `chmod -R 777 /`; fork bomb.
+- [ ] The same for secrets reads (Read tool, `cat`/`less`/`head`/`tail`/`cp`/`scp`, `curl -F @`): `.env`/`.env.*` (not `.example`/`.sample`/`.template`), `~/.ssh/id_*` (not `.pub`), `~/.aws/credentials`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.docker/config.json`, `~/.kube/config`, `*.pem`/`*.key`.
+- [ ] Caught inside `bash -c`/`sh -c`, `sudo`, `env X=1` and `&&`/`;`/`||`/`|` chains; unparsable commands fall back to the raw patterns.
+- [ ] Safe look-alikes pass with no output (`rm -rf ./build`, `rm -rf node_modules`, `git push --force-with-lease`, `cat .env.example`, `echo "rm -rf /"`).
+- [ ] Runs before the loop breaker, which is unchanged; any error fails open; no detector registry import on PreToolUse; hook latency measured.
+- [ ] No new env vars or dependencies. hooks.json, README, CHANGELOG and CLAUDE.md updated. Tests through `coach.run()` and the real `_entry` process.
+
+**B: `stats --blocks`**
+- [ ] 5-hour blocks computed from Claude Code logs.
+- [ ] The active block shows elapsed and remaining time, burn rate and projected cost.
+- [ ] `--json` output.
+- [ ] Tests from a JSONL fixture.
+
+### Board questions
+- (a) The guard is on by default with `ask` and has no off switch. OK?
+  **Board 2026-11-02: guard stays on by default; per-user off switch `agentwatch guard off` added** (writes `{"on": false}` to `user_state_dir()/guard`; anything else, or no file, leaves it on). Reason: under `claude -p` an ask becomes a deny, so headless runs that legitimately `rm -rf build/` or `git reset --hard` had no escape.
+- (b) Does `ask` still prompt under `bypassPermissions` mode? **Verified live 2026-11-02: a hook `ask` IS enforced under `bypassPermissions`. Under `claude -p`, both bypass and default mode denied a `.env` read with the hook's reason. The interactive prompt itself is unverified.**
+
+**#193 fix round (board-approved 2026-11-02):** the guard now also unwraps `eval` (quoted or not), `setsid`, `builtin`, `cmd /c`, `powershell`/`pwsh -c|-Command`, `wsl [-d X] [-e|--]` and `script -c`, ignores a trailing `.exe`, and catches `agentguard guard off` (the alias entry point) and the `npx`/`xargs` launchers. Documented gaps: `powershell -EncodedCommand`, and Write/Edit or a redirect onto the guard file through a relative path (`coach/guard`).
+
+**#193 round 2 (board-approved 2026-11-02):** now also asks on `cmd //c ...` (Git Bash), `cmd /c"..."`/`/k"..."` (glued), `/r`; PowerShell bare positional args (5.1 runs them as a command; `pwsh` asked the same), `-c`/`-Command` and its prefixes from `-com`, after skipping switches and value options (`-ExecutionPolicy`, `-WindowStyle`, ...); `-File` and `-EncodedCommand` still pass. Program names are case-insensitive (`BASH -c`, `GIT reset --hard`) and a quoted `C:\...\cmd.exe` path works. Documented gaps: `wsl --shell-type X`, `script --command=...`, `curl | cmd`/`| powershell`, wrappers nested more than 3 deep, unquoted backslash program paths, quote-split words (`r''m`) in commands over 20,000 chars.
+
+### Sprint 42 -- follow-ups and 0.2.2 release prep (2026-11-06)
+
+Clear the Sprint 40/41 follow-ups, then prepare 0.2.2 on `develop`. Out of scope: anything touching `main` (promotion PR, tag, PyPI publish need the board's go).
+
+**Shipped to develop**
+- [x] #153 `report --days` capped at 10000 (usage error, not a traceback); empty report points at `--include-active`; SIEM cost test skips without the extra; `agentwatch statusline` (#146) added to the 0.2.1 notes, where it shipped. Brought up to date by merging develop (no force-push). QA pass with notes.
+- [x] #211 (fixes #206) `history.error_kind`: a failed command with an exit line is classified by its first and last output lines only, not a phrase anywhere in its output; Claude Code API errors count as tool `api`, not `system`. No schema change, old rows correct on the next re-sync of their log. Precision on 206 real failed calls: 1 reclassified (the bug). QA pass with notes.
+- [x] #212 `agentwatch subagents [--log] [--all] [--active] [--json]`: health of each Claude Code subagent transcript (`<session>/subagents/agent-<id>.jsonl`, any depth), plus a "Subagents of the newest session" section on `visual`'s Overview.
+- [x] #209 `visual`: running agents, health and security reload every 5 seconds while the page is visible.
+- [x] #204 closed: already fixed by #208 (checked against the issue's examples). A two-segment name like `home/zaid` is still stored on purpose: it cannot be told apart from `anthropic/claude-x`.
+- [ ] #210 release prep: version 0.2.2 (pyproject, `__version__`, plugin.json, get-started), CHANGELOG `[0.2.2] - 2026-11-06` with every Sprint 40-42 entry and an empty `[Unreleased]` (PEM fix under Security; docs under Changed), README image and LICENSE links absolute (raw.githubusercontent.com / github.com on `main`) so they render on PyPI. Ready for review; the board merges.
+
+**Release order (board):** merge #210 into develop -> develop -> `main` promotion PR (merge commit, not squash) -> tag `v0.2.2` -> publish. Promote before publishing: `banner.svg` is not on `main` yet, so its README link 404s on PyPI until then.
+
+**Follow-ups**
+- ~~Subagents are not shown in the `watch-all` dashboard yet~~ Done in #213: `subagents.with_subagents()` adds each active subagent log to process-mode discovery, nested under the log that started it.
+- `error_kind`: a Node.js crash prints its `Error: ENOENT ...` mid-output (first line `node:internal/...`, last `Node.js vN`), so it is now `nonzero_exit` rather than `file_not_found`; consider also reading a leading `Error:` line. Add tests for a 500-char head with a longer result, `incoming_message=None`, CRLF and a Node stack trace.
+- No test that `report --days 10000` itself succeeds (checked by hand).

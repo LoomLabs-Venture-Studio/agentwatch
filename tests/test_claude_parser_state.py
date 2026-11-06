@@ -284,7 +284,8 @@ def test_syntax_loop_fires_at_the_same_call_count_as_before(run, tmp_path):
 
 def test_no_history_gate_counts_raw_actions():
     """Warm-up gates use buffer.history_len (a merged failure is two calls' worth),
-    except the two that read only the failures themselves."""
+    except error_spiral's, which reads only the failures themselves (high_error_rate
+    gates on buffer.activity_len: usage records are not actions)."""
     import re
 
     root = Path(__file__).parent.parent / "src" / "agentwatch" / "detectors" / "health"
@@ -296,7 +297,6 @@ def test_no_history_gate_counts_raw_actions():
     }
     assert gates == {
         ("errors.py", "if len(buffer) < self.threshold:"),
-        ("errors.py", "if len(buffer) < self.min_actions:"),
     }
 
 

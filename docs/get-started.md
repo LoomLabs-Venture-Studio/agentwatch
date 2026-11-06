@@ -122,7 +122,7 @@ Check that it worked:
 agentwatch --version
 ```
 
-It prints `agentwatch, version 0.2.1`, or a newer number.
+It prints `agentwatch, version 0.2.2`, or a newer number.
 
 ??? note "Prefer plain pip?"
 

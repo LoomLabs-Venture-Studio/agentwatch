@@ -25,7 +25,7 @@ class ErrorSpiralDetector(Detector):
         if len(buffer) < self.threshold:
             return None
 
-        recent = buffer.last(self.threshold + 2)
+        recent = buffer.last(self.threshold + 2, activity=True)
 
         # Count consecutive failures from the end
         consecutive_failures = 0
@@ -83,10 +83,10 @@ class ErrorBlindnessDetector(Detector):
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
         # history_len: a failed call is one Action here, two before results were merged.
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         # Collect and normalize errors
         errors = []
@@ -146,10 +146,10 @@ class SyntaxLoopDetector(Detector):
         self._pattern = re.compile("|".join(self.SYNTAX_PATTERNS), re.IGNORECASE)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         # Count syntax-like errors
         syntax_errors = 0
@@ -195,10 +195,10 @@ class HighErrorRateDetector(Detector):
         self.min_actions = min_actions
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.min_actions:
+        if buffer.activity_len < self.min_actions:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         failures = sum(1 for a in recent if not a.success)
         error_rate = failures / len(recent)
