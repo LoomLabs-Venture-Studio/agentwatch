@@ -141,9 +141,9 @@ numbers refer to the GitHub repository.
 
 ### Security
 
-- A private key is now redacted whole, body included, also when the text
-  is cut before its `-----END` line. Before, only the `BEGIN` header was
-  masked and the key body could show in redacted output.
+- A private key cut before its `-----END` line is now redacted whole. Before,
+  only its `BEGIN` header was masked and the key body could show in redacted
+  output (#205).
 
 ## [0.2.1] - 2026-10-27
 
