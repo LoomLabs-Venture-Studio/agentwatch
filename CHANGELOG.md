@@ -9,7 +9,7 @@ numbers refer to the GitHub repository.
 ### Fixed
 
 - `report`/`tools` error kinds: a Node.js crash that failed to open a file is
-  counted as file not found again, not as a plain nonzero exit. A failed
+  counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
   now read along with its first and last output lines (#206).
 
