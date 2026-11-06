@@ -622,20 +622,31 @@ const VIEWS = {
       : el("p", "No sessions recorded yet. Sync history reads your agent logs into a local " +
         "database on this computer.", "mute")],
 };
-const busy = new WeakMap();
-async function load(sec, name, run) {
+// Sections that reload on their own while the page is visible; the rest
+// read every saved log, so they stay on their buttons.
+const LIVE = new Set(["ps", "check", "security-scan"]), LIVE_MS = 5000;
+const busy = new WeakMap(), last = new WeakMap(), inflight = new WeakSet();
+// quiet: a timer reload. No "Loading...", buttons stay usable, skipped while
+// another load of the section runs, and the view is kept if nothing changed.
+async function load(sec, name, run, quiet) {
+  if (quiet && inflight.has(sec)) return;
   const body = sec.querySelector(".body"), stamp = sec.querySelector(".when");
   const seq = (busy.get(sec) || 0) + 1;
   busy.set(sec, seq);
-  sec.querySelectorAll("button").forEach(b => { b.disabled = true; });
-  body.setAttribute("aria-busy", "true");
-  body.replaceChildren(el("p", run ? "Running. This can take a minute..." : "Loading...", "mute"));
-  let parts;
+  inflight.add(sec);
+  if (!quiet) {
+    sec.querySelectorAll("button").forEach(b => { b.disabled = true; });
+    body.setAttribute("aria-busy", "true");
+    body.replaceChildren(el("p", run ? "Running. This can take a minute..." : "Loading...",
+      "mute"));
+  }
+  let parts, text;
   try {
     const r = await fetch(`/api/${name}?t=${encodeURIComponent(T)}${run ? "&run=1" : ""}`);
     if (r.status === 403) throw new Error("This link has expired. Open the address that " +
       "agentwatch visual printed in your terminal.");
-    const d = await r.json();
+    text = await r.text();
+    const d = JSON.parse(text);
     if (d.error) parts = [problem("Nothing to show yet.", d.error)];
     else if (d.not_run) parts = [el("p", "Not run yet. The audit reads every saved session " +
       "log, so it can take a while.", "mute")];
@@ -645,9 +656,14 @@ async function load(sec, name, run) {
       "agentwatch is not answering. Is agentwatch visual still running?" : e.message)];
   }
   if (busy.get(sec) !== seq) return;  // a newer load replaced this one
-  body.replaceChildren(...parts.filter(Boolean));
+  inflight.delete(sec);
+  if (!(quiet && text !== undefined && text === last.get(sec))) {
+    body.replaceChildren(...parts.filter(Boolean));
+  }
+  last.set(sec, text);
   body.removeAttribute("aria-busy");
-  stamp.textContent = "Updated " + new Date().toLocaleTimeString(undefined, {timeStyle: "short"});
+  stamp.textContent = (sec.dataset.live ? "Live, updated " : "Updated ") +
+    new Date().toLocaleTimeString(undefined, {timeStyle: "short"});
   sec.querySelectorAll("button").forEach(b => { b.disabled = false; });
 }
 function problem(title, detail) {
@@ -684,9 +700,15 @@ function show(id) {
     }
     head.append(again, el("p", null, "when"));
     sec.append(head, body); main.append(sec);
+    if (LIVE.has(name)) sec.dataset.live = name;
     load(sec, name, false);
   }
 }
+setInterval(() => {
+  if (document.hidden) return;
+  document.querySelectorAll("section[data-live]").forEach(
+    sec => load(sec, sec.dataset.live, false, true));
+}, LIVE_MS);
 const tabs = document.getElementById("tabs");
 TABS.forEach(([id, label]) => {
   const b = el("button", label);

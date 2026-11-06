@@ -14,7 +14,9 @@ numbers refer to the GitHub repository.
   `history sync` on a button). stdlib server on 127.0.0.1 only, one inline
   page, no CDN, no new dependency. Every request needs the token from the
   printed URL and a `127.0.0.1`/`localhost` Host header; GET only; every
-  string sent is redacted.
+  string sent is redacted. Running agents, health and security reload
+  every 5 seconds while the page is visible (kept as is when unchanged);
+  audit, cost and history stay on their buttons.
 - `agentwatch tools [--log PATH] [--calls] [--json] [--format text|json|csv]`:
   the tools one session called. Per tool: calls, failed, failure %, top error
   kind, total and median time (`-` when the agent logs none; Claude Code's is
