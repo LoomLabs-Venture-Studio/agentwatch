@@ -1562,7 +1562,8 @@ def security_scan(
         )
 
         click.echo()
-        click.echo(f"  Analyzed {len(buffer)} actions")
+        # Every action scanned, not len(buffer): the buffer keeps only the newest.
+        click.echo(f"  Analyzed {buffer.stats.action_count} actions")
         click.echo(f"  Found {len(warnings)} security issue(s)")
         click.echo(
             "  Raw signal counts: "
@@ -1603,7 +1604,7 @@ def _security_json(warnings, buffer: ActionBuffer, note, goal_alignment=None) ->
         "security_score": security_score,
         "status": security_tier_from_score(security_score),
         "warnings": [w.to_dict() for w in warnings],
-        "action_count": len(buffer),
+        "action_count": buffer.stats.action_count,  # all scanned, not the buffer size
         "security_stats": _security_stats(buffer),
         "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
         "session_fallback": note,

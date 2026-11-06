@@ -12,6 +12,13 @@ numbers refer to the GitHub repository.
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
   now read along with its first and last output lines (#206).
+- `security-scan` reports how many actions it scanned ("Analyzed N actions",
+  JSON `action_count`, also in `agentwatch visual`). It reported at most 500,
+  the size of the live buffer, on longer sessions.
+- `error_spiral` reports the whole run of failed calls since the last
+  success (up to the 500 kept in the buffer), and its token cost covers
+  each of them. It reported at most 5 with the default settings. It fires
+  at the same point and with the same severity as before.
 
 ## [0.2.2] - 2026-11-06
 
