@@ -130,17 +130,20 @@ numbers refer to the GitHub repository.
   persistence, exploration stall, context rot, rediscovery and the thrash
   metric no longer tally it, fill windows with it or have a failure streak
   broken by it. Tokens, cost and the action count still include it.
-- A private key is now redacted whole, body included, also when the text
-  is cut before its `-----END` line. Before, only the `BEGIN` header was
-  masked and the key body could show in redacted output.
 - History stores a model or tool name only when it holds no path, email or
   secret; anything else is stored as `other`.
 
-### Documentation
+### Changed
 
 - README: a short, plain-language front page with a banner.
 - agentwatch.info: plain-language redesign, with a dashboard screenshot
   rendered from made-up sessions.
+
+### Security
+
+- A private key is now redacted whole, body included, also when the text
+  is cut before its `-----END` line. Before, only the `BEGIN` header was
+  masked and the key body could show in redacted output.
 
 ## [0.2.1] - 2026-10-27
 
