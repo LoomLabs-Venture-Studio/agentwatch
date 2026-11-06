@@ -13,10 +13,13 @@ numbers refer to the GitHub repository.
   command's line that starts with `Error:` (or `TypeError:` and the like) is
   now read along with its first and last output lines (#206).
 - Reading a local doc or test file that only talks about prompt injection
-  (Markdown, docs/, tests/, CLAUDE.md, skills) is now a medium finding
-  instead of critical, so it no longer drops the security score to 0. The
-  same text from the web, an MCP tool, a source file or a prompt is
-  unchanged.
+  (Markdown, docs/, tests/, CLAUDE.md, skills) with an agent's own built-in
+  read tool is now a medium finding instead of critical, so it no longer
+  drops the security score to 0. Shell commands, the web, MCP tools, source
+  files, prompts, files in temp, download, cache or package folders, and
+  files written or named by another tool call in the last 50 actions keep
+  their severity. A downgraded finding is reported separately, so a later
+  real one is still exported and alerted.
 
 ## [0.2.2] - 2026-11-06
 
