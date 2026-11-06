@@ -17,6 +17,10 @@ numbers refer to the GitHub repository.
   string sent is redacted. Running agents, health and security reload
   every 5 seconds while the page is visible (kept as is when unchanged);
   audit, cost and history stay on their buttons.
+- `agentwatch subagents [--log PATH] [--all] [--active] [--json]`: the health
+  of each subagent (cto, engineer, qa, ...) of a Claude Code session, at any
+  depth: type, task, health score, status, cost, actions, last activity and
+  HIGH/CRITICAL warnings. Also live on `agentwatch visual`'s Overview tab.
 - `agentwatch tools [--log PATH] [--calls] [--json] [--format text|json|csv]`:
   the tools one session called. Per tool: calls, failed, failure %, top error
   kind, total and median time (`-` when the agent logs none; Claude Code's is

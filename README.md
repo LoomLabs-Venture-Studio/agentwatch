@@ -31,6 +31,7 @@ agentwatch watch-all       # live dashboard of every running assistant
 agentwatch security-scan   # leaked keys, prompt injection, risky commands
 agentwatch visual          # all the reports in your browser
 agentwatch tools           # every tool a session used, and what failed
+agentwatch subagents       # health of each subagent (cto, engineer, qa...)
 ```
 
 Run `agentwatch --help` for all commands, or see

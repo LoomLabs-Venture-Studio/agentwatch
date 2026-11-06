@@ -67,7 +67,7 @@ src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
                        detect, net, list-detectors, security-scan, config-scan, themes, stats,
                        visual,
-                       audit, scrub, report, tools, history sync|prune|path, notify on|off|status
+                       audit, scrub, report, tools, subagents, history sync|prune|path, notify on|off|status
                        [--webhook URL] [--events needs-input,done] (the
                        Claude Code hook's attention-alert settings; webhook
                        masked).
@@ -317,8 +317,8 @@ src/agentwatch/
   visual.py            `agentwatch visual`: ThreadingHTTPServer on
                        127.0.0.1 (--port, 0 = free) + one inline vanilla-JS
                        page (textContent only, CSP, no CDN). GET /api/<name>
-                       (ps, check, security-scan, audit, stats, report,
-                       history) calls cli.py's --json builders (_ps_json,
+                       (ps, check, subagents, security-scan, audit, stats,
+                       report, history) calls cli.py's --json builders (_ps_json,
                        _check_json, _security_json, _audit_scan/_audit_json)
                        in process; every string through redact_truncate.
                        Token (?t=, compare_digest) + Host 127.0.0.1|localhost
@@ -343,6 +343,14 @@ src/agentwatch/
                        via one_line(80); never args/results/error text.
                        Log picked by cli._default_log like `check`;
                        csv via report.write_csv
+  subagents.py         `agentwatch subagents [--log] [--all] [--active]
+                       [--json]`: every <session>/subagents/agent-<id>.jsonl
+                       (any depth; type, description, spawnDepth from
+                       agent-<id>.meta.json via one_line), newest 10 by
+                       default, each scored like `check` (health mode);
+                       active = written in the last 10 min; scores cached
+                       per (size, mtime_ns) for visual's 5 s reload. JSON
+                       schema 1. Not wired into watch-all yet
   config_scan.py       `agentwatch config-scan [--json] [--path DIR]` (also
                        `agentguard config-scan`): offline, read-only audit
                        of agent configs. Claude Code settings(.local).json

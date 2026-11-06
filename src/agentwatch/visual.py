@@ -26,6 +26,8 @@ from agentwatch.detectors.security.secret_scanner import assess_impact, redact_t
 from agentwatch.history import connect, sync
 from agentwatch.parser.logs import LogUnreadableError, UnsupportedLogFormatError
 from agentwatch.report import build
+from agentwatch.subagents import build as subagents_build
+from agentwatch.subagents import session_of
 
 _STR_LIMIT = 2000
 # audit and history sync each read every log: one at a time, a second request
@@ -59,6 +61,13 @@ def _check(run: bool):
     report = cli.calculate_health(warnings, include_security=False)
     efficiency = cli.calculate_efficiency(warnings, buffer)
     return cli._check_json(report, efficiency, warnings, buffer, note)
+
+
+def _subagents(run: bool):
+    log, _ = cli._default_log()
+    if log is None:
+        raise _NoDataError("No log files found")
+    return subagents_build(session_of(log))
 
 
 def _security(run: bool):
@@ -107,6 +116,7 @@ def _history(run: bool):
 API = {
     "ps": _ps,
     "check": _check,
+    "subagents": _subagents,
     "security-scan": _security,
     "audit": _audit,
     "stats": _stats,
@@ -373,6 +383,9 @@ margin:16px 0 0}
   <dd>Lists the AI assistants running right now. Overview tab.</dd></div>
 <div><dt><code>agentwatch tools</code></dt>
   <dd>Every tool a session used: calls, failures, error types and time.</dd></div>
+<div><dt><code>agentwatch subagents</code></dt>
+  <dd>Health of each subagent (cto, engineer, qa) of a Claude Code session.
+  Overview tab.</dd></div>
 <div><dt><code>agentwatch stats</code></dt>
   <dd>Claude Code token use and estimated cost, by tool. Cost tab.</dd></div>
 <div><dt><code>agentwatch report</code></dt>
@@ -399,8 +412,10 @@ const T = new URLSearchParams(location.search).get("t") || "";
 // [tab id, label, intro, [endpoint, title, run button label or null], ...]
 // Tools and Config tabs are added here once #198 and #196 merge.
 const TABS = [
-  ["overview", "Overview", "Your running agents and the newest session's health.",
-    ["ps", "Running agents", null], ["check", "Health of the newest session", null]],
+  ["overview", "Overview",
+    "Your running agents, the newest session's health and its subagents' health.",
+    ["ps", "Running agents", null], ["check", "Health of the newest session", null],
+    ["subagents", "Subagents of the newest session", null]],
   ["security", "Security", "Secrets, risky commands and data leaving your machine.",
     ["security-scan", "Security of the newest session", null],
     ["audit", "Secrets in all saved sessions", "Run audit"]],
@@ -611,6 +626,22 @@ const VIEWS = {
         "History tab to record them.", "mute"),
       raw(d)];
   },
+  subagents: d => [
+    el("p", d.total ? `${d.active} active, ${d.total} in all. Each is scored like the ` +
+      "session above. Newest first." : "This session has not started any subagents.",
+      d.total ? "" : "mute"),
+    d.subagents.length ? table(d.subagents, [
+      ["type", "Subagent", r => (r.depth > 1 ? "\u21b3 " : "") + r.type],
+      ["description", "Task"],
+      ["health_score", "Health", "num"],
+      ["status", "Status", r => r.status ? chip(r.status, tone(r.health_score)) : "None"],
+      ["cost_usd", "Cost", "num"], ["actions", "Actions", "num"],
+      ["last_activity", "Last activity",
+        r => r.active ? chip("active", "ok") : when(r.last_activity)],
+      ["warnings", "Warnings",
+        r => r.warnings.map(w => `${w.severity} ${w.signal}`).join(", ") || "None"],
+    ]) : null,
+    d.subagents.length ? raw(d) : null],
   history: d => [
     d.synced ? el("p", `Synced: ${d.synced.new} new, ${d.synced.updated} updated, ` +
       `${d.synced.unchanged} unchanged` + (d.synced.active ? `, ${d.synced.active} skipped ` +
@@ -624,7 +655,7 @@ const VIEWS = {
 };
 // Sections that reload on their own while the page is visible; the rest
 // read every saved log, so they stay on their buttons.
-const LIVE = new Set(["ps", "check", "security-scan"]), LIVE_MS = 5000;
+const LIVE = new Set(["ps", "check", "subagents", "security-scan"]), LIVE_MS = 5000;
 const busy = new WeakMap(), last = new WeakMap(), inflight = new WeakSet();
 // quiet: a timer reload. No "Loading...", buttons stay usable, skipped while
 // another load of the section runs, and the view is kept if nothing changed.
