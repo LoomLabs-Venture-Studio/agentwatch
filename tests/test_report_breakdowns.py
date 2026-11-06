@@ -164,6 +164,34 @@ def test_zero_failed_is_not_a_test_failure(text, kind):
     assert history.error_kind(a) == kind
 
 
+@pytest.mark.parametrize("text, kind", [
+    # the command's own error: first or last output line (#206)
+    ("Exit code 2\nls: cannot access 'nope': No such file or directory", "file_not_found"),
+    ("Exit code 28\nfetching\ncurl: (28) Operation timed out after 5000 ms", "timeout"),
+    ("Exit code 127\nstep 1 ok\nstep 2 ok\nbash: foo: command not found",
+     "command_not_found"),
+    ("Exit code 1\nTraceback (most recent call last):\n  x\nFileNotFoundError: a.txt",
+     "file_not_found"),
+    # the same words in the middle of ordinary output are not the error
+    ("Exit code 1\nmatch 1\nlog: request timed out, retrying\nmatch 3", "nonzero_exit"),
+    ("Exit code 1\nmatch 1\nNo such file or directory: x.py\nmatch 3", "nonzero_exit"),
+    ("Exit code 1\nmatch 1\nPreToolUse:Bash hook error: denied\nmatch 3", "nonzero_exit"),
+    ("exit 1: line one\nThe tool use was rejected\nlast", "nonzero_exit"),  # Codex prefix
+])
+def test_failed_command_is_classified_by_its_error_not_its_output(text, kind):
+    a = SimpleNamespace(error_message=text, incoming_message=text, command="grep -r x .")
+    assert history.error_kind(a) == kind
+
+
+def test_api_error_is_not_a_tool():
+    from agentwatch.parser.models import Action, ToolType
+
+    tap = history._Tap()
+    list(tap([Action(timestamp=None, tool_name="system", tool_type=ToolType.UNKNOWN,
+                     success=False, error_message="Request timed out.")]))
+    assert tap.errors() == {("timeout", "api"): 1}
+
+
 def test_sync_then_report_json(env):
     rep = json.loads(_report("--json"))
     models = {(m["agent"], m["model"]): m for m in rep["models"]}
