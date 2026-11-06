@@ -667,10 +667,22 @@ _FINGERPRINT_HEX = 12
 _fingerprint_key: bytes | None = None
 
 
+_KEY_READ_TRIES = 25  # x 20 ms: wait up to 0.5 s for another process's write
+_KEY_REPAIR_AGE_S = 2.0  # a wrong-length key file older than this is broken
+
+
 def _load_fingerprint_key() -> bytes | None:
     """This user's fingerprint key: 32 random bytes in history.data_dir()
     (0700 dir, 0600 file), created on first use. None if it cannot be read
-    or created."""
+    or created.
+
+    The file is created complete (temp file hard-linked into place), so a
+    reader never sees a partial key. One of the wrong length (empty or cut:
+    a crash on a filesystem without hard links, a disk-full write) is
+    replaced once it is older than ``_KEY_REPAIR_AGE_S``, so it is not a
+    concurrent writer mid-write. A symlink, or on POSIX a file we do not
+    own, is refused and never replaced.
+    """
     try:
         from agentwatch.coach import _private_dir
         from agentwatch.history import data_dir
@@ -680,17 +692,37 @@ def _load_fingerprint_key() -> bytes | None:
             return None  # not ours (POSIX)
         path = directory / _FINGERPRINT_KEY_FILE
         with contextlib.suppress(FileExistsError):
-            _create_exclusive(path, os.urandom(_FINGERPRINT_KEY_BYTES), 0o600)
-        if path.is_symlink():
-            return None
-        for _ in range(5):  # another process may be writing it right now
-            key = path.read_bytes()
+            _atomic_write_bytes(
+                path, os.urandom(_FINGERPRINT_KEY_BYTES), 0o600, exclusive=True
+            )
+        for _ in range(_KEY_READ_TRIES):  # another process may be writing it
+            key = _read_key_file(path)
+            if key is None:
+                return None
             if len(key) == _FINGERPRINT_KEY_BYTES:
                 return key
             time.sleep(0.02)
+        if time.time() - path.lstat().st_mtime < _KEY_REPAIR_AGE_S:
+            return None  # still being written: use a run-only key
+        _atomic_write_bytes(path, os.urandom(_FINGERPRINT_KEY_BYTES), 0o600)
+        # Read back: if two processes repaired at once, both use the survivor.
+        key = _read_key_file(path)
+        if key is not None and len(key) == _FINGERPRINT_KEY_BYTES:
+            return key
     except Exception:
         pass
     return None
+
+
+def _read_key_file(path: Path) -> bytes | None:
+    """The key file's bytes; None if it is a symlink, not a regular file or
+    (POSIX) not owned by us."""
+    st = path.lstat()
+    if not stat.S_ISREG(st.st_mode):
+        return None  # symlink, dir, fifo
+    if os.name == "posix" and st.st_uid != os.getuid():
+        return None
+    return path.read_bytes()
 
 
 def secret_fingerprint(value: str) -> str:
@@ -722,6 +754,45 @@ def _match_fingerprint(m: re.Match, label: str) -> str:
         return secret_fingerprint(_KEY_BLOCK_SPACE_RE.sub("", m.group(0)))
     start, end = _value_span(m, label)
     return secret_fingerprint(m.string[start:end])
+
+
+def _claimed_matches(
+    text: str,
+    file_path: str | None,
+    patterns: list[tuple[re.Pattern, str]] = _BLOCKS_FIRST,
+) -> Iterator[tuple[str, str, re.Match]]:
+    """(secret_type, fingerprint, match) for every secret value in *text*,
+    each value under one pattern only.
+
+    *patterns* is ordered specific-first ("must be before generic"), so a
+    value matched by two patterns (a Neon URL is also a database URL, a
+    GitHub token is also a bearer token) is reported as the first one: its
+    span is claimed and later patterns overlapping it are skipped. Redacted
+    values, placeholders and cut key blocks are dropped. Shared by the live
+    scanner and ``audit_log_file`` so both report the same value the same way.
+    """
+    taken: list[tuple[int, int]] = []  # value spans already explained
+    for pattern, secret_type in patterns:
+        spans: list[tuple[int, int]] = []
+        for cand in _iter_matches(pattern, secret_type, text):
+            if _is_redacted_value(cand, secret_type) or _is_placeholder(
+                cand, secret_type, file_path
+            ):
+                continue
+            # A cut key (no END) is reported by the header pattern.
+            if secret_type == "private_key_block" and not cand.group("end"):
+                continue
+            # A key block claims header through footer, so the header-only
+            # pattern inside it is the same key.
+            lo, hi = (
+                cand.span() if secret_type == "private_key_block"
+                else _value_span(cand, secret_type)
+            )
+            if any(lo < t_hi and t_lo < hi for t_lo, t_hi in taken):
+                continue
+            spans.append((lo, hi))
+            yield secret_type, _match_fingerprint(cand, secret_type), cand
+        taken.extend(spans)
 
 
 def redact_secrets(text: str) -> str:
@@ -846,36 +917,11 @@ class SecretLeakScanner(SecurityDetector):
         tool_name = getattr(action, "tool_name", None) or ""
         for text, channel, file_path in extract_scannable_content(action):
             severity = _CHANNEL_SEVERITY.get(channel, Severity.MEDIUM)
-            taken: list[tuple[int, int]] = []  # value spans already explained
-            # _SECRET_PATTERNS is ordered specific-first ("must be before
-            # generic"), so a value matched by two patterns (a Neon URL is
-            # also a database URL) is reported as the first one only.
-            for pattern, secret_type in _BLOCKS_FIRST:
-                firsts: dict[str, re.Match] = {}  # fingerprint -> its first match
-                spans: list[tuple[int, int]] = []
-                for cand in _iter_matches(pattern, secret_type, text):
-                    if _is_redacted_value(cand, secret_type) or _is_placeholder(
-                        cand, secret_type, file_path
-                    ):
-                        continue
-                    # A cut key (no END) is reported by the header pattern.
-                    if secret_type == "private_key_block" and not cand.group("end"):
-                        continue
-                    # A key block claims header through footer, so the
-                    # header-only pattern inside it is the same key.
-                    lo, hi = (
-                        cand.span() if secret_type == "private_key_block"
-                        else _value_span(cand, secret_type)
-                    )
-                    if any(lo < t_hi and t_lo < hi for t_lo, t_hi in taken):
-                        continue
-                    spans.append((lo, hi))  # every occurrence is explained by this pattern
-                    # but one finding per pattern, text and distinct secret
-                    firsts.setdefault(_match_fingerprint(cand, secret_type), cand)
-                taken.extend(spans)
-                if not firsts:
-                    continue
-
+            by_type: dict[str, dict[str, re.Match]] = {}
+            for secret_type, fingerprint, m in _claimed_matches(text, file_path):
+                # one finding per pattern, text and distinct secret
+                by_type.setdefault(secret_type, {}).setdefault(fingerprint, m)
+            for secret_type, firsts in by_type.items():
                 remediation = _REMEDIATION.get(
                     secret_type, "Remove from file, use env var, rotate if committed to git"
                 )
@@ -952,21 +998,17 @@ def audit_log_file(
     findings: list[AuditFinding] = []
     # dedup: (secret_type, channel, file_path, fingerprint) per session
     seen: set[tuple[str, str, str, str]] = set()
+    # Same order as the live scanner: key blocks first, then specific-first.
+    ordered = sorted(patterns, key=lambda p: p[1] != "private_key_block")
 
     def _scan(items: list[tuple[str, str, str | None]], ts_str: str | None) -> None:
         for text, channel, file_path in items:
-            for pattern, secret_type in patterns:
-                for m in _iter_matches(pattern, secret_type, text):
-                    if _is_redacted_value(m, secret_type) or _is_placeholder(
-                        m, secret_type, file_path
-                    ):
-                        continue
-                    fingerprint = _match_fingerprint(m, secret_type)
-                    dedup_key = (secret_type, channel, file_path or "", fingerprint)
-                    if dedup_key in seen:
-                        continue
-                    seen.add(dedup_key)
-                    _add(m, secret_type, channel, file_path, fingerprint, ts_str)
+            for secret_type, fingerprint, m in _claimed_matches(text, file_path, ordered):
+                dedup_key = (secret_type, channel, file_path or "", fingerprint)
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+                _add(m, secret_type, channel, file_path, fingerprint, ts_str)
 
     def _add(
         m: re.Match,

@@ -231,3 +231,154 @@ def test_history_stores_one_row_per_secret_and_resync_replaces(cc_env):
     dump = "\n".join(conn.iterdump())
     assert KEY_A not in dump and KEY_B not in dump
     assert secret_fingerprint(KEY_A) not in dump  # only a hash of the dedup key
+
+
+# --- audit: one finding per value (QA #220 B) ----------------------------------
+
+def _user_log(path: Path, texts: list[str]) -> Path:
+    path.write_text("".join(json.dumps({
+        "type": "user", "timestamp": "2026-03-01T12:00:00Z",
+        "message": {"role": "user", "content": t}}) + "\n" for t in texts))
+    return path
+
+
+def _tokens(n: int) -> list[str]:
+    import random
+    import string
+    rnd = random.Random(7)
+    return ["ghp_" + "".join(rnd.choice(string.ascii_letters + string.digits)
+                             for _ in range(36)) for _ in range(n)]
+
+
+def test_audit_reports_each_value_once_under_the_live_scanners_pattern(tmp_path):
+    # Each token is also a bearer token, a bearer header, a key=value secret
+    # and a high-entropy string; it is one github_pat finding, as live.
+    tokens = _tokens(200)
+    log = _user_log(tmp_path / "s.jsonl",
+                    [f"export GITHUB_TOKEN={t}\nAuthorization: Bearer {t}" for t in tokens])
+    found = audit_log_file(log)
+    assert len(found) == 200
+    assert {f.secret_type for f in found} == {"github_pat"}
+    assert {f.fingerprint for f in found} == {secret_fingerprint(t) for t in tokens}
+
+
+def test_audit_same_value_repeated_is_one_finding(tmp_path):
+    (token,) = _tokens(1)
+    log = _user_log(tmp_path / "s.jsonl",
+                    [f"export GITHUB_TOKEN={token}\nAuthorization: Bearer {token}"] * 50)
+    assert [f.secret_type for f in audit_log_file(log)] == ["github_pat"]
+
+
+def test_audit_and_live_scanner_pick_the_same_types(tmp_path):
+    (token,) = _tokens(1)
+    text = (f"GITHUB_TOKEN={token}\nAuthorization: Bearer {token}\n"
+            "DATABASE_URL=postgres://admin:Zq7wErTy9uIoPaSdFgHjKl2@db.example.net/app\n")
+    log = tmp_path / "s.jsonl"
+    log.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "x", "content": text}]}}) + "\n")
+    audit = sorted(f.secret_type for f in audit_log_file(log))
+    live = sorted(w.details["secret_type"] for w in SecretLeakScanner()._scan_action(
+        Action(timestamp=T0, tool_name="Bash", tool_type=ToolType.BASH, success=True,
+               incoming_message=text)))
+    assert audit == live and "github_pat" in audit and "bearer_token" not in audit
+
+
+# --- key file self-repair (QA #220 A) -------------------------------------------
+
+def _key_path() -> Path:
+    directory = history.data_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / sc._FINGERPRINT_KEY_FILE
+
+
+@pytest.mark.parametrize("content", [b"", b"\x01" * 7], ids=["empty", "truncated"])
+def test_old_broken_key_file_is_replaced_and_then_reused(monkeypatch, content):
+    monkeypatch.setattr(sc, "_KEY_READ_TRIES", 1)
+    path = _key_path()
+    path.write_bytes(content)
+    old = time.time() - 60
+    os.utime(path, (old, old))
+    key = sc._load_fingerprint_key()
+    assert key is not None and len(key) == 32 and path.read_bytes() == key
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert sc._load_fingerprint_key() == key  # stable from now on
+    assert not [p for p in path.parent.iterdir() if p.suffix == ".tmp"]
+
+
+def test_fresh_broken_key_file_is_left_to_its_writer(monkeypatch):
+    monkeypatch.setattr(sc, "_KEY_READ_TRIES", 1)
+    path = _key_path()
+    path.write_bytes(b"\x01" * 7)  # just written: maybe another process mid-write
+    assert sc._load_fingerprint_key() is None
+    assert path.read_bytes() == b"\x01" * 7
+
+
+@pytest.mark.skipif(os.name != "posix", reason="symlinks need privileges on Windows")
+def test_symlinked_key_file_is_refused_not_replaced(tmp_path, monkeypatch):
+    monkeypatch.setattr(sc, "_KEY_READ_TRIES", 1)
+    target = tmp_path / "elsewhere"
+    target.write_bytes(b"")
+    path = _key_path()
+    path.symlink_to(target)
+    old = time.time() - 60
+    os.utime(path, (old, old), follow_symlinks=False)
+    assert sc._load_fingerprint_key() is None
+    assert path.is_symlink() and target.read_bytes() == b""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership")
+def test_key_file_owned_by_someone_else_is_refused(monkeypatch):
+    monkeypatch.setattr(sc, "_KEY_READ_TRIES", 1)
+    path = _key_path()
+    path.write_bytes(b"")
+    old = time.time() - 60
+    os.utime(path, (old, old))
+    uid = os.getuid()
+    monkeypatch.setattr("agentwatch.coach._private_dir", lambda d: True)  # the dir is ours
+    monkeypatch.setattr(sc.os, "getuid", lambda: uid + 1)  # the file is not
+    assert sc._load_fingerprint_key() is None
+    assert path.read_bytes() == b""
+
+
+# --- channel labels of raw tool output (pinned; merging labels is separate) -----
+
+def test_copilot_agy_opencode_raw_tool_output_keeps_tool_output_channel(tmp_path):
+    from agentwatch.parser import parse_file
+    from agentwatch.parser.opencode import _tool_action
+
+    (token,) = _tokens(1)
+    out = f"GITHUB_TOKEN={token}\n"
+    copilot = tmp_path / "events.jsonl"
+    copilot.write_text("".join(json.dumps(e) + "\n" for e in [
+        {"type": "session.start", "timestamp": "2026-10-01T12:21:50Z",
+         "data": {"sessionId": "s", "producer": "copilot-agent", "copilotVersion": "1.0.90",
+                  "context": {"cwd": "/tmp/aw-test"}}},
+        {"type": "tool.execution_start", "timestamp": "2026-10-01T12:21:56Z",
+         "data": {"toolCallId": "c1", "toolName": "view", "arguments": {"path": "/tmp/.env"}}},
+        {"type": "tool.execution_complete", "timestamp": "2026-10-01T12:21:57Z",
+         "data": {"toolCallId": "c1", "success": True, "result": {"content": out}}},
+    ]))
+    agy = tmp_path / "transcript.jsonl"
+    agy.write_text("".join(json.dumps(e) + "\n" for e in [
+        {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+         "created_at": "2026-10-01T12:38:27Z", "content": "<USER_REQUEST>\nread .env"},
+        {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+         "created_at": "2026-10-01T12:38:28Z", "tool_calls": [
+             {"name": "view_file", "args": {"AbsolutePath": json.dumps("/tmp/.env")}}]},
+        {"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "DONE",
+         "created_at": "2026-10-01T12:38:29Z", "content": out},
+    ]))
+    opencode = _tool_action({"tool": "read", "state": {
+        "status": "completed", "input": {"filePath": "/tmp/.env"}, "output": out,
+        "time": {"start": 1, "end": 2}}}, "ses_x")
+
+    for actions in (list(parse_file(copilot)), list(parse_file(agy)), [opencode]):
+        channels = {ch for a in actions for text, ch, _ in sc.extract_scannable_content(a)
+                    if token in text}
+        assert channels == {"tool_output"}
+        buf = ActionBuffer()
+        for a in actions:
+            buf.add(a)
+        assert {w.details["channel"] for w in SecretLeakScanner().check_many(buf)} == {
+            "tool_output"}
