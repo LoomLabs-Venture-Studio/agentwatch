@@ -14,7 +14,9 @@ numbers refer to the GitHub repository.
   `history sync` on a button). stdlib server on 127.0.0.1 only, one inline
   page, no CDN, no new dependency. Every request needs the token from the
   printed URL and a `127.0.0.1`/`localhost` Host header; GET only; every
-  string sent is redacted.
+  string sent is redacted. Running agents, health and security reload
+  every 5 seconds while the page is visible (kept as is when unchanged);
+  audit, cost and history stay on their buttons.
 - `agentwatch tools [--log PATH] [--calls] [--json] [--format text|json|csv]`:
   the tools one session called. Per tool: calls, failed, failure %, top error
   kind, total and median time (`-` when the agent logs none; Claude Code's is
@@ -107,6 +109,9 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- `agentwatch report --days` above 10000 is now a usage error instead of a
+  traceback, and an empty report mentions `--include-active` for sessions
+  still being written.
 - `report`/`tools` error kinds: a failed command is classified by its first and
   last output lines, not by "timed out" or "No such file" anywhere in its
   output, and Claude Code API errors count as tool `api`, not `system` (#206).
@@ -216,6 +221,11 @@ Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.
   finding counts and the change against the previous period. Sessions with
   no price show as n/a and are left out of spend and %. `--agent`,
   `--project`, `--json` (schema 1, documented in the README), `--no-sync`.
+- `agentwatch statusline`: one short word in Claude Code's status line
+  (`⚠ loop ~$1.40`) for the most severe current HIGH/CRITICAL coach
+  finding, nothing when healthy (`--ok` shows a dim check mark). Reads only
+  the coach's state file and always exits 0; a one-line setup in
+  `~/.claude/settings.json` (PR #146).
 - `agentwatch history sync|prune|path`: a local SQLite history of sessions
   and findings behind the report (`%LOCALAPPDATA%\agentwatch\history.db`, or
   `~/.local/share/agentwatch/`). Only new or changed logs are read; logs
