@@ -13,10 +13,14 @@ numbers refer to the GitHub repository.
   command's line that starts with `Error:` (or `TypeError:` and the like) is
   now read along with its first and last output lines (#206).
 - `security-scan` reports how many actions it scanned ("Analyzed N actions",
-  JSON `action_count`, also in `agentwatch visual`). It reported at most 500,
-  the size of the live buffer, on longer sessions.
+  JSON `action_count`, also in `agentwatch visual`), and `subagents` how
+  many each subagent made. Both reported at most 500, the size of the live
+  buffer, on longer sessions. Token-usage and turn-end records (Codex
+  `token_count`, for example) are not counted as actions, as in `history`
+  and `report`.
 - `error_spiral` reports the whole run of failed calls since the last
-  success (up to the 500 kept in the buffer), and its token cost covers
+  success (up to the actions kept in the buffer: 500 in scans, 2,000 in
+  `watch-all`), and its token cost covers
   each of them. It reported at most 5 with the default settings. It fires
   at the same point and with the same severity as before.
 

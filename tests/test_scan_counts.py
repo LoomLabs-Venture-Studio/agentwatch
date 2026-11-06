@@ -123,3 +123,60 @@ def test_growing_spiral_keeps_one_dedup_key():
         for n in (3, 7, 8, 30)
     }
     assert len(keys) == 1
+
+
+# --- usage records, the watch-all buffer and subagents -------------------
+
+CODEX_USAGE = {"input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 10,
+               "reasoning_output_tokens": 0, "total_tokens": 110}
+
+
+def _codex_rollout(tmp_path, n_calls: int):
+    def line(ts, type_, payload):
+        return {"timestamp": f"2026-10-09T14:{ts // 60:02d}:{ts % 60:02d}Z",
+                "type": type_, "payload": payload}
+
+    entries = [line(0, "session_meta", {"id": "s1", "cwd": "/x", "cli_version": "0.162.0"})]
+    for i in range(n_calls):
+        t = 10 + i * 4
+        entries.append(line(t, "response_item", {
+            "type": "function_call", "call_id": f"c{i}", "name": "shell",
+            "arguments": json.dumps({"command": ["bash", "-lc", f"echo {i}"]})}))
+        entries.append(line(t + 1, "response_item", {
+            "type": "function_call_output", "call_id": f"c{i}", "output": "ok"}))
+        entries.append(line(t + 2, "event_msg", {
+            "type": "token_count",
+            "info": {"last_token_usage": CODEX_USAGE, "total_token_usage": CODEX_USAGE,
+                     "model_context_window": 258_400}}))
+    path = tmp_path / "rollout-2026-10-09T14-00-00-s1.jsonl"
+    path.write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
+    return path
+
+
+def test_security_scan_does_not_count_usage_records(tmp_path):
+    log = _codex_rollout(tmp_path, 3)
+    text = CliRunner().invoke(cli, ["security-scan", "--log", str(log)])
+    assert "Analyzed 3 actions" in text.output, text.output
+    data = CliRunner().invoke(cli, ["security-scan", "--log", str(log), "--json"])
+    assert json.loads(data.output)["action_count"] == 3
+
+
+def test_error_spiral_run_in_the_watch_all_buffer():
+    buffer = ActionBuffer(max_size=2000)
+    for i in range(N_ACTIONS):
+        buffer.add(_action(i, success=False, tokens=1))
+    warning = ErrorSpiralDetector().check(buffer)
+    assert warning is not None
+    assert warning.details["consecutive_failures"] == N_ACTIONS
+
+
+def test_subagents_count_every_action(tmp_path):
+    from agentwatch.subagents import build
+
+    session = tmp_path / "abc.jsonl"
+    session.write_text("", encoding="utf-8")
+    sub = tmp_path / "abc" / "subagents"
+    sub.mkdir(parents=True)
+    _write_log(sub / "agent-a1.jsonl", N_ACTIONS)
+    (row,) = build(session)["subagents"]
+    assert row["actions"] == N_ACTIONS
