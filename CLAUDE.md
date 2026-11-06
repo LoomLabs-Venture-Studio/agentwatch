@@ -632,15 +632,15 @@ agentwatch watch --security     # manual smoke test (live TUI)
 ```
 
 ## Git Rules
-- **Never push to `main`. Merges into `main` go only through a PR that the
-  board reviews and approves** (board rule 2026-09-30, clarified
-  2026-10-25). It is not a ban: propose a release/promote PR into `main`
-  when it is the right next step, but never merge one without the board's
-  explicit go. (Native memory is per-machine, so this rule lives here too.)
-- Promoting `develop` to `main`: open a plain `develop` -> `main` PR and,
-  after the board's go, merge it with a merge commit, not a squash (0.2.1,
-  #183). The one-time `git merge -s ours origin/main` for main's revert
-  commits (ee1f65e, 349c7a1, dc5d03d) was done in the 0.2.0 promotion (#180).
+- **Never push to `main` and never merge into `main`** (board rule
+  2026-09-30; tightened by the user 2026-11-06: "never merge to main").
+  Agents may open a release/promote PR into `main` as a draft, but only a
+  human merges it, and agents never tag or publish from `main`. (Native
+  memory is per-machine, so this rule lives here too.)
+- Promoting `develop` to `main` (done by a human): a plain PR into `main`,
+  merged with a merge commit, not a squash (0.2.1, #183). The one-time
+  `git merge -s ours origin/main` for main's revert commits (ee1f65e,
+  349c7a1, dc5d03d) was done in the 0.2.0 promotion (#180).
 - `develop` is the integration line (v0.2.0+). Branch `feature/`, `fix/`,
   `chore/` or `docs/` **from `develop`**; PRs target `develop`.
 - One commit per logical change
