@@ -6,6 +6,8 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-06
+
 ### Added
 
 - `agentwatch visual [--port N] [--no-open]`: the reports in a local browser
@@ -132,6 +134,20 @@ numbers refer to the GitHub repository.
   persistence, exploration stall, context rot, rediscovery and the thrash
   metric no longer tally it, fill windows with it or have a failure streak
   broken by it. Tokens, cost and the action count still include it.
+- History stores a model or tool name only when it holds no path, email or
+  secret; anything else is stored as `other`.
+
+### Changed
+
+- README: a short, plain-language front page with a banner.
+- agentwatch.info: plain-language redesign, with a dashboard screenshot
+  rendered from made-up sessions.
+
+### Security
+
+- A private key cut before its `-----END` line is now redacted whole. Before,
+  only its `BEGIN` header was masked and the key body could show in redacted
+  output (#205).
 
 ## [0.2.1] - 2026-10-27
 

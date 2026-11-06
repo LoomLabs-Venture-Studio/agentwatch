@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
+> **Latest: Sprint 42, follow-ups and 0.2.2 release prep (2026-11-06), at the end of this file; before it Sprint 41 (visual, tools, README) and Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -5579,3 +5579,22 @@ Cut: needs-input in watch-all (Codex approval requests are transient, not persis
 **#193 fix round (board-approved 2026-11-02):** the guard now also unwraps `eval` (quoted or not), `setsid`, `builtin`, `cmd /c`, `powershell`/`pwsh -c|-Command`, `wsl [-d X] [-e|--]` and `script -c`, ignores a trailing `.exe`, and catches `agentguard guard off` (the alias entry point) and the `npx`/`xargs` launchers. Documented gaps: `powershell -EncodedCommand`, and Write/Edit or a redirect onto the guard file through a relative path (`coach/guard`).
 
 **#193 round 2 (board-approved 2026-11-02):** now also asks on `cmd //c ...` (Git Bash), `cmd /c"..."`/`/k"..."` (glued), `/r`; PowerShell bare positional args (5.1 runs them as a command; `pwsh` asked the same), `-c`/`-Command` and its prefixes from `-com`, after skipping switches and value options (`-ExecutionPolicy`, `-WindowStyle`, ...); `-File` and `-EncodedCommand` still pass. Program names are case-insensitive (`BASH -c`, `GIT reset --hard`) and a quoted `C:\...\cmd.exe` path works. Documented gaps: `wsl --shell-type X`, `script --command=...`, `curl | cmd`/`| powershell`, wrappers nested more than 3 deep, unquoted backslash program paths, quote-split words (`r''m`) in commands over 20,000 chars.
+
+### Sprint 42 -- follow-ups and 0.2.2 release prep (2026-11-06)
+
+Clear the Sprint 40/41 follow-ups, then prepare 0.2.2 on `develop`. Out of scope: anything touching `main` (promotion PR, tag, PyPI publish need the board's go).
+
+**Shipped to develop**
+- [x] #153 `report --days` capped at 10000 (usage error, not a traceback); empty report points at `--include-active`; SIEM cost test skips without the extra; `agentwatch statusline` (#146) added to the 0.2.1 notes, where it shipped. Brought up to date by merging develop (no force-push). QA pass with notes.
+- [x] #211 (fixes #206) `history.error_kind`: a failed command with an exit line is classified by its first and last output lines only, not a phrase anywhere in its output; Claude Code API errors count as tool `api`, not `system`. No schema change, old rows correct on the next re-sync of their log. Precision on 206 real failed calls: 1 reclassified (the bug). QA pass with notes.
+- [x] #212 `agentwatch subagents [--log] [--all] [--active] [--json]`: health of each Claude Code subagent transcript (`<session>/subagents/agent-<id>.jsonl`, any depth), plus a "Subagents of the newest session" section on `visual`'s Overview.
+- [x] #209 `visual`: running agents, health and security reload every 5 seconds while the page is visible.
+- [x] #204 closed: already fixed by #208 (checked against the issue's examples). A two-segment name like `home/zaid` is still stored on purpose: it cannot be told apart from `anthropic/claude-x`.
+- [ ] #210 release prep: version 0.2.2 (pyproject, `__version__`, plugin.json, get-started), CHANGELOG `[0.2.2] - 2026-11-06` with every Sprint 40-42 entry and an empty `[Unreleased]` (PEM fix under Security; docs under Changed), README image and LICENSE links absolute (raw.githubusercontent.com / github.com on `main`) so they render on PyPI. Ready for review; the board merges.
+
+**Release order (board):** merge #210 into develop -> develop -> `main` promotion PR (merge commit, not squash) -> tag `v0.2.2` -> publish. Promote before publishing: `banner.svg` is not on `main` yet, so its README link 404s on PyPI until then.
+
+**Follow-ups**
+- Subagents are not shown in the `watch-all` dashboard yet (needs the process-mode watcher to track `<session>/subagents/*.jsonl`).
+- `error_kind`: a Node.js crash prints its `Error: ENOENT ...` mid-output (first line `node:internal/...`, last `Node.js vN`), so it is now `nonzero_exit` rather than `file_not_found`; consider also reading a leading `Error:` line. Add tests for a 500-char head with a longer result, `incoming_message=None`, CRLF and a Node stack trace.
+- No test that `report --days 10000` itself succeeds (checked by hand).
