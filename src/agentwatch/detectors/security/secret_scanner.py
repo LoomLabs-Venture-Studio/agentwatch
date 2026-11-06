@@ -96,12 +96,25 @@ _p(
 _p(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", "private_key")
 _p(r"-----BEGIN PGP PRIVATE KEY BLOCK-----", "pgp_private_key")
 # The whole key: the header-only patterns above leave the body behind on
-# redaction. The body is lazy and bounded, so an unterminated BEGIN scans
-# at most 20000 chars; [\s\S] spans real newlines and JSON "\n" escapes.
+# redaction. The body is the lines a key body can hold: base64(url) runs and
+# "Name: value" headers (Proc-Type, DEK-Info, PGP Version/Comment), split by
+# newlines, JSON "\n" escapes or (one_line flattens) spaces. A run of 40+
+# chars is a full key line; a shorter run or a header must end its line (a
+# line break, '"', "-----" or the text end), so it stops at prose or at the
+# next "AWS=..." line. It needs no END: parsers and display windows cut long
+# text before the footer, and the cut body must still be masked. Possessive
+# and bounded, so the scan is linear.
+_KEY_SEP = r"(?:\s|\\r|\\n)"
+_KEY_CH = r"(?:[A-Za-z0-9+/_]|-(?!----))"
+_KEY_EOL = r"(?=[ \t]*+(?:\r?\n|\\r|\\n|\\?\"|-----|\Z))"
 _p(
     r"-----BEGIN (?P<kind>(?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?"
     r"PRIVATE KEY(?: BLOCK)?)-----"
-    r"(?P<secret>[\s\S]{1,20000}?)-----END (?P=kind)-----",
+    r"(?P<secret>(?:" + _KEY_SEP + r"*+(?>" + _KEY_CH + r"{40}" + _KEY_CH + r"*+=*+"
+    r"|(?:[A-Za-z][A-Za-z0-9-]*+: (?:[^\r\n\"\\-]|-(?!----))*+|" + _KEY_CH + r"++=*+)"
+    + _KEY_EOL + r")){1,1000}+"
+    r"(?:" + _KEY_SEP + r"*+(?=-----END (?P=kind)-----))?)"
+    r"(?P<end>-----END (?P=kind)-----)?",
     "private_key_block",
 )
 
@@ -292,6 +305,7 @@ _NO_TAIL_LABELS = frozenset({
     "url_credentials",
     "database_connection_string",
     "neondb_connection_string",
+    "private_key_block",
 })
 
 
@@ -625,6 +639,10 @@ def _mask_match(m: re.Match, label: str) -> str:
     return m.string[m.start() : start] + _mask_match_value(m, label) + m.string[end : m.end()]
 
 
+# Whole key blocks first: they claim the header the header-only patterns match.
+_BLOCKS_FIRST = sorted(_SECRET_PATTERNS, key=lambda p: p[1] != "private_key_block")
+
+
 def redact_secrets(text: str) -> str:
     """Replace every ``_SECRET_PATTERNS`` match in *text* with its masked form.
 
@@ -634,7 +652,9 @@ def redact_secrets(text: str) -> str:
     heuristic misjudged does. Callers that truncate must redact *first* --
     truncating first can cut a token so the pattern no longer matches.
     """
-    for pattern, label in _SECRET_PATTERNS:
+    # Key blocks first: a header-only pattern masking the BEGIN line would
+    # leave the block pattern nothing to match, and the body in the clear.
+    for pattern, label in _BLOCKS_FIRST:
         text = pattern.sub(lambda m: _mask_match(m, label), text)
     return text
 
@@ -679,10 +699,6 @@ def _redact_window(window: str) -> str:
 # ---------------------------------------------------------------------------
 # SecretLeakScanner
 # ---------------------------------------------------------------------------
-
-# Whole key blocks first: they claim the header the header-only patterns match.
-_BLOCKS_FIRST = sorted(_SECRET_PATTERNS, key=lambda p: p[1] != "private_key_block")
-
 
 class SecretLeakScanner(SecurityDetector):
     """Scans all action channels for leaked secrets/credentials in real time."""
@@ -759,6 +775,9 @@ class SecretLeakScanner(SecurityDetector):
                     if _is_redacted_value(cand, secret_type) or _is_placeholder(
                         cand, secret_type, file_path
                     ):
+                        continue
+                    # A cut key (no END) is reported by the header pattern.
+                    if secret_type == "private_key_block" and not cand.group("end"):
                         continue
                     # A key block claims header through footer, so the
                     # header-only pattern inside it is the same key.

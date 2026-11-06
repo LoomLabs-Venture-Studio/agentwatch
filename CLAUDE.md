@@ -65,8 +65,14 @@ want a "fitness tracker + security guard" for those agents.
 ```
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps,
-                       detect, net, list-detectors, security-scan, themes, stats,
-                       audit, scrub, report, history sync|prune|path. `scrub PATH` redacts secrets + PII in one
+                       detect, net, list-detectors, security-scan, config-scan, themes, stats,
+                       visual,
+                       audit, scrub, report, tools, history sync|prune|path, notify on|off|status
+                       [--webhook URL] [--events needs-input,done] (the
+                       Claude Code hook's attention-alert settings; webhook
+                       masked).
+                       `report`/`stats`/`tools` take --format text|json|csv.
+                       `scrub PATH` redacts secrets + PII in one
                        file (copy by default, `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
                        (output without `--pii` unchanged)
@@ -172,7 +178,8 @@ src/agentwatch/
                        PostToolUseFailure hook. Tail (4 MB) of
                        transcript_path -> parse_claude_code_entry ->
                        health registry; new HIGH/CRITICAL PROGRESS/ERRORS
-                       warning -> hookSpecificOutput.additionalContext
+                       warning (includes `test_tampering`, Try line fixed)
+                       -> hookSpecificOutput.additionalContext
                        (<= 3 lines; evidence quoted with </> stripped, the
                        Try line is fixed text per signal). Subagent
                        payloads (agent_id) read <transcript>/subagents/
@@ -194,7 +201,30 @@ src/agentwatch/
                        (same id as LoopDetector) and denies the first match
                        once (permissionDecision deny, fixed reason).
                        LOOP_ALLOW Bash prefixes are never denied.
-  statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
+                       Attention alerts (Sprint 40): Notification
+                       (permission_prompt, idle_prompt, elicitation_dialog,
+                       elicitation_url_dialog, agent_needs_input) and Stop,
+                       only when user_state_dir()/notify (no suffix, so never
+                       pruned; 0600; {on, events, webhook?}) is on; off = one
+                       file read. Title `agentwatch: Claude Code · <cwd
+                       name> — waiting for permission|waiting for your
+                       input|finished`; body = payload message or "N tool
+                       calls this turn, ~$x" (1 MB transcript tail back to
+                       the prompt). Desktop via alerts.notify_command,
+                       spawned detached; webhook 3 s. Dedup: state
+                       "attention" key; repeated idle and idle after done
+                       skipped; PostToolUse _save and Stop reset it;
+                       stop_hook_active skipped. Prints nothing, no decision.
+                       hooks.json runs both async
+                       Command guard (guard.py, stdlib only, runs before
+                       the breaker): catastrophic Bash (rm -rf ~, push -f,
+                       mkfs, curl|sh, ...; shlex-split, sudo/env/bash -c
+                       unwrapped) or a secrets read (.env, SSH keys, cloud
+                       creds) -> permissionDecision ask, fixed reason.
+                       `agentwatch guard off` writes {"on": false} to
+                       user_state_dir()/guard (coach.GUARD); only that
+                       exact value turns it off (`on` deletes the file)
+  statusline.py        `agentwatch statusline [--ok] [--cost]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
                        user_state_dir()/state-dir (coach.POINTER, written
@@ -202,12 +232,16 @@ src/agentwatch/
                        CLAUDE_PLUGIN_DATA), else <CLAUDE_CONFIG_DIR or
                        ~/.claude>/plugins/data/agentwatch-*/coach, and
                        user_state_dir; worst HIGH/CRITICAL of the mapped
-                       signals -> `⚠ loop|thrash|errors|stuck ~$x` (cost
+                       signals -> `⚠ loop|thrash|errors|stuck|tests weakened ~$x` (cost
                        only if finite, 0 <= x < 10k; < 0.01 -> `<$0.01`;
                        yellow/red, NO_COLOR). Healthy: nothing, `--ok` dim
                        `✓ agentwatch`. No state / > 10 min old / any error:
                        nothing, exit 0. No transcript parsing; imports only
-                       stdlib + coach (~150 ms on Windows)
+                       stdlib + coach (~150 ms on Windows). `--cost`: the
+                       active 5-hour block (spend -> projection · resets)
+                       from a 60 s cache (user_state_dir()/block.json); a
+                       miss imports cc_stats and scans transcripts modified
+                       in the last 24 h
   alerts.py            Alerter for `watch`/`watch-all` `--notify`,
                        `--webhook URL` (env AGENTWATCH_WEBHOOK) and
                        `watch-all --headless`. observe(session, agent,
@@ -241,7 +275,12 @@ src/agentwatch/
                        (URL masked), beep on
                        Windows toast failure; TUIs route warn to a toast
                        (tui_warn). Headless = MultiAgentWatchApp.run(
-                       headless=True), the same engine
+                       headless=True), the same engine.
+                       --notify-done (Sprint 40): observe(done=) = parser.
+                       models.turn_ended(newest first) -> one "finished
+                       [~$x]" alert per turn end (same message_id = same),
+                       baselined like findings, not rate-limited; headless
+                       DONE line
   _entry.py            Console-script entry: `hook` and `statusline` go
                        straight to coach.py / statusline.py without
                        importing cli.py, the rest to cli.main. The package
@@ -252,10 +291,19 @@ src/agentwatch/
                        $XDG_DATA_HOME or ~/.local/share + agentwatch; dir via
                        coach._private_dir, 0700). PRAGMA user_version +
                        _MIGRATIONS (statement lists, IF NOT EXISTS) run
-                       under BEGIN IMMEDIATE, version re-read inside. sessions keyed by log_hash (sha256
+                       under BEGIN IMMEDIATE, version re-read inside.
+                       sessions keyed by log_hash (sha256
                        of the path, never the path), findings by (log_hash,
-                       sha256 of warning_dedup_key). sync(): every adapter's
-                       history_logs(), skip unchanged (size, mtime_ns),
+                       sha256 of warning_dedup_key); schema 2 adds
+                       session_models (per model id: calls, tokens incl.
+                       cache write/1h/read, USD, USD saved by cache reads;
+                       ActionBuffer's largest-copy-per-call rule, so they sum
+                       to the session cost) and session_errors (kind, tool,
+                       count; never error text). error_kind(): first match
+                       of fixed strings/regexes over error_message + the
+                       failed result's tail -> ERROR_KINDS. Migration 2
+                       sets size = -1 so the next sync re-reads every log.
+                       sync(): every adapter's history_logs(), skip unchanged (size, mtime_ns),
                        active (< 60 s) and --days; changed logs re-scanned
                        whole (registry "all", `check`'s health score and
                        waste_summary), findings replaced, first_seen kept;
@@ -266,10 +314,68 @@ src/agentwatch/
                        last part; secret mask tail dropped; 120); security
                        messages not stored.
                        Deleted logs stay; prune(days)
-  report.py            `agentwatch report`: build() (JSON schema 1) over
-                       sessions whose last action is in the period, plus the
-                       previous one for the trend; unpriced sessions counted
-                       but out of spend and waste %; render() text
+  visual.py            `agentwatch visual`: ThreadingHTTPServer on
+                       127.0.0.1 (--port, 0 = free) + one inline vanilla-JS
+                       page (textContent only, CSP, no CDN). GET /api/<name>
+                       (ps, check, security-scan, audit, stats, report,
+                       history) calls cli.py's --json builders (_ps_json,
+                       _check_json, _security_json, _audit_scan/_audit_json)
+                       in process; every string through redact_truncate.
+                       Token (?t=, compare_digest) + Host 127.0.0.1|localhost
+                       :<port> or 403; non-GET 405; token masked in logs.
+                       audit and history sync only with ?run=1
+  report.py            `agentwatch report`: build() (JSON schema 1, fields
+                       only added) over sessions whose last action is in the
+                       period, plus the previous one for the trend; unpriced
+                       sessions counted but out of spend and waste %;
+                       models (per model+agent, USD null if any call
+                       unpriced), cache (hit % = read / (read + written +
+                       uncached), saved_usd priced models only), errors
+                       (by kind with sessions share and delta, by tool);
+                       render() text; write_csv(): any JSON report as one
+                       long table table,rank,name,metric,value (also
+                       `stats --format csv`), formula-leading text quoted
+  tools_view.py        `agentwatch tools`: build() (JSON schema 1) over one
+                       parsed log's is_tool_call actions: per tool calls,
+                       failed, top history.error_kind, total/median ms
+                       (duration_ms, else completed_at - timestamp, else
+                       null); --calls rows: target = file name or command
+                       via one_line(80); never args/results/error text.
+                       Log picked by cli._default_log like `check`;
+                       csv via report.write_csv
+  config_scan.py       `agentwatch config-scan [--json] [--path DIR]` (also
+                       `agentguard config-scan`): offline, read-only audit
+                       of agent configs. Claude Code settings(.local).json
+                       (user + project; permissions, hooks, statusLine,
+                       env), .mcp.json, ~/.claude.json (mcpServers +
+                       projects.*.mcpServers only, <= 32 MB), skills/
+                       commands/agents md, CLAUDE.md, installed plugins
+                       (installed_plugins.json installPath); Cursor
+                       mcp.json; VS Code mcp.json (servers, JSONC); Codex
+                       config.toml + hooks.json; Gemini settings.json;
+                       Cline cline_mcp_settings.json (legacy store per
+                       editor + ~/.cline/data/settings). Root helpers
+                       reused (CLAUDE_CONFIG_DIR, _codex_sessions_root,
+                       _gemini_dir, default_user_dir, cline paths).
+                       Checks: secrets via _SECRET_PATTERNS (masked; var
+                       refs stripped), unpinned npx/uvx/pipx/... and git
+                       refs (a Windows `cmd /c|/k` wrapper is unwrapped
+                       first, so `cmd /c npx -y pkg` counts), docker
+                       untagged, plain-http remotes, bypassPermissions /
+                       allow-all / credential-path allow rules, Codex
+                       sandbox_mode = "danger-full-access" at top level
+                       and in each [profiles.<name>] (high with
+                       approval_policy = "never", the profile's own else
+                       the top-level one), pipe-to-shell in hooks and in
+                       MCP server command + args (remote_script), hidden
+                       chars / hidden comments / override phrases in md,
+                       POSIX files writable by others. show(): paths in /
+                       form with home as ~ on every OS (Windows home
+                       match case-insensitive). Symlinks must resolve
+                       inside the root (project, else home); symlinked
+                       dirs not walked; > 2 MB skipped; unparseable ->
+                       files_skipped. JSON schema 1. Exit 0 / 1 medium /
+                       2 high
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
@@ -294,13 +400,21 @@ src/agentwatch/
                        --all`. project_dir_to_name(dir, log): basename of
                        the transcripts' recorded cwd, else the dir-name
                        decode; project_name(): "~" for the home dir (also
-                       agents.base.folder_name, used by history)
+                       agents.base.folder_name, used by history).
+                       compute_blocks(): `stats --blocks` 5-hour usage
+                       windows (all projects, message.id once, ccusage rule)
   themes.py             Pluggable status-label/emoji/color themes shared by
                        CLI, health scoring, and the TUI
 
   parser/
     models.py           Action / ActionBuffer / SessionStats / ToolType /
-                       MetricResult data models
+                       MetricResult data models.
+                       Action.turn_end marks where an agent finished its turn
+                       (Claude Code end_turn text, Codex task_complete,
+                       Copilot CLI final assistant.turn_end, Copilot VS Code
+                       request Complete, OpenCode finish=stop); Codex and
+                       Copilot CLI emit a TURN_END record counted like a
+                       usage record (is_usage_record)
                        ActionBuffer merges a late tool result into its call
                        (`_sync_results`, `take_changed()`) and bumps
                        `revision` on any change (the dashboard's score cache
@@ -404,7 +518,11 @@ src/agentwatch/
                        action whose result lands after it left their window
     health/*.py          Health detectors: loops, tool_thrash, stall/stuck,
                        errors, context, repetition, behavioral, progress,
-                       constraints
+                       constraints, fake_green (`test_tampering`: tests
+                       skipped/weakened/deleted on test files only; HIGH when
+                       the last test run before it failed; edit text read
+                       from raw for Claude Code, Codex, Copilot CLI, Gemini,
+                       OpenCode/Kilo, Cline; commands for all)
     security/*.py        Security detectors: credentials, injection,
                        network, privilege, supply_chain, secret_scanner
                        (also redact_truncate and one_line, the shared
