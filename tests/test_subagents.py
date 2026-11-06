@@ -53,3 +53,26 @@ def test_no_subagents(tmp_path):
     session = tmp_path / "x.jsonl"
     session.write_text("")
     assert build(session)["subagents"] == []
+
+
+def test_with_subagents_and_parent(tmp_path):
+    from agentwatch.discovery import AgentProcess
+    from agentwatch.subagents import parent_log, with_subagents
+
+    session = _session(tmp_path)
+    sub = session.with_suffix("") / "subagents"
+    (sub / "agent-a1.jsonl").write_text(
+        (sub / "agent-a1.jsonl").read_text() + '{"content":[{"type":"tool_use","id":"tu9"}]}\n')
+    shutil.copy(FIX / "claude_code_2_1_30x.jsonl", sub / "agent-a4.jsonl")
+    (sub / "agent-a4.meta.json").write_text(json.dumps(
+        {"agentType": "qa", "spawnDepth": 2, "toolUseId": "tu9"}))
+    main = AgentProcess(pid=7, agent_type="claude-code", working_directory=tmp_path,
+                        log_file=session, depth=0, team_id=7)
+    other = AgentProcess(pid=8, agent_type="aider", working_directory=tmp_path, log_file=None)
+    procs = with_subagents([main, other])
+    added = {p.log_file.stem: p for p in procs[2:]}
+    assert set(added) == {"agent-a1", "agent-a4"}  # a2 is old: not active
+    assert (added["agent-a1"].pid, added["agent-a1"].team_id) == (7, 7)
+    assert (added["agent-a1"].depth, added["agent-a4"].depth) == (2, 2)  # spawnDepth
+    assert parent_log(sub / "agent-a4.jsonl") == sub / "agent-a1.jsonl"
+    assert parent_log(sub / "agent-a1.jsonl") == session

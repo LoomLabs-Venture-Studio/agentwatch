@@ -350,7 +350,14 @@ src/agentwatch/
                        default, each scored like `check` (health mode);
                        active = written in the last 10 min; scores cached
                        per (size, mtime_ns) for visual's 5 s reload. JSON
-                       schema 1. Not wired into watch-all yet
+                       schema 1. with_subagents(): watch-all (process
+                       mode) adds each active subagent log of a Claude Code
+                       session as an AgentProcess sharing its pid/team
+                       (depth = session + spawnDepth); multi_app sets
+                       parent_log via parent_log() (the sibling log holding
+                       the meta's toolUseId, else the session; cached),
+                       labels the row by agentType, never net-samples it
+                       and keeps it out of the by-pid parent map
   config_scan.py       `agentwatch config-scan [--json] [--path DIR]` (also
                        `agentguard config-scan`): offline, read-only audit
                        of agent configs. Claude Code settings(.local).json

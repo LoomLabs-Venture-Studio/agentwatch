@@ -5595,6 +5595,6 @@ Clear the Sprint 40/41 follow-ups, then prepare 0.2.2 on `develop`. Out of scope
 **Release order (board):** merge #210 into develop -> develop -> `main` promotion PR (merge commit, not squash) -> tag `v0.2.2` -> publish. Promote before publishing: `banner.svg` is not on `main` yet, so its README link 404s on PyPI until then.
 
 **Follow-ups**
-- Subagents are not shown in the `watch-all` dashboard yet (needs the process-mode watcher to track `<session>/subagents/*.jsonl`).
+- ~~Subagents are not shown in the `watch-all` dashboard yet~~ Done in #213: `subagents.with_subagents()` adds each active subagent log to process-mode discovery, nested under the log that started it.
 - `error_kind`: a Node.js crash prints its `Error: ENOENT ...` mid-output (first line `node:internal/...`, last `Node.js vN`), so it is now `nonzero_exit` rather than `file_not_found`; consider also reading a leading `Error:` line. Add tests for a 500-char head with a longer result, `incoming_message=None`, CRLF and a Node stack trace.
 - No test that `report --days 10000` itself succeeds (checked by hand).
