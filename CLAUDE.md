@@ -930,8 +930,7 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   _find_own_process` so TUI tests never scan real processes.
 - **0.2.1 known limitations** (Sprint 38, PRs #184-#186): Claude Code user
   text blocks are not emitted yet (scoring must first ignore `user_message`
-  sentinels); two different secrets of the same type in the same channel and
-  file count as one finding (needs a secret fingerprint in the dedup key); a
+  sentinels); a
   security-mode toggle recovers actions that arrived while security was off
   only from the 2,000-action live buffer; a toggle's `refresh_ui` rescores
   every session synchronously (about 200 ms with 23 sessions); `--audit-log`
@@ -941,7 +940,11 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   Code tool-result text reaches the prompt-injection detector, so reading a
   file that only discusses injection (docs, tests) can score security 0
   (board accepted 2026-10-27; reducing these false positives is a follow-up).
-  The secret scanner labels tool-result text with channel `user_message`.
+  Fixed in Sprint 43: secret findings carry `details.fingerprint` (HMAC-SHA256
+  under a per-user key in data_dir()/secret-fingerprint.key, 0600; first 12
+  hex; in the dedup key), so two different secrets are two findings; tool
+  results are channel `tool_result` (agy/Gemini/OpenCode/Copilot CLI
+  `raw.content` stays `tool_output`).
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
 

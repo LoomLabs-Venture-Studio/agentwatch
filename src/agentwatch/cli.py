@@ -2369,6 +2369,7 @@ def _audit_json(
             "severity": f.severity,
             "file_path": f.file_path,
             "matched_prefix": f.matched_prefix,
+            "fingerprint": f.fingerprint,
             "log_file": f.log_file,
             "session_id": f.session_id,
             "project_name": f.project_name,
