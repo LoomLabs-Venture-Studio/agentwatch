@@ -73,8 +73,8 @@ _CORPUS = [
     "git -c core.sshCommand='rm -rf ~' fetch origin", "git fetch --upload-pack='rm -rf ~' x",
     "git grep -O'rm -rf ~' x", "git -c alias.x='!rm -rf ~' x",
     "gh repo clone o/r -- --upload-pack='rm -rf ~'",
-    "rm -rf /etc", "rm -rf /usr", "rm -rf /home", "rm -rf /home/*", "rm -rf /home/zaid",
-    "rm -rf /Users/zaid", "rm -rf /root", "rm -rf ~/.ssh", "rm -rf ~/..", "rm -rf //",
+    "rm -rf /etc", "rm -rf /usr", "rm -rf /home", "rm -rf /home/*", "rm -rf /home/alice",
+    "rm -rf /Users/alice", "rm -rf /root", "rm -rf ~/.ssh", "rm -rf ~/..", "rm -rf //",
     "rm -rf ${HOME}", "rm -rf $HOME/", "rm -rf -- /", "rm -rf --no-preserve-root /",
     "rm -Rf /", "rm -rf C:/", "rm -rf ./", "rm -rf ../", "rm -rf ../*", "rm -rf .git",
     "rm -rf ~/*", "rm -rf /tmp/x", "rm -rf .pytest_cache", "rm -rf ./build",
@@ -147,7 +147,7 @@ def test_new_spellings_are_added():
     "rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf ~/", "rm -rf ~/*", "rm -rf $HOME",
     'rm -rf "$HOME"', "rm --recursive --force ${HOME}", "rm -rf .", "rm -rf ..",
     "rm -rf ./*", "rm -rf /etc", "rm -rf /usr", "rm -rf /var", "rm -rf /home",
-    "rm -rf /home/zaid", "rm -rf /Users/alice", "rm -rf /lib64", "rm -rf //",
+    "rm -rf /home/alice", "rm -rf /Users/alice", "rm -rf /lib64", "rm -rf //",
     "rm -fr /", "rm -r -f ~", "rm -Rf /", "rm -rf --no-preserve-root /",
     "rm -rf ~/.ssh", "rm -rf ~/Documents",  # a ~ in the target is not a plain literal
     "rm -rf /tmp/$X", "rm -rf /opt/`id`", "rm -rf /srv/*", "cd /tmp && rm -rf ./*",
@@ -159,8 +159,9 @@ def test_recursive_rm_of_filesystem_target_is_critical(command):
 
 @pytest.mark.parametrize("command", [
     "rm -rf /tmp/x", "rm -rf .pytest_cache", "rm -rf ./build",
-    "rm -rf /home/zaid/proj", "rm -fr /tmp/scratch",
-    "rm -rf /var/tmp/cache", "rm -rf ./dist tests/__pycache__",
+    "rm -fr /tmp/scratch",
+    "rm -rf /var/tmp/cache", "rm -rf ./dist tests/__pycache__", "rm -rf /tmp//x",
+    "rm -rf /tmp/./x", "rm -rf ./a/b",
 ])
 def test_recursive_rm_of_ordinary_path_is_high(command):
     assert _sev(command, DANGEROUS) == HIGH
@@ -178,7 +179,7 @@ def test_setuid_chmod_is_critical(command):
 
 
 @pytest.mark.parametrize("command", [
-    "chmod 755 x", "chmod 644 x", "chmod 1777 /tmp", "chmod 777 file",
+    "chmod 755 x", "chmod 644 x", "chmod 1777 /tmp/x", "chmod 777 file",
 ])
 def test_non_setuid_chmod_is_medium(command):
     assert _sev(command, PRIVILEGE) == MED
@@ -208,7 +209,7 @@ def test_sudo_running_a_shell_is_critical(command):
 
 @pytest.mark.parametrize("command", [
     "sudo apt update", "sudo -n apt-get install -y php-cli",
-    "sudo -u postgres psql", "sudo GH_TOKEN=x gh release create v1", "env A=1 sudo ls",
+    "sudo -u postgres psql", "sudo GH_TOKEN=x gh release create v1",
     "sudo -v", "sudo -l", "sudo -k", "pkexec", "pkexec --user root",
     "doas pkg_add vim", "sudo cp /bin/bash /tmp/rb", "sudo install -m 4755 /bin/sh /tmp/s",
     "sudo ./deploy.sh",
@@ -311,3 +312,106 @@ def test_megabyte_command_is_fast(command):
     t = time.perf_counter()
     analyze_command(command)
     assert time.perf_counter() - t < 1.0
+
+
+# --- QA round 2: every occurrence must fit the safe shape -------------------
+
+@pytest.mark.parametrize("command", [
+    # chained bypasses: a safe rm next to an unsafe one
+    "rm -rf /tmp/x && sudo rm -rf /", "rm -rf /tmp/x; nice rm -rf ~",
+    "rm -rf /tmp/x; nice rm -rf /", "rm -rf /tmp/x; command rm -rf /etc",
+    "rm -rf build; xargs rm -rf /usr", "rm -rf build | env rm -rf /",
+    "rm -rf /tmp/x; rm -rf ~", "rm -rf /tmp/x /etc", "rm -rf /tmp/x -- /",
+    "rm /tmp/x -rf /", "rm -rf /tmp/x\t/", "rm -rf /tmp/x /home/alice/",
+    "rm -rf ./build ../..", "rm -rf /tmp/x; sudo rm -rf /tmp/y",
+    # paths outside /tmp and /var/tmp, however they are spelled
+    "rm -rf //etc", "rm -rf /./etc", "rm -rf /etc/./", "rm -rf /usr/bin",
+    "rm -rf /var/log", "rm -rf /root/.ssh", "rm -rf /home/alice/.ssh",
+    "rm -rf /home/alice/projects", "rm -rf /sys", "rm -rf /mnt", "rm -rf /media",
+    "rm -rf /run", "rm -rf /nix", "rm -rf /private/etc", "rm -rf /Applications",
+    "rm -rf /mnt/c/Windows", "rm -rf /tmp/../etc", "rm -rf /usr/local/..", "rm -rf /ETC",
+    "rm -rf /home//alice", "rm -rf //home/alice", "rm -rf /tmp", "rm -rf /var/tmp",
+])
+def test_qa2_rm_stays_critical(command):
+    assert _sev(command, DANGEROUS) == CRIT
+
+
+@pytest.mark.parametrize("command", [
+    "chmod 755 /tmp/x && nice chmod 4755 /tmp/y", "chmod 755 /tmp/x; chmod 4755 /tmp/y",
+    "chmod 666 /etc/shadow", "chmod 777 /etc/sudoers", "chmod 755 /usr/bin/x",
+    "chmod 7755 x", "chmod 0004755 /tmp/x", "chmod g=s /tmp/x", "chmod a+rwx,u+s /tmp/x",
+    "chmod 777 x; sudo bash",
+])
+def test_qa2_chmod_stays_critical(command):
+    assert _sev(command, PRIVILEGE) == CRIT
+
+
+@pytest.mark.parametrize("command", [
+    "chmod 755 x", "chmod 0755 x", "chmod 00755 x", "chmod 1777 /tmp/x", "chmod 644 a b",
+    "chmod 755 -R /tmp/d",
+])
+def test_qa2_chmod_medium(command):
+    assert _sev(command, PRIVILEGE) == MED
+
+
+@pytest.mark.parametrize("command", [
+    # long flags with a value consume the next word
+    "sudo --user root bash", "sudo --group wheel sh", "sudo --chdir /tmp sh",
+    "sudo --host x sh", "sudo --prompt x sh", "sudo -g wheel bash", "sudo -C 3 bash",
+    "sudo -h host bash", "sudo -p x bash", "sudo -uroot bash", "sudo -nu root bash",
+    "sudo -k -u root bash", "sudo -D /tmp bash", "sudo -R /x bash", "sudo -T 5 bash",
+    "sudo --preserve-env bash", "sudo --preserve-env=PATH bash", "sudo -u root -- bash",
+    "doas -u root bash", "doas -C /etc/doas.conf bash", "pkexec --user root sh",
+    "pkexec --user root /usr/bin/python3",
+    # edit, nested elevators, escape helpers, versioned interpreters
+    "sudo -e /etc/passwd", "sudo -e /etc/sudoers", "sudo sudoedit /etc/sudoers",
+    "sudo sudo -s", "sudo doas sh", "sudo su", "sudo busybox sh", "sudo python3.12",
+    "sudo perl5.36", "sudo ex", "sudo view /etc/hosts", "sudo ipython", "sudo pwsh",
+    "sudo script", "sudo crontab -e", "sudo git -p help config", "sudo socat - exec:sh",
+    "sudo tar -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec=sh",
+    "sudo ionice bash", "sudo nice -n 5 bash", "sudo stdbuf -o0 bash", "env A=1 sudo ls",
+    # chained
+    "sudo -s; ls", "ls; sudo bash", "ls && sudo -u root bash", "su root", "su - root",
+])
+def test_qa2_sudo_stays_critical(command):
+    sev = _sev(command, PRIVILEGE)
+    assert sev in (CRIT, None)  # None only when develop does not flag it at all
+    if PRIVILEGE_COMMAND_REGEX.search(command):
+        assert sev == CRIT
+
+
+@pytest.mark.parametrize("command", [
+    "sudo apt install foo", "sudo -l", "sudo -n apt-get install -y php",
+    "sudo -u postgres psql", "sudo --user=postgres psql",
+])
+def test_qa2_plain_sudo_is_high(command):
+    assert _sev(command, PRIVILEGE) == HIGH
+
+
+@pytest.mark.parametrize("command", [
+    "sudo tee /etc/sudoers.d/x", "echo hi | sudo tee /etc/sudoers",
+    "sudo cp /tmp/x /etc/sudoers.d/x", "sed -i s/a/b/ /etc/sudoers", "dd of=/etc/sudoers",
+    "echo x >> /etc/sudoers.d/x",
+])
+def test_sudoers_writes_are_critical(command):
+    assert _sev(command, PRIVILEGE) == CRIT
+
+
+def _rep(s: str, n: int = 1_000_000) -> str:
+    return (s * (n // len(s) + 1))[:n]
+
+
+@pytest.mark.parametrize("command", [
+    "sudoers " + _rep("sed -i "), "sudoers " + _rep("cp /"), "sudoers " + _rep("tee /"),
+    _rep("tee /etc/sudoers "), _rep("> /etc/sudoers"), _rep("sed -i x ", 999_980) + "/etc/sudoers",
+    "sudo " + _rep("> /etc/", 999_980) + "x", _rep("rm -rf a "), _rep("rm -r -f "),
+    "rm" + _rep(" -x", 999_998), "chmod" + _rep(" -R", 999_995), _rep("chmod 4"),
+    _rep("sudo -u "), _rep("sudo -"), _rep(";", 999_990) + "rm -rf /x",
+    _rep("&&", 999_994) + " sudo", _rep("|", 999_990) + "chmod 755",
+    "rm -rf " + _rep("${HOME}/", 999_993), _rep("su -"), _rep("doas "),
+])
+def test_qa2_megabyte_shapes_are_fast(command):
+    analyze_command.cache_clear()
+    t = time.perf_counter()
+    analyze_command(command)
+    assert time.perf_counter() - t < 0.5

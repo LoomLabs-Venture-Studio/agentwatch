@@ -63,11 +63,22 @@ _DEV_DANGEROUS_PATTERNS = [
     r"ufw\s+disable",
 ]
 
-# Each develop pattern, split into the ones that are linear on any input and
-# the ones that back-track (`.*`/`.+`); the latter are gated on a literal and
-# capped so a crafted megabyte cannot make them quadratic.
-_LINEAR_D = []
-_BACKTRACKY_D = []  # (required lowercase literals, compiled pattern)
+def _gated(pattern: str, literals: tuple[str, ...] | None = None):
+    """(lowercase literals the pattern cannot match without, compiled pattern,
+    back-tracks). A leading \\bword becomes word(?<!\\wword): the same matches,
+    but re can jump straight to the literal (a leading \\b scans every char)."""
+    if m := re.match(r"\\b([a-z]+)(.*)", pattern, re.DOTALL):
+        word, rest = m.groups()
+        pattern = rf"{word}(?<!\w{word}){rest}"
+    if literals is None:
+        lead = re.match(r"(?:[a-z0-9/>:.=-]|\\[.(){}|])+", pattern)
+        literals = (lead.group().replace("\\", "").lower(),) if lead else ("",)
+    backtracks = ".*" in pattern or ".+" in pattern
+    return literals, re.compile(pattern, re.IGNORECASE), backtracks
+
+
+# develop's patterns, each gated on a literal. Back-tracking ones (`.*`/`.+`)
+# get every literal they need and are capped (see _search).
 _BACKTRACKY_LITERALS = {
     r"while\s+true.*fork": ("while", "fork"),
     r"socat\s+.*EXEC": ("socat", "exec"),
@@ -76,83 +87,95 @@ _BACKTRACKY_LITERALS = {
     r"rm.*\.bash_history": ("rm", ".bash_history"),
     r"dd\s+if=.+of=/dev": ("dd", "of=/dev"),
 }
-for _p in _DEV_DANGEROUS_PATTERNS:
-    if _p in _BACKTRACKY_LITERALS:
-        _BACKTRACKY_D.append((_BACKTRACKY_LITERALS[_p], re.compile(_p, re.IGNORECASE)))
-    else:
-        _LINEAR_D.append(_p)
-_LINEAR_DANGEROUS = re.compile("|".join(_LINEAR_D), re.IGNORECASE)
-
-# develop's privilege patterns are all linear.
-_DEV_PRIVILEGE = re.compile("|".join(PRIVILEGE_COMMAND_PATTERNS), re.IGNORECASE)
+_DEV_D = [(p, _gated(p, _BACKTRACKY_LITERALS.get(p))) for p in _DEV_DANGEROUS_PATTERNS]
+_DEV_P = [_gated(p) for p in PRIVILEGE_COMMAND_PATTERNS]
+# dangerous rules other than develop's three `rm -rf` target patterns.
+_DEV_D_NON_RM = [g for p, g in _DEV_D if not p.startswith(r"rm\s+-rf")]
+_DEV_D_ALL = [g for _, g in _DEV_D]
+# develop's privilege patterns by family: sudo/su/doas/pkexec, chmod, the rest.
+_DEV_P_SUDO = _DEV_P[:4]
+_DEV_P_CHMOD = _DEV_P[4:6]
+_DEV_P_OTHER = _DEV_P[6:]
 
 _CAP = 20_000  # past this, a gated back-tracking pattern counts as matched
+
+
+def _search(command: str, low: str, gated) -> bool:
+    """Any gated pattern matches *command* (same verdict as develop's regex)."""
+    for literals, pattern, backtracks in gated:
+        if all(lit in low for lit in literals):
+            if backtracks and len(command) > _CAP:
+                return True  # too long to run safely: count as matched (fail safe)
+            if pattern.search(command):
+                return True
+    return False
 
 # --- new spellings develop misses (additions only) --------------------------
 # Recursive+force rm is detected by _rm_calls (below); the leading characters
 # of a target develop's `rm -rf` rules cover.
 _RM_LEADING = ("/", "~", ".", "*")
 _HOME_VAR = re.compile(r"(?:\$HOME|\$\{HOME\})(?:/|$)")  # $HOME, ${HOME}, "$HOME"/x
-# a write to /etc/sudoers via redirect, tee, sed -i, dd of=, cp/mv/install/ln.
-_SUDOERS_WRITE = re.compile(
-    r">\s*\S*/etc/sudoers"
-    r"|\btee\b[^\n|&;]*?\s/?\S*/etc/sudoers"
-    r"|\bsed\b[^\n|&;]*?-i[^\n|&;]*?\s/?\S*/etc/sudoers"
-    r"|\bdd\b[^\n|&;]*?\bof=\s*\S*/etc/sudoers"
-    r"|\b(?:cp|mv|install|ln)\b[^\n|&;]*?\s/?\S*/etc/sudoers",
-    re.IGNORECASE)
+# a write to /etc/sudoers: checked only around each `/etc/sudoers` literal
+# (see _sudoers_write), never by an unbounded regex over the whole command.
+_SUDOERS = "/etc/sudoers"
+_SUDOERS_WINDOW = 300  # chars before the literal that can hold the writer
+_SUDOERS_MAX_HITS = 1000  # past this many occurrences: count as a write
+_SUDOERS_WRITERS = {"tee", "cp", "mv", "install", "ln", "dd", "rsync"}
 # setuid/setgid chmod: a numeric mode (leading zeros allowed) whose special
 # triad sets the suid/sgid bit, or a symbolic mode granting `s`.
 _CHMOD_CALL = re.compile(
     r"\bchmod\b(?:\s+-{1,2}[\w-]+|\s+--)*\s+(?P<mode>\S+)", re.IGNORECASE)
 
 # --- severity helpers -------------------------------------------------------
-# recursive flags: both recursive and force, in any spelling/order.
+# every rm call, with its flags and operands (used by the new-spelling rule).
 _RM_SEG = re.compile(
     r"\brm\b(?P<flags>(?:\s+-{1,2}[\w-]+|\s+--)*)(?P<rest>(?:\s+[^\s;&|<>\n`]+)*)",
     re.IGNORECASE)
-_SYSTEM_DIRS = {
-    "/", "/etc", "/usr", "/bin", "/sbin", "/var", "/boot", "/root", "/home",
-    "/users", "/opt", "/srv", "/system", "/library", "/mnt/c", "c:", "/dev", "/proc",
-}
-_HOME_SINGLE = re.compile(r"/(?:home|users)/[^/]+$", re.IGNORECASE)
-_LIB_DIR = re.compile(r"/lib\w*$", re.IGNORECASE)
 
-_SUDO_FAMILY = re.compile(r"\bsudo\b|\bdoas\b|\bpkexec\b|\bsu\s+-", re.IGNORECASE)
+# words that raise privileges: each occurrence must fit _sudo_shape.
+_ELEVATORS = {"sudo", "doas", "pkexec", "su", "sudoedit", "run0"}
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish", "tcsh", "csh", "ash", "mksh",
-           "yash", "rbash", "rsh", "su", "login"}
-# programs that run another command, a script, an editor or a remote: never a
-# "safe program" for sudo to run.
-_ESCAPE = _SHELLS | {
+           "yash", "rbash", "rsh", "login"}
+# programs that run another command, a script, an editor, a pager or a remote:
+# never a safe program for sudo to run (versions stripped: python3.12 -> python).
+_ESCAPE = _SHELLS | _ELEVATORS | {
     "env", "nohup", "setsid", "exec", "eval", "xargs", "find", "watch", "timeout",
     "nice", "ionice", "stdbuf", "command", "builtin", "time", "chroot", "nsenter",
     "unshare", "flock", "runuser", "sg", "systemd-run", "strace", "ltrace", "gdb",
-    "awk", "gawk", "perl", "python", "python2", "python3", "ruby", "node", "deno",
-    "php", "lua", "tclsh", "expect", "irb", "pry", "ssh", "docker", "podman",
-    "kubectl", "tmux", "screen", "vi", "vim", "nvim", "emacs", "nano", "ed",
-    "less", "more", "man", "pager",
+    "awk", "gawk", "mawk", "nawk", "perl", "python", "pypy", "ruby", "node", "nodejs",
+    "deno", "bun", "php", "lua", "tclsh", "wish", "expect", "irb", "pry", "ipython",
+    "ssh", "docker", "podman", "kubectl", "tmux", "screen", "script", "busybox",
+    "vi", "vim", "nvim", "view", "rview", "rvim", "vimdiff", "ex", "emacs", "nano",
+    "ed", "less", "more", "most", "man", "pager", "pwsh", "powershell", "crontab",
+    "tar", "git", "make", "rsync", "zip", "unzip", "dpkg", "rpm", "systemctl",
+    # destructive tools: sudo in front of them is not "plain sudo"
+    "rm", "dd", "chmod", "chown", "shred", "wipefs", "fdisk", "parted", "mkfs",
+    # network tools that can hand out a shell
+    "socat", "nc", "ncat", "netcat", "telnet", "openssl",
 }
 # A segment with any of these cannot be split safely into words.
-_META = set("$`\"'\\*?[](){}<>!")
+_META = set("$`\"'\\*?[](){}<>!~")
 _SEGMENTS = re.compile(r"\|\||&&|[;\n|&]")  # linear split into simple commands
-_SAFE_PATH = re.compile(r"[A-Za-z0-9._/@=:+-]+")  # a plain literal operand
-# recursive-rm flag spellings that are safe to keep (no interactive/unknown flag).
+_SAFE_PATH = re.compile(r"[A-Za-z0-9._/+-]+")  # a plain literal path
+# rm flags that do not change what is deleted beyond recursive/force.
 _RM_SAFE_SHORT = re.compile(r"-[rRfvd]+")
 _RM_SAFE_LONG = {"--recursive", "--force", "--verbose", "--dir", "--one-file-system"}
 # chmod flags that do not change what is set.
 _CHMOD_SAFE_SHORT = re.compile(r"-[Rvcf]+")
 _CHMOD_SAFE_LONG = {"--recursive", "--verbose", "--changes", "--silent", "--quiet",
-                    "--no-preserve-root", "--preserve-root"}
-# sudo flags that neither open a shell nor take the next word as a value.
-_SUDO_SAFE_SHORT = set("nHEkKvlbASPe")
-# sudo flags that consume the following word.
-_SUDO_VALUE_SHORT = set("ugpCUrtRD")
+                    "--preserve-root"}
+# sudo/doas/pkexec short flags that neither open a shell, edit a file nor take
+# a value (no -i, -s, -e).
+_SUDO_SAFE_SHORT = set("nHEkKvlbASP")
+# short flags whose value is the rest of the cluster or the next word.
+_SUDO_VALUE_SHORT = set("ugpCUrtRDh")
+# long flags that take a value (next word unless written with =).
+_SUDO_LONG_VALUE = {"user", "group", "chdir", "host", "prompt", "role", "type",
+                    "other-user", "close-from", "command-timeout", "chroot"}
+_SUDO_LONG_SAFE = {"non-interactive", "preserve-env", "set-home", "list", "validate",
+                   "reset-timestamp", "remove-timestamp", "background", "askpass",
+                   "stdin", "preserve-groups", "disable-internal-agent", "keep-cwd"}
 
-# privilege rules that are always CRITICAL (everything but sudo-family and chmod).
-_PRIV_CRITICAL = re.compile(
-    r"chown\s+root|chgrp\s+(?:root|wheel|admin)|setcap\b|getcap\b|useradd\b"
-    r"|usermod\b|groupadd\b|visudo\b|systemctl\s+(?:enable|start|restart)"
-    r"|service\s+\w+\s+(?:start|restart)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -164,16 +187,7 @@ class CommandFinding:
 
 def _dev_dangerous(command: str) -> bool:
     """develop's dangerous_command verdict, made safe on long input."""
-    if _LINEAR_DANGEROUS.search(command):
-        return True
-    low = command.lower()
-    for literals, pattern in _BACKTRACKY_D:
-        if all(lit in low for lit in literals):
-            if len(command) > _CAP:
-                return True  # too long to verify: keep the finding (fail safe)
-            if pattern.search(command):
-                return True
-    return False
+    return _search(command, command.lower(), _DEV_D_ALL)
 
 
 def _rm_calls(command: str):
@@ -189,9 +203,31 @@ def _rm_calls(command: str):
             yield m.group("rest").split()
 
 
+def _rm_flags_anywhere(command: str) -> bool:
+    """`rm <x> -rf /`: GNU rm takes flags after operands too."""
+    if len(command) > _CAP or "rm" not in command:
+        return False
+    for segment in _segments(command):
+        words = segment.split()
+        if not words or _prog(words[0]) != "rm":
+            continue
+        short = "".join(w[1:] for w in words[1:] if w[:1] == "-" and w[:2] != "--")
+        longs = {w for w in words[1:] if w.startswith("--")}
+        if not (("r" in short.lower() or "--recursive" in longs)
+                and ("f" in short.lower() or "--force" in longs)):
+            continue
+        for w in words[1:]:
+            o = _unquote(w)
+            if not o.startswith("-") and (o[:1] in _RM_LEADING or _HOME_VAR.match(o)):
+                return True
+    return False
+
+
 def _new_rm_match(command: str) -> bool:
     """A recursive+force rm of a target develop's `rm -rf` rules cover, in a
     spelling develop's literal patterns miss. Unions cleanly with develop."""
+    if _rm_flags_anywhere(command):
+        return True
     for ops in _rm_calls(command):
         if any(_unquote(op)[:1] in _RM_LEADING or _HOME_VAR.match(_unquote(op))
                for op in ops):
@@ -214,8 +250,8 @@ def _privilege_match(command: str) -> bool:
     if not any(lit in low for lit in _PRIV_LITERALS):
         return False
     return bool(
-        _DEV_PRIVILEGE.search(command)
-        or _SUDOERS_WRITE.search(command)
+        _search(command, low, _DEV_P)
+        or _sudoers_write(command)
         or _chmod_setid(command)
     )
 
@@ -232,6 +268,57 @@ def _prog(word: str) -> str:
     return word.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
 
 
+def _sudoers_write(command: str) -> bool:
+    """A write to /etc/sudoers: for each occurrence of the literal, the text
+    just before it (inside its segment, at most _SUDOERS_WINDOW chars) ends in
+    a redirect, `of=`, or a tee / cp / mv / install / ln / sed -i call. Linear:
+    gated on the literal, bounded windows, capped number of occurrences."""
+    low = command.lower()
+    if _SUDOERS not in low:
+        return False
+    start, hits = 0, 0
+    while (at := low.find(_SUDOERS, start)) >= 0:
+        hits += 1
+        if hits > _SUDOERS_MAX_HITS:
+            return True  # too many to check: count as a write (fail safe)
+        if _writes_here(low[max(0, at - _SUDOERS_WINDOW):at]):
+            return True
+        start = at + 1
+    return False
+
+
+def _writes_here(window: str) -> bool:
+    """*window* is the text just before an /etc/sudoers literal. True when the
+    segment it ends ends in a redirect or `of=`, or runs a writer program (tee,
+    cp, mv, install, ln, dd, rsync) or `sed -i`. Plain string work only."""
+    cut = max(window.rfind(c) for c in "\n;&|")
+    segment = window[cut + 1:]
+    head, _, token = segment.rpartition(" ")
+    if ">" in token or "of=" in token or head.rstrip().endswith(">"):
+        return True
+    words = [_prog(w) for w in head.split()]
+    if _SUDOERS_WRITERS.intersection(words):
+        return True
+    return "sed" in words and any(
+        w.startswith("-i") or w.startswith("--in-place") for w in head.split())
+
+
+def _chmod_setid(command: str) -> bool:
+    """A chmod whose mode sets setuid/setgid: numeric (leading zeros allowed)
+    or symbolic with `s`."""
+    if "chmod" not in command.lower():
+        return False
+    for m in _CHMOD_CALL.finditer(command):
+        mode = _unquote(m.group("mode"))
+        if re.fullmatch(r"[0-7]{1,12}", mode):
+            if int(mode, 8) & 0o6000:
+                return True
+        elif any(re.fullmatch(r"[ugoa]*(?:[-+=][rwxXst]*)+", part) and "s" in part
+                 for part in mode.split(",")):
+            return True
+    return False
+
+
 def _segments(command: str) -> list[str]:
     """The simple commands, split on ; && || | & and newlines (linear)."""
     return _SEGMENTS.split(command)
@@ -239,152 +326,141 @@ def _segments(command: str) -> list[str]:
 
 def _safe_words(segment: str) -> list[str] | None:
     """The segment split into words, or None when it holds a shell metacharacter
-    (quote, $, backtick, glob, brace, redirection, subshell) that makes a plain
-    split unsafe -- in which case the segment cannot be judged and stays
-    CRITICAL."""
+    (quote, $, backtick, glob, brace, redirection, subshell, escape) that makes
+    a plain split unsafe."""
     if any(ch in _META for ch in segment):
         return None
     return segment.split()
 
 
-def _safe_literal_path(op: str) -> bool:
-    """An ordinary relative/absolute path that is not a filesystem-level target.
-    Allowlist: it must be plain literal text, have no `..`, and not be `/`, `.`,
-    a system directory or a single home directory."""
-    if not _SAFE_PATH.fullmatch(op):
-        return False  # $, glob, ~, quote, escape, ... -> not safe
-    parts = op.split("/")
-    if ".." in parts:
+def _safe_target(op: str) -> bool:
+    """Allowlist for a path an rm/chmod may touch at the lower severity:
+    (a) a relative literal path, not `.` or `..`, with no `..` segment, or
+    (b) an absolute literal path under /tmp/ or /var/tmp/ (after collapsing
+    `//` and `/./`), with no `..` segment. Anything else is not safe."""
+    if not _SAFE_PATH.fullmatch(op) or op.startswith("-"):
         return False
-    core = op.rstrip("/") or "/"
-    if core in (".", "/"):
+    parts = [p for p in op.split("/") if p not in ("", ".")]
+    if ".." in parts or not parts:
         return False
-    low = core.lower()
-    return not (low in _SYSTEM_DIRS or _HOME_SINGLE.match(core) or _LIB_DIR.match(low))
+    if not op.startswith("/"):
+        return True
+    return (parts[0] == "tmp" and len(parts) >= 2) or (
+        parts[:2] == ["var", "tmp"] and len(parts) >= 3)
+
+
+def _all_occurrences_safe(command: str, progs: set[str], shape) -> bool | None:
+    """True when every word naming one of *progs* anywhere in *command* is the
+    program of its own segment and that segment fits *shape*; False when any
+    occurrence does not; None when *command* holds no such word at all. A
+    segment that cannot be split safely and mentions one of *progs* fails."""
+    if len(command) > _CAP:
+        return False
+    seen = False
+    for segment in _segments(command):
+        low = segment.lower()
+        if not any(p in low for p in progs):
+            continue
+        words = _safe_words(segment)
+        if words is None:
+            # mentions the program but cannot be judged word by word
+            if any(_prog(w.strip("\"'`$(){}<>;|&")) in progs for w in segment.split()) \
+                    or any(re.search(rf"\b{p}\b", low) for p in progs):
+                return False
+            continue
+        hits = [i for i, w in enumerate(words) if _prog(w) in progs]
+        if not hits:
+            continue
+        seen = True
+        if hits != [0] or not shape(words):
+            return False
+    return True if seen else None
+
+
+def _rm_shape(words: list[str]) -> bool:
+    """`rm` + only allowlisted flags + one or more safe targets."""
+    flags = [w for w in words[1:] if w.startswith("-")]
+    targets = [w for w in words[1:] if not w.startswith("-")]
+    return bool(targets) and all(
+        _RM_SAFE_SHORT.fullmatch(f) or f in _RM_SAFE_LONG for f in flags) and all(
+        _safe_target(t) for t in targets)
 
 
 def _rm_targets_critical(command: str) -> bool:
-    """CRITICAL unless every recursive+force rm fits the safe allowlist shape:
-    `rm` + only {-r,-R,-f,-v,-d,--recursive,--force,...} + one or more plain
-    literal non-filesystem-level paths, and nothing else in that segment."""
-    if len(command) > _CAP:
-        return True  # too long to inspect: keep CRITICAL (fail safe)
-    saw = False
-    for segment in _segments(command):
-        words = _safe_words(segment)
-        if words is None:
-            # cannot parse this segment: if it holds a recursive rm, stay CRITICAL
-            if any(_rm_calls(segment)):
-                return True
-            continue
-        if not words or _prog(words[0]) != "rm":
-            continue  # rm reached through a wrapper is judged by _rm_calls below
-        flags = [w for w in words[1:] if w.startswith("-")]
-        targets = [w for w in words[1:] if not w.startswith("-")]
-        recursive = any(f in ("-R", "--recursive") or (f[:1] == "-" and f[:2] != "--"
-                        and "r" in f.lower()) for f in flags)
-        force = any(f in ("--force",) or (f[:1] == "-" and f[:2] != "--"
-                    and "f" in f.lower()) for f in flags)
-        if not (recursive and force):
-            continue
-        saw = True
-        safe_flags = all(_RM_SAFE_SHORT.fullmatch(f) or f in _RM_SAFE_LONG for f in flags)
-        if not (safe_flags and targets and all(_safe_literal_path(t) for t in targets)):
-            return True
-    if saw:
-        return False  # every recursive rm fit the safe shape -> HIGH
-    # No safe rm segment seen, but a recursive rm was matched (wrapper, quoting,
-    # metacharacters): we could not verify it -> keep CRITICAL.
-    return any(_rm_calls(command))
+    """HIGH (False) only when every rm in the command is the program of a
+    segment that fits _rm_shape; any other occurrence, or none found, means
+    CRITICAL."""
+    return _all_occurrences_safe(command, {"rm"}, _rm_shape) is not True
 
 
-def _chmod_setid(command: str) -> bool:
-    for m in _CHMOD_CALL.finditer(command):
-        mode = _unquote(m.group("mode"))
-        if re.fullmatch(r"[0-7]+", mode):
-            digits = mode.lstrip("0") or "0"
-            if len(digits) >= 4 and int(digits[-4]) & 0o6:
-                return True
-        if re.search(r"[-+=][rwxXst]*s", mode):
-            return True
-    return False
+def _chmod_shape(words: list[str]) -> bool:
+    """`chmod` + allowlisted flags + a non-setuid octal or s-free symbolic mode
+    + one or more safe targets."""
+    flags = [w for w in words[1:] if w.startswith("-")]
+    rest = [w for w in words[1:] if not w.startswith("-")]
+    if not all(_CHMOD_SAFE_SHORT.fullmatch(f) or f in _CHMOD_SAFE_LONG for f in flags):
+        return False
+    if len(rest) < 2:
+        return False
+    mode, paths = rest[0], rest[1:]
+    if re.fullmatch(r"[0-7]{1,5}", mode):
+        if int(mode, 8) > 0o7777 or int(mode, 8) & 0o6000:
+            return False
+    elif not all(re.fullmatch(r"[ugoa]*[-+=][rwxXt]*", part) for part in mode.split(",")):
+        return False
+    return all(_safe_target(p) for p in paths)
 
 
 def _chmod_medium(command: str) -> bool:
-    """True (-> MEDIUM) only when every chmod segment fits the safe allowlist
-    shape: `chmod [-R/-v/...]` + a non-setuid octal or symbolic-without-s mode
-    + plain literal paths, and nothing else. Otherwise CRITICAL."""
-    if len(command) > _CAP:
+    """MEDIUM only when every chmod in the command fits _chmod_shape."""
+    return _all_occurrences_safe(command, {"chmod"}, _chmod_shape) is True
+
+
+def _strip_version(prog: str) -> str:
+    """python3.12 -> python, perl5.36 -> perl."""
+    return re.sub(r"[\d.]+$", "", prog)
+
+
+def _sudo_shape(words: list[str]) -> bool:
+    """sudo/doas/pkexec + allowlisted flags (value flags consume their value)
+    + at most a literal program that is not a shell, elevator or escape
+    helper. `su`, `sudoedit`, -e/--edit, -i/-s/--login/--shell all fail."""
+    elevator = _prog(words[0])
+    if elevator not in ("sudo", "doas", "pkexec", "run0"):
         return False
-    saw = False
-    for segment in _segments(command):
-        words = _safe_words(segment)
-        if words is None:
-            if re.search(r"\bchmod\b", segment):
-                return False
+    i = 1
+    while i < len(words) and words[i].startswith("-"):
+        flag = words[i]
+        i += 1
+        if flag == "--":
+            break
+        if flag.startswith("--"):
+            name, _, value = flag[2:].partition("=")
+            if name in _SUDO_LONG_VALUE:
+                if not value:
+                    i += 1  # the value is the next word
+                continue
+            if name not in _SUDO_LONG_SAFE:
+                return False  # --login, --shell, --edit or anything unknown
             continue
-        if not words or _prog(words[0]) != "chmod":
-            continue
-        saw = True
-        flags = [w for w in words[1:] if w.startswith("-") and w != "--"]
-        rest = [w for w in words[1:] if not w.startswith("-")]
-        if not all(_CHMOD_SAFE_SHORT.fullmatch(f) or f in _CHMOD_SAFE_LONG for f in flags):
-            return False
-        if not rest:
-            return False
-        mode, paths = rest[0], rest[1:]
-        octal = re.fullmatch(r"[0-7]{3,4}", mode)
-        symbolic = re.fullmatch(r"[ugoa]*[-+=][rwxX]*", mode)
-        if octal:
-            if len(mode) == 4 and int(mode[0]) & 0o6:
-                return False  # setuid/setgid -> CRITICAL
-        elif not symbolic:
-            return False  # anything we do not fully recognize -> CRITICAL
-        if not all(_safe_literal_path(p) for p in paths):
-            return False
-    return saw
+        body = flag[1:]
+        for k, ch in enumerate(body):
+            if ch in _SUDO_VALUE_SHORT:
+                if k == len(body) - 1:
+                    i += 1  # the value is the next word
+                break  # the rest of the cluster is the value
+            if ch not in _SUDO_SAFE_SHORT:
+                return False  # -i, -s, -e or anything unknown
+    if i >= len(words):
+        return True  # no program: sudo -l, -v, -k
+    prog = _prog(words[i])
+    return not ({prog, _strip_version(prog), prog.split(".")[0]} & _ESCAPE)
 
 
 def _sudo_high(command: str) -> bool:
-    """True (-> HIGH) only when every sudo/doas/pkexec/su segment fits the safe
-    allowlist shape: the elevator + allowlisted flags + at most a plain literal
-    program that is not a shell or escape helper. Otherwise CRITICAL."""
-    if len(command) > _CAP:
-        return False
-    for segment in _segments(command):
-        words = _safe_words(segment)
-        if words is None:
-            if _SUDO_FAMILY.search(segment):
-                return False
-            continue
-        if not words:
-            continue
-        prog = _prog(words[0])
-        if prog == "su":
-            return False  # su / su - / su root all escalate to a shell
-        if prog not in ("sudo", "doas", "pkexec"):
-            continue
-        i = 1
-        while i < len(words) and words[i].startswith("-"):
-            flag = words[i]
-            i += 1
-            if flag == "--":
-                break
-            if flag.startswith("--"):
-                name = flag[2:].split("=", 1)[0]
-                if name in ("login", "shell", "edit"):
-                    return False
-                continue
-            body = flag[1:]
-            if body and all(c in _SUDO_SAFE_SHORT for c in body):
-                continue
-            if len(body) == 1 and body in _SUDO_VALUE_SHORT:
-                i += 1  # consumes the following value word
-                continue
-            return False  # -i, -s, or any flag we do not recognize -> CRITICAL
-        if i < len(words) and _prog(words[i]) in _ESCAPE:
-            return False  # runs a shell or an escape helper
-    return True
+    """HIGH only when every sudo/doas/pkexec/su/sudoedit/run0 in the command
+    is the program of a segment that fits _sudo_shape."""
+    return _all_occurrences_safe(command, _ELEVATORS, _sudo_shape) is True
 
 
 def _dangerous_finding(command: str) -> CommandFinding | None:
@@ -405,17 +481,20 @@ def _privilege_finding(command: str) -> CommandFinding | None:
         return None
     if len(command) > _CAP:
         return CommandFinding(PRIVILEGE, Severity.CRITICAL, "privilege escalation")
+    low = command.lower()
     best = None
-    if _PRIV_CRITICAL.search(command):
-        best = Severity.CRITICAL
-    if _SUDOERS_WRITE.search(command):
-        best = Severity.CRITICAL
-    if _SUDO_FAMILY.search(command):
-        sev = Severity.HIGH if _sudo_high(command) else Severity.CRITICAL
-        best = sev if best is None else max(best, sev, key=lambda s: s.score_impact)
-    if _CHMOD_NUMERIC.search(command) or _chmod_setid(command):
-        sev = Severity.MEDIUM if _chmod_medium(command) else Severity.CRITICAL
-        best = sev if best is None else max(best, sev, key=lambda s: s.score_impact)
+
+    def worse(sev: Severity) -> None:
+        nonlocal best
+        if best is None or sev.score_impact > best.score_impact:
+            best = sev
+
+    if _search(command, low, _DEV_P_OTHER) or _sudoers_write(command):
+        worse(Severity.CRITICAL)
+    if _search(command, low, _DEV_P_SUDO):
+        worse(Severity.HIGH if _sudo_high(command) else Severity.CRITICAL)
+    if _search(command, low, _DEV_P_CHMOD) or _chmod_setid(command):
+        worse(Severity.MEDIUM if _chmod_medium(command) else Severity.CRITICAL)
     if best is None:
         best = Severity.CRITICAL  # matched but uncategorized: keep CRITICAL
     reason = {Severity.CRITICAL: "privilege escalation",
@@ -425,26 +504,13 @@ def _privilege_finding(command: str) -> CommandFinding | None:
 
 # dangerous rules that stay CRITICAL (everything but the plain recursive-rm
 # target patterns and the new rm spellings).
-_LINEAR_NON_RM = re.compile("|".join(
-    p for p in _LINEAR_D if not p.startswith(r"rm\s+-rf")), re.IGNORECASE)
-_CHMOD_NUMERIC = re.compile(r"chmod\s+[0-7]*[4567][0-7]*|chmod\s+\+s", re.IGNORECASE)
 
 
 def _non_rm_dangerous(command: str) -> bool:
-    """A dangerous rule other than a plain recursive rm: the linear non-rm
-    patterns, or any of the back-tracking ones (disk wipe, reverse shell,
-    fork bomb, history wipe), all of which are filesystem/system level and
-    stay CRITICAL. Gated on literals and capped, like _dev_dangerous."""
-    if _LINEAR_NON_RM.search(command):
-        return True
-    low = command.lower()
-    for literals, pattern in _BACKTRACKY_D:
-        if all(lit in low for lit in literals):
-            if len(command) > _CAP:
-                return True
-            if pattern.search(command):
-                return True
-    return False
+    """A dangerous rule other than develop's plain `rm -rf` target patterns
+    (disk wipe, fork bomb, netcat, reverse shell, history wipe, SELinux or
+    firewall off): always CRITICAL."""
+    return _search(command, command.lower(), _DEV_D_NON_RM)
 
 
 @lru_cache(maxsize=256)

@@ -220,3 +220,142 @@ SUDO=sudo; $SUDO ls
 /usr/bin/sudo ls
 s''udo ls
 \sudo ls
+rm -rf /
+rm -rf ~
+rm -rf /var
+rm -rf /boot
+rm -rf /opt
+rm -rf /home/alice/.ssh
+rm -rf /home/alice/projects
+rm -rf /root/.ssh
+rm -rf /tmp/../etc
+rm -rf //etc
+rm -rf /./etc
+rm -rf /etc/
+rm -rf /etc//
+rm -rf /ETC
+rm -rf /usr/local/..
+rm -rf /home//alice
+rm -rf //home/alice
+rm -rf /usr/bin
+rm -rf /usr/lib
+rm -rf /usr/local
+rm -rf /var/log
+rm -rf /etc/ssh
+rm -rf /sys
+rm -rf /mnt
+rm -rf /media
+rm -rf /run
+rm -rf /nix
+rm -rf /private/etc
+rm -rf /Applications
+rm -rf /mnt/c/Windows
+rm -rf C:/Windows
+rm -rf /tmp/x /
+rm -rf /tmp/x /etc
+rm -rf /tmp/x -- /
+rm -- -rf /
+rm /tmp/x -rf /
+rm -r -f /
+rm --recursive --force /
+rm -fr /
+rm -r -f /home/alice
+rm -rf /tmp/x; rm -rf ~
+rm -rf /tmp/x; rm -rf /
+rm -rf /tmp/x && sudo rm -rf /
+rm -rf /tmp/x; nice rm -rf ~
+rm -rf /tmp/x; nice rm -rf /
+rm -rf /tmp/x; command rm -rf /etc
+rm -rf build; xargs rm -rf /usr
+rm -rf build | env rm -rf /
+sudo rm -rf /
+rm -rf /tmp/x
+rm -rf build
+chmod 4755 /tmp/x
+chmod 04755 /tmp/x
+chmod 0004755 /tmp/x
+chmod u+s /tmp/x
+chmod g=s /tmp/x
+chmod a+rwx,u+s /tmp/x
+chmod +s /tmp/x
+chmod 2755 x
+chmod 666 /etc/shadow
+chmod 777 /etc/sudoers
+chmod -R 777 /
+chmod -R 777 /etc/ssh
+sudo bash
+sudo -u root bash
+sudo -g wheel bash
+sudo -C 3 bash
+sudo -h host bash
+sudo -p x bash
+sudo -uroot bash
+sudo /bin/bash
+sudo vim
+sudo less /etc/hosts
+sudo awk x
+sudo find .
+sudo env
+sudo xargs
+sudo python
+sudo python3.12
+sudo perl5.36
+sudo busybox sh
+sudo sudo -s
+sudo doas sh
+sudo -e /etc/sudoers
+sudo -e /etc/passwd
+sudo tar -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec=sh
+sudo git -p help config
+sudo pwsh
+sudo apt install foo
+sudo -s
+sudo su
+su - root
+pkexec bash
+echo hi | sudo tee /etc/sudoers
+sudo --user root bash
+sudo --user=root bash
+sudo --group wheel sh
+sudo --chdir /tmp sh
+sudo --host x sh
+sudo --prompt x sh
+sudo -u root -- bash
+sudo -nu root bash
+sudo -k -u root bash
+sudo -D /tmp bash
+sudo -R /x bash
+sudo --preserve-env bash
+sudo --preserve-env=PATH bash
+sudo -T 5 bash
+sudo -i -u root
+doas -u root bash
+doas -C /etc/doas.conf bash
+pkexec --user root sh
+pkexec --user root /usr/bin/python3
+sudo ionice bash
+sudo nice -n 5 bash
+sudo stdbuf -o0 bash
+sudo script
+sudo socat - exec:sh
+sudo ex
+sudo view /etc/hosts
+sudo ipython
+sudo sudoedit /etc/sudoers
+sudo cp /tmp/x /etc/sudoers.d/x
+sudo crontab -e
+sudo -s; ls
+ls; sudo bash
+ls && sudo -u root bash
+rm -rf /tmp/x; sudo rm -rf /tmp/y
+rm -rf /tmp/x/
+rm -rf /etc/./
+rm -rf /tmp/x	/
+rm -rf /tmp/x /home/alice/
+rm -rf ./build ../..
+chmod 777 x; sudo bash
+chmod 755 /tmp/x; chmod 4755 /tmp/y
+chmod 755 /tmp/x && nice chmod 4755 /tmp/y
+chmod 00755 x
+chmod 1777 /tmp/x
+chmod 7755 x
