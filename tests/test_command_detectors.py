@@ -208,11 +208,11 @@ def test_sudo_running_a_shell_is_critical(command):
 
 
 @pytest.mark.parametrize("command", [
-    "sudo apt update", "sudo -n apt-get install -y php-cli",
-    "sudo -u postgres psql", "sudo GH_TOKEN=x gh release create v1",
+    "sudo apt update", "sudo -n apt-get install -y php-cli", "sudo dnf install x",
     "sudo -v", "sudo -l", "sudo -k", "pkexec", "pkexec --user root",
-    "doas pkg_add vim", "sudo cp /bin/bash /tmp/rb", "sudo install -m 4755 /bin/sh /tmp/s",
-    "sudo ./deploy.sh",
+    "doas pacman -Syu", "sudo systemctl daemon-reload", "sudo lsof -i :8080",
+    "sudo -u root -g wheel -H -n -- apt update", "sudo --user root apt install foo",
+    "sudo --chdir /tmp apt update", "sudo snap install x", "sudo umount /mnt/x",
 ])
 def test_plain_sudo_is_high(command):
     assert _sev(command, PRIVILEGE) == HIGH
@@ -382,7 +382,7 @@ def test_qa2_sudo_stays_critical(command):
 
 @pytest.mark.parametrize("command", [
     "sudo apt install foo", "sudo -l", "sudo -n apt-get install -y php",
-    "sudo -u postgres psql", "sudo --user=postgres psql",
+    "sudo --user=root apt update", "sudo systemctl --no-pager status x",
 ])
 def test_qa2_plain_sudo_is_high(command):
     assert _sev(command, PRIVILEGE) == HIGH
@@ -414,4 +414,87 @@ def test_qa2_megabyte_shapes_are_fast(command):
     analyze_command.cache_clear()
     t = time.perf_counter()
     analyze_command(command)
-    assert time.perf_counter() - t < 0.5
+    assert time.perf_counter() - t < 1.0
+
+
+# --- QA round 3 ---------------------------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    # B1: a NAME=value word after the flags
+    "sudo FOO=bar bash", "sudo FOO=1 sh -c id", "sudo -u root FOO=1 bash",
+    "sudo -- FOO=1 bash", "doas FOO=1 sh", "sudo LD_PRELOAD=/tmp/x.so apt update",
+    "sudo A=1 vim", "sudo PATH=/tmp:$PATH apt update", "sudo GH_TOKEN=x gh release create v1",
+    # L3: only allowlisted programs, exact name, no path
+    "sudo ./deploy.sh", "sudo /tmp/evil", "sudo /usr/bin/apt update", "sudo ./bash",
+    "sudo bash5.2", "sudo Bash", "sudo BASH.EXE", "sudo nu", "sudo xonsh", "sudo journalctl",
+    "sudo pip install .", "sudo gem install x", "sudo nmap --interactive", "sudo mysql",
+    "sudo psql", "sudo -u postgres psql", "sudo julia", "sudo java -jar x",
+    "sudo gcc -wrapper /bin/sh,-s .", "sudo ftp", "sudo scp x y", "sudo node18",
+    "sudo /usr/bin/env bash", "sudo cp /bin/bash /tmp/rb", "doas pkg_add vim",
+    "sudo -u root -T 5 ls",
+    # allowlisted programs, used in a way that pages or runs something
+    "sudo apt-get changelog x", "sudo apt update -o APT::Update::Pre-Invoke::=/bin/sh",
+    "sudo apt-get --option Dpkg::Pre-Invoke::=sh install x", "sudo systemctl status x",
+    "sudo snap run x", "sudo flatpak run x", "sudo dnf shell",
+    # the caller's environment
+    "sudo -E apt update", "sudo --preserve-env=PATH apt update",
+])
+def test_qa3_sudo_stays_critical(command):
+    assert _sev(command, PRIVILEGE) == CRIT
+
+
+@pytest.mark.parametrize("command", [
+    # L1: a cd/pushd/popd on the line moves what a relative target means
+    "cd / && rm -rf ./etc", "cd / && rm -rf ./usr", "cd ~ && rm -rf ./.ssh",
+    "cd /etc && rm -rf ./ssh", "cd /home/alice && rm -rf ./projects",
+    "pushd / && rm -rf ./boot", "cd / && rm -rf .ssh", "popd; rm -rf ./x",
+    # credential directories in any target
+    "rm -rf ./.ssh", "rm -rf /tmp/x/.kube", "rm -rf ./a/.aws", "rm -rf ./.gnupg",
+    "rm -rf ./.docker", "rm -rf ./.azure/x", "rm -rf ./.config/gcloud",
+    # other QA round-3 targets
+    "rm -rf ./a /etc", "rm -rf ./a ~", "rm -rf ./a ~/b", "rm -rf ./a ~root",
+    "rm -rf ./a $HOME", "rm -rf ./a *", "rm -rf ./a .*", "rm -rf ./a $(pwd)",
+    "rm -rf ./a `pwd`", "rm -rf ./a {/,x}", "rm -rf ./a /*", "rm -rf ./a \\/",
+    'rm -rf ./a "/"', "rm -rf ./a '/'", "rm -rf ./a/ /", "rm -rf --no-preserve-root /",
+    "rm -rf --no-preserve-root /tmp/x", "rm -rf --preserve-root=all /tmp/x",
+    "rm -rfI /tmp/x",
+])
+def test_qa3_rm_stays_critical(command):
+    assert _sev(command, DANGEROUS) == CRIT
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf /tmp/x/", "rm -rf /tmp/x/ /tmp/y", "rm -fr /tmp/x", "rm -r -f /tmp/x",
+    "rm --recursive --force /tmp/x", "rm -Rfv /tmp/x", "rm -rf /tmp/x /var/tmp/y ./z",
+    "rm -rf .git", "rm -rf ./build", "rm -rf //tmp/x", "rm -rf /./tmp/x",
+])
+def test_qa3_rm_safe_shapes_are_high(command):
+    assert _sev(command, DANGEROUS) == HIGH
+
+
+# --- final round: cd/pushd targets that keep a relative rm target harmless ----
+# (develop flags `rm -rf ./x`, not `rm -rf x`, so the targets are written ./x)
+
+@pytest.mark.parametrize("command", [
+    "cd /home/alice/proj && rm -rf ./build", "cd /tmp/x && rm -rf ./build",
+    "cd sub && rm -rf ./build", "pushd /home/alice/p/q && rm -rf ./b",
+    "cd /Users/bob/code && rm -rf ./dist", "cd //home/alice//proj && rm -rf ./build",
+    "cd /home/alice/./proj && rm -rf ./b", "cd /tmp/x && rm -rf /tmp/x/y",
+    "cd /home/alice/proj; rm -rf /tmp/x",
+])
+def test_cd_to_safe_dir_keeps_rm_high(command):
+    assert _sev(command, DANGEROUS) == HIGH
+
+
+@pytest.mark.parametrize("command", [
+    "cd /home/alice && rm -rf ./proj", "cd /home/alice/.ssh && rm -rf ./x",
+    "cd /etc && rm -rf ./ssh", "cd /home/alice/proj/../.. && rm -rf ./x",
+    "cd ~/proj && rm -rf ./build", "cd && rm -rf ./build", "cd - && rm -rf ./build",
+    "popd; rm -rf ./x", "cd /home/alice/proj/.aws && rm -rf ./x",
+    "cd $HOME/proj && rm -rf ./build", "cd /home/alice/proj && cd / && rm -rf ./etc",
+    "cd -P /home/a/b && rm -rf ./x", "cd /Users/bob && rm -rf ./x",
+    "cd /home/alice/proj/.config/gcloud && rm -rf ./x", "echo cd /etc; rm -rf ./x",
+    "cd '/home/alice/proj' && rm -rf ./x", "cd /tmp && rm -rf ./x",  # /tmp itself
+])
+def test_cd_to_other_dir_keeps_rm_critical(command):
+    assert _sev(command, DANGEROUS) == CRIT

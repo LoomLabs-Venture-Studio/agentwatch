@@ -134,25 +134,26 @@ _RM_SEG = re.compile(
 
 # words that raise privileges: each occurrence must fit _sudo_shape.
 _ELEVATORS = {"sudo", "doas", "pkexec", "su", "sudoedit", "run0"}
-_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish", "tcsh", "csh", "ash", "mksh",
-           "yash", "rbash", "rsh", "login"}
-# programs that run another command, a script, an editor, a pager or a remote:
-# never a safe program for sudo to run (versions stripped: python3.12 -> python).
-_ESCAPE = _SHELLS | _ELEVATORS | {
-    "env", "nohup", "setsid", "exec", "eval", "xargs", "find", "watch", "timeout",
-    "nice", "ionice", "stdbuf", "command", "builtin", "time", "chroot", "nsenter",
-    "unshare", "flock", "runuser", "sg", "systemd-run", "strace", "ltrace", "gdb",
-    "awk", "gawk", "mawk", "nawk", "perl", "python", "pypy", "ruby", "node", "nodejs",
-    "deno", "bun", "php", "lua", "tclsh", "wish", "expect", "irb", "pry", "ipython",
-    "ssh", "docker", "podman", "kubectl", "tmux", "screen", "script", "busybox",
-    "vi", "vim", "nvim", "view", "rview", "rvim", "vimdiff", "ex", "emacs", "nano",
-    "ed", "less", "more", "most", "man", "pager", "pwsh", "powershell", "crontab",
-    "tar", "git", "make", "rsync", "zip", "unzip", "dpkg", "rpm", "systemctl",
-    # destructive tools: sudo in front of them is not "plain sudo"
-    "rm", "dd", "chmod", "chown", "shred", "wipefs", "fdisk", "parted", "mkfs",
-    # network tools that can hand out a shell
-    "socat", "nc", "ncat", "netcat", "telnet", "openssl",
+# The only programs sudo/doas/pkexec may run at HIGH: non-interactive system
+# tools with no shell escape or pager (exact name, no path). Anything else under
+# an elevator -- a path program, an interpreter, a shell, an editor -- is
+# CRITICAL. Per program, subcommands that page or run something are excluded.
+_SUDO_PROGRAMS = {"apt", "apt-get", "dnf", "yum", "pacman", "zypper", "snap", "flatpak",
+                  "systemctl", "service", "mount", "umount", "lsof", "ss", "netstat"}
+_SUDO_PROGRAM_DENY = {
+    "apt": {"changelog", "show", "showsrc", "search", "list", "edit-sources"},
+    "apt-get": {"changelog", "source"},
+    "snap": {"run", "shell"}, "flatpak": {"run", "enter"},
+    "dnf": {"shell"}, "yum": {"shell"}, "zypper": {"shell", "sh"},
 }
+# systemctl pages unless the subcommand never shows text.
+_SYSTEMCTL_QUIET = {"start", "stop", "restart", "reload", "try-restart", "enable",
+                    "disable", "daemon-reload", "is-active", "is-enabled", "is-failed",
+                    "reset-failed", "mask", "unmask"}
+# credential directories: an rm/chmod target containing one stays CRITICAL.
+_CREDENTIAL_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"}
+# a cd/pushd/popd anywhere on the line (linear: one fixed-width boundary each side).
+_CHANGES_DIR = re.compile(r"(?:^|[\s;&|(`])(?:cd|pushd|popd)(?=$|[\s;&|)`])")
 # A segment with any of these cannot be split safely into words.
 _META = set("$`\"'\\*?[](){}<>!~")
 _SEGMENTS = re.compile(r"\|\||&&|[;\n|&]")  # linear split into simple commands
@@ -166,13 +167,13 @@ _CHMOD_SAFE_LONG = {"--recursive", "--verbose", "--changes", "--silent", "--quie
                     "--preserve-root"}
 # sudo/doas/pkexec short flags that neither open a shell, edit a file nor take
 # a value (no -i, -s, -e).
-_SUDO_SAFE_SHORT = set("nHEkKvlbASP")
+_SUDO_SAFE_SHORT = set("nHkKvlbASP")  # not -E: it passes the caller's environment
 # short flags whose value is the rest of the cluster or the next word.
 _SUDO_VALUE_SHORT = set("ugpCUrtRDh")
 # long flags that take a value (next word unless written with =).
 _SUDO_LONG_VALUE = {"user", "group", "chdir", "host", "prompt", "role", "type",
                     "other-user", "close-from", "command-timeout", "chroot"}
-_SUDO_LONG_SAFE = {"non-interactive", "preserve-env", "set-home", "list", "validate",
+_SUDO_LONG_SAFE = {"non-interactive", "set-home", "list", "validate",
                    "reset-timestamp", "remove-timestamp", "background", "askpass",
                    "stdin", "preserve-groups", "disable-internal-agent", "keep-cwd"}
 
@@ -343,6 +344,8 @@ def _safe_target(op: str) -> bool:
     parts = [p for p in op.split("/") if p not in ("", ".")]
     if ".." in parts or not parts:
         return False
+    if _CREDENTIAL_DIRS.intersection(parts) or ".config/gcloud" in "/".join(parts):
+        return False
     if not op.startswith("/"):
         return True
     return (parts[0] == "tmp" and len(parts) >= 2) or (
@@ -386,10 +389,34 @@ def _rm_shape(words: list[str]) -> bool:
         _safe_target(t) for t in targets)
 
 
+def _cd_shape(words: list[str]) -> bool:
+    """`cd <dir>` / `pushd <dir>` with exactly one target that keeps a later
+    relative rm target harmless: a safe relative path or one under /tmp,
+    /var/tmp (see _safe_target), or a literal path at least three levels below
+    a home root (/home/<user>/<a>/..., /Users/<user>/<a>/...) with no
+    credential directory. popd, a bare `cd`, `cd -`, a flag or anything else
+    fails."""
+    if _prog(words[0]) not in ("cd", "pushd") or len(words) != 2:
+        return False
+    target = words[1]
+    if _safe_target(target):
+        return True
+    if not target.startswith("/") or not _SAFE_PATH.fullmatch(target):
+        return False
+    parts = [p for p in target.split("/") if p not in ("", ".")]
+    return (".." not in parts and len(parts) >= 3 and parts[0] in ("home", "Users")
+            and not _CREDENTIAL_DIRS.intersection(parts)
+            and ".config/gcloud" not in "/".join(parts))
+
+
 def _rm_targets_critical(command: str) -> bool:
     """HIGH (False) only when every rm in the command is the program of a
-    segment that fits _rm_shape; any other occurrence, or none found, means
-    CRITICAL."""
+    segment that fits _rm_shape and every cd/pushd on the line fits _cd_shape
+    (popd or any other directory change could move what a relative target
+    means); otherwise CRITICAL."""
+    if _CHANGES_DIR.search(command) and _all_occurrences_safe(
+            command, {"cd", "pushd", "popd"}, _cd_shape) is not True:
+        return True
     return _all_occurrences_safe(command, {"rm"}, _rm_shape) is not True
 
 
@@ -416,15 +443,12 @@ def _chmod_medium(command: str) -> bool:
     return _all_occurrences_safe(command, {"chmod"}, _chmod_shape) is True
 
 
-def _strip_version(prog: str) -> str:
-    """python3.12 -> python, perl5.36 -> perl."""
-    return re.sub(r"[\d.]+$", "", prog)
-
-
 def _sudo_shape(words: list[str]) -> bool:
     """sudo/doas/pkexec + allowlisted flags (value flags consume their value)
-    + at most a literal program that is not a shell, elevator or escape
-    helper. `su`, `sudoedit`, -e/--edit, -i/-s/--login/--shell all fail."""
+    + either no program or an exact program from _SUDO_PROGRAMS (no path, no
+    NAME=value word) with no -o/--option/Invoke argument and no paging or
+    shell subcommand. `su`, `sudoedit`, -e/--edit, -i/-s/--login/--shell and
+    every other program fail."""
     elevator = _prog(words[0])
     if elevator not in ("sudo", "doas", "pkexec", "run0"):
         return False
@@ -453,8 +477,19 @@ def _sudo_shape(words: list[str]) -> bool:
                 return False  # -i, -s, -e or anything unknown
     if i >= len(words):
         return True  # no program: sudo -l, -v, -k
-    prog = _prog(words[i])
-    return not ({prog, _strip_version(prog), prog.split(".")[0]} & _ESCAPE)
+    prog, args = words[i], words[i + 1:]
+    if prog not in _SUDO_PROGRAMS:
+        return False  # NAME=value, a path, an interpreter, a shell, anything else
+    if any(a.startswith(("-o", "--option")) or "invoke" in a.lower() or "=" in a
+           and a.split("=", 1)[0].isupper() for a in args):
+        return False  # apt hook options and environment words
+    subs = [a for a in args if not a.startswith("-")]
+    sub = subs[0] if subs else ""
+    if sub in _SUDO_PROGRAM_DENY.get(prog, ()):
+        return False
+    if prog == "systemctl" and sub not in _SYSTEMCTL_QUIET and "--no-pager" not in args:
+        return False
+    return True
 
 
 def _sudo_high(command: str) -> bool:

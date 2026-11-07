@@ -359,3 +359,235 @@ chmod 755 /tmp/x && nice chmod 4755 /tmp/y
 chmod 00755 x
 chmod 1777 /tmp/x
 chmod 7755 x
+rm -rf node_modules/../..
+rm -rf node_modules/..
+rm -rf ./-rf
+rm -rf -- -x
+rm -rf -- build
+cd / && rm -rf usr
+cd / ; rm -rf etc
+cd ~ && rm -rf .ssh
+cd && rm -rf .ssh
+cd $HOME && rm -rf .ssh
+pushd /etc; rm -rf ssh
+cd /; rm -rf bin
+cd .. && rm -rf ..
+cd /home && rm -rf alice
+rm -rf .ssh
+rm -rf .aws
+rm -rf .gnupg
+rm -rf src
+rm -rf ./build
+rm -rf .
+rm -rf ..
+rm -rf ./.
+rm -rf .//.
+rm -rf /tmp/x/../../etc
+rm -rf /tmp/
+rm -rf /tmp
+rm -rf /tmp//..
+rm -rf /tmp/.
+rm -rf /tmp/./
+rm -rf /tmpx
+rm -rf /tmpx/y
+rm -rf /var/tmp/..
+rm -rf /var/tmp
+rm -rf /var/tmp/
+rm -rf /var/tmp/x
+rm -rf /var//tmp/x
+rm -rf /./tmp/x
+rm -rf //tmp/x
+rm -rf /tmp/x/..
+rm -rf /tmp/.../x
+rm -rf /tmp/x/...
+rm -rf /TMP/x
+rm -rf /Tmp/x
+rm -rf /tmp∕..∕etc
+rm -rf /tmp／x
+rm -rf /tmp/x\ /
+rm -rf /tmp/x+
+rm -rf /tmp/link
+rm -rf build\ /
+echo sudo; rm -rf /tmp/x
+echo rm; rm -rf /tmp/x
+rm -rf /tmp/rm
+rm -rf rm
+rm -rf sudo
+rm -rf ./sudo
+rm -rf /tmp/sudo
+find . -name sudo
+find . -name sudo; rm -rf build
+find . -name rm; rm -rf build
+find . -delete
+grep sudo README.md
+grep -r chmod src
+git commit -m sudo
+ls /tmp/rm; rm -rf build
+rm -rf build; echo chmod
+chmod 755 build; echo sudo
+chmod 755 /tmp/chmod
+chmod 755 chmod
+chmod 755 ../x
+chmod 755 /etc/x
+chmod -R 755 .
+chmod -R 755 ./
+chmod 755 /tmp
+chmod 755 /tmp/
+chmod u+x /tmp/x
+chmod 0755 /var/tmp/x
+chmod --reference=/bin/su x
+chmod 755 x -R
+chmod 755 -- x
+sudo --user root apt install foo
+sudo --user=root apt install foo
+sudo --user root --login
+sudo --user=root --shell
+sudo --login
+sudo --edit /etc/hosts
+sudo --chdir=/tmp apt update
+sudo --chdir /tmp apt update
+sudo --preserve-env apt update
+sudo --preserve-env=PATH apt update
+sudo --non-interactive apt update
+sudo --chroot=/ bash
+sudo --chroot /x apt update
+sudo --user root --non-interactive -- apt update
+sudo --user -- bash
+sudo --user=root -- bash
+sudo --user root=x bash
+sudo --list
+sudo --other-user root -l
+sudo --close-from=3 apt update
+sudo --command-timeout 5 apt update
+sudo --role r bash
+sudo -u root apt install x
+sudo -u root
+sudo -u
+sudo -n apt update
+sudo -nu root apt update
+sudo -uroot apt update
+sudo -A apt update
+sudo -S apt update
+sudo -b apt update
+sudo -P apt update
+sudo -H apt update
+sudo -E apt update
+sudo -K
+sudo -v
+sudo -k apt update
+sudo -D / apt update
+sudo -R / apt update
+sudo -R /x apt update
+sudo -C 3 apt update
+sudo -T 5 apt update
+sudo -U root -l
+sudo -h
+sudo -V
+sudo apt-get install x
+sudo apt update
+sudo cp a /etc/x
+sudo mv a /etc/x
+sudo tee /etc/x
+sudo install -m 4755 x /usr/bin/x
+sudo ln -s /bin/sh /usr/local/bin/x
+sudo mount /dev/sdb /mnt
+sudo kill -9 1
+sudo reboot
+sudo ./script.sh
+sudo /tmp/x
+sudo npm install -g x
+sudo pip install x
+sudo cat /etc/shadow
+sudo sed -i s/a/b/ /etc/sudoers
+sudo passwd
+sudo useradd x
+sudo apt update; sudo apt install x
+sudo apt update && echo sudo
+sudo apt update | sudo bash
+doas apt update
+pkexec apt update
+run0 apt update
+run0 bash
+sudoedit /etc/hosts
+SUDO_ASKPASS=x sudo -A apt update
+sudo IFS=x apt update
+sudo LD_PRELOAD=/tmp/x.so apt update
+sudo PATH=/tmp:$PATH apt update
+sudo PATH=/tmp apt update
+sudo FOO=bar bash
+cd / && rm -rf ./etc
+cd / && rm -rf ./usr
+cd ~ && rm -rf ./.ssh
+cd /etc && rm -rf ./ssh
+cd /home/alice && rm -rf ./projects
+pushd / && rm -rf ./boot
+cd / && rm -rf .ssh
+sudo FOO=1 sh -c id
+sudo -u root FOO=1 bash
+sudo -- FOO=1 bash
+doas FOO=1 sh
+sudo A=1 vim
+sudo A=1 python
+sudo A=1 rm -rf /
+sudo ./deploy.sh
+sudo /tmp/evil
+sudo /tmp/evil.sh
+sudo ./bash
+sudo bash5.2
+sudo Bash
+sudo BASH.EXE
+sudo nu
+sudo xonsh
+sudo elvish
+sudo oksh
+sudo posh
+sudo osh
+sudo journalctl
+sudo apt-get changelog x
+sudo apt update -o APT::Update::Pre-Invoke::=/bin/sh
+sudo pip install .
+sudo gem install x
+sudo nmap --interactive
+sudo mysql
+sudo sqlite3
+sudo psql
+sudo cpan
+sudo julia
+sudo R
+sudo Rscript x
+sudo jshell
+sudo java -jar x
+sudo gcc -wrapper /bin/sh,-s .
+sudo ftp
+sudo sftp x
+sudo scp x y
+sudo zsh-5.9
+sudo python3-x
+sudo node18
+sudo /usr/bin/env bash
+sudo -u root -g wheel -H -E -n -- apt update
+sudo -u root -T 5 ls
+rm -rf /tmp/x/ /tmp/y
+rm -fr /tmp/x
+rm -r -f /tmp/x
+rm --recursive --force /tmp/x
+rm -rf --no-preserve-root /tmp/x
+rm -rf --preserve-root=all /tmp/x
+rm -rfI /tmp/x
+rm -Rfv /tmp/x
+rm -rf /tmp/x /var/tmp/y ./z
+rm -rf ./a /etc
+rm -rf ./a ~
+rm -rf ./a ~/b
+rm -rf ./a ~root
+rm -rf ./a $HOME
+rm -rf ./a *
+rm -rf ./a .*
+rm -rf ./a $(pwd)
+rm -rf ./a `pwd`
+rm -rf ./a {/,x}
+rm -rf ./a /*
+rm -rf ./a \/
+rm -rf ./a "/"
+rm -rf ./a '/'
+rm -rf ./a/ /

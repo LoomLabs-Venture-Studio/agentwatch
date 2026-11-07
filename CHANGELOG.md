@@ -30,13 +30,23 @@ numbers refer to the GitHub repository.
   command segment is plainly safe.
   - A recursive `rm` is HIGH only when every target is a relative literal
     path (not `.` or `..`, no `..` part) or a path under `/tmp/` or
-    `/var/tmp/`; anything else, such as `/usr/bin` or `~/.ssh`, is CRITICAL.
+    `/var/tmp/`, no target names a credential directory (`.ssh`, `.aws`,
+    `.gnupg`, `.kube`, `.docker`, `.azure`, `.config/gcloud`), and every `cd`
+    or `pushd` on the line goes to such a relative path, a path under `/tmp/`
+    or `/var/tmp/`, or a literal path at least three levels below a home root
+    (`/home/<user>/<dir>/...`); `popd`, a bare `cd`, `cd -` or any other
+    directory keeps it CRITICAL, as do targets such as `/usr/bin` or `~/.ssh`.
   - A `chmod` is MEDIUM only for a non-setuid mode on those same paths;
     setuid/setgid and anything unrecognized stay CRITICAL.
-  - `sudo`/`doas`/`pkexec` are HIGH only with allowlisted flags and a literal
-    program that is not a shell, editor, interpreter or other elevator;
-    `su`, `sudo -e`, a shell, a redirect or anything unrecognized stays
-    CRITICAL.
+  - `sudo`/`doas`/`pkexec` are HIGH only with allowlisted flags and either
+    no program (`sudo -l`) or a program from a short allowlist of
+    non-interactive system tools (`apt`, `apt-get`, `dnf`, `yum`, `pacman`,
+    `zypper`, `snap`, `flatpak`, `systemctl`, `service`, `mount`, `umount`,
+    `lsof`, `ss`, `netstat`), named exactly, with no `-o`/`--option`/
+    `Invoke` argument and no paging or shell subcommand (`systemctl status`
+    without `--no-pager`, `apt-get changelog`, `snap run`, ...). Any other
+    program, a path such as `./deploy.sh`, a `NAME=value` word, `-E`, `su`,
+    `sudo -e`, a redirect or anything unrecognized stays CRITICAL.
   - A command is lowered only when every `rm`, `chmod` or elevator in it,
     anywhere on the line, fits these shapes: `rm -rf /tmp/x && sudo rm -rf /`
     stays CRITICAL.
