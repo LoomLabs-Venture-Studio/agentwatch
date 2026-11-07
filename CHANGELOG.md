@@ -12,6 +12,25 @@ numbers refer to the GitHub repository.
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
   now read along with its first and last output lines (#206).
+- `dangerous_command` and `privilege_escalation` flag exactly the same
+  commands as before (every develop regex match, plus `rm -fr`/`rm -r -f`/
+  `rm --recursive --force`, `/etc/sudoers` writes and setuid `chmod` with
+  leading zeros), but no longer rate every match CRITICAL. The lower severity
+  is chosen by a strict allowlist: a match stays CRITICAL unless the whole
+  command segment is plainly safe.
+  - A recursive `rm` is HIGH only when every target is an ordinary literal
+    path (no `/`, `~`, `$`, glob, `..`, system directory or single home
+    directory) and the segment holds nothing else; otherwise CRITICAL.
+  - A `chmod` is MEDIUM only for a non-setuid octal or an `s`-free symbolic
+    mode on literal paths; setuid/setgid and anything unrecognized stay
+    CRITICAL.
+  - `sudo`/`doas`/`pkexec` are HIGH only with allowlisted flags and, at most,
+    a literal program that is not a shell or escape helper; `su`, a shell, a
+    redirect or anything unrecognized stays CRITICAL.
+  All other rules stay CRITICAL, and anything the allowlist cannot parse
+  (quoting, wrappers, substitutions, very long input) stays CRITICAL.
+- These detectors stay linear on hostile input: a 1 MB command is checked in
+  well under a second.
 
 ## [0.2.2] - 2026-11-06
 
