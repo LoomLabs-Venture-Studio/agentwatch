@@ -1,26 +1,36 @@
-"""Command guard: the coach hook asks the user before a catastrophic call.
+r"""Command guard: the coach hook asks the user before a catastrophic call.
 
 Runs on Claude Code's PreToolUse, before the loop breaker. A match returns a
 fixed reason; coach turns it into `"permissionDecision": "ask"`, so Claude
 Code shows the user a permission prompt. A false positive costs one click.
 
-Bash commands are split with shlex into simple commands (on `;`, `&&`, `||`,
+Bash commands are first read with bash's quoting rules (_Scan): comments
+(`#` at a word start, up to the newline) and `\<newline>` continuations are
+removed, and the commands bash runs inside `$(...)`, backticks, `<(...)` and
+`>(...)` are checked on their own, also inside double quotes, `${...}` and
+unquoted heredocs (not inside single quotes). The rest is split with shlex
+into simple commands (on `;`, `&&`, `||`,
 `|`, `&`, newlines, `(`, `)`, backticks and `$(`), leading `sudo`, `env`,
 `VAR=value`, `timeout N`, `nohup`, `setsid`, `builtin`, `wsl [-d X] [-e]`, ...
 and shell keywords (`if`, `do`, `{`, `!`, ...) are skipped, and
 `bash/sh/zsh -c '<script>'`, `script -c '<cmd>'`, `eval ...`, `cmd /c|//c|/k ...`
 (also glued `/c"..."`) and `powershell/pwsh` (-c, -Command or a prefix from -com,
-or bare args) are checked recursively. Program names are lowercased, without
-`.exe` and directory (`/` or backslash). Not caught: `powershell -EncodedCommand`
+or bare args) are checked recursively, as are scripts a shell reads on stdin
+(heredocs, here-strings, `echo`/`printf` piped to it); `sh -c "$(curl ...)"`,
+`bash <(curl ...)` and `source <(wget ...)` count as pipe to shell. Program
+names are lowercased, without `.exe` and directory (`/` or backslash). Nesting
+deeper than 3 (wrappers or substitutions) gets the raw patterns. Not caught:
+`powershell -EncodedCommand`
 (not decoded), `wsl --shell-type X`, `script --command=...`, `curl | cmd` or
-`| powershell`, wrappers nested more than 3 deep, unquoted backslash program
+`| powershell`, a script passed through a variable (`x=...; sh -c "$x"`),
+unquoted backslash program
 paths (shlex eats them), cmd's `^` escape (`g^it`), PowerShell syntax inside
 -Command (`& {...}`, `iex`, cmdlets such as `Remove-Item -Recurse -Force`; the
 PowerShell tool is not guarded either), and quote-split words (`r''m`) inside
 commands over MAX_PARSE chars. Arguments of any other program are not inspected, so
-`echo "rm -rf /"` or `git commit -m "rm -rf /"` pass. When shlex cannot parse
-the command (unbalanced quotes), the raw string is matched against
-DESTRUCTIVE_PATTERNS instead. Commands over
+`echo "rm -rf /"` or `git commit -m "rm -rf /"` pass. When the command cannot
+be parsed (unbalanced quotes or substitutions), the raw string is also matched
+against DESTRUCTIVE_PATTERNS. Commands over
 MAX_PARSE chars are split on `;`, `&&`, `||` and newlines first; each piece up
 to _SMALL chars that names a guarded program or path is checked as above,
 longer pieces get the raw patterns on their first _PIECE chars.
@@ -304,13 +314,16 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
     if _turns_guard_off(argv):
         return REASONS["guard_off"]
     if prog == "eval":  # bash joins eval's args and parses them again
-        return check_command(" ".join(args), depth + 1)
+        return _script(" ".join(args), depth)
     if prog in _SHELLS and piped_from & {"curl", "wget"}:
         return REASONS["pipe_shell"]
+    if prog in _SHELLS or prog in ("source", "."):  # bash <(curl ...), . <(wget ...)
+        if any(a == "<(" and _prog(b) in ("curl", "wget") for a, b in zip(args, args[1:])):
+            return REASONS["pipe_shell"]
     if prog in _SHELLS or prog == "script":
         for i, a in enumerate(args[:-1]):
             if re.fullmatch(r"-[a-z]*c[a-z]*", a) or a == "--command":
-                return check_command(args[i + 1], depth + 1)
+                return _script(args[i + 1], depth)
         return None
     if prog == "cmd":
         return _cmd(args, depth)
@@ -358,34 +371,424 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
     return None
 
 
-def check_command(command: str, depth: int = 0) -> str | None:
-    """The ask reason for a Bash command, or None."""
+class _UnparsedError(Exception):
+    """The scanner lost track of the command's quoting."""
+
+
+_CODE_RUN = re.compile(r"[^ \t\n\\'\"`$#()<>;&|]+")
+_DQ_RUN = re.compile(r'[^\\"$`]+')
+_BRACE_RUN = re.compile(r"[^\\'\"`${}]+")
+_ANSI = re.compile(r"(?:[^\\']|\\.)*'", re.DOTALL)  # the rest of a $'...' string
+_BACKTICK = re.compile(r"(?:[^\\`]|\\.)*`", re.DOTALL)
+_WORD_END = " \t\n;&|()<>"
+_MAX_NEST = 50
+_ECHOES = {"echo", "printf"}
+# The script a shell runs is the output of curl/wget: sh -c "$(curl -fsSL URL)".
+_DOWNLOAD = re.compile(r"\s*(?:\$\(|`)\s*(?:\S*[/\\])?(?:curl|wget)(?:\.exe)?\s",
+                       re.IGNORECASE)
+
+
+class _Scan:
+    r"""One pass over a command with bash's quoting rules.
+
+    `text` is the command without comments (`#` at a word start, up to the
+    newline) and `\<newline>` continuations, and with `\$` and `` \` `` inside
+    double quotes unescaped as bash does (shlex keeps the backslash). `bodies`
+    are the commands bash runs inside `$(...)`, backticks, `<(...)` and
+    `>(...)`, also inside double quotes, `${...}` and unquoted heredocs (only
+    the outermost ones; check_command scans each body again). `skeleton` is
+    `text` with those substitutions replaced by `_` and heredoc bodies cut
+    (None when there is neither); `heredocs` are the heredoc bodies in order.
+    Raises _UnparsedError on unbalanced quotes or substitutions.
+    """
+
+    def __init__(self, s: str):
+        self.s, self.out, self.n = s, [], 0
+        self.level = 0  # enclosing substitutions
+        self.nest = 0
+        self.spans: list[tuple[int, int, str]] = []  # skeleton cuts (start, end, filler)
+        self.bodies: list[str | tuple[int, int]] = []
+        self.heredocs: list[str] = []
+        self.pending: list[tuple[str, bool, bool]] = []  # (delimiter, <<-, quoted)
+
+    def result_bodies(self) -> list[str]:
+        text = "".join(self.out)
+        return [b if isinstance(b, str) else text[b[0]:b[1]] for b in self.bodies]
+
+    def emit(self, text: str) -> None:
+        self.out.append(text)
+        self.n += len(text)
+
+    def enter(self) -> None:
+        self.nest += 1
+        if self.nest > _MAX_NEST:
+            raise _UnparsedError
+
+    def result(self) -> tuple[str, list[str], str | None, list[str]]:
+        self.code(0, False)
+        text, bodies = "".join(self.out), self.result_bodies()
+        if not self.spans:
+            return text, bodies, None, self.heredocs
+        parts, at = [], 0
+        for a, b, filler in sorted(self.spans):
+            if a >= at:
+                parts += [text[at:a], filler]
+                at = b
+        parts.append(text[at:])
+        return text, bodies, "".join(parts), self.heredocs
+
+    def code(self, i: int, closes: bool) -> int:
+        """Unquoted shell code up to the `)` that closes a substitution (closes)
+        or the end; returns the index of that `)`."""
+        s, end = self.s, len(self.s)
+        word_start = cmd_pos = True
+        parens = cases = 0
+        while i < end:
+            if m := _CODE_RUN.match(s, i):
+                word = m.group()
+                if cmd_pos and word == "case":
+                    cases += 1
+                elif cmd_pos and word == "esac" and cases:
+                    cases -= 1
+                cmd_pos = cmd_pos and word in _KEYWORDS
+                self.emit(word)
+                i, word_start = m.end(), False
+                continue
+            c = s[i]
+            if c in " \t":
+                self.emit(c)
+                i, word_start = i + 1, True
+                continue
+            if c == "#" and word_start:  # a comment, up to the newline
+                nl = s.find("\n", i)
+                i = end if nl < 0 else nl
+                continue
+            if c == "\n":
+                self.emit(c)
+                i, word_start, cmd_pos = i + 1, True, True
+                if self.pending:
+                    i = self.heredoc_bodies(i)
+                continue
+            word_start = cmd_pos = False
+            if c == "\\":
+                if s.startswith("\n", i + 1):  # line continuation
+                    i += 2
+                else:
+                    self.emit(s[i:i + 2])
+                    i += 2
+            elif c == "'":
+                close = s.find("'", i + 1)
+                if close < 0:
+                    raise _UnparsedError
+                self.emit(s[i:close + 1])
+                i = close + 1
+            elif c == '"':
+                i = self.dq(i + 1, False)
+            elif c == "$":
+                i = self.dollar(i, False)
+            elif c == "`":
+                i = self.backtick(i, False)
+            elif s.startswith("<<<", i):
+                self.emit("<<<")
+                i, word_start = i + 3, True
+            elif s.startswith("<<", i):
+                i = self.heredoc_op(i)
+            elif c in "<>" and s.startswith("(", i + 1):  # process substitution
+                i = self.sub(i, 2)
+            else:  # ; & | ( ) < >
+                word_start, cmd_pos = True, c in "(;&|"
+                if c == "(":
+                    parens += 1
+                elif c == ")":
+                    if parens:
+                        parens -= 1
+                    elif cases:  # a case pattern: `a) cmd ;;`
+                        cmd_pos = True
+                    elif closes:
+                        return i
+                self.emit(c)
+                i += 1
+        if closes:
+            raise _UnparsedError
+        return i
+
+    def dq(self, i: int, heredoc: bool) -> int:
+        """Inside double quotes (or an unquoted heredoc body: no closing quote)."""
+        self.enter()
+        s, end = self.s, len(self.s)
+        if not heredoc:
+            self.emit('"')
+        while i < end:
+            if m := _DQ_RUN.match(s, i):
+                self.emit(m.group())
+                i = m.end()
+                continue
+            c = s[i]
+            if c == '"':
+                self.emit(c)
+                i += 1
+                if not heredoc:
+                    self.nest -= 1
+                    return i
+            elif c == "\\":
+                nxt = s[i + 1:i + 2]
+                if nxt != "\n":  # \<newline> is a continuation
+                    self.emit(nxt if nxt and nxt in "$`" and not self.level else s[i:i + 2])
+                i += 2
+            elif c == "$":
+                i = self.dollar(i, True)
+            else:
+                i = self.backtick(i, True)
+        if not heredoc:
+            raise _UnparsedError
+        self.nest -= 1
+        return i
+
+    def dollar(self, i: int, quoted: bool) -> int:
+        s = self.s
+        nxt = s[i + 1:i + 2]
+        if nxt == "(":  # $( and $(( (checked as a subshell; harmless for arithmetic)
+            return self.sub(i, 2)
+        if nxt == "{":
+            return self.brace(i + 2, quoted)
+        if nxt == "'" and not quoted:  # $'...' with backslash escapes
+            if not (m := _ANSI.match(s, i + 2)):
+                raise _UnparsedError
+            self.emit(s[i:m.end()])
+            return m.end()
+        self.emit("$")
+        return i + 1
+
+    def brace(self, i: int, quoted: bool) -> int:
+        """${...} up to its `}`: quotes and substitutions inside still count."""
+        self.enter()
+        s, end, depth = self.s, len(self.s), 0
+        self.emit("${")
+        while i < end:
+            if m := _BRACE_RUN.match(s, i):
+                self.emit(m.group())
+                i = m.end()
+                continue
+            c = s[i]
+            if c == "\\":
+                if not s.startswith("\n", i + 1):
+                    self.emit(s[i:i + 2])
+                i += 2
+            elif c == "'" and not quoted:
+                close = s.find("'", i + 1)
+                if close < 0:
+                    raise _UnparsedError
+                self.emit(s[i:close + 1])
+                i = close + 1
+            elif c == "'":
+                self.emit(c)
+                i += 1
+            elif c == '"':
+                i = self.dq(i + 1, False)
+            elif c == "$":
+                i = self.dollar(i, quoted)
+            elif c == "`":
+                i = self.backtick(i, quoted)
+            else:
+                self.emit(c)
+                i += 1
+                if c == "{":
+                    depth += 1
+                elif depth:
+                    depth -= 1
+                else:
+                    self.nest -= 1
+                    return i
+        raise _UnparsedError
+
+    def sub(self, i: int, op_len: int) -> int:
+        """$(...), <(...) or >(...)."""
+        self.enter()
+        start = self.n
+        self.emit(self.s[i:i + op_len])
+        body = self.n
+        outer, self.pending = self.pending, []  # a heredoc must end inside
+        self.level += 1
+        close = self.code(i + op_len, True)
+        self.level -= 1
+        self.pending = outer
+        if not self.level:
+            self.bodies.append((body, self.n))
+        self.emit(")")
+        if not self.level:
+            self.spans.append((start, self.n, "_"))
+        self.nest -= 1
+        return close + 1
+
+    def backtick(self, i: int, quoted: bool) -> int:
+        if not (m := _BACKTICK.match(self.s, i + 1)):
+            raise _UnparsedError
+        start = self.n
+        self.emit(self.s[i:m.end()])
+        if not self.level:
+            # Inside backticks bash drops the backslash before \ ` $ (and " when quoted).
+            escaped = r'\\([\\`$"])' if quoted else r"\\([\\`$])"
+            self.bodies.append(re.sub(escaped, r"\1", self.s[i + 1:m.end() - 1]))
+            self.spans.append((start, self.n, "_"))
+        return m.end()
+
+    def heredoc_op(self, i: int) -> int:
+        """`<<WORD` / `<<-WORD`: the body starts after the next newline."""
+        s, end = self.s, len(self.s)
+        j = i + 2
+        strip = s.startswith("-", j)
+        j += strip
+        while j < end and s[j] in " \t":
+            j += 1
+        delim, quoted = [], False
+        while j < end and s[j] not in _WORD_END:
+            c = s[j]
+            if c in "'\"":
+                close = s.find(c, j + 1)
+                if close < 0:
+                    raise _UnparsedError
+                delim.append(s[j + 1:close])
+                quoted, j = True, close + 1
+            elif c == "\\":
+                delim.append(s[j + 1:j + 2])
+                quoted, j = True, j + 2
+            else:
+                delim.append(c)
+                j += 1
+        if not delim:  # `<<` with no word: not a heredoc
+            self.emit("<<")
+            return i + 2
+        self.emit(s[i:j])
+        self.pending.append(("".join(delim), strip, quoted))
+        return j
+
+    def heredoc_bodies(self, i: int) -> int:
+        """Skip the pending heredoc bodies that start at *i*."""
+        s, end = self.s, len(self.s)
+        for delim, strip, quoted in self.pending:
+            start, stop = i, end
+            while i < end:
+                nl = s.find("\n", i)
+                line_end = end if nl < 0 else nl
+                line = s[i:line_end]
+                bare = line.lstrip("\t") if strip else line
+                if bare == delim:
+                    stop, i = i, (end if nl < 0 else nl + 1)
+                    break
+                if self.level and bare.startswith(delim) and \
+                        bare[len(delim):].lstrip(" \t").startswith(")"):  # EOF)
+                    stop, i = i, i + len(line) - len(bare) + len(delim)
+                    break
+                i = end if nl < 0 else nl + 1
+            body = s[start:stop]
+            out_start = self.n
+            self.emit(s[start:i])
+            if not self.level:
+                self.spans.append((out_start, self.n, ""))
+                self.heredocs.append(body)
+                if not quoted:  # $(...) and backticks run in an unquoted heredoc
+                    inner = _Scan(body)
+                    inner.nest = self.nest
+                    inner.dq(0, True)
+                    self.bodies += inner.result_bodies()
+        self.pending = []
+        return i
+
+
+def _tokens(command: str) -> list[str]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>`\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""  # _Scan removes comments; shlex starts one mid-word
+    return list(lexer)
+
+
+def _raw(command: str) -> str | None:
+    """The check for a command that cannot be parsed: raw patterns."""
+    if _AW_RAW.search(command) and _GUARD_RAW.search(command):
+        return REASONS["guard_off"]
+    return REASONS["destructive"] if _FALLBACK.search(command) else None
+
+
+def _script(script: str, depth: int) -> str | None:
+    """A script a shell runs (-c, eval, its stdin)."""
+    if _DOWNLOAD.match(script):
+        return REASONS["pipe_shell"]
+    return check_command(script, depth + 1)
+
+
+def _stdin_scripts(prog: str, argv: list[str]) -> list[str]:
+    """What a command writes to a shell it is piped to, or a shell reads: here-strings,
+    and the text echo/printf print."""
+    out = [b for a, b in zip(argv, argv[1:]) if a == "<<<"]
+    if prog in _ECHOES:
+        words = [a for a in argv[1:] if not re.fullmatch(r"-[neE]+", a)]
+        out.append(" ".join(words).replace("\\n", "\n"))
+    return out
+
+
+def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -> str | None:
+    """Check each simple command. *heredocs* are the bodies cut from *command*,
+    in the order of its `<<` operators. Raises ValueError when shlex cannot parse."""
+    pipeline: set[str] = set()  # programs earlier in the current pipeline
+    stdin: list[str] = []  # scripts flowing down the current pipeline
+    docs = iter(heredocs or ())
+    for argv, sep in _simple_commands(_tokens(command)):
+        mine = [next(docs, "") for tok in argv if tok == "<<"] if heredocs else []
+        argv = _strip_prefixes(argv)
+        if sep != "|":
+            pipeline, stdin = set(), []
+        reason = _check_argv(argv, pipeline, depth)
+        if reason:
+            return reason
+        if argv:
+            prog = _prog(argv[0])
+            mine += _stdin_scripts(prog, argv)
+            if prog in _SHELLS:
+                for script in stdin + mine:
+                    if reason := _script(script, depth):
+                        return reason
+            stdin += mine
+            pipeline.add(prog)
+    return None
+
+
+def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | None:
+    """The ask reason for a Bash command, or None. *_sub*: a substitution's body."""
     if depth > 3:
-        return None
+        return _raw(command)
     if _FORK_BOMB.search(command):
         return REASONS["fork_bomb"]
     if len(command) > MAX_PARSE:
         return _check_long(command, depth)
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>`\n")
-        lexer.whitespace = " \t\r"
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        if _AW_RAW.search(command) and _GUARD_RAW.search(command):
-            return REASONS["guard_off"]
-        return REASONS["destructive"] if _FALLBACK.search(command) else None
-    pipeline: set[str] = set()  # programs earlier in the current pipeline
-    for argv, sep in _simple_commands(tokens):
-        argv = _strip_prefixes(argv)
-        if sep != "|":
-            pipeline = set()
-        reason = _check_argv(argv, pipeline, depth)
-        if reason:
+        text, bodies, skeleton, heredocs = _Scan(command).result()
+    except (_UnparsedError, RecursionError):
+        try:
+            reason = _check_tokens(command, depth)
+        except ValueError:
+            reason = None
+        return reason or _raw(command)
+    # Both views of the command: the full text (substitutions and heredoc lines
+    # read as commands, as before) and the skeleton, which follows bash's own
+    # nesting. A substitution's heredoc is data unless a shell reads it, so a
+    # commit message in `$(cat <<'EOF' ... EOF)` is not read as commands.
+    if not (_sub and heredocs):
+        try:
+            if reason := _check_tokens(text, depth):
+                return reason
+        except ValueError:
+            if reason := _raw(text):
+                return reason
+    for body in dict.fromkeys(bodies):
+        if reason := check_command(body, depth + 1, _sub=True):
             return reason
-        if argv:
-            pipeline.add(_prog(argv[0]))
-    return None
+    if skeleton is None:
+        return None
+    try:
+        return _check_tokens(skeleton, depth, heredocs)
+    except ValueError:
+        return _raw(skeleton)
 
 
 def _check_long(command: str, depth: int) -> str | None:
