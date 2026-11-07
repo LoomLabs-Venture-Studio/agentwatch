@@ -12,6 +12,12 @@ numbers refer to the GitHub repository.
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
   now read along with its first and last output lines (#206).
+- `c2_beacon` no longer flags a one-shot `sleep N; curl ...`, such as a
+  dev-server readiness probe. It now needs a loop (or a cron entry) that
+  runs `sleep` and `curl`/`wget`/`nc` against a host that is not loopback.
+  It is critical when that loop also sends data or runs what it downloads
+  (`curl ... | sh`), high otherwise; a command it cannot parse is still
+  flagged by the old rule, at high.
 
 ## [0.2.2] - 2026-11-06
 
