@@ -12,6 +12,13 @@ numbers refer to the GitHub repository.
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
   now read along with its first and last output lines (#206).
+- `c2_beacon` findings now carry a severity: a plain local dev-server
+  readiness probe such as `(server &); sleep 1; curl -s http://127.0.0.1:8765/`
+  is reported as high instead of critical. Detection is unchanged -- every
+  command the previous rules flagged is still flagged -- only the severity
+  drops, and only when every URL/host is a literal loopback target and the
+  command has no loop, cron, pipe-to-shell, downloaded-code run, command
+  substitution or `PATH=`/`.curlrc` hijack. Anything else stays critical.
 
 ## [0.2.2] - 2026-11-06
 
