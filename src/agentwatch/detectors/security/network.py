@@ -13,7 +13,7 @@ from agentwatch.ai_detect import AI_PROVIDERS
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
-from .beacon import beacon_exempt
+from .beacon import beacon_severity
 from .secret_scanner import redact_truncate
 
 
@@ -186,18 +186,25 @@ class C2CommunicationDetector(SecurityDetector):
         recent = buffer.last(self.window)
 
         # Check for beacon-like command patterns
-        # A match is exempt only when beacon.py is sure it is not a beacon,
-        # e.g. a one-shot "sleep 1; curl localhost" readiness probe.
+        # Report the worst match in the window, so an earlier HIGH loopback
+        # probe cannot hide a later CRITICAL beacon.
+        found = None
         for action in recent:
-            if (action.command and self._pattern.search(action.command)
-                    and not beacon_exempt(action.command)):
-                return Warning(
-                    category=self.category,
-                    severity=Severity.CRITICAL,
-                    signal="c2_beacon",
-                    message="Command pattern consistent with C2 beacon",
-                    details={"command": redact_truncate(action.command, 80)},
-                )
+            if action.command and self._pattern.search(action.command):
+                severity = beacon_severity(action.command)
+                if found is None or severity is Severity.CRITICAL:
+                    found = (action, severity)
+                if severity is Severity.CRITICAL:
+                    break
+        if found is not None:
+            action, severity = found
+            return Warning(
+                category=self.category,
+                severity=severity,
+                signal="c2_beacon",
+                message="Command pattern consistent with C2 beacon",
+                details={"command": redact_truncate(action.command, 80)},
+            )
 
         # Check for regular network polling
         network_actions = [a for a in recent if a.is_network]
