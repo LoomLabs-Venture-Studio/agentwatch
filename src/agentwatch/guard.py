@@ -19,10 +19,19 @@ or bare args) are checked recursively, as are scripts a shell reads on stdin
 (heredocs, here-strings, `echo`/`printf` piped to it); `sh -c "$(curl ...)"`,
 `bash <(curl ...)` and `source <(wget ...)` count as pipe to shell. Program
 names are lowercased, without `.exe` and directory (`/` or backslash). Nesting
-deeper than 3 (wrappers or substitutions) gets the raw patterns. Not caught:
+deeper than 3 (wrappers or substitutions) gets the raw patterns. A check that
+runs past _BUDGET_S (1 s) asks. Not caught:
 `powershell -EncodedCommand`
 (not decoded), `wsl --shell-type X`, `script --command=...`, `curl | cmd` or
-`| powershell`, a script passed through a variable (`x=...; sh -c "$x"`),
+`| powershell`, scripts passed through variables, aliases, functions, traps,
+positional parameters or array subscripts (`x=...; sh -c "$x"`, `$x -rf ~`,
+`alias`, `function f { ...; }`, `trap '...' EXIT`, `sh -c '$1 ...' _ rm`,
+`x='a[$(...)]'`, PS4, BASH_ENV), a program name built at run time (`$(echo rm)`,
+`${x:-rm}`), ANSI-C or locale quoting (`$'rm'`, `$"rm"`, `eval $'...'`),
+`coproc`, `xargs` running a guarded program, stdin scripts other than
+heredocs, here-strings and echo/printf (`base64 -d | bash`, `bash < <(echo
+...)`, `. /dev/stdin`, `printf '%s' ... | bash`), `#` inside `(( ))`, array
+subscripts or extglob patterns (read as a comment at a word start),
 unquoted backslash program
 paths (shlex eats them), cmd's `^` escape (`g^it`), PowerShell syntax inside
 -Command (`& {...}`, `iex`, cmdlets such as `Remove-Item -Recurse -Force`; the
@@ -78,9 +87,10 @@ _SPLIT = re.compile(r"&&|\|\||[;\n]")
 _RELEVANT = re.compile(r"rm|git|mkfs|dd|chmod|curl|wget|/dev/|\.env|\.ssh|\.aws|netrc"
                        r"|npmrc|pypirc|\.docker|\.kube|\.pem|\.key|agentwatch|agentguard",
                        re.IGNORECASE)
-# ponytail: wall-clock cap on the long-command path; past it the guard asks
-# instead of finishing. Raise it (under coach.BUDGET_S) if real commands hit it.
-_LONG_BUDGET_S = 1.0
+# ponytail: wall-clock cap on one check; past it the guard asks instead of
+# finishing. Raise it (under coach.BUDGET_S) if real commands hit it.
+_BUDGET_S = 1.0
+_deadline: float | None = None  # set by the outermost check_command
 _HOME_RE = re.compile(r"(?:~|\$HOME|\$\{HOME\})(?=/|$)")
 _DISK = re.compile(r"/dev/(?:sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|disk\d)")
 _HARMLESS_DEV = ("/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/")
@@ -96,6 +106,8 @@ _PREFIXES = {"sudo": {"-u", "-g", "-C", "-h", "-p"}, "doas": {"-u", "-C"},
 _KEYWORDS = {"{", "}", "!", "if", "then", "elif", "else", "do", "while", "until",
              "fi", "done", "esac"}
 _SEPARATORS = set(";&|()`\n")
+_REDIR = re.compile(r"[<>]{1,3}[&|]?|&>{1,2}")  # shlex tokens of a redirection operator
+_PIPES = ("|", "|&")
 _READERS = {"cat", "less", "more", "head", "tail", "cp", "scp", "bat"}
 # The guard's settings file is always <user_state_dir>/agentwatch/coach/guard
 # (coach.guard_path()); matching the tail also catches ~, $HOME and %VAR% spellings.
@@ -243,10 +255,17 @@ def _simple_commands(tokens: list[str]) -> list[tuple[list[str], str]]:
 
 
 def _strip_prefixes(argv: list[str]) -> list[str]:
-    i = 0
+    """argv from the program on; leading redirections (`2>/dev/null rm ...`) are
+    moved to the end, where _check_argv still sees them."""
+    i, redirs = 0, []
     while i < len(argv):
         word = argv[i]
-        if re.fullmatch(r"[A-Za-z_]\w*=.*", word, re.DOTALL):
+        nxt = argv[i + 1] if i + 1 < len(argv) else ""
+        if _REDIR.fullmatch(word) or (word.isdigit() and _REDIR.fullmatch(nxt)):
+            j = i + (1 if _REDIR.fullmatch(word) else 2)
+            redirs += argv[i:j + 1]
+            i = j + 1
+        elif re.fullmatch(r"[A-Za-z_]\w*=.*", word, re.DOTALL):
             i += 1
         elif word in _KEYWORDS:
             i += 1
@@ -258,7 +277,7 @@ def _strip_prefixes(argv: list[str]) -> list[str]:
                 i += 1  # the duration
         else:
             break
-    return argv[i:]
+    return argv[i:] + redirs
 
 
 def _flags(args: list[str]) -> tuple[set[str], list[str]]:
@@ -318,12 +337,18 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
     if prog in _SHELLS and piped_from & {"curl", "wget"}:
         return REASONS["pipe_shell"]
     if prog in _SHELLS or prog in ("source", "."):  # bash <(curl ...), . <(wget ...)
-        if any(a == "<(" and _prog(b) in ("curl", "wget") for a, b in zip(args, args[1:])):
+        if _DL in args or any(
+                a == "<(" and _prog(b) in ("curl", "wget") for a, b in zip(args, args[1:])):
             return REASONS["pipe_shell"]
     if prog in _SHELLS or prog == "script":
         for i, a in enumerate(args[:-1]):
             if re.fullmatch(r"-[a-z]*c[a-z]*", a) or a == "--command":
-                return _script(args[i + 1], depth)
+                j = i + 1
+                while j < len(args) - 1 and args[j].startswith("-") and args[j] != "-":
+                    j += 1  # bash -c -- 'cmd', bash -c -e 'cmd'
+                    if args[j - 1] == "--":
+                        break
+                return _script(args[j], depth)
         return None
     if prog == "cmd":
         return _cmd(args, depth)
@@ -386,6 +411,10 @@ _ECHOES = {"echo", "printf"}
 # The script a shell runs is the output of curl/wget: sh -c "$(curl -fsSL URL)".
 _DOWNLOAD = re.compile(r"\s*(?:\$\(|`)\s*(?:\S*[/\\])?(?:curl|wget)(?:\.exe)?\s",
                        re.IGNORECASE)
+_DL_BODY = re.compile(r"\s*(?:\S*[/\\])?(?:curl|wget)(?:\.exe)?\s", re.IGNORECASE)
+# In the skeleton a substitution running curl/wget becomes this word, so
+# `eval $(curl ...)` and `bash <(curl ...)` still read as pipe to shell.
+_DL = "__agentwatch_download__"
 
 
 class _Scan:
@@ -432,6 +461,8 @@ class _Scan:
         parts, at = [], 0
         for a, b, filler in sorted(self.spans):
             if a >= at:
+                if filler and _DL_BODY.match(text, a + (1 if text[a] == "`" else 2), b):
+                    filler = _DL
                 parts += [text[at:a], filler]
                 at = b
         parts.append(text[at:])
@@ -603,6 +634,7 @@ class _Scan:
 
     def sub(self, i: int, op_len: int) -> int:
         """$(...), <(...) or >(...)."""
+        _tick()
         self.enter()
         start = self.n
         self.emit(self.s[i:i + op_len])
@@ -666,6 +698,7 @@ class _Scan:
         """Skip the pending heredoc bodies that start at *i*."""
         s, end = self.s, len(self.s)
         for delim, strip, quoted in self.pending:
+            _tick()
             start, stop = i, end
             while i < end:
                 nl = s.find("\n", i)
@@ -712,7 +745,7 @@ def _raw(command: str) -> str | None:
 
 def _script(script: str, depth: int) -> str | None:
     """A script a shell runs (-c, eval, its stdin)."""
-    if _DOWNLOAD.match(script):
+    if _DOWNLOAD.match(script) or script.strip() == _DL:
         return REASONS["pipe_shell"]
     return check_command(script, depth + 1)
 
@@ -732,11 +765,13 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
     in the order of its `<<` operators. Raises ValueError when shlex cannot parse."""
     pipeline: set[str] = set()  # programs earlier in the current pipeline
     stdin: list[str] = []  # scripts flowing down the current pipeline
+    checked: set[str] = set()
     docs = iter(heredocs or ())
     for argv, sep in _simple_commands(_tokens(command)):
+        _tick()
         mine = [next(docs, "") for tok in argv if tok == "<<"] if heredocs else []
         argv = _strip_prefixes(argv)
-        if sep != "|":
+        if sep not in _PIPES:
             pipeline, stdin = set(), []
         reason = _check_argv(argv, pipeline, depth)
         if reason:
@@ -744,17 +779,45 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
         if argv:
             prog = _prog(argv[0])
             mine += _stdin_scripts(prog, argv)
-            if prog in _SHELLS:
+            if prog in _SHELLS:  # the shell reads its stdin: what it prints is not a script
                 for script in stdin + mine:
-                    if reason := _script(script, depth):
-                        return reason
-            stdin += mine
+                    if script not in checked:
+                        checked.add(script)
+                        if reason := _script(script, depth):
+                            return reason
+                stdin = []
+            else:
+                stdin += mine
             pipeline.add(prog)
     return None
 
 
+class _TimeUpError(Exception):
+    """The check ran past _BUDGET_S."""
+
+
+def _tick() -> None:
+    if _deadline is not None and time.monotonic() > _deadline:
+        raise _TimeUpError
+
+
 def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | None:
-    """The ask reason for a Bash command, or None. *_sub*: a substitution's body."""
+    """The ask reason for a Bash command, or None. *_sub*: a substitution's body.
+    Past _BUDGET_S the answer is "too_long" (ask), never None."""
+    global _deadline
+    if _deadline is not None:  # a nested check: the outermost one owns the clock
+        return _check_command(command, depth, _sub)
+    _deadline = time.monotonic() + _BUDGET_S
+    try:
+        return _check_command(command, depth, _sub)
+    except _TimeUpError:
+        return REASONS["too_long"]
+    finally:
+        _deadline = None
+
+
+def _check_command(command: str, depth: int, _sub: bool) -> str | None:
+    _tick()
     if depth > 3:
         return _raw(command)
     if _FORK_BOMB.search(command):
@@ -792,13 +855,11 @@ def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | Non
 
 
 def _check_long(command: str, depth: int) -> str | None:
-    deadline = time.perf_counter() + _LONG_BUDGET_S
     seen: set[str] = set()  # pieces already found safe
     for piece in _SPLIT.split(command):
         if piece in seen:
             continue
-        if time.perf_counter() > deadline:
-            return REASONS["too_long"]
+        _tick()
         if len(piece) > _SMALL:
             head = piece.strip()[:_PIECE]
             if _AW_RAW.search(head) and _GUARD_RAW.search(head):

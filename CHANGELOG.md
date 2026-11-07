@@ -13,8 +13,11 @@ numbers refer to the GitHub repository.
   Commands that run inside `$(...)` or backticks are now checked also inside
   double quotes and `${...}`, as are `<(...)`, `>(...)`, line continuations
   and scripts a shell reads from a heredoc, a here-string or `echo | sh`.
-  `sh -c "$(curl ...)"` and `bash <(curl ...)` now count as piping a
-  download into a shell.
+  A redirection before the program (`2>/dev/null rm -rf ~`) and
+  `bash -c -- '...'` no longer hide the command. `sh -c "$(curl ...)"`,
+  `eval $(curl ...)`, `bash <(curl ...)` and `curl ... |& bash` now count as
+  piping a download into a shell. A check that takes longer than a second
+  asks instead of running on.
 - `report`/`tools` error kinds: a Node.js crash that failed to open a file is
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
