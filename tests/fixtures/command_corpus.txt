@@ -1,0 +1,222 @@
+echo $'\' # '; rm -rf ~
+echo $'\'' ; rm -rf ~ ; echo $'\''
+echo $'a\' #'; sudo bash
+bash -c -- 'rm -rf /'
+bash -c -x 'rm -rf ~'
+bash -c -e 'sudo bash'
+sh -c +x 'rm -rf /'
+echo 'rm -rf /' > 1; sh 1
+echo 'rm -rf /' >2; bash 2
+echo 'rm -rf /' 1<>run.sh; sh run.sh
+echo 'sudo su' 1<>r.sh; sh r.sh
+{ echo 'rm -rf /'; } > run.sh; sh run.sh
+for i in 1; do echo 'rm -rf ~'; done > r.sh; bash r.sh
+if true; then echo 'rm -rf ~'; fi > r.sh; bash r.sh
+exec > run.sh; echo 'rm -rf /*'; sh run.sh
+printf -v c 'rm -rf /*'; $c
+printf -v c 'sudo bash'; $c
+echo 'rm -rf /' | sort -o run.sh; sh run.sh
+echo 'rm -rf /' | uniq - run.sh; sh run.sh
+man -P 'rm -rf ~' ls
+man --pager='rm -rf ~' ls
+man -P 'sudo bash' ls
+git -c core.pager='rm -rf ~' log
+git -c core.editor='rm -rf ~' commit
+git -c core.sshCommand='rm -rf ~' fetch origin
+git -c core.fsmonitor='rm -rf ~' status
+git -c diff.external='rm -rf ~' diff
+git fetch --upload-pack='rm -rf ~' ../repo
+git push --receive-pack='rm -rf ~' ../repo
+git grep -O'rm -rf ~' x
+git grep --open-files-in-pager='sudo bash' x
+git -c core.pager='sudo bash' log
+gh repo clone o/r -- --upload-pack='rm -rf ~'
+git -c alias.x='!rm -rf ~' x
+rm -rf /etc
+rm -rf /usr
+rm -rf /home
+rm -rf /home/*
+rm -rf /home/alice
+rm -rf /Users/alice
+rm -rf /root
+rm -rf /c/
+rm -rf /mnt/c
+rm -rf ~/.ssh
+rm -rf ~/Documents
+rm -rf ~/x/..
+rm -rf ~/.
+rm -rf ~/..
+rm -rf /tmp/..
+rm -rf //
+rm -rf /./
+rm -rf /tmp/x/../../
+rm -rf ~root
+rm -rf "$HOME"
+rm -rf ${HOME}
+rm -rf $HOME/
+rm -rf /home/$USER
+rm -rf ~+
+rm -rf -- /
+rm -rf --no-preserve-root /
+rm -Rf /
+rm -rf /tmp/link/
+rm -rf C:/
+rm -rf ./
+rm -rf ../
+rm -rf ../*
+rm -rf .git
+rm -rf ~/*
+chmod 00004755 /tmp/rootbash
+chmod 04755 /tmp/rootbash
+chmod 6755 x
+chmod 4755 x
+chmod =s x
+chmod u-x+s x
+chmod 755 x
+chmod 644 x
+chmod -R 4755 d
+chmod -- 4755 x
+sudo -u root -s
+sudo --shell
+sudo --sh
+sudo --she
+sudo --logi
+sudo -E bash
+sudo sh -c 'id'
+sudo -- sh
+sudo tee /etc/sudoers.d/x
+sudo visudo
+sudo awk 'BEGIN{system("/bin/sh")}'
+sudo tcsh
+sudo csh
+sudo ash
+sudo mksh
+sudo vim -c ':!sh'
+sudo sed -i 's/x/y/' /etc/sudoers
+sudo dd of=/etc/sudoers
+sudo install -m 4755 /bin/bash /tmp/rb
+sudo cp /bin/bash /tmp/rb
+pkexec
+pkexec --user root
+doas -s
+doas sh
+sudo -i
+sudo -h bash
+sudo -l
+sudo apt-get install -y x
+sudo nohup bash
+sudo env bash
+sudo env -S bash
+sudo setsid bash
+sudo irb
+sudo expect
+echo hi & rm -rf ~
+echo hi |& rm -rf ~
+echo hi;; rm -rf ~
+echo hi	&&	rm -rf ~
+echo x 'rm -rf ~'
+grep 'rm -rf ~' file
+git commit -m 'rm -rf ~'
+gh pr create --body 'sudo rm -rf /'
+echo 'rm -rf ~' >| x
+echo 'rm -rf ~' >& x
+echo 'rm -rf ~' &> x
+echo 'rm -rf ~' 2> x
+echo 'rm -rf ~' | tee x
+'if' true; then rm -rf ~; fi
+if true; then rm -rf ~; fi
+{ rm -rf ~; }
+! rm -rf ~
+ls	rm -rf ~
+echo 'a' 'b' ; rm -rf ~ #
+echo x | tee >(sh) <<< 'rm -rf ~'
+echo 'rm -rf ~' > >(sh)
+cat <(echo 'rm -rf ~')
+echo 'rm -rf ~' | tee x | sh
+echo 'rm -rf ~' | grep rm | sh
+git commit -m 'x' && $(git log -1 --format=%B)
+git log --format='rm -rf ~' | sh
+echo 'rm -rf ~' |& sh
+echo 'rm -rf ~' 2>&1 | bash
+printf 'rm -rf ~\n' > /tmp/x.sh; sh /tmp/x.sh
+echo rm -rf ~ > /dev/stdout | sh
+coproc sh; echo 'rm -rf ~' >&${COPROC[1]}
+alias x='rm -rf ~'; x
+function f { rm -rf ~; }; f
+f() { rm -rf ~; }; f
+trap 'rm -rf ~' EXIT
+source <(echo 'rm -rf ~')
+. /dev/stdin <<< 'rm -rf ~'
+time rm -rf ~
+command rm -rf ~
+builtin eval 'rm -rf ~'
+nice -n 5 eval 'rm -rf ~'
+env rm -rf ~
+env -i bash -c 'rm -rf ~'
+timeout 5 sh -c 'rm -rf ~'
+echo ok && grep -q x f || rm -rf ~
+case x in x) rm -rf ~;; esac
+select x in a; do rm -rf ~; done
+rm -rf -- ~
+rm -rf ~/
+rm -rf '/'
+rm -rf ${HOME:-/}
+chmod 4755 $F
+chmod u+s,g+s f
+chmod $(echo 4755) f
+sudo -E env PATH=$P rm -rf /
+dd if=a of=/dev/null; dd if=b of=/dev/sda
+echo 'dd if=x of=/dev/sda' | sh
+history -c; ls
+agentwatch $(rm -rf ~)
+echo "$(rm -rf ~)"
+echo "`rm -rf ~`"
+grep x <<< "$(rm -rf ~)"
+x=$'\n'; rm -rf ~
+echo $'rm -rf ~' | sh
+sudo rm -rf /tmp/x
+sudo -u bob ls
+sudo -iu root
+sudo -uroot ls
+sudo -- bash
+sudo nohup ls
+sudo -s ls
+sudo sh
+SUDO_ASKPASS=x sudo -A ls
+echo pw | sudo -S ls
+sudo tee /etc/sudoers < f
+sudo cp x /etc/sudoers.d/x
+sudo chmod 755 /usr/bin/x
+sudo chmod u+s /bin/x
+chmod 0755 x
+chmod -R 2775 d
+chmod +s x
+chmod a=rwxs x
+chmod 755 $(ls)
+chown root x
+sudo chown root x
+echo chown root
+git commit -m 'chown root, setcap, sudo'
+doas -u root sh
+pkexec --user root bash
+su - -c ls
+su root
+sudo -k
+visudo -c
+setcap -r x
+getcap x
+systemctl status nginx
+systemctl start nginx
+echo 'systemctl start x'
+grep -r sudo . | sudo sh
+echo sudo | xargs
+sudo ./x.sh
+sudo $(which apt) update
+sudo `which apt` update
+sudo "$(which apt)" update
+sudo -E PATH=$P apt
+sudo apt update # sudo bash
+SUDO=sudo; $SUDO ls
+/usr/bin/sudo ls
+s''udo ls
+\sudo ls

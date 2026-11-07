@@ -2,7 +2,7 @@
 
 A CRITICAL security finding must fail `check --security` even when the
 averaged health score is high. Uses a synthetic Claude Code JSONL fixture
-(`tests/fixtures/check_security_critical.jsonl`: one `sudo rm -rf ~` Bash
+(`tests/fixtures/check_security_critical.jsonl`: one `sudo rm -rf` Bash
 call, flagged CRITICAL by privilege_escalation and dangerous_command).
 """
 
