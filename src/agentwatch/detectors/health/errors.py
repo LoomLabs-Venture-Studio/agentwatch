@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from agentwatch.parser.models import ActionBuffer
+from agentwatch.parser.models import ActionBuffer, is_usage_record
 
 from ..base import Category, Detector, Severity, Warning
 from ..security.secret_scanner import redact_truncate
@@ -27,14 +27,18 @@ class ErrorSpiralDetector(Detector):
 
         recent = buffer.last(self.threshold + 2, activity=True)
 
-        # Count consecutive failures from the end
-        consecutive_failures = 0
-        for action in reversed(recent):
-            if not action.success:
-                consecutive_failures += 1
-            else:
+        # The whole run of failures from the end (usage records skipped), back
+        # to the last success or the start of the buffer: the count is the real
+        # run length, not capped at the window above.
+        failed = []
+        for action in reversed(buffer.actions):
+            if is_usage_record(action):
+                continue
+            if action.success:
                 break
-        failed = recent[len(recent) - consecutive_failures:]
+            failed.append(action)
+        failed.reverse()
+        consecutive_failures = len(failed)
 
         if consecutive_failures >= self.threshold:
             # Collect the actual errors
