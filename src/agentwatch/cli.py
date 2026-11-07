@@ -1562,7 +1562,9 @@ def security_scan(
         )
 
         click.echo()
-        click.echo(f"  Analyzed {len(buffer)} actions")
+        # Every action scanned, not len(buffer) (the buffer keeps only the
+        # newest); token-usage/turn-end records are not agent actions.
+        click.echo(f"  Analyzed {buffer.stats.activity_count} actions")
         click.echo(f"  Found {len(warnings)} security issue(s)")
         click.echo(
             "  Raw signal counts: "
@@ -1603,7 +1605,8 @@ def _security_json(warnings, buffer: ActionBuffer, note, goal_alignment=None) ->
         "security_score": security_score,
         "status": security_tier_from_score(security_score),
         "warnings": [w.to_dict() for w in warnings],
-        "action_count": len(buffer),
+        # All scanned, not the buffer size; usage records excluded (as history).
+        "action_count": buffer.stats.activity_count,
         "security_stats": _security_stats(buffer),
         "goal_alignment": goal_alignment.to_dict() if goal_alignment else None,
         "session_fallback": note,
@@ -2366,6 +2369,7 @@ def _audit_json(
             "severity": f.severity,
             "file_path": f.file_path,
             "matched_prefix": f.matched_prefix,
+            "fingerprint": f.fingerprint,
             "log_file": f.log_file,
             "session_id": f.session_id,
             "project_name": f.project_name,

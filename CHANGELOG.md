@@ -8,6 +8,16 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- Command guard: a `#` in the middle of a word (`a#b`) no longer hides the rest
+  of the line, and a comment no longer hides the command on the next line.
+  Commands that run inside `$(...)` or backticks are now checked also inside
+  double quotes and `${...}`, as are `<(...)`, `>(...)`, line continuations
+  and scripts a shell reads from a heredoc, a here-string or `echo | sh`.
+  A redirection before the program (`2>/dev/null rm -rf ~`) and
+  `bash -c -- '...'` no longer hide the command. `sh -c "$(curl ...)"`,
+  `eval $(curl ...)`, `bash <(curl ...)` and `curl ... |& bash` now count as
+  piping a download into a shell. A check that takes longer than a second
+  asks instead of running on.
 - `report`/`tools` error kinds: a Node.js crash that failed to open a file is
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
@@ -34,6 +44,32 @@ numbers refer to the GitHub repository.
   (quoting, wrappers, substitutions, very long input) stays CRITICAL.
 - These detectors stay linear on hostile input: a 1 MB command is checked in
   well under a second.
+- Secret findings: two different secrets of the same type in the same
+  channel and file are now two findings, and the same secret seen twice is
+  still one. Each finding carries a `fingerprint`: the first 12 hex chars of
+  an HMAC-SHA256 of the value under a random per-user key
+  (`secret-fingerprint.key` in the history data dir, created on first use,
+  0600), never the value. The fingerprint is in the warning details, the
+  dedup key, `security-scan --json`, SIEM export and `audit --json`.
+- Secrets in a tool's result text are reported in channel `tool_result`
+  (same severity as before), not `user_message`, which now means a prompt.
+  `audit` uses `tool_result` for Claude Code `tool_result` blocks too
+  (was `tool_output`).
+- History: secret findings now have new keys. A log that changed is
+  re-scanned and its findings replaced, so its secret findings get a new
+  first-seen time once; logs that did not change keep their old rows until
+  they change.
+- `security-scan` reports how many actions it scanned ("Analyzed N actions",
+  JSON `action_count`, also in `agentwatch visual`), and `subagents` how
+  many each subagent made. Both reported at most 500, the size of the live
+  buffer, on longer sessions. Token-usage and turn-end records (Codex
+  `token_count`, for example) are not counted as actions, as in `history`
+  and `report`.
+- `error_spiral` reports the whole run of failed calls since the last
+  success (up to the actions kept in the buffer: 500 in scans, 2,000 in
+  `watch-all`), and its token cost covers
+  each of them. It reported at most 5 with the default settings. It fires
+  at the same point and with the same severity as before.
 
 ## [0.2.2] - 2026-11-06
 

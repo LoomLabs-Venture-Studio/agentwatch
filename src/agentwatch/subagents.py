@@ -136,7 +136,7 @@ def _score(log: Path) -> dict[str, Any]:
         return row
     report = calculate_health(warnings, include_security=False)
     row.update(
-        actions=len(buffer),
+        actions=buffer.stats.activity_count,  # every action, not the newest 500
         health_score=report.overall_score,
         status=report.status,
         cost_usd=calculate_efficiency(warnings, buffer).cost_total,
