@@ -30,8 +30,9 @@ numbers refer to the GitHub repository.
   command segment is plainly safe.
   - A recursive `rm` is HIGH only when every target is a relative literal
     path (not `.` or `..`, no `..` part) or a path under `/tmp/` or
-    `/var/tmp/`, no target names a credential directory (`.ssh`, `.aws`,
-    `.gnupg`, `.kube`, `.docker`, `.azure`, `.config/gcloud`), and every `cd`
+    `/var/tmp/`, no target (alone or joined to the `cd` directory) names a
+    credential store (`.ssh`, `.aws`, `.gnupg`, `.kube`, `.netrc`,
+    `.config/gcloud`, keyrings, keychains, ..., any case), and every `cd`
     or `pushd` on the line goes to such a relative path, a path under `/tmp/`
     or `/var/tmp/`, or a literal path at least three levels below a home root
     (`/home/<user>/<dir>/...`); `popd`, a bare `cd`, `cd -` or any other
@@ -41,12 +42,16 @@ numbers refer to the GitHub repository.
   - `sudo`/`doas`/`pkexec` are HIGH only with allowlisted flags and either
     no program (`sudo -l`) or a program from a short allowlist of
     non-interactive system tools (`apt`, `apt-get`, `dnf`, `yum`, `pacman`,
-    `zypper`, `snap`, `flatpak`, `systemctl`, `service`, `mount`, `umount`,
-    `lsof`, `ss`, `netstat`), named exactly, with no `-o`/`--option`/
-    `Invoke` argument and no paging or shell subcommand (`systemctl status`
-    without `--no-pager`, `apt-get changelog`, `snap run`, ...). Any other
-    program, a path such as `./deploy.sh`, a `NAME=value` word, `-E`, `su`,
-    `sudo -e`, a redirect or anything unrecognized stays CRITICAL.
+    `zypper`, `snap`, `flatpak`, `systemctl`, `service`, `umount`, `lsof`,
+    `ss`, `netstat`), named exactly, with no `-o`/`--option`/`Invoke`
+    argument and no paging or shell subcommand (`systemctl status` without
+    `--no-pager`, `apt-get changelog`, `snap run`, ...). A package manager
+    is HIGH only with plain flags (`-y`, `-q`, `--no-install-recommends`,
+    `-Syu`, ...) and plain package names: a config file, hook, `--setopt`,
+    path, `NAME=value` or local package file (`.deb`, `.rpm`, ...) keeps it
+    CRITICAL. Any other program, a path such as `./deploy.sh`, a
+    `NAME=value` word, `-E`, `-R`/`--chroot`, `su`, `sudo -e`, a redirect or
+    anything unrecognized stays CRITICAL.
   - A command is lowered only when every `rm`, `chmod` or elevator in it,
     anywhere on the line, fits these shapes: `rm -rf /tmp/x && sudo rm -rf /`
     stays CRITICAL.

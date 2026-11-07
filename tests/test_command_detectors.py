@@ -498,3 +498,68 @@ def test_cd_to_safe_dir_keeps_rm_high(command):
 ])
 def test_cd_to_other_dir_keeps_rm_critical(command):
     assert _sev(command, DANGEROUS) == CRIT
+
+
+# --- final QA (probe5) ----------------------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    # F1: package managers only with plain flags and plain package names
+    "sudo apt -c /tmp/x install y", "sudo apt-get -c /tmp/x install y",
+    "sudo apt install ./evil.deb", "sudo apt install /tmp/evil.deb",
+    "sudo apt-get install ./evil.deb", "sudo apt-get --allow-unauthenticated install x",
+    "sudo apt-get --config-file /tmp/x update", "sudo apt-get --config-file=/tmp/x update",
+    "sudo dnf --setopt=x=y install z", "sudo dnf -c /tmp/x install y",
+    "sudo dnf --config=/tmp/x install y", "sudo dnf install ./evil.rpm",
+    "sudo dnf --exclude=x upgrade", "sudo yum -c /tmp/x install y",
+    "sudo pacman -U ./evil.pkg.tar.zst", "sudo pacman --config /tmp/x -Syu",
+    "sudo pacman --hookdir /tmp/x -Syu", "sudo zypper install ./evil.rpm",
+    "sudo snap install x --dangerous", "sudo snap install ./x.snap --dangerous --devmode",
+    "sudo apt install x lowercase=y", "sudo apt install pkg=1.2.3", "sudo apt install Pkg=1.2.3",
+    "sudo apt install x-1.0=1.0", "sudo apt-get -ox=y update", "sudo apt-get -qq -o=x update",
+    # F2: mount is no longer allowlisted
+    "sudo mount -o exec /dev/sdb /mnt", "sudo mount -t tmpfs none /etc",
+    "sudo mount --bind /tmp/x /etc", "sudo mount -B /tmp/x /etc", "sudo mount /tmp/evil.img /mnt",
+    "sudo mount -a", "sudo mount --helper x", "sudo mount -o remount,rw /",
+    # F3: chroot in any form
+    "sudo -R /x apt update", "sudo --chroot /x apt update", "sudo --chroot=/x apt update",
+    "sudo -nR /x apt update", "sudo -R/x apt update",
+])
+def test_probe5_privilege_stays_critical(command):
+    assert _sev(command, PRIVILEGE) == CRIT
+
+
+@pytest.mark.parametrize("command", [
+    "sudo apt update", "sudo apt-get update", "sudo apt install -y x",
+    "sudo apt-get install -y python3", "sudo apt-get update -y -q", "sudo dnf install x",
+    "sudo pacman -Syu", "sudo apt-get install --no-install-recommends x", "sudo umount /mnt/x",
+])
+def test_probe5_plain_package_commands_are_high(command):
+    assert _sev(command, PRIVILEGE) == HIGH
+
+
+@pytest.mark.parametrize("command", [
+    # F4: credential names, case-insensitive, extended list
+    "rm -rf .SSH", "rm -rf .netrc", "rm -rf .password-store", "rm -rf .local/share/keyrings",
+    "rm -rf ./x/.ssh", "rm -rf .config/gcloud", "rm -rf ./.config/gcloud/x", "rm -rf .kube",
+    "rm -rf ./a/.PGPASS", "rm -rf ./.git-credentials", "rm -rf ./.npmrc", "rm -rf ./.pypirc",
+    "rm -rf ./.vault-token", "rm -rf ./Library/Keychains", "rm -rf ./keyrings",
+    # F4: the cd target joined with the rm target
+    "cd .config && rm -rf ./gcloud", "cd .local/share && rm -rf ./keyrings",
+    "cd Library && rm -rf ./Keychains", "cd /home/a/p/.config/gcloud && rm -rf ./x",
+    "cd /home/a/.ssh/x && rm -rf ./y",
+    # cd forms from probe5
+    "cd /home/a/p && cd .. && rm -rf ./x", "cd /home/a/p && cd ../.. && rm -rf ./x",
+    "cd /home/a/p; cd /; rm -rf ./etc", "cd /home/a/p/../../../etc && rm -rf ./ssh",
+    "cd /home/a && rm -rf ./x", "cd /home/a/p && popd && rm -rf ./x",
+    "cd /home/a/p && cd - && rm -rf ./x", "cd /home/a/p && cd && rm -rf ./x",
+    "cd /home/a/p && cd ~ && rm -rf ./x", "cd -- / && rm -rf ./etc", "cd /tmp && rm -rf ./y",
+    "cd /tmp/.. && rm -rf ./etc", "cd .. && rm -rf ./x", "cd build/../.. && rm -rf ./x",
+    "(cd /; rm -rf ./etc)", "builtin cd / && rm -rf ./etc", "command cd / && rm -rf ./etc",
+    "CDPATH=/ cd etc && rm -rf ./ssh", "export HOME=/; cd && rm -rf ./etc",
+    "OLDPWD=/ cd - && rm -rf ./etc", "cd /home/a/p && pushd / && rm -rf ./etc",
+    "pushd /home/a/p && pushd +1 && rm -rf ./x", "cd /HOME/a/p && rm -rf ./x",
+    "chmod 755 .ssh", "chmod 755 x/.aws/y",
+])
+def test_probe5_rm_and_chmod_stay_critical(command):
+    sev = _sigs(command)
+    assert CRIT in sev.values()

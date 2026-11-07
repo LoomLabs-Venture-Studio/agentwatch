@@ -591,3 +591,192 @@ rm -rf ./a \/
 rm -rf ./a "/"
 rm -rf ./a '/'
 rm -rf ./a/ /
+cd /home/a/p && cd .. && rm -rf ./x
+cd /home/a/p && cd ../.. && rm -rf ./x
+cd /home/a/p; cd /; rm -rf ./etc
+cd /home/a/p/../../../etc && rm -rf ./ssh
+cd /home/a/p/../../.. && rm -rf ./etc
+cd /home/a/p && rm -rf ./x
+cd /home/a/p/q && rm -rf ./x
+cd /home/a && rm -rf ./x
+cd /home/a/.ssh/x && rm -rf ./y
+cd /home/a/p && popd && rm -rf ./x
+cd /home/a/p && cd - && rm -rf ./x
+cd /home/a/p && cd && rm -rf ./x
+cd /home/a/p && cd ~ && rm -rf ./x
+cd -P /home/a/p && rm -rf ./x
+cd -- / && rm -rf ./etc
+cd /home/a/p/link && rm -rf ./x
+cd /tmp/x && rm -rf ./y
+cd /tmp && rm -rf ./y
+cd /tmp/.. && rm -rf ./etc
+cd /var/tmp/x && rm -rf ./y
+cd build && rm -rf ./x
+cd .. && rm -rf ./x
+cd ../.. && rm -rf ./x
+cd build/../.. && rm -rf ./x
+cd build; cd ..; cd ..; rm -rf ./x
+cd build && cd ../.. && rm -rf ./x
+(cd /; rm -rf ./etc)
+builtin cd / && rm -rf ./etc
+command cd / && rm -rf ./etc
+CDPATH=/ cd etc && rm -rf ./ssh
+cd etc && rm -rf ./ssh
+export HOME=/; cd && rm -rf ./etc
+OLDPWD=/ cd - && rm -rf ./etc
+cd /home/a/p && pushd / && rm -rf ./etc
+pushd /home/a/p && pushd +1 && rm -rf ./x
+cd /Users/a/p && rm -rf ./x
+cd /home//a/p && rm -rf ./x
+cd /home/./a/p && rm -rf ./x
+cd /HOME/a/p && rm -rf ./x
+cd /home/a/p/.config/gcloud && rm -rf ./x
+rm -rf ./x/.ssh
+rm -rf .config/gcloud
+rm -rf ./.config/gcloud/x
+rm -rf .SSH
+rm -rf .kube
+rm -rf .netrc
+rm -rf .password-store
+rm -rf .local/share/keyrings
+rm -rf .mozilla
+rm -rf .gitconfig
+chmod 755 .ssh
+chmod 755 x/.aws/y
+sudo apt -c /tmp/x install y
+sudo apt-get -c /tmp/x install y
+sudo apt install ./evil.deb
+sudo apt install /tmp/evil.deb
+sudo apt-get install ./evil.deb
+sudo dpkg -i x.deb
+sudo apt-get update
+sudo apt-get -o APT::Update::Pre-Invoke::=sh update
+sudo apt-get -oAPT::x=y update
+sudo apt-get --option=x update
+sudo apt-get download x
+sudo apt-get help
+sudo apt edit-sources
+sudo apt list --installed
+sudo apt full-upgrade
+sudo apt install -y x
+sudo apt-get --allow-unauthenticated install x
+sudo apt-get --config-file /tmp/x update
+sudo apt-get --config-file=/tmp/x update
+sudo dnf install x
+sudo dnf --setopt=x=y install z
+sudo dnf -c /tmp/x install y
+sudo dnf --config=/tmp/x install y
+sudo dnf install ./evil.rpm
+sudo dnf shell
+sudo dnf history
+sudo dnf --exclude=x upgrade
+sudo yum -c /tmp/x install y
+sudo yum shell
+sudo pacman -U ./evil.pkg.tar.zst
+sudo pacman --config /tmp/x -Syu
+sudo pacman --hookdir /tmp/x -Syu
+sudo pacman -Syu
+sudo zypper install ./evil.rpm
+sudo zypper shell
+sudo zypper sh
+sudo snap install x --dangerous
+sudo snap install ./x.snap --dangerous --devmode
+sudo snap run x
+sudo snap shell
+sudo flatpak run x
+sudo flatpak install x
+sudo flatpak enter x
+sudo systemctl edit x
+sudo systemctl edit --full x
+sudo systemctl status x
+sudo systemctl status x --no-pager
+sudo systemctl --no-pager status x
+sudo systemctl start x
+sudo systemctl start ./evil.service
+sudo systemctl link /tmp/evil.service
+sudo systemctl enable /tmp/evil.service
+sudo systemctl enable --now /tmp/evil.service
+sudo systemctl set-environment LD_PRELOAD=/tmp/x
+sudo systemctl import-environment
+sudo systemctl daemon-reload
+sudo systemctl kexec
+sudo systemctl poweroff
+sudo systemctl isolate rescue
+sudo systemctl mask x
+sudo systemctl show x --no-pager
+sudo systemctl cat x --no-pager
+sudo systemctl -H x start y
+sudo systemctl --root=/ enable x
+sudo systemctl stop sshd
+sudo systemctl disable apparmor
+sudo systemctl stop firewalld
+sudo service x start
+sudo service ./x start
+sudo service --status-all
+sudo service ufw stop
+sudo service apparmor stop
+sudo mount -o exec /dev/sdb /mnt
+sudo mount -oexec /dev/sdb /mnt
+sudo mount --options exec x /mnt
+sudo mount -t tmpfs none /etc
+sudo mount --bind /tmp/x /etc
+sudo mount -B /tmp/x /etc
+sudo mount --bind /tmp/x /usr/bin/sudo
+sudo mount /tmp/evil.img /mnt
+sudo mount -a
+sudo mount -o remount,rw /
+sudo mount --helper x
+sudo umount /
+sudo umount -l /proc
+sudo lsof +L
+sudo lsof +L1
+sudo lsof -i
+sudo lsof -F x
+sudo ss -K
+sudo ss -K dst 1.2.3.4
+sudo ss -tlnp
+sudo ss -E
+sudo ss --kill
+sudo ss -D /tmp/x
+sudo netstat -tlnp
+sudo netstat -c
+sudo apt update; sudo bash
+sudo apt update && sudo apt install x
+sudo apt update | tee log
+sudo apt update > /etc/x
+sudo apt update 2>&1
+SUDO=1 sudo apt update
+sudo -u root apt update
+sudo -n apt-get update
+sudo -h apt update
+sudo -D /tmp apt update
+sudo -p x apt update
+sudo -U root apt update
+sudo -r r apt update
+sudo -t t apt update
+sudo -g g apt update
+sudo -K apt update
+sudo -v apt update
+sudo -l apt update
+sudo -ll apt update
+sudo APT update
+sudo Apt update
+sudo apt.exe update
+sudo ./apt update
+sudo /usr/bin/apt update
+sudo apt-get update -y -q
+sudo apt-get install -y python3
+sudo apt install x lowercase=y
+sudo apt install X=1
+sudo apt install x-1.0=1.0
+sudo apt install pkg=1.2.3
+sudo apt install Pkg=1.2.3
+sudo apt-get -ox=y update
+sudo apt-get -qq -o=x update
+doas -u root apt update
+doas -n apt update
+doas -s apt update
+doas -C /etc/doas.conf apt update
+pkexec --user root apt update
+pkexec --disable-internal-agent apt update
+pkexec --keep-cwd apt update

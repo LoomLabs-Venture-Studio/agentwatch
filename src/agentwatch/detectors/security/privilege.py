@@ -139,7 +139,14 @@ _ELEVATORS = {"sudo", "doas", "pkexec", "su", "sudoedit", "run0"}
 # an elevator -- a path program, an interpreter, a shell, an editor -- is
 # CRITICAL. Per program, subcommands that page or run something are excluded.
 _SUDO_PROGRAMS = {"apt", "apt-get", "dnf", "yum", "pacman", "zypper", "snap", "flatpak",
-                  "systemctl", "service", "mount", "umount", "lsof", "ss", "netstat"}
+                  "systemctl", "service", "umount", "lsof", "ss", "netstat"}
+# Package managers are HIGH only with these flags and plain package names: no
+# config file, hook, setopt, local package file, path or NAME=value argument.
+_PKG_MANAGERS = {"apt", "apt-get", "dnf", "yum", "pacman", "zypper", "snap", "flatpak"}
+_PKG_SAFE_FLAGS = {"-y", "-q", "-qq", "--yes", "--assume-yes", "--quiet",
+                   "--no-install-recommends", "--noconfirm", "--needed", "-S", "-Sy",
+                   "-Syu", "-Su", "-Ss", "-Q"}
+_PKG_FILE = re.compile(r"\.(?:deb|rpm|snap|flatpak\w*)$|\.pkg\.tar(?:\.|$)", re.IGNORECASE)
 _SUDO_PROGRAM_DENY = {
     "apt": {"changelog", "show", "showsrc", "search", "list", "edit-sources"},
     "apt-get": {"changelog", "source"},
@@ -151,7 +158,11 @@ _SYSTEMCTL_QUIET = {"start", "stop", "restart", "reload", "try-restart", "enable
                     "disable", "daemon-reload", "is-active", "is-enabled", "is-failed",
                     "reset-failed", "mask", "unmask"}
 # credential directories: an rm/chmod target containing one stays CRITICAL.
-_CREDENTIAL_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"}
+_CREDENTIAL_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".netrc",
+                    ".password-store", "keyrings", "keychains", ".pgpass",
+                    ".git-credentials", ".npmrc", ".pypirc", ".vault-token"}
+# multi-part credential locations (matched on the lowercased joined path).
+_CREDENTIAL_PATHS = (".config/gcloud", ".local/share/keyrings", "library/keychains")
 # a cd/pushd/popd anywhere on the line (linear: one fixed-width boundary each side).
 _CHANGES_DIR = re.compile(r"(?:^|[\s;&|(`])(?:cd|pushd|popd)(?=$|[\s;&|)`])")
 # A segment with any of these cannot be split safely into words.
@@ -334,6 +345,14 @@ def _safe_words(segment: str) -> list[str] | None:
     return segment.split()
 
 
+def _credential(path: str) -> bool:
+    """A path naming a credential store anywhere in it (case-insensitive)."""
+    parts = [p for p in path.lower().split("/") if p not in ("", ".")]
+    joined = "/".join(parts)
+    return bool(_CREDENTIAL_DIRS.intersection(parts)) or any(
+        c in joined for c in _CREDENTIAL_PATHS)
+
+
 def _safe_target(op: str) -> bool:
     """Allowlist for a path an rm/chmod may touch at the lower severity:
     (a) a relative literal path, not `.` or `..`, with no `..` segment, or
@@ -344,7 +363,7 @@ def _safe_target(op: str) -> bool:
     parts = [p for p in op.split("/") if p not in ("", ".")]
     if ".." in parts or not parts:
         return False
-    if _CREDENTIAL_DIRS.intersection(parts) or ".config/gcloud" in "/".join(parts):
+    if _credential(op):
         return False
     if not op.startswith("/"):
         return True
@@ -399,14 +418,30 @@ def _cd_shape(words: list[str]) -> bool:
     if _prog(words[0]) not in ("cd", "pushd") or len(words) != 2:
         return False
     target = words[1]
+    if target[:1] in "+-":
+        return False  # pushd +1, cd -, cd -P: a stack entry or a flag
     if _safe_target(target):
         return True
     if not target.startswith("/") or not _SAFE_PATH.fullmatch(target):
         return False
     parts = [p for p in target.split("/") if p not in ("", ".")]
     return (".." not in parts and len(parts) >= 3 and parts[0] in ("home", "Users")
-            and not _CREDENTIAL_DIRS.intersection(parts)
-            and ".config/gcloud" not in "/".join(parts))
+            and not _credential(target))
+
+
+def _cd_joins_credential(command: str) -> bool:
+    """A cd/pushd target joined with an rm target names a credential store
+    (`cd .config && rm -rf ./gcloud`)."""
+    dirs, targets = [], []
+    for segment in _segments(command):
+        words = _safe_words(segment) or []
+        if not words:
+            continue
+        if _prog(words[0]) in ("cd", "pushd"):
+            dirs += words[1:]
+        elif _prog(words[0]) == "rm":
+            targets += [w for w in words[1:] if not w.startswith("-")]
+    return any(_credential(d + "/" + t) for d in dirs for t in targets)
 
 
 def _rm_targets_critical(command: str) -> bool:
@@ -414,9 +449,11 @@ def _rm_targets_critical(command: str) -> bool:
     segment that fits _rm_shape and every cd/pushd on the line fits _cd_shape
     (popd or any other directory change could move what a relative target
     means); otherwise CRITICAL."""
-    if _CHANGES_DIR.search(command) and _all_occurrences_safe(
-            command, {"cd", "pushd", "popd"}, _cd_shape) is not True:
-        return True
+    if _CHANGES_DIR.search(command):
+        if _all_occurrences_safe(command, {"cd", "pushd", "popd"}, _cd_shape) is not True:
+            return True
+        if _cd_joins_credential(command):
+            return True
     return _all_occurrences_safe(command, {"rm"}, _rm_shape) is not True
 
 
@@ -460,6 +497,8 @@ def _sudo_shape(words: list[str]) -> bool:
             break
         if flag.startswith("--"):
             name, _, value = flag[2:].partition("=")
+            if name == "chroot":
+                return False
             if name in _SUDO_LONG_VALUE:
                 if not value:
                     i += 1  # the value is the next word
@@ -468,6 +507,8 @@ def _sudo_shape(words: list[str]) -> bool:
                 return False  # --login, --shell, --edit or anything unknown
             continue
         body = flag[1:]
+        if "R" in body:
+            return False  # -R / --chroot: a root directory of the caller's choice
         for k, ch in enumerate(body):
             if ch in _SUDO_VALUE_SHORT:
                 if k == len(body) - 1:
@@ -483,6 +524,10 @@ def _sudo_shape(words: list[str]) -> bool:
     if any(a.startswith(("-o", "--option")) or "invoke" in a.lower() or "=" in a
            and a.split("=", 1)[0].isupper() for a in args):
         return False  # apt hook options and environment words
+    if prog in _PKG_MANAGERS and not all(
+            (a in _PKG_SAFE_FLAGS) if a.startswith("-") else
+            ("/" not in a and "=" not in a and not _PKG_FILE.search(a)) for a in args):
+        return False  # config/hook/setopt flags, local package files, paths
     subs = [a for a in args if not a.startswith("-")]
     sub = subs[0] if subs else ""
     if sub in _SUDO_PROGRAM_DENY.get(prog, ()):
