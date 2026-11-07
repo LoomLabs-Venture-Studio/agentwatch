@@ -5604,18 +5604,28 @@ Clear the Sprint 40/41 follow-ups, then prepare 0.2.2 on `develop`. Out of scope
 Clear the 0.2.1 security follow-ups (Sprint 38). All PRs target `develop`; nothing touches `main` (user rule 2026-11-06). 0.2.2 (#214) stays as is.
 
 **A. Fewer prompt-injection false positives** (`fix/injection-doc-fp`)
-- [ ] Reading a local file that only discusses injection (docs `.md`/`.rst`/`.txt`, `docs/`, test files, the agent's own CLAUDE.md/skills) no longer scores security 0 on its own: at most MEDIUM, never CRITICAL.
-- [ ] The same text in a web fetch result, an MCP tool result, a non-doc source file or a user prompt keeps today's severity.
-- [ ] Before/after counts on real logs under `~/.claude/projects`: CRITICAL injection findings drop, none of the dropped ones is a real attack (spot-checked).
-- [ ] Tests: doc read -> not CRITICAL; web fetch with the same text -> CRITICAL; test file; README.
+- [ ] Dropped: #219 closed 2026-11-07. Adversarial QA found the shell-command path could be bypassed (glued `&`, stdin redirects, sed `e`, awk `system`, UNC paths, laundering through a written `.md`) and the SIEM export lost a later CRITICAL. The narrowed rework (built-in read tools only) changed 0 findings on 154 real logs, so it was not worth its risk. Only 1 of 40 sessions at security 0 had a prompt-injection cause.
 
 **B. Secret findings: one per secret, own channel** (`fix/secret-fingerprint`)
-- [ ] Two different secrets of the same type in the same channel and file are two findings; the same secret seen twice is one. The dedup key holds a short hash of the secret, never the value.
-- [ ] Tool-result text is labelled channel `tool_result`, not `user_message`; SIEM, audit, history and alerts handle the new label (same severity as before unless argued otherwise).
-- [ ] History: findings keyed by the new dedup key re-sync without duplicates (note in CHANGELOG if old rows change).
+- [x] Two different secrets of the same type in the same channel and file are two findings; the same secret seen twice is one. Fingerprint = first 12 hex of HMAC-SHA256 under a per-user key (`data_dir()/secret-fingerprint.key`, 0600), never the value (#220).
+- [x] Tool-result text is channel `tool_result`; `audit` reports each secret once, under the live scanner's pattern (#220).
+- [x] History re-syncs without duplicates; changed logs get new secret keys once (#220, CHANGELOG).
 
 **C. Honest counts** (`fix/scan-counts`)
-- [ ] `security-scan` "Analyzed N actions" and JSON `action_count` give the number of actions scanned, not the buffer size.
-- [ ] `error_spiral` reports the real number of consecutive failures, not one capped at its look-back window.
+- [x] `security-scan` and `subagents` count every agent action (not the newest 500), without token-usage records (#218).
+- [x] `error_spiral` reports the whole run of failures (up to the buffer: 500 in scans, 2,000 in `watch-all`) (#218).
 
 **Later:** literal-prefix pre-check in the secret scanner (speed; after B, same file); Claude Code user text blocks; consumers serialising a call before its result lands.
+
+### Sprint 44 -- command detector false positives (2026-11-07)
+
+Analysis of 154 real logs: of 94 commands behind `dangerous_command`, `privilege_escalation` and `c2_beacon`, 93 were false positives (one real `sudo -n apt-get install`). 40 sessions scored security 0.
+
+- [x] #222 command guard (unreleased, since #193): `echo hi # c` + newline + `rm -rf ~` and `echo "$(rm -rf ~)"` were not asked. Guard now reads quoting like bash, checks substitutions in double quotes, heredoc/here-string/`echo|sh` scripts, leading redirections, `bash -c --`, `|&`, `eval $(curl)`; a shared 1 s budget answers ask (QA had found a 9 KB command that took 5 s, past the hook's 4 s watchdog, which fails open). 0 asked->allowed over 5,162 real and 309 attack commands.
+- [ ] #223 dangerous_command / privilege_escalation: in rework after QA. Design: develop's detection set kept exactly (plus `rm -fr`, sudoers writes, setuid with leading zeros); severity lowered only for strict allowlisted shapes. Real logs: sessions at security 0 40 -> 32.
+- [ ] #221 c2_beacon: closed 2026-11-07 after four QA rounds (lexer, exemption, denylist severity): each version let real beacons through or was quadratic; best case changed 2 sessions.
+
+**Lesson** (also in memory): never drop security findings by parsing bash to prove a command inert; keep the detection set and lower severity only for allowlisted shapes, with linear regexes. A change that only makes a guard stricter may parse.
+
+**Follow-ups:** remaining security-0 sessions are mostly piled-up `secret_leak` HIGH findings (cap points per signal?); heredoc prose that mentions `curl | sh` still makes the guard ask; guard "Not caught" list (`$'..'`, `coproc`, `base64 -d | bash`, variables).
+
