@@ -10,7 +10,6 @@ import sys
 import pytest
 
 from agentwatch import coach
-from agentwatch.detectors.security.privilege import DangerousCommandDetector
 from agentwatch.guard import DESTRUCTIVE_PATTERNS
 
 
@@ -303,10 +302,41 @@ def test_guard_error_fails_open(monkeypatch):
     assert _hook({"command": "rm -rf ~"}) is None
 
 
-def test_detector_keeps_its_destructive_patterns():
-    patterns = DangerousCommandDetector.DANGEROUS_PATTERNS
-    assert patterns[:len(DESTRUCTIVE_PATTERNS)] == DESTRUCTIVE_PATTERNS
-    assert len(patterns) == 21
+def test_destructive_patterns_unchanged():
+    """The guard's unparseable fallback; the detector no longer shares them."""
+    assert DESTRUCTIVE_PATTERNS == [
+        r"rm\s+-rf\s+[/~]", r"rm\s+-rf\s+\*", r"rm\s+-rf\s+\.", r">\s*/dev/sd[a-z]",
+        r"mkfs\.", r"dd\s+if=.+of=/dev"]
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf ~", "ls; rm -rf /", "echo $(rm -rf ~)", 'echo "a b', "a # c\nrm -rf ~",
+    "cat <<EOF\nx\nEOF", "",
+])
+def test_split_commands_matches_the_guards_own_parse(command):
+    import shlex
+
+    from agentwatch.guard import _simple_commands, split_commands
+
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>`\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        expected = _simple_commands(list(lexer))
+    except ValueError:
+        expected = None
+    assert split_commands(command) == expected
+
+
+@pytest.mark.parametrize("command, kind", [
+    ("rm -rf ~", "rm_home"), ("git push -f", "push_force"), ("cat .env", "secret"),
+    ("ls", None), ("bash -c 'rm -rf /'", "rm_root"),
+])
+def test_check_argv_returns_the_reason_kind(command, kind):
+    from agentwatch.guard import check_argv, split_commands
+
+    ((argv, _),) = split_commands(command)
+    assert check_argv(argv) == kind
 
 
 def test_real_entry_process_prints_ask(tmp_path):

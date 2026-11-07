@@ -12,6 +12,20 @@ numbers refer to the GitHub repository.
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
   now read along with its first and last output lines (#206).
+- `dangerous_command` and `privilege_escalation` no longer flag a command
+  whose match is plainly inert: text in a quoted argument of a program that
+  only prints or stores it (`echo`, `git commit -m`, `grep`, ...), a
+  comment, a heredoc read by such a program, `rm -rf` of a path under `/`
+  or `~` (such as `/tmp/x`) or of a dot directory (`.pytest_cache`), or a
+  `chmod` that does not set setuid or setgid. When the command cannot be
+  fully checked (unparseable, an interpreter payload, a heredoc or pipe into
+  a shell, `eval`, `ssh`, `xargs`, a `$VAR` target, ...), the old CRITICAL
+  finding stands.
+- `rm -fr`, `rm -r -f` and `rm --recursive --force` of `/`, `~` or `.` are
+  now caught, also inside `bash -c`, `$(...)` and backticks. `sudo` run as
+  the program is HIGH; it is CRITICAL when it runs a shell (`sudo bash`,
+  `sudo -i`, `sudo su`, `curl ... | sudo sh`), a dangerous command, or
+  writes the sudoers file. `sudo` mentioned as a word is not flagged.
 
 ## [0.2.2] - 2026-11-06
 

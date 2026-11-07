@@ -358,6 +358,50 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
     return None
 
 
+def split_commands(command: str, comments: bool = True) -> list[tuple[list[str], str]] | None:
+    """(argv, separator before it) per simple command, prefixes (sudo, env,
+    ...) kept; None when shlex cannot tokenize *command* (unbalanced quotes).
+    shlex starts a comment at any `#`, also inside a word, and the comment
+    swallows its newline; comments=False keeps `#` as text, for a caller that
+    has already cut the comments out. Quadratic on long tokens: callers keep
+    *command* under MAX_PARSE chars."""
+    tokens = tokenize(command, comments)
+    return None if tokens is None else _simple_commands(tokens)
+
+
+def tokenize(command: str, comments: bool = True) -> list[str] | None:
+    """The shlex tokens split_commands groups (separators are tokens of
+    `;&|()`$` and newlines), or None when shlex cannot tokenize *command*."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>`\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        if not comments:
+            lexer.commenters = ""
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+_KINDS = {text: kind for kind, text in REASONS.items()}
+
+
+def reason_kind(reason: str | None) -> str | None:
+    """The REASONS key of a reason this module returned ("secret" for any
+    secret-file reason), or None."""
+    if reason is None:
+        return None
+    return _KINDS.get(reason, "secret")
+
+
+def check_argv(argv: list[str], piped_from: set[str] | frozenset[str] = frozenset()) -> str | None:
+    """The REASONS key for one simple command whose prefixes (sudo, env,
+    VAR=value, ...) are already stripped, or None. *piped_from* holds the
+    programs earlier in its pipeline. Nested scripts (bash -c, eval, cmd /c,
+    powershell) are checked as check_command checks them."""
+    return reason_kind(_check_argv(argv, set(piped_from), 0))
+
+
 def check_command(command: str, depth: int = 0) -> str | None:
     """The ask reason for a Bash command, or None."""
     if depth > 3:
@@ -366,17 +410,13 @@ def check_command(command: str, depth: int = 0) -> str | None:
         return REASONS["fork_bomb"]
     if len(command) > MAX_PARSE:
         return _check_long(command, depth)
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>`\n")
-        lexer.whitespace = " \t\r"
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
+    commands = split_commands(command)
+    if commands is None:
         if _AW_RAW.search(command) and _GUARD_RAW.search(command):
             return REASONS["guard_off"]
         return REASONS["destructive"] if _FALLBACK.search(command) else None
     pipeline: set[str] = set()  # programs earlier in the current pipeline
-    for argv, sep in _simple_commands(tokens):
+    for argv, sep in commands:
         argv = _strip_prefixes(argv)
         if sep != "|":
             pipeline = set()
