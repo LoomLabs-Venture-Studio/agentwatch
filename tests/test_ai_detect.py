@@ -130,6 +130,9 @@ _HELPERS = "/Contents/Frameworks/X.framework/Versions/1/Helpers/"
     ("Brave Browser Helper", "/private/T/AppTranslocation/X/d/Brave Browser.app" + _HELPERS + "h"),
     ("Helper", _APPS + "Google Chrome.app/Contents/MacOS/Google Chrome"),
     ("x", _APPS + "Safari.app/Contents/MacOS/Safari"),
+    ("Opera GX", None),
+    ("Opera GX Helper", None),
+    ("x", "/Users/bob/Applications/Arc.app/Contents/MacOS/Arc"),
     ("brave-browser", None),
     ("google-chrome", None),
     ("google-chrome-stable", None),
@@ -153,6 +156,11 @@ def test_browsers_excluded_macos_linux(name, exe):
     ("com.apple.WebKit.Networking", None),
     ("Archive Utility", None),
     ("Operator", None),
+    ("chrome-headless-shell", None),
+    ("node", "/Users/x/Projects/Arc.app/Contents/MacOS/node"),
+    ("claude", "/Users/x/Projects/Arc.app/Contents/Resources/.bin/claude"),
+    ("node", "/tmp/Brave Browser.app/Contents/MacOS/node"),
+    ("node", "/Applications/Foo.app/Contents/Frameworks/Arc.app/Contents/MacOS/node"),
 ])
 def test_electron_ai_apps_not_excluded(name, exe):
     r = run([conn(1, "160.79.104.10")], [FakeProc(1, name, exe)])

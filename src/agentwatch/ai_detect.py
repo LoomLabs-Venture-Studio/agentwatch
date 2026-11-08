@@ -166,7 +166,7 @@ BROWSER_NAMES = frozenset({
 # (Renderer)") are matched by bundle or by name + " helper" (psutil may truncate it).
 _BROWSER_FULL_NAMES = frozenset({
     "google chrome", "chrome", "chromium", "chromium browser", "brave browser", "brave",
-    "microsoft edge", "msedge", "firefox", "firefox esr", "opera", "vivaldi", "arc",
+    "microsoft edge", "msedge", "firefox", "firefox esr", "opera", "opera gx","vivaldi", "arc",
     "safari",
 })
 _BROWSER_APPS = frozenset({
@@ -178,11 +178,35 @@ _BROWSER_NAME_NOISE = frozenset({"bin", "stable", "beta", "dev", "nightly", "uns
 _HELPER = " helper"
 
 
+# Where an installed macOS app lives: /Applications, a user's ~/Applications, or the
+# AppTranslocation copy Gatekeeper runs a freshly downloaded app from.
+_APP_INSTALL_DIR = re.compile(
+    r"^/(Applications|Users/[^/]+/Applications"
+    r"|(private/)?var/folders/.+/AppTranslocation/[^/]+/d)$"
+)
+
+
+def _in_browser_bundle(exe: str) -> bool:
+    """True when exe sits in a browser .app that is itself in an install location.
+
+    Only the FIRST .app component counts and its parent must be an install dir, so
+    an agent CLI in a folder like ~/Projects/Arc.app/ cannot hide from detect.
+    """
+    parts = exe.replace("\\", "/").split("/")
+    for i, part in enumerate(parts):
+        if part.lower().endswith(".app"):
+            return (
+                part.lower() in _BROWSER_APPS
+                and _APP_INSTALL_DIR.match("/".join(parts[:i])) is not None
+            )
+    return False
+
+
 def is_browser(name: str, exe: str | None = None) -> bool:
     n = name.lower().strip().removesuffix(".exe")
     if n in BROWSER_NAMES:
         return True
-    if exe and any(part.lower() in _BROWSER_APPS for part in re.split(r"[\\/]", exe)):
+    if exe and _in_browser_bundle(exe):
         return True
     words = [w for w in re.split(r"[-_ ]+", n) if w]
     while len(words) > 1 and words[-1] in _BROWSER_NAME_NOISE:
