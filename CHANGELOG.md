@@ -8,6 +8,11 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- `detect`: browsers are now excluded on macOS and Linux too (helper processes such
+  as `Brave Browser Helper (Renderer)`, executables inside a browser `.app`,
+  `google-chrome`, `firefox-bin`, truncated names). Electron AI apps (`Claude
+  Helper`, `Code Helper`, `Cursor Helper`) still report. Safari's shared
+  `com.apple.WebKit.Networking` is not excluded.
 - Command guard: a `#` in the middle of a word (`a#b`) no longer hides the rest
   of the line, and a comment no longer hides the command on the next line.
   Commands that run inside `$(...)` or backticks are now checked also inside
