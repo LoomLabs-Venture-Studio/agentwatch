@@ -5629,3 +5629,12 @@ Analysis of 154 real logs: of 94 commands behind `dangerous_command`, `privilege
 
 **Follow-ups:** remaining security-0 sessions are mostly piled-up `secret_leak` HIGH findings (cap points per signal?); heredoc prose that mentions `curl | sh` still makes the guard ask; guard "Not caught" list (`$'..'`, `coproc`, `base64 -d | bash`, variables).
 
+
+### Sprint 45 -- guard "Not caught" list and macOS sweep (2026-11-08)
+
+- [ ] #225 command guard: `$'...'` quoting, `coproc` / `function` bodies, decoded or `printf` scripts piped into a shell, `xargs`, `#` inside arithmetic. Only makes the guard ask more. Awaiting review + QA.
+- [x] macOS sweep (develop 95ec692, macOS 27.2 arm64, Python 3.12 via uv; system Python is 3.9): 3,439 passed / 0 failed, ruff clean. `ps`, `check`, `security-scan`, `watch`, `watch-all --headless`, `net`, `stats --all`, `history sync` / `report`, `audit`, `hook`, `statusline` correct against live Claude Code. Only Claude Code and Claude.app are installed; other agents not tested on macOS (#108 stays open).
+- [x] #226 `detect` listed browsers on macOS/Linux (exact Windows-style names never matched "Brave Browser Helper"). Now excluded by name (helper suffixes, truncated names, Linux `-bin`/`-stable`) or by a browser `.app` that is the first bundle in the path and sits in `/Applications`, `~/Applications` or AppTranslocation, so an agent in `~/Projects/Arc.app` still reports. Electron AI apps and `chrome-headless-shell` still report. QA: 2 rounds, 8 mutation probes killed (1 equivalent).
+- Follow-up #227: deliberate evasion (agent named `chrome`, or installed as `~/Applications/Arc.app`) hides it from `detect`; code-signature check would close it. Safari's shared `com.apple.WebKit.Networking` still reported.
+
+**Lesson:** a new worktree on this Mac has no git identity; agents commit with `-c user.name/-c user.email`.
