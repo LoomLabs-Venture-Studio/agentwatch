@@ -161,6 +161,43 @@ BROWSER_NAMES = frozenset({
     "vivaldi", "arc", "safari", "iexplore",
 })
 
+# macOS/Linux names (hyphens read as spaces, "-bin"/"-stable"/... dropped) and the
+# macOS ".app" bundle a browser's executable lives in. Helpers ("Brave Browser Helper
+# (Renderer)") are matched by bundle or by name + " helper" (psutil may truncate it).
+_BROWSER_FULL_NAMES = frozenset({
+    "google chrome", "chrome", "chromium", "chromium browser", "brave browser", "brave",
+    "microsoft edge", "msedge", "firefox", "firefox esr", "opera", "vivaldi", "arc",
+    "safari",
+})
+_BROWSER_APPS = frozenset({
+    "google chrome.app", "google chrome canary.app", "chromium.app", "brave browser.app",
+    "microsoft edge.app", "firefox.app", "firefox nightly.app", "arc.app", "safari.app",
+    "opera.app", "vivaldi.app",
+})
+_BROWSER_NAME_NOISE = frozenset({"bin", "stable", "beta", "dev", "nightly", "unstable"})
+_HELPER = " helper"
+
+
+def is_browser(name: str, exe: str | None = None) -> bool:
+    n = name.lower().strip().removesuffix(".exe")
+    if n in BROWSER_NAMES:
+        return True
+    if exe and any(part.lower() in _BROWSER_APPS for part in re.split(r"[\\/]", exe)):
+        return True
+    words = [w for w in re.split(r"[-_ ]+", n) if w]
+    while len(words) > 1 and words[-1] in _BROWSER_NAME_NOISE:
+        words.pop()
+    n = " ".join(words)
+    for full in _BROWSER_FULL_NAMES:
+        if n == full:
+            return True
+        if n.startswith(full + " "):
+            rest = n[len(full):]
+            if rest.startswith(_HELPER) or _HELPER.startswith(rest):
+                return True
+    return False
+
+
 _PROC_ERRORS = (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError)
 
 
@@ -287,8 +324,11 @@ def detect(
             name = proc.name()
         except _PROC_ERRORS:
             continue
-        lowered = name.lower()
-        if lowered.removesuffix(".exe") in BROWSER_NAMES:
+        try:
+            exe = proc.exe()
+        except _PROC_ERRORS:
+            exe = None
+        if is_browser(name, exe):
             continue
         runtime = listeners.get(pid)
         if runtime and runtime_of(name, proc) != runtime:

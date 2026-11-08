@@ -113,6 +113,52 @@ def test_browsers_excluded_case_insensitive():
     assert r.usages == []
 
 
+_APPS = "/Applications/"
+_HELPERS = "/Contents/Frameworks/X.framework/Versions/1/Helpers/"
+
+
+@pytest.mark.parametrize("name,exe", [
+    ("Google Chrome Helper", None),
+    ("Google Chrome Helper (Renderer)", None),
+    ("Brave Browser Helper", None),
+    ("Brave Browser H", None),  # psutil truncation
+    ("Microsoft Edge Helper", None),
+    ("Arc Helper", None),
+    ("Arc H", None),
+    ("Brave Browser", None),
+    ("Whatever", _APPS + "Firefox.app/Contents/MacOS/plugin-container"),
+    ("Brave Browser Helper", "/private/T/AppTranslocation/X/d/Brave Browser.app" + _HELPERS + "h"),
+    ("Helper", _APPS + "Google Chrome.app/Contents/MacOS/Google Chrome"),
+    ("x", _APPS + "Safari.app/Contents/MacOS/Safari"),
+    ("brave-browser", None),
+    ("google-chrome", None),
+    ("google-chrome-stable", None),
+    ("chromium-browser", None),
+    ("firefox-bin", None),
+    ("firefox-esr", None),
+    ("microsoft-edge", None),
+])
+def test_browsers_excluded_macos_linux(name, exe):
+    r = run([conn(1, "160.79.104.10")], [FakeProc(1, name, exe)])
+    assert r.usages == []
+
+
+@pytest.mark.parametrize("name,exe", [
+    ("Claude Helper", _APPS + "Claude.app" + _HELPERS + "Claude Helper"),
+    ("Claude Helper (Renderer)", None),
+    ("Code Helper", _APPS + "Visual Studio Code.app" + _HELPERS + "Code Helper"),
+    ("Cursor Helper", _APPS + "Cursor.app" + _HELPERS + "Cursor Helper"),
+    ("ChatGPT Helper", None),
+    ("Codex", _APPS + "Codex.app/Contents/Resources/codex"),
+    ("com.apple.WebKit.Networking", None),
+    ("Archive Utility", None),
+    ("Operator", None),
+])
+def test_electron_ai_apps_not_excluded(name, exe):
+    r = run([conn(1, "160.79.104.10")], [FakeProc(1, name, exe)])
+    assert [u.pid for u in r.usages] == [1]
+
+
 def test_one_row_per_pid_for_multiprocess_apps():
     r = run(
         [conn(1, "104.18.32.47"), conn(2, "104.18.32.47")],
