@@ -153,10 +153,22 @@ _SUDO_PROGRAM_DENY = {
     "snap": {"run", "shell"}, "flatpak": {"run", "enter"},
     "dnf": {"shell"}, "yum": {"shell"}, "zypper": {"shell", "sh"},
 }
-# systemctl pages unless the subcommand never shows text.
-_SYSTEMCTL_QUIET = {"start", "stop", "restart", "reload", "try-restart", "enable",
-                    "disable", "daemon-reload", "is-active", "is-enabled", "is-failed",
-                    "reset-failed", "mask", "unmask"}
+# systemctl is HIGH under an elevator only for a read-only verb. Verbs that show
+# text page (`less` runs commands), so they also need --no-pager; is-* never
+# page. Every other verb (start, stop, enable, disable, mask, kill, edit,
+# daemon-reload, set-property, ...) and --root/--image stay CRITICAL.
+_SYSTEMCTL_READ_PAGED = {"status", "show", "cat", "help"}
+_SYSTEMCTL_DENY_OPT = ("--root", "--image")
+
+
+def _systemctl_read_only(args: list[str], sub: str) -> bool:
+    if any(a.split("=", 1)[0] in _SYSTEMCTL_DENY_OPT for a in args):
+        return False
+    if sub.startswith("is-"):
+        return True
+    paged = sub in _SYSTEMCTL_READ_PAGED or sub.startswith("list-")
+    return paged and "--no-pager" in args
+
 # credential directories: an rm/chmod target containing one stays CRITICAL.
 _CREDENTIAL_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".netrc",
                     ".password-store", "keyrings", "keychains", ".pgpass",
@@ -532,7 +544,7 @@ def _sudo_shape(words: list[str]) -> bool:
     sub = subs[0] if subs else ""
     if sub in _SUDO_PROGRAM_DENY.get(prog, ()):
         return False
-    if prog == "systemctl" and sub not in _SYSTEMCTL_QUIET and "--no-pager" not in args:
+    if prog == "systemctl" and not _systemctl_read_only(args, sub):
         return False
     return True
 

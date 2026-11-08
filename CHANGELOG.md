@@ -49,7 +49,11 @@ numbers refer to the GitHub repository.
     is HIGH only with plain flags (`-y`, `-q`, `--no-install-recommends`,
     `-Syu`, ...) and plain package names: a config file, hook, `--setopt`,
     path, `NAME=value` or local package file (`.deb`, `.rpm`, ...) keeps it
-    CRITICAL. Any other program, a path such as `./deploy.sh`, a
+    CRITICAL. `systemctl` is HIGH only for a read-only verb (`is-*`, or
+    `status`/`show`/`cat`/`help`/`list-*` with `--no-pager`); every other
+    verb (`start`, `stop`, `enable`, `disable`, `mask`, `daemon-reload`,
+    ...) and any `--root`/`--image` option stays CRITICAL. Any other
+    program, a path such as `./deploy.sh`, a
     `NAME=value` word, `-E`, `-R`/`--chroot`, `su`, `sudo -e`, a redirect or
     anything unrecognized stays CRITICAL.
   - A command is lowered only when every `rm`, `chmod` or elevator in it,

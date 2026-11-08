@@ -20,6 +20,7 @@ import pytest
 
 from agentwatch.detectors.base import Severity, warning_dedup_key
 from agentwatch.detectors.registry import SessionScan, create_registry
+from agentwatch.detectors.security import privilege as _priv
 from agentwatch.detectors.security.privilege import (
     DANGEROUS,
     PRIVILEGE,
@@ -210,7 +211,7 @@ def test_sudo_running_a_shell_is_critical(command):
 @pytest.mark.parametrize("command", [
     "sudo apt update", "sudo -n apt-get install -y php-cli", "sudo dnf install x",
     "sudo -v", "sudo -l", "sudo -k", "pkexec", "pkexec --user root",
-    "doas pacman -Syu", "sudo systemctl daemon-reload", "sudo lsof -i :8080",
+    "doas pacman -Syu", "sudo systemctl is-active nginx", "sudo lsof -i :8080",
     "sudo -u root -g wheel -H -n -- apt update", "sudo --user root apt install foo",
     "sudo --chdir /tmp apt update", "sudo snap install x", "sudo umount /mnt/x",
 ])
@@ -563,3 +564,61 @@ def test_probe5_plain_package_commands_are_high(command):
 def test_probe5_rm_and_chmod_stay_critical(command):
     sev = _sigs(command)
     assert CRIT in sev.values()
+
+
+# --- sprint 44 QA: systemctl read-only verbs only; safe-path characters pinned ---
+
+@pytest.mark.parametrize("command", [
+    "sudo systemctl --no-pager status x", "sudo systemctl status --no-pager x",
+    "sudo systemctl --no-pager show x", "sudo systemctl --no-pager cat x",
+    "sudo systemctl --no-pager list-units", "sudo systemctl --no-pager list-unit-files",
+    "sudo systemctl --no-pager help x", "sudo systemctl is-active x",
+    "sudo systemctl is-enabled x", "sudo systemctl is-failed x",
+    "sudo systemctl --quiet is-active x",
+])
+def test_systemctl_read_only_verbs_are_high(command):
+    assert _sev(command, PRIVILEGE) == HIGH
+
+
+@pytest.mark.parametrize("command", [
+    "sudo systemctl status x", "sudo systemctl show x", "sudo systemctl list-units",
+    "sudo systemctl help x",
+    "sudo systemctl --root=/ enable x", "sudo systemctl --root=/ --no-pager status x",
+    "sudo systemctl --root / --no-pager status x", "sudo systemctl --image=x is-active x",
+    "sudo systemctl --no-pager --root=/mnt status x",
+    "sudo systemctl daemon-reload", "sudo systemctl --no-pager daemon-reload",
+    "sudo systemctl disable apparmor", "sudo systemctl --no-pager disable apparmor",
+    "sudo systemctl disable --now apparmor", "sudo systemctl mask x",
+    "sudo systemctl stop auditd", "sudo systemctl kill x", "sudo systemctl enable x",
+    "sudo systemctl edit x", "sudo systemctl set-property x CPUQuota=1%",
+    "sudo systemctl start x", "sudo systemctl restart x", "sudo systemctl --no-pager",
+])
+def test_systemctl_other_verbs_and_root_stay_critical(command):
+    assert _sev(command, PRIVILEGE) == CRIT
+
+
+@pytest.mark.parametrize("path", [
+    'a"b', "a'b", "a$b", "a`b", "$HOME/x", "x/$X", "a b", "a\\b", "a;b", "a*b",
+    "~/x", "a:b", "a@b", "a%b", "a=b", "a,b", "a#b", "a^b", "", "x\n",
+])
+def test_safe_path_rejects_non_literal_characters(path):
+    # Pins _SAFE_PATH itself. _safe_words() already rejects quotes, $ and
+    # backticks, so no command line reaches _safe_target with them (that
+    # mutation is unobservable through analyze_command); test the regex directly.
+    assert not _priv._SAFE_PATH.fullmatch(path)
+    assert not _priv._safe_target(path)
+
+
+@pytest.mark.parametrize("path", ["x", "a/b.c", "tmp-x/y_z", "/tmp/a+b", "/var/tmp/x/y"])
+def test_safe_path_accepts_literal_paths(path):
+    assert _priv._SAFE_PATH.fullmatch(path)
+    assert _priv._safe_target(path)
+
+
+@pytest.mark.parametrize("command", [
+    'rm -rf "$HOME"', "rm -rf /tmp/$X", "rm -rf /tmp/`x`",
+    "rm -rf /tmp/a:b", "rm -rf /tmp/a@b", "rm -rf /tmp/a=b", "rm -rf /tmp/a,b",
+    "rm -rf /tmp/a%b", "rm -rf /tmp/a#b", "rm -rf /tmp/a^b",
+])
+def test_rm_with_non_literal_path_chars_is_not_lowered(command):
+    assert _sev(command, DANGEROUS) == CRIT
