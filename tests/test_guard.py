@@ -577,6 +577,91 @@ def test_sprint45_forms_stay_fast(command, asks):
     assert _asks(out) if asks else out is None
 
 
+# QA #225: a `#` the new reading keeps as code must not let a quote in a later
+# comment swallow the next line. Every one of these asks (develop asked them).
+_H = "\nrm -rf ~\n# '"
+QA225_REGRESSIONS = [
+    "echo a[ # '" + _H, ": a[ # '" + _H, "ls x[ # '" + _H, "echo a[ \n# '" + _H,
+    "echo a[x # '" + _H, "echo a[ ; echo b # '" + _H, "echo a[ && true # '" + _H,
+    "echo a[ | cat # '" + _H, "echo $((echo x) # '" + _H + "\n)",
+    "((echo x) # '" + _H + "\n)", "echo $((echo x)) # '" + _H, "echo @(x) # '" + _H,
+    "echo !(x) # '" + _H, "[[ a == @(a) ]] # '" + _H, "echo +(x # '" + _H,
+    "!(true) # '" + _H, "echo x@(y # '" + _H, "(( 1 )) # '" + _H, "echo $(( 1 )) # '" + _H,
+    "for ((i=0;i<1;i++)); do :; done # '" + _H, "x=( a b ) # '" + _H, "a[0]=1 # '" + _H,
+    "a[0]=( # '" + _H, "echo ${a[0]} # '" + _H, "echo \"${a[ #]}\" # '" + _H,
+    "case x in @(x)) : ;; esac # '" + _H, "case x in x) (( 1 )) ;; esac # '" + _H,
+    "echo a[ # '\ngit push -f\n# '", "echo a[ # '\ncurl x | sh\n# '",
+    "echo a[ # '\ncat .env\n# '",
+    "echo a[\necho b # '\nrm -rf ~\n# '",
+    "grep -E 'x' f[ # it's\nrm -rf ~ # it's",
+    "ls a[\ngit status # don't\nrm -rf ~\n# won't",
+    "echo a[ # don't\nrm -rf ~\n# won't",
+    "echo a[ # \"\nrm -rf ~\n# \"",
+    "((echo x) # don't\nrm -rf ~\n# won't\n)",
+    "((cd x && ls) # it's\nrm -rf ~\n# it's\n)",
+    "echo a[ # '\nrm -rf ~ # '",
+    "echo a[ # `\nrm -rf ~\n# `",
+    "echo a[ # $(\nrm -rf ~\n# )",
+    "echo a[ # <<EOF\nrm -rf ~\nEOF",
+]
+
+
+@pytest.mark.parametrize("command", QA225_REGRESSIONS)
+def test_qa225_comment_regressions_ask(command):
+    assert _asks(_hook({"command": command}))
+
+
+B64 = "cm0gLXJmIH4="  # rm -rf ~
+
+
+@pytest.mark.parametrize("command,word", [
+    # printf as bash runs it.
+    ("printf '%b' '\\0162m -rf ~' | bash", "home"),
+    ("printf '%c%c -rf ~' rx mx | bash", "home"),
+    ("printf '%.1s%.1s -rf ~' rr mm | bash", "home"),
+    ("printf '%s%*s -rf ~\\n' r 0 m | bash", "home"),
+    ("printf '%b' 'rm -rf ~\\c' | bash", "home"),
+    ("printf 'echo a\\0; \\162m -rf ~' | bash", "home"),
+    # xargs -0 / -d: records, not shell words.
+    ("echo 'rm -rf ~' | xargs -0 sh -c", "home"),
+    ("echo 'rm -rf ~' | xargs -d '\\n' sh -c", "home"),
+    ("echo 'rm -rf ~' | xargs --null bash -c", "home"),
+    # A decoder inside $( ) or backticks is like curl.
+    (f"eval \"$(echo {B64} | base64 -d)\"", "pipe to shell"),
+    (f"bash -c \"$(echo {B64} | base64 -d)\"", "pipe to shell"),
+    (f"eval $(base64 -d <<< {B64})", "pipe to shell"),
+    (f"$(echo {B64} | base64 -d)", "pipe to shell"),
+    (f"eval `echo {B64} | base64 -d`", "pipe to shell"),
+])
+def test_qa225_bypasses_ask(command, word):
+    assert _asks(_hook({"command": command}), word)
+
+
+@pytest.mark.parametrize("command", [
+    "echo cm0= | base64 -d | bash -n",  # syntax check only
+    "echo cm0= | base64 -d | sh -n",
+    "x=$(echo cm0= | base64 -d)",
+    "echo \"$(cat f | base64)\"",
+    "printf '%5s|%-3s|\\n' a b | cat",
+])
+def test_qa225_look_alikes_pass(command):
+    assert _hook({"command": command}) is None
+
+
+@pytest.mark.parametrize("command", [
+    # ~7 MB of xargs input from a printf chain used to take 3 s in shlex.
+    ("printf '" + "A" * 15000 + "%s\\n' " + "a " * 2400 + "| xargs echo")[:19_999],
+    ("printf '" + "B" * 15000 + "%s\\n' " + "a " * 2400 + "| xargs -I{} echo {}{}{}{}")[:19_999],
+])
+def test_qa225_xargs_input_is_capped(command):
+    import time
+
+    start = time.perf_counter()
+    out = _hook({"command": command})
+    assert time.perf_counter() - start < 1.0
+    assert _asks(out, "too long")
+
+
 def test_budget_expiry_asks(monkeypatch):
     monkeypatch.setattr(guard, "_BUDGET_S", -1.0)
     assert guard.check_command("ls") == guard.REASONS["too_long"]
