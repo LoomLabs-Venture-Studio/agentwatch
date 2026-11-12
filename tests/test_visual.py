@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from agentwatch import visual
+from agentwatch import agent_status, visual
 from agentwatch.agents.claude_code import ClaudeCodeAdapter
 from agentwatch.cli import cli
 from agentwatch.discovery import AgentProcess
@@ -406,6 +406,8 @@ def test_agents_endpoint_is_read_only_and_has_no_secret(server, sandbox, monkeyp
     assert data["agents"][0]["last_action"]["target"] == "export"  # program only
     assert data["agents"][1]["health"] is None  # no readable log
     assert SECRET not in body and "cat .env" not in body
+    built = json.dumps(agent_status.build([agent, AGENT]))  # builder itself, before redact
+    assert SECRET not in built and "cat .env" not in built and "GH_TOKEN" not in built
     r, _ = _get(server, "/api/agents", method="POST")
     assert r.status == 405
 

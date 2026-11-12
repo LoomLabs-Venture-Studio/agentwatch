@@ -675,7 +675,8 @@ const VERBS = {Edit: "Edited", MultiEdit: "Edited", NotebookEdit: "Edited", Writ
 function statusParts(s) {
   if (!s) return [el("p", "Checking what it is doing...", "mute")];
   const out = [], la = s.last_action;
-  if (!la) out.push(el("p", s.health ? "No tool calls yet." : "No log to read for this agent.",
+  if (!la) out.push(el("p", s.health ? "No tool calls yet." :
+    "Activity not available for this agent type.",
     "mute"));
   else {
     const p = el("p", null, "doing");
@@ -947,7 +948,7 @@ async function load(sec, name, run, quiet) {
   }
   if (!(quiet && text !== undefined && text === last.get(sec))) swap(body, parts.filter(Boolean));
   last.set(sec, text);
-  if (name === "ps" && !failed) pullAgents();  // new cards get their status at once
+  if (name === "ps" && !failed) pullAgents();  // one scan per tick, here
   sec.classList.remove("stale");
   stamp.dataset.ok = loadedAt.set(sec, Date.now()).get(sec);
   const when = aged(sec.dataset.cadence ? "Last updated" : "Loaded", Date.now());

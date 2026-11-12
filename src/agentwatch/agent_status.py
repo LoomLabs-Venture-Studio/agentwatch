@@ -10,7 +10,8 @@ no readable log still get a row, with the log-derived fields null.
 
 from __future__ import annotations
 
-import shlex
+import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,20 +29,29 @@ SCHEMA = 1
 ACTIVE_S = 120  # written to in the last 2 minutes = active
 TARGET_LIMIT = 40
 # log -> ((size, mtime_ns), scored fields); pruned to the logs still running.
+_LOCK = threading.Lock()  # visual's server threads call build() concurrently
 _CACHE: dict[Path, tuple[tuple[int, int], dict[str, Any]]] = {}
 
 
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\s;&|<>()$`'\"]*")
+_STOP = re.compile(r"[;&|<>()$`'\"]")
+_NAME = re.compile(r"[A-Za-z0-9._+-]{1,40}")
+_OTHER = "a command"
+
+
 def _program(command: str) -> str:
-    """The program a shell command runs: first word that is not a VAR=value
-    prefix, base name only."""
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        words = command.split()
-    for w in words:
-        if "=" not in w.split("/")[0]:
-            return _base(w)
-    return ""
+    """The program a shell command runs, by allow-list: skip leading VAR=value
+    words, cut the next word at the first shell operator or quote, keep its
+    base name (after / or \\) only if it is a plain name. Anything else is
+    "a command", so no argument text can come out."""
+    words = command.split()
+    while words and _ASSIGN.fullmatch(words[0]):
+        words.pop(0)
+    if not words:
+        return ""
+    word = _STOP.split(words[0], maxsplit=1)[0]
+    name = re.split(r"[/\\]", word)[-1]
+    return name if _NAME.fullmatch(name) else _OTHER
 
 
 def _target(action) -> str:
@@ -69,9 +79,12 @@ def _score(log: Path) -> dict[str, Any]:
 
 
 def _scored(log: Path, key: tuple[int, int]) -> dict[str, Any]:
-    cached = _CACHE.get(log)
+    with _LOCK:
+        cached = _CACHE.get(log)
     if cached is None or cached[0] != key:
-        cached = _CACHE[log] = (key, _score(log))
+        cached = (key, _score(log))  # parsed outside the lock; a race just parses twice
+        with _LOCK:
+            _CACHE[log] = cached
     return cached[1]
 
 
@@ -105,6 +118,7 @@ def build(agents: list[AgentProcess]) -> dict[str, Any]:
                     "tool": last["tool"], "target": last["target"],
                     "age_s": _age(last["at"], now), "ok": last["ok"]})
         rows.append(row)
-    for log in set(_CACHE) - live:
-        del _CACHE[log]
+    with _LOCK:
+        for log in [k for k in _CACHE if k not in live]:
+            _CACHE.pop(log, None)
     return {"schema": SCHEMA, "agents": rows}
