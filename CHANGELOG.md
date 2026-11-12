@@ -6,89 +6,14 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-12
+
 ### Added
 
 - `visual`: each agent card on the Overview now says what that agent is doing: its last
   action (tool and file or program, never arguments), its own health score and label, its own
   cost, and whether it is working now. Served by a new read-only `/api/agents` on the 5 s
   timer; each log is scored once per change.
-
-### Changed
-
-- `visual`: redesigned around what is running now. The Overview opens with a plain-words
-  summary, tiles with live sparklines and one card per running agent; every view now
-  refreshes on its own while the page is visible (5 s for ps/check/security/subagents,
-  30 s for stats/report/history reads), updates in place, and shows a ticking "last
-  updated" time. The audit and history sync still run only on a click and show their age.
-
-### Fixed
-
-- `find_running_agents()` (and the Cursor, Claude Desktop, Copilot VS Code and Cline
-  process checks) are now thread-safe: they no longer read psutil's shared
-  `proc.info`, which concurrent scans overwrote (`KeyError: 'pid'` / `'ppid'`, a
-  500 from the `visual` server's `/api/ps` when two requests overlapped).
-- `detect`: browsers are now excluded on macOS and Linux too (helper processes such
-  as `Brave Browser Helper (Renderer)`, executables inside a browser `.app`,
-  `google-chrome`, `firefox-bin`, truncated names). Electron AI apps (`Claude
-  Helper`, `Code Helper`, `Cursor Helper`) still report. Safari's shared
-  `com.apple.WebKit.Networking` is not excluded.
-- Command guard: a `#` in the middle of a word (`a#b`) no longer hides the rest
-  of the line, and a comment no longer hides the command on the next line.
-  Commands that run inside `$(...)` or backticks are now checked also inside
-  double quotes and `${...}`, as are `<(...)`, `>(...)`, line continuations
-  and scripts a shell reads from a heredoc, a here-string or `echo | sh`.
-  A redirection before the program (`2>/dev/null rm -rf ~`) and
-  `bash -c -- '...'` no longer hide the command. `sh -c "$(curl ...)"`,
-  `eval $(curl ...)`, `bash <(curl ...)` and `curl ... |& bash` now count as
-  piping a download into a shell. A check that takes longer than a second
-  asks instead of running on.
-- Command guard: `$'...'` and `$"..."` quoting (`$'rm' -rf ~`, `eval $'...'`),
-  `coproc` and function bodies, `xargs` running a guarded command
-  (`echo ~ | xargs rm -rf`), scripts printed by `printf` or read through
-  `. /dev/stdin` or `bash < <(...)`, a decoder piped into a shell
-  (`base64 -d | sh`) or run from `$(...)`, and a `#` inside `(( ))`, `a[...]=`,
-  an extglob group or after another mid-word `#` (`a##b`) no longer hide a
-  dangerous command. The new reading runs next to the previous one, so a
-  command the guard asked about before is still asked. An error while
-  checking a Bash command now asks instead of letting the command through (a `printf` width or
-  precision such as `²` or a 5,000-digit number used to), `function > /dev/sda`
-  is checked as a redirection, and `bash -n` counts as a syntax check only
-  without `-i` (bash ignores `-n` when interactive). The decoder check is
-  linear, so a long `|/|/...` run no longer stalls the hook past its watchdog.
-- `report`/`tools` error kinds: a Node.js crash that failed to open a file is
-  counted as file not found, not as a plain nonzero exit. A failed
-  command's line that starts with `Error:` (or `TypeError:` and the like) is
-  now read along with its first and last output lines (#206).
-- Secret findings: two different secrets of the same type in the same
-  channel and file are now two findings, and the same secret seen twice is
-  still one. Each finding carries a `fingerprint`: the first 12 hex chars of
-  an HMAC-SHA256 of the value under a random per-user key
-  (`secret-fingerprint.key` in the history data dir, created on first use,
-  0600), never the value. The fingerprint is in the warning details, the
-  dedup key, `security-scan --json`, SIEM export and `audit --json`.
-- Secrets in a tool's result text are reported in channel `tool_result`
-  (same severity as before), not `user_message`, which now means a prompt.
-  `audit` uses `tool_result` for Claude Code `tool_result` blocks too
-  (was `tool_output`).
-- History: secret findings now have new keys. A log that changed is
-  re-scanned and its findings replaced, so its secret findings get a new
-  first-seen time once; logs that did not change keep their old rows until
-  they change.
-- `security-scan` reports how many actions it scanned ("Analyzed N actions",
-  JSON `action_count`, also in `agentwatch visual`), and `subagents` how
-  many each subagent made. Both reported at most 500, the size of the live
-  buffer, on longer sessions. Token-usage and turn-end records (Codex
-  `token_count`, for example) are not counted as actions, as in `history`
-  and `report`.
-- `error_spiral` reports the whole run of failed calls since the last
-  success (up to the actions kept in the buffer: 500 in scans, 2,000 in
-  `watch-all`), and its token cost covers
-  each of them. It reported at most 5 with the default settings. It fires
-  at the same point and with the same severity as before.
-
-## [0.2.2] - 2026-11-06
-
-### Added
 
 - `agentwatch visual [--port N] [--no-open]`: the reports in a local browser
   page. Overview (`ps`, `check`), Security (`security-scan`, `audit` on a
@@ -199,6 +124,69 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- `find_running_agents()` (and the Cursor, Claude Desktop, Copilot VS Code and Cline
+  process checks) are now thread-safe: they no longer read psutil's shared
+  `proc.info`, which concurrent scans overwrote (`KeyError: 'pid'` / `'ppid'`, a
+  500 from the `visual` server's `/api/ps` when two requests overlapped).
+- `detect`: browsers are now excluded on macOS and Linux too (helper processes such
+  as `Brave Browser Helper (Renderer)`, executables inside a browser `.app`,
+  `google-chrome`, `firefox-bin`, truncated names). Electron AI apps (`Claude
+  Helper`, `Code Helper`, `Cursor Helper`) still report. Safari's shared
+  `com.apple.WebKit.Networking` is not excluded.
+- Command guard: a `#` in the middle of a word (`a#b`) no longer hides the rest
+  of the line, and a comment no longer hides the command on the next line.
+  Commands that run inside `$(...)` or backticks are now checked also inside
+  double quotes and `${...}`, as are `<(...)`, `>(...)`, line continuations
+  and scripts a shell reads from a heredoc, a here-string or `echo | sh`.
+  A redirection before the program (`2>/dev/null rm -rf ~`) and
+  `bash -c -- '...'` no longer hide the command. `sh -c "$(curl ...)"`,
+  `eval $(curl ...)`, `bash <(curl ...)` and `curl ... |& bash` now count as
+  piping a download into a shell. A check that takes longer than a second
+  asks instead of running on.
+- Command guard: `$'...'` and `$"..."` quoting (`$'rm' -rf ~`, `eval $'...'`),
+  `coproc` and function bodies, `xargs` running a guarded command
+  (`echo ~ | xargs rm -rf`), scripts printed by `printf` or read through
+  `. /dev/stdin` or `bash < <(...)`, a decoder piped into a shell
+  (`base64 -d | sh`) or run from `$(...)`, and a `#` inside `(( ))`, `a[...]=`,
+  an extglob group or after another mid-word `#` (`a##b`) no longer hide a
+  dangerous command. The new reading runs next to the previous one, so a
+  command the guard asked about before is still asked. An error while
+  checking a Bash command now asks instead of letting the command through (a `printf` width or
+  precision such as `²` or a 5,000-digit number used to), `function > /dev/sda`
+  is checked as a redirection, and `bash -n` counts as a syntax check only
+  without `-i` (bash ignores `-n` when interactive). The decoder check is
+  linear, so a long `|/|/...` run no longer stalls the hook past its watchdog.
+- `report`/`tools` error kinds: a Node.js crash that failed to open a file is
+  counted as file not found, not as a plain nonzero exit. A failed
+  command's line that starts with `Error:` (or `TypeError:` and the like) is
+  now read along with its first and last output lines (#206).
+- Secret findings: two different secrets of the same type in the same
+  channel and file are now two findings, and the same secret seen twice is
+  still one. Each finding carries a `fingerprint`: the first 12 hex chars of
+  an HMAC-SHA256 of the value under a random per-user key
+  (`secret-fingerprint.key` in the history data dir, created on first use,
+  0600), never the value. The fingerprint is in the warning details, the
+  dedup key, `security-scan --json`, SIEM export and `audit --json`.
+- Secrets in a tool's result text are reported in channel `tool_result`
+  (same severity as before), not `user_message`, which now means a prompt.
+  `audit` uses `tool_result` for Claude Code `tool_result` blocks too
+  (was `tool_output`).
+- History: secret findings now have new keys. A log that changed is
+  re-scanned and its findings replaced, so its secret findings get a new
+  first-seen time once; logs that did not change keep their old rows until
+  they change.
+- `security-scan` reports how many actions it scanned ("Analyzed N actions",
+  JSON `action_count`, also in `agentwatch visual`), and `subagents` how
+  many each subagent made. Both reported at most 500, the size of the live
+  buffer, on longer sessions. Token-usage and turn-end records (Codex
+  `token_count`, for example) are not counted as actions, as in `history`
+  and `report`.
+- `error_spiral` reports the whole run of failed calls since the last
+  success (up to the actions kept in the buffer: 500 in scans, 2,000 in
+  `watch-all`), and its token cost covers
+  each of them. It reported at most 5 with the default settings. It fires
+  at the same point and with the same severity as before.
+
 - `agentwatch report --days` above 10000 is now a usage error instead of a
   traceback, and an empty report mentions `--include-active` for sessions
   still being written.
@@ -218,6 +206,12 @@ numbers refer to the GitHub repository.
   secret; anything else is stored as `other`.
 
 ### Changed
+
+- `visual`: redesigned around what is running now. The Overview opens with a plain-words
+  summary, tiles with live sparklines and one card per running agent; every view now
+  refreshes on its own while the page is visible (5 s for ps/check/security/subagents,
+  30 s for stats/report/history reads), updates in place, and shows a ticking "last
+  updated" time. The audit and history sync still run only on a click and show their age.
 
 - README: a short, plain-language front page with a banner.
 - agentwatch.info: plain-language redesign, with a dashboard screenshot
