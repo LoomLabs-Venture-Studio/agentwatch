@@ -6,6 +6,14 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Changed
+
+- `visual`: redesigned around what is running now. The Overview opens with a plain-words
+  summary, tiles with live sparklines and one card per running agent; every view now
+  refreshes on its own while the page is visible (5 s for ps/check/security/subagents,
+  30 s for stats/report/history reads), updates in place, and shows a ticking "last
+  updated" time. The audit and history sync still run only on a click and show their age.
+
 ### Fixed
 
 - `detect`: browsers are now excluded on macOS and Linux too (helper processes such
