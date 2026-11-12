@@ -80,7 +80,8 @@ def test_no_previous_period_has_no_trend(conn):
     rep = report.build(conn, days=7, now=NOW + 30 * DAY)
     assert rep["totals"]["sessions"] == 0
     assert rep["trend"] == {"cost_usd": None, "waste_usd": None}
-    assert "No sessions" in "\n".join(report.render(rep))
+    text = "\n".join(report.render(rep))
+    assert "No sessions" in text and "--include-active" in text
 
 
 def test_render(conn):
@@ -109,12 +110,31 @@ TOTAL_KEYS = {"sessions", "unpriced_sessions", "cost_usd", "tokens", "waste_usd"
               "waste_pct", "waste_findings"}
 
 
+def test_days_above_max_is_usage_error():
+    out = CliRunner().invoke(cli, ["report", "--no-sync", "--days", "1000000"])
+    assert out.exit_code == 2 and isinstance(out.exception, SystemExit)
+    assert "Traceback" not in out.output and "--days" in out.output
+
+
+def test_days_at_max_succeeds(tmp_path, monkeypatch):
+    # an empty data dir and no agent logs: the sync and the report both run
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr("agentwatch.agents.ADAPTERS", [])
+    out = CliRunner().invoke(cli, ["report", "--days", "10000"])
+    assert out.exit_code == 0, out.output
+    assert "Traceback" not in out.output
+    assert (tmp_path / "data" / "agentwatch" / "history.db").exists()
+
+
 def test_json_schema(tmp_path, monkeypatch, conn):
     monkeypatch.setattr(history, "db_path", lambda: tmp_path / "h.db")
     out = CliRunner().invoke(cli, ["report", "--no-sync", "--json", "--days", "30"])
     assert out.exit_code == 0, out.output
     rep = json.loads(out.stdout)
-    assert set(rep) == JSON_KEYS and rep["schema"] == report.JSON_SCHEMA == 1
+    # Schema 1 only grows: every key before Sprint 40 is unchanged.
+    assert set(rep) == JSON_KEYS | {"models", "cache", "errors"}
+    assert rep["schema"] == report.JSON_SCHEMA == 1
     assert set(rep["totals"]) == set(rep["previous"]) == TOTAL_KEYS
     assert set(rep["period"]) == {"days", "start", "end"}
     assert set(rep["filters"]) == {"agent", "project"}

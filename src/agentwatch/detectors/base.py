@@ -246,6 +246,9 @@ _IDENTITY_DETAIL_KEYS = (
     "last_error",
     "endpoint",
     "loop_id",
+    # secret_scanner.secret_fingerprint() of a leaked value (keyed hash, never
+    # the value): two different secrets of one type and channel are two findings.
+    "fingerprint",
 )
 
 # Error text in a key is normalized first: its durations, pids, temp paths

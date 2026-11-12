@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from agentwatch.parser.models import ActionBuffer
+from agentwatch.parser.models import ActionBuffer, is_usage_record
 
 from ..base import Category, Detector, Severity, Warning
 from ..security.secret_scanner import redact_truncate
@@ -25,16 +25,20 @@ class ErrorSpiralDetector(Detector):
         if len(buffer) < self.threshold:
             return None
 
-        recent = buffer.last(self.threshold + 2)
+        recent = buffer.last(self.threshold + 2, activity=True)
 
-        # Count consecutive failures from the end
-        consecutive_failures = 0
-        for action in reversed(recent):
-            if not action.success:
-                consecutive_failures += 1
-            else:
+        # The whole run of failures from the end (usage records skipped), back
+        # to the last success or the start of the buffer: the count is the real
+        # run length, not capped at the window above.
+        failed = []
+        for action in reversed(buffer.actions):
+            if is_usage_record(action):
+                continue
+            if action.success:
                 break
-        failed = recent[len(recent) - consecutive_failures:]
+            failed.append(action)
+        failed.reverse()
+        consecutive_failures = len(failed)
 
         if consecutive_failures >= self.threshold:
             # Collect the actual errors
@@ -83,10 +87,10 @@ class ErrorBlindnessDetector(Detector):
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
         # history_len: a failed call is one Action here, two before results were merged.
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         # Collect and normalize errors
         errors = []
@@ -146,10 +150,10 @@ class SyntaxLoopDetector(Detector):
         self._pattern = re.compile("|".join(self.SYNTAX_PATTERNS), re.IGNORECASE)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         # Count syntax-like errors
         syntax_errors = 0
@@ -195,10 +199,10 @@ class HighErrorRateDetector(Detector):
         self.min_actions = min_actions
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if len(buffer) < self.min_actions:
+        if buffer.activity_len < self.min_actions:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         failures = sum(1 for a in recent if not a.success)
         error_rate = failures / len(recent)

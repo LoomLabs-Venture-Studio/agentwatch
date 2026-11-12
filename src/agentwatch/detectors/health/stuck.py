@@ -64,10 +64,10 @@ class SameOutcomeDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         # Find edit→bash(fail) pairs and classify the errors
         error_classes_after_edits: list[tuple[str, str]] = []  # (error_class, error_msg)
@@ -140,10 +140,10 @@ class FileChurnDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         # Track per-file: edits since last successful bash
         file_edit_runs: dict[str, int] = {}  # file -> consecutive edits without success
@@ -217,10 +217,10 @@ class ExplorationStallDetector(Detector):
         self.min_actions = min_actions
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if buffer.history_len < self.min_actions:
+        if buffer.activity_history_len < self.min_actions:
             return None
 
-        all_actions = list(buffer.actions)
+        all_actions = buffer.last(len(buffer), activity=True)
 
         # Split into "earlier" and "recent" halves
         split = len(all_actions) - self.stale_window
@@ -295,10 +295,10 @@ class ErrorClassPersistenceDetector(Detector):
         self.min_edits_between = min_edits_between
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         # Collect all bash failures with their error classes
         failures: list[tuple[str, str]] = []  # (error_class, raw_message)

@@ -76,11 +76,19 @@ class TestExtractScannableContent:
         channels = [ch for _, ch, _ in results]
         assert "bash_command" in channels
 
-    def test_extracts_incoming_message(self):
+    def test_extracts_tool_result_text(self):
+        # A tool call's merged result text is its own channel, not a prompt.
         action = _make_action(incoming_message="Use this key: AKIAI44QH8DHBFNRK3GQ")
         results = extract_scannable_content(action)
         channels = [ch for _, ch, _ in results]
-        assert "user_message" in channels
+        assert channels == ["tool_result"]
+
+    @pytest.mark.parametrize("tool_name", ["user_message", "aider_prompt", "user", "message"])
+    def test_extracts_prompt_as_user_message(self, tool_name):
+        action = _make_action(incoming_message="Use this key: AKIAI44QH8DHBFNRK3GQ")
+        action.tool_name = tool_name
+        channels = [ch for _, ch, _ in extract_scannable_content(action)]
+        assert channels == ["user_message"]
 
     def test_extracts_write_tool_content(self):
         action = _make_action(
@@ -277,9 +285,21 @@ class TestSecretLeakScanner:
         assert w.severity.value == "medium"
         assert w.details["channel"] == "tool_output"
 
-    def test_user_message_severity_medium(self):
+    def test_tool_result_severity_medium(self):
         scanner = SecretLeakScanner()
         buf = self._buf_with(incoming_message="Use AKIAI44QH8DHBFNRK3GQ please")
+        w = scanner.check(buf)
+        assert w is not None
+        assert w.severity.value == "medium"
+        assert w.details["channel"] == "tool_result"
+        assert w.message == "Secret detected (aws_access_key) in tool_result"
+
+    def test_user_message_severity_medium(self):
+        scanner = SecretLeakScanner()
+        action = _make_action(incoming_message="Use AKIAI44QH8DHBFNRK3GQ please")
+        action.tool_name = "user_message"
+        buf = ActionBuffer()
+        buf.add(action)
         w = scanner.check(buf)
         assert w is not None
         assert w.severity.value == "medium"
