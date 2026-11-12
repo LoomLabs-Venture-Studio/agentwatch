@@ -51,7 +51,8 @@ def _program(command: str) -> str:
         return ""
     word = _STOP.split(words[0], maxsplit=1)[0]
     name = re.split(r"[/\\]", word)[-1]
-    return name if _NAME.fullmatch(name) else _OTHER
+    # a name the secret scanner would redact (token-shaped) is not shown
+    return name if _NAME.fullmatch(name) and one_line(name, 40) == name else _OTHER
 
 
 def _target(action) -> str:

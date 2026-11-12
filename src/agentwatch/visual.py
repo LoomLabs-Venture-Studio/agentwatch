@@ -366,6 +366,8 @@ padding:12px 14px;min-width:0}
 margin-top:8px;font-size:.9375rem}
 .card .status{margin:8px 0;padding:8px 0;border-top:1px solid var(--rule-strong);
 border-bottom:1px solid var(--rule-strong)}
+.card .status .row{flex-wrap:wrap;justify-content:flex-start;gap:4px 12px}
+.card .status .chip{min-width:0;overflow-wrap:anywhere}
 .card .status p{margin:0 0 6px;overflow-wrap:anywhere}
 .card.child{margin-left:12px;border-left:4px solid var(--acc)}
 .spark{display:block;width:100%;max-width:9rem;height:28px;margin-top:6px;overflow:visible}
@@ -680,7 +682,9 @@ function statusParts(s) {
     "mute"));
   else {
     const p = el("p", null, "doing");
-    const what = (VERBS[la.tool] || "Used " + la.tool) + (la.target ? " " + la.target : "");
+    const sub = !la.target && (la.tool === "Agent" || la.tool === "Task");
+    const what = sub ? "Started a subagent" :
+      (VERBS[la.tool] || "Used " + la.tool) + (la.target ? " " + la.target : "");
     p.append(aged(what, Date.now() - (la.age_s || 0) * 1000));
     if (la.ok === false) p.append(" (failed)");
     out.push(p);

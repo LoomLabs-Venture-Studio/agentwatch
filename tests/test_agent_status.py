@@ -175,3 +175,36 @@ def test_double_prune_does_not_raise(log):
     agent_status.build([_agent(log)])
     agent_status.build([])
     agent_status.build([])
+
+
+def test_secret_shaped_name_is_not_shown():
+    name = SECRET[:40]  # 40 chars: passes the name pattern, is token-shaped
+    assert agent_status.one_line(name, 40) != name  # the scanner would redact it
+    assert agent_status._program(name + " -x") == "a command"
+
+
+def test_cache_is_only_touched_under_the_lock(log, monkeypatch):
+    class Guarded(dict):
+        def _held(self):
+            assert agent_status._LOCK.locked(), "cache touched without the lock"
+
+        def get(self, *a):
+            self._held()
+            return super().get(*a)
+
+        def __setitem__(self, k, v):
+            self._held()
+            super().__setitem__(k, v)
+
+        def __iter__(self):
+            self._held()
+            return super().__iter__()
+
+        def pop(self, *a):
+            self._held()
+            return super().pop(*a)
+
+    monkeypatch.setattr(agent_status, "_CACHE", Guarded())
+    agent_status.build([_agent(log)])
+    agent_status.build([])
+    assert not agent_status._CACHE
