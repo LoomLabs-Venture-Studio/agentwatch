@@ -31,33 +31,49 @@ numbers refer to the GitHub repository.
   - A recursive `rm` is HIGH only when every target is a relative literal
     path (not `.` or `..`, no `..` part) or a path under `/tmp/` or
     `/var/tmp/`, no target (alone or joined to the `cd` directory) names a
-    credential store (`.ssh`, `.aws`, `.gnupg`, `.kube`, `.netrc`,
-    `.config/gcloud`, keyrings, keychains, ..., any case), and every `cd`
-    or `pushd` on the line goes to such a relative path, a path under `/tmp/`
-    or `/var/tmp/`, or a literal path at least three levels below a home root
-    (`/home/<user>/<dir>/...`); `popd`, a bare `cd`, `cd -` or any other
-    directory keeps it CRITICAL, as do targets such as `/usr/bin` or `~/.ssh`.
-  - A `chmod` is MEDIUM only for a non-setuid mode on those same paths;
-    setuid/setgid and anything unrecognized stay CRITICAL.
-  - `sudo`/`doas`/`pkexec` are HIGH only when every option is on an explicit
-    safe list (any other, such as `-h`/`--host` or `-T`, keeps CRITICAL)
-    and either no program (`sudo -l`) or a program from a short allowlist of
-    non-interactive system tools (`apt`, `apt-get`, `dnf`, `yum`, `pacman`,
-    `zypper`, `snap`, `flatpak`, `systemctl`, `service`, `umount`, `lsof`,
-    `ss`, `netstat`), named exactly, with no `-o`/`--option`/`Invoke`
-    argument and no paging or shell subcommand (`systemctl status` without
-    `--no-pager`, `apt-get changelog`, `snap run`, ...). A package manager
-    is HIGH only with plain flags (`-y`, `-q`, `--no-install-recommends`,
-    `-Syu`, ...) and plain package names: a config file, hook, `--setopt`,
-    path, `NAME=value` or local package file (`.deb`, `.rpm`, ...) keeps it
-    CRITICAL. `systemctl` is HIGH only for a read-only verb (`is-*`, or
-    `status`/`show`/`cat`/`help`/`list-*` with `--no-pager`); every other
-    verb (`start`, `stop`, `enable`, `disable`, `mask`, `daemon-reload`,
-    ...) and any `--root`/`--image` option stays CRITICAL. `service` is HIGH
-    only as `service <plain name> status`; a name with a `/` or `..`, a flag
-    or any other verb (`stop`, `start`, ...) stays CRITICAL. Any other
-    program, a path such as `./deploy.sh`, a
-    `NAME=value` word, `-E`, `-R`/`--chroot`, `su`, `sudo -e`, a redirect or
+    credential store or startup file (`.ssh`, `.aws`, `.gnupg`, `.kube`,
+    `.netrc`, all of `.config`, `.claude`, `.mozilla`, `.cargo`,
+    `.terraform.d`, `.m2`, keyrings, keychains, shell history and rc files,
+    names starting with one such as `.gnupg.bak`, `/tmp/krb5cc*`,
+    `/tmp/ssh-*`, dot entries in `/tmp`, ..., any case), and the rest of the
+    line is plain too: every `cd` or `pushd` goes to such a relative path, a
+    path under `/tmp/` or `/var/tmp/`, or a literal path at least three
+    levels below a home root (`/home/<user>/<dir>/...`), every absolute path
+    anywhere on the line is one of those (or `/dev/null`), there is no `~`
+    or `CDPATH`, and develop's `rm -rf` pattern matches only inside the `rm`
+    segments (`farm -rf /` keeps it CRITICAL). `popd`, a bare `cd`, `cd -`
+    or any other directory keeps it CRITICAL, as do targets such as
+    `/usr/bin` or `~/.ssh` and lines such as `rm -rf ./x && unlink
+    /etc/passwd`.
+  - A `chmod` is MEDIUM only for a non-setuid mode on those same paths, under
+    the same line rules; setuid/setgid and anything unrecognized stay
+    CRITICAL.
+  - `sudo`/`doas`/`pkexec` are HIGH only when every option is one of `-n`,
+    `-H`, `-k`, `-K`, `-v`, `-l`, `-u`/`--user`, `-g`/`--group` and a few
+    no-value long forms (any other, such as `-h`/`--host`, `-A`, `-D`,
+    `-T` or `--`, keeps CRITICAL) and either no program (`sudo -l`) or one
+    of these exact calls:
+    - a package manager with a read/install verb as its first word: `apt`/
+      `apt-get` `install`/`update`/`upgrade`, `dnf`/`yum` those plus
+      `info`/`list`, `zypper install`/`update`, `snap install`, `flatpak
+      install`/`update`, or `pacman` with `-S`/`-Sy`/`-Syu`/`-Su`/`-Ss`/`-Q`
+      only; flags from `-y`, `-q`, `-qq`, `--yes`, `--assume-yes`,
+      `--quiet`, `--no-install-recommends` (pacman: `--noconfirm`,
+      `--needed`); plain registry package names (no `/`, `=`, URL, or name
+      ending in `.deb`, `.udeb`, `.ddeb`, `.rpm`, `.spec`, `.snap`, `.repo`,
+      ...). `remove`, `purge`, `erase`, `builddep`, `history`, `snap try`,
+      `zypper addrepo`, `apt show`/`list`/`search` and the rest stay
+      CRITICAL.
+    - `systemctl` with a read-only verb as its first word (`is-active`,
+      `is-enabled`, `is-failed`, `is-system-running`, or `status`/`show`/
+      `cat`/`list-*` with `--no-pager`) followed only by plain unit names and
+      `--no-pager`, `--quiet`/`-q`, `--full`/`-l`. An option before the verb
+      (`systemctl -p is-active stop sshd`) or any other option keeps it
+      CRITICAL.
+    - `service <plain name> status`.
+    - `netstat` with flag clusters only.
+    `umount`, `ss`, `lsof`, any other program, a path such as
+    `./deploy.sh`, a `NAME=value` word, `su`, `sudo -e`, a redirect or
     anything unrecognized stays CRITICAL.
   - A command is lowered only when every `rm`, `chmod` or elevator in it,
     anywhere on the line, fits these shapes: `rm -rf /tmp/x && sudo rm -rf /`

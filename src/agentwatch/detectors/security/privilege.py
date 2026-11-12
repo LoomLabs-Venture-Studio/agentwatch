@@ -10,13 +10,15 @@ writes to `/etc/sudoers`, setuid `chmod` with leading zeros or a symbolic
 Only the SEVERITY is new, chosen by small regex rules on the matched text --
 no shell parser, no attempt to prove a command is inert:
 
-* recursive `rm`: CRITICAL when the target is the whole filesystem, the home
-  directory, the working/parent directory, a top-level system directory, or
-  anything with a variable, substitution or glob in it; otherwise HIGH (a
-  path such as `/tmp/x`, `.pytest_cache` or `./build`).
-* `chmod`: CRITICAL for setuid/setgid, otherwise MEDIUM.
-* `sudo`/`doas`/`pkexec`/`su`: CRITICAL when it runs a shell, takes a
-  login/shell flag, runs `su`, or is piped into; otherwise HIGH.
+Everything is CRITICAL unless it fits a narrow allowlist:
+
+* recursive `rm`: HIGH only for literal relative or /tmp, /var/tmp targets
+  with no credential store, on a line with nothing else that could change
+  what they mean (_rm_shape, _line_critical).
+* `chmod`: MEDIUM only for a non-setuid mode on those paths (_chmod_shape).
+* `sudo`/`doas`/`pkexec`: HIGH only with safe options and an exact
+  allowlisted call: package install/update, a read-only systemctl verb,
+  `service <name> status`, netstat (_sudo_shape).
 * every other rule stays CRITICAL.
 
 `analyze_command()` returns at most one finding per signal, the most severe.
@@ -91,6 +93,7 @@ _DEV_D = [(p, _gated(p, _BACKTRACKY_LITERALS.get(p))) for p in _DEV_DANGEROUS_PA
 _DEV_P = [_gated(p) for p in PRIVILEGE_COMMAND_PATTERNS]
 # dangerous rules other than develop's three `rm -rf` target patterns.
 _DEV_D_NON_RM = [g for p, g in _DEV_D if not p.startswith(r"rm\s+-rf")]
+_DEV_D_RM = [g for p, g in _DEV_D if p.startswith(r"rm\s+-rf")]
 _DEV_D_ALL = [g for _, g in _DEV_D]
 # develop's privilege patterns by family: sudo/su/doas/pkexec, chmod, the rest.
 _DEV_P_SUDO = _DEV_P[:4]
@@ -147,40 +150,70 @@ _RM_SEG = re.compile(
 
 # words that raise privileges: each occurrence must fit _sudo_shape.
 _ELEVATORS = {"sudo", "doas", "pkexec", "su", "sudoedit", "run0"}
-# The only programs sudo/doas/pkexec may run at HIGH: non-interactive system
-# tools with no shell escape or pager (exact name, no path). Anything else under
-# an elevator -- a path program, an interpreter, a shell, an editor -- is
-# CRITICAL. Per program, subcommands that page or run something are excluded.
+# The only programs sudo/doas/pkexec may run at HIGH (exact name, no path), each
+# with its own narrow argument rule below. Anything else under an elevator -- a
+# path program, an interpreter, a shell, an editor, umount, ss, lsof -- is
+# CRITICAL.
 _SUDO_PROGRAMS = {"apt", "apt-get", "dnf", "yum", "pacman", "zypper", "snap", "flatpak",
-                  "systemctl", "service", "umount", "lsof", "ss", "netstat"}
-# Package managers are HIGH only with these flags and plain package names: no
-# config file, hook, setopt, local package file, path or NAME=value argument.
-_PKG_MANAGERS = {"apt", "apt-get", "dnf", "yum", "pacman", "zypper", "snap", "flatpak"}
-_PKG_SAFE_FLAGS = {"-y", "-q", "-qq", "--yes", "--assume-yes", "--quiet",
-                   "--no-install-recommends", "--noconfirm", "--needed", "-S", "-Sy",
-                   "-Syu", "-Su", "-Ss", "-Q"}
-_PKG_FILE = re.compile(r"\.(?:deb|rpm|snap|flatpak\w*)$|\.pkg\.tar(?:\.|$)", re.IGNORECASE)
-_SUDO_PROGRAM_DENY = {
-    "apt": {"changelog", "show", "showsrc", "search", "list", "edit-sources"},
-    "apt-get": {"changelog", "source"},
-    "snap": {"run", "shell"}, "flatpak": {"run", "enter"},
-    "dnf": {"shell"}, "yum": {"shell"}, "zypper": {"shell", "sh"},
+                  "systemctl", "service", "netstat"}
+# Package managers: HIGH only for these verbs (the first non-flag word), with
+# flags from _PKG_FLAGS and plain registry package names. Every other verb
+# (remove, purge, erase, builddep, history, try, ack, addrepo, shell, show, ...)
+# stays CRITICAL. pacman has no verb word; its flags are the whole allowlist.
+_PKG_VERBS = {
+    "apt": {"install", "update", "upgrade"},
+    "apt-get": {"install", "update", "upgrade"},
+    "dnf": {"install", "update", "upgrade", "info", "list"},
+    "yum": {"install", "update", "upgrade", "info", "list"},
+    "zypper": {"install", "update"},
+    "snap": {"install"},
+    "flatpak": {"install", "update"},
 }
-# systemctl is HIGH under an elevator only for a read-only verb. Verbs that show
-# text page (`less` runs commands), so they also need --no-pager; is-* never
-# page. Every other verb (start, stop, enable, disable, mask, kill, edit,
-# daemon-reload, set-property, ...) and --root/--image stay CRITICAL.
-_SYSTEMCTL_READ_PAGED = {"status", "show", "cat", "help"}
-_SYSTEMCTL_DENY_OPT = ("--root", "--image")
+_PKG_FLAGS = {"-y", "-q", "-qq", "--yes", "--assume-yes", "--quiet",
+              "--no-install-recommends"}
+_PACMAN_FLAGS = {"-S", "-Sy", "-Syu", "-Su", "-Ss", "-Q", "--noconfirm", "--needed"}
+# a plain registry package name: no path, URL, version pin or option.
+_PKG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9+_.-]*")
+# a name that is really a local file (package, build spec, repo, assertion).
+_PKG_FILE = re.compile(
+    r"\.(?:u?deb|ddeb|rpm|spec|snap|assert|repo|flatpak\w*)$|\.pkg\.tar(?:\.|$)",
+    re.IGNORECASE)
+# systemctl: HIGH only as `systemctl <read-only verb> [unit | no-value flag]...`
+# with the verb as the very first word (an option before it could take the
+# verb as its value: `systemctl -p is-active stop sshd`). Verbs that print text
+# page (`less` runs commands), so they also need --no-pager; is-* never page.
+_SYSTEMCTL_READ_PAGED = {"status", "show", "cat", "list-units", "list-unit-files",
+                         "list-timers", "list-sockets", "list-dependencies", "list-jobs"}
+_SYSTEMCTL_READ = {"is-active", "is-enabled", "is-failed", "is-system-running"}
+_SYSTEMCTL_FLAGS = {"--no-pager", "--quiet", "-q", "--full", "-l"}
+_UNIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]*")
+# netstat only reads kernel tables: flag clusters only, no operand, no value.
+_NETSTAT_ARG = re.compile(r"-[A-Za-z]+|--[a-z-]+")
 
 
-def _systemctl_read_only(args: list[str], sub: str) -> bool:
-    if any(a.split("=", 1)[0] in _SYSTEMCTL_DENY_OPT for a in args):
+def _systemctl_read_only(args: list[str]) -> bool:
+    if not args:
         return False
-    if sub.startswith("is-"):
-        return True
-    paged = sub in _SYSTEMCTL_READ_PAGED or sub.startswith("list-")
-    return paged and "--no-pager" in args
+    verb, rest = args[0], args[1:]
+    if verb not in _SYSTEMCTL_READ and verb not in _SYSTEMCTL_READ_PAGED:
+        return False
+    if not all(a in _SYSTEMCTL_FLAGS or (not a.startswith("-") and _UNIT_NAME.fullmatch(a))
+               for a in rest):
+        return False
+    return verb in _SYSTEMCTL_READ or "--no-pager" in rest
+
+
+def _pkg_safe(prog: str, args: list[str]) -> bool:
+    """A package-manager call that only installs/updates/queries plain names."""
+    flags = [a for a in args if a.startswith("-")]
+    words = [a for a in args if not a.startswith("-")]
+    if prog == "pacman":
+        verb_ok, allowed = bool(flags), _PACMAN_FLAGS
+    else:
+        verb_ok, allowed = bool(words) and words[0] in _PKG_VERBS[prog], _PKG_FLAGS
+        words = words[1:]
+    return verb_ok and all(f in allowed for f in flags) and all(
+        _PKG_NAME.fullmatch(w) and not _PKG_FILE.search(w) for w in words)
 
 
 # `service NAME VERB` runs /etc/init.d/NAME as root (or hands VERB to
@@ -195,14 +228,26 @@ def _service_read_only(args: list[str]) -> bool:
             and _SERVICE_NAME.fullmatch(args[0]) is not None)
 
 
-# credential directories: an rm/chmod target containing one stays CRITICAL.
-_CREDENTIAL_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".netrc",
+# credential stores: a path part that IS one of these or starts with one
+# (`.gnupg.bak`) keeps an rm/chmod CRITICAL. `.config` counts as a whole (gh,
+# gcloud, op, hub, ... live there); so does any dot-file with `history` in it.
+_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".netrc",
                     ".password-store", "keyrings", "keychains", ".pgpass",
-                    ".git-credentials", ".npmrc", ".pypirc", ".vault-token"}
+                    ".git-credentials", ".npmrc", ".pypirc", ".vault-token", ".config",
+                    ".claude", ".mozilla", ".cargo", ".terraform.d", ".m2",
+                    # shell startup files: world-writable means code run as you
+                    ".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile",
+                    ".zshenv", ".login")
 # multi-part credential locations (matched on the lowercased joined path).
 _CREDENTIAL_PATHS = (".config/gcloud", ".local/share/keyrings", "library/keychains")
+# entries directly under /tmp or /var/tmp that hold live credentials or
+# sockets: Kerberos caches, ssh-agent sockets, X11/ICE sockets (any dot entry).
+_TMP_SENSITIVE = ("krb5cc", "ssh-", "systemd-private-", "tmux-", ".")
 # a cd/pushd/popd anywhere on the line (linear: one fixed-width boundary each side).
 _CHANGES_DIR = re.compile(r"(?:^|[\s;&|(`])(?:cd|pushd|popd)(?=$|[\s;&|)`])")
+# an absolute path anywhere on the line (at the start or after a space,
+# redirect, separator, `=` or `:`). Linear: one fixed-width look-behind.
+_ABS_PATH = re.compile(r"(?:^|(?<=[\s<>|;&(=:]))/[^\s<>|;&()'\"`]*")
 # A segment with any of these cannot be split safely into words.
 _META = set("$`\"'\\*?[](){}<>!~")
 _SEGMENTS = re.compile(r"\|\||&&|[;\n|&]")  # linear split into simple commands
@@ -214,19 +259,14 @@ _RM_SAFE_LONG = {"--recursive", "--force", "--verbose", "--dir", "--one-file-sys
 _CHMOD_SAFE_SHORT = re.compile(r"-[Rvcf]+")
 _CHMOD_SAFE_LONG = {"--recursive", "--verbose", "--changes", "--silent", "--quiet",
                     "--preserve-root"}
-# sudo/doas/pkexec short flags that neither open a shell, edit a file nor take
-# a value (no -i, -s, -e).
-_SUDO_SAFE_SHORT = set("nHkKvlbASP")  # not -E: it passes the caller's environment
-# short flags whose value is the rest of the cluster or the next word. Only
-# these and _SUDO_SAFE_SHORT are understood; any other option (-h/--host,
-# -T, -i, -s, -e, ...) keeps the command CRITICAL.
-_SUDO_VALUE_SHORT = set("ugpCUrtRD")
-# long flags that take a value (next word unless written with =).
-_SUDO_LONG_VALUE = {"user", "group", "chdir", "prompt", "role", "type",
-                    "other-user", "close-from", "command-timeout", "chroot"}
+# sudo/doas/pkexec options: only these are understood. Every other option
+# (-h/--host, -A/--askpass, -D/--chdir, -C, -U, -r, -t, -T, -p, -b, -P, -S, -E,
+# -i, -s, -e, `--`, ...) keeps the command CRITICAL.
+_SUDO_SAFE_SHORT = set("nHkKvl")
+_SUDO_VALUE_SHORT = set("ug")  # value: rest of the cluster or the next word
+_SUDO_LONG_VALUE = {"user", "group"}  # value: next word unless written with =
 _SUDO_LONG_SAFE = {"non-interactive", "set-home", "list", "validate",
-                   "reset-timestamp", "remove-timestamp", "background", "askpass",
-                   "stdin", "preserve-groups", "disable-internal-agent", "keep-cwd"}
+                   "reset-timestamp", "remove-timestamp"}
 
 
 
@@ -386,11 +426,20 @@ def _safe_words(segment: str) -> list[str] | None:
 
 
 def _credential(path: str) -> bool:
-    """A path naming a credential store anywhere in it (case-insensitive)."""
+    """A path naming a credential store anywhere in it (case-insensitive): a
+    part starting with a _CREDENTIAL_DIRS name, a dot-file with `history` in
+    it, a _CREDENTIAL_PATHS location, or a sensitive entry right under /tmp or
+    /var/tmp (_TMP_SENSITIVE)."""
     parts = [p for p in _fold(path).split("/") if p not in ("", ".")]
+    if any(p.startswith(_CREDENTIAL_DIRS) or (p[:1] == "." and "history" in p)
+           for p in parts):
+        return True
     joined = "/".join(parts)
-    return bool(_CREDENTIAL_DIRS.intersection(parts)) or any(
-        c in joined for c in _CREDENTIAL_PATHS)
+    if any(c in joined for c in _CREDENTIAL_PATHS):
+        return True
+    tmp = parts[1:] if parts[:1] == ["tmp"] else parts[2:] if parts[:2] == ["var", "tmp"] \
+        else []
+    return bool(tmp) and tmp[0].startswith(_TMP_SENSITIVE)
 
 
 def _safe_target(op: str) -> bool:
@@ -465,18 +514,22 @@ def _cd_shape(words: list[str]) -> bool:
     target = words[1]
     if target[:1] in "+-":
         return False  # pushd +1, cd -, cd -P: a stack entry or a flag
-    if _safe_target(target):
-        return True
-    if not target.startswith("/") or not _SAFE_PATH.fullmatch(target):
+    return _safe_target(target) or _home_path(target)
+
+
+def _home_path(path: str) -> bool:
+    """A literal absolute path at least three levels below a home root
+    (/home/<user>/<a>/..., /Users/<user>/<a>/...) with no credential store."""
+    if not path.startswith("/") or not _SAFE_PATH.fullmatch(path):
         return False
-    parts = [p for p in target.split("/") if p not in ("", ".")]
+    parts = [p for p in path.split("/") if p not in ("", ".")]
     return (".." not in parts and len(parts) >= 3 and parts[0] in ("home", "Users")
-            and not _credential(target))
+            and not _credential(path))
 
 
 def _cd_joins_credential(command: str) -> bool:
-    """A cd/pushd target joined with an rm target names a credential store
-    (`cd .config && rm -rf ./gcloud`). Same verdict as _credential(d + "/" + t)
+    """A cd/pushd target joined with an rm or chmod operand names a credential
+    store (`cd .local && rm -rf ./share/keyrings`). Same verdict as _credential(d + "/" + t)
     over every pair, in linear time: a credential part lies wholly in d or in
     t, and a multi-part credential path crossing the join is some split
     `head/tail` of it with d ending in head and t starting with tail."""
@@ -487,7 +540,7 @@ def _cd_joins_credential(command: str) -> bool:
             continue
         if _prog(words[0]) in ("cd", "pushd"):
             dirs += words[1:]
-        elif _prog(words[0]) == "rm":
+        elif _prog(words[0]) in ("rm", "chmod"):
             targets += [w for w in words[1:] if not w.startswith("-")]
     if not dirs or not targets:
         return False
@@ -504,16 +557,41 @@ def _cd_joins_credential(command: str) -> bool:
     return any(h in heads and t in tails for h, t in splits)
 
 
-def _rm_targets_critical(command: str) -> bool:
-    """HIGH (False) only when every rm in the command is the program of a
-    segment that fits _rm_shape and every cd/pushd on the line fits _cd_shape
-    (popd or any other directory change could move what a relative target
-    means); otherwise CRITICAL."""
+def _line_critical(command: str, gated, prog: str) -> bool:
+    """What around an rm/chmod keeps it CRITICAL, whatever its own shape:
+    a develop match in a segment whose program is not *prog* (`farm -rf /`),
+    CDPATH or `~` anywhere, an absolute path anywhere on the line that is not
+    under /tmp, /var/tmp or three levels below a home root (or /dev/null), a
+    cd/pushd/popd that does not fit _cd_shape (it could move what a relative
+    target means), or a cd target joined with an operand naming a credential
+    store."""
+    if len(command) > _CAP:
+        return True
+    low = _fold(command)
+    if "cdpath" in low or "~" in command:
+        return True
+    for path in _ABS_PATH.findall(command):
+        if path != "/dev/null" and not _safe_target(path) and not _home_path(path):
+            return True
+    for segment in _segments(command):
+        if _search(segment, _fold(segment), gated):
+            words = _safe_words(segment)
+            if not words or _prog(words[0]) != prog:
+                return True
     if _CHANGES_DIR.search(command):
         if _all_occurrences_safe(command, {"cd", "pushd", "popd"}, _cd_shape) is not True:
             return True
         if _cd_joins_credential(command):
             return True
+    return False
+
+
+def _rm_targets_critical(command: str) -> bool:
+    """HIGH (False) only when every rm in the command is the program of a
+    segment that fits _rm_shape and nothing else on the line keeps it
+    CRITICAL (_line_critical); otherwise CRITICAL."""
+    if _line_critical(command, _DEV_D_RM, "rm"):
+        return True
     return _all_occurrences_safe(command, {"rm"}, _rm_shape) is not True
 
 
@@ -536,16 +614,18 @@ def _chmod_shape(words: list[str]) -> bool:
 
 
 def _chmod_medium(command: str) -> bool:
-    """MEDIUM only when every chmod in the command fits _chmod_shape."""
+    """MEDIUM only when every chmod in the command fits _chmod_shape and
+    nothing else on the line keeps it CRITICAL (_line_critical)."""
+    if _line_critical(command, _DEV_P_CHMOD, "chmod"):
+        return False
     return _all_occurrences_safe(command, {"chmod"}, _chmod_shape) is True
 
 
 def _sudo_shape(words: list[str]) -> bool:
-    """sudo/doas/pkexec + allowlisted flags (value flags consume their value)
-    + either no program or an exact program from _SUDO_PROGRAMS (no path, no
-    NAME=value word) with no -o/--option/Invoke argument and no paging or
-    shell subcommand. `su`, `sudoedit`, -e/--edit, -i/-s/--login/--shell and
-    every other program fail."""
+    """sudo/doas/pkexec + options from the safe lists only (-u/-g consume their
+    value) + either no program or an exact program from _SUDO_PROGRAMS whose
+    arguments fit that program's rule. `su`, `sudoedit`, every other option
+    and every other program fail."""
     elevator = _prog(words[0])
     if elevator not in ("sudo", "doas", "pkexec", "run0"):
         return False
@@ -553,50 +633,37 @@ def _sudo_shape(words: list[str]) -> bool:
     while i < len(words) and words[i].startswith("-"):
         flag = words[i]
         i += 1
-        if flag == "--":
-            break
         if flag.startswith("--"):
             name, _, value = flag[2:].partition("=")
-            if name == "chroot":
-                return False
             if name in _SUDO_LONG_VALUE:
                 if not value:
                     i += 1  # the value is the next word
                 continue
             if name not in _SUDO_LONG_SAFE or value:
-                return False  # --login, --shell, --host, --edit, anything unknown
+                return False  # `--`, --login, --host, --chdir, anything unknown
             continue
         body = flag[1:]
-        if "R" in body:
-            return False  # -R / --chroot: a root directory of the caller's choice
+        if not body:
+            return False
         for k, ch in enumerate(body):
             if ch in _SUDO_VALUE_SHORT:
                 if k == len(body) - 1:
                     i += 1  # the value is the next word
                 break  # the rest of the cluster is the value
             if ch not in _SUDO_SAFE_SHORT:
-                return False  # -i, -s, -e or anything unknown
+                return False  # -i, -s, -e, -h, -A, -D or anything unknown
     if i >= len(words):
         return True  # no program: sudo -l, -v, -k
     prog, args = words[i], words[i + 1:]
-    if prog not in _SUDO_PROGRAMS:
-        return False  # NAME=value, a path, an interpreter, a shell, anything else
-    if any(a.startswith(("-o", "--option")) or "invoke" in _fold(a) or "=" in a
-           and a.split("=", 1)[0].isupper() for a in args):
-        return False  # apt hook options and environment words
-    if prog in _PKG_MANAGERS and not all(
-            (a in _PKG_SAFE_FLAGS) if a.startswith("-") else
-            ("/" not in a and "=" not in a and not _PKG_FILE.search(a)) for a in args):
-        return False  # config/hook/setopt flags, local package files, paths
-    subs = [a for a in args if not a.startswith("-")]
-    sub = subs[0] if subs else ""
-    if sub in _SUDO_PROGRAM_DENY.get(prog, ()):
-        return False
-    if prog == "systemctl" and not _systemctl_read_only(args, sub):
-        return False
-    if prog == "service" and not _service_read_only(args):
-        return False
-    return True
+    if prog in _PKG_VERBS or prog == "pacman":
+        return _pkg_safe(prog, args)
+    if prog == "systemctl":
+        return _systemctl_read_only(args)
+    if prog == "service":
+        return _service_read_only(args)
+    if prog == "netstat":
+        return all(_NETSTAT_ARG.fullmatch(a) for a in args)
+    return False  # NAME=value, a path, an interpreter, a shell, anything else
 
 
 def _sudo_high(command: str) -> bool:
