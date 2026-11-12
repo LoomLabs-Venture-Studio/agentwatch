@@ -28,6 +28,8 @@ from agentwatch.parser.models import ActionBuffer, is_tool_call
 SCHEMA = 1
 ACTIVE_S = 120  # written to in the last 2 minutes = active
 TARGET_LIMIT = 40
+# Agents whose sessions live in one database, not in a log file per session.
+NO_SESSION_LOG = {"cursor", "opencode", "kilo-code"}
 # log -> ((size, mtime_ns), scored fields); pruned to the logs still running.
 _LOCK = threading.Lock()  # visual's server threads call build() concurrently
 _CACHE: dict[Path, tuple[tuple[int, int], dict[str, Any]]] = {}
@@ -104,6 +106,7 @@ def build(agents: list[AgentProcess]) -> dict[str, Any]:
         row: dict[str, Any] = {
             "pid": a.pid, "agent_type": a.agent_type, "project": a.project_name,
             "last_action": None, "health": None, "cost_usd": None, "active": None,
+            "log_expected": a.agent_type not in NO_SESSION_LOG,
         }
         try:
             st = a.log_file.stat() if a.log_file else None

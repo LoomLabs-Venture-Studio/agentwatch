@@ -678,7 +678,8 @@ function statusParts(s) {
   if (!s) return [el("p", "Checking what it is doing...", "mute")];
   const out = [], la = s.last_action;
   if (!la) out.push(el("p", s.health ? "No tool calls yet." :
-    "Activity not available for this agent type.",
+    s.log_expected === false ? "Activity not available for this agent type." :
+    "No session log found yet.",
     "mute"));
   else {
     const p = el("p", null, "doing");

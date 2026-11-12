@@ -208,3 +208,20 @@ def test_cache_is_only_touched_under_the_lock(log, monkeypatch):
     agent_status.build([_agent(log)])
     agent_status.build([])
     assert not agent_status._CACHE
+
+
+@pytest.mark.parametrize("agent_type,expected", [
+    ("claude-code", True), ("codex", True), ("cursor", False), ("opencode", False),
+    ("kilo-code", False)])
+def test_log_expected_depends_on_agent_type(agent_type, expected):
+    a = AgentProcess(pid=3, agent_type=agent_type, working_directory=Path("/w"),
+                     log_file=None, command="x")
+    row = agent_status.build([a])["agents"][0]
+    assert row["log_expected"] is expected and row["health"] is None
+
+
+def test_page_words_differ_for_no_log_cases():
+    from agentwatch import visual
+    assert "log_expected === false" in visual.PAGE
+    assert "Activity not available for this agent type." in visual.PAGE
+    assert "No session log found yet." in visual.PAGE
