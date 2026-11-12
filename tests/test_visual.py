@@ -343,7 +343,7 @@ def _fn(name):
 
 def test_refresh_is_quiet_hidden_aware_and_never_runs():
     body = _fn("refresh")
-    assert "if (document.hidden) return;" in body
+    assert "if (document.hidden || expiredLink) return;" in body
     assert body.count("load(") == 1
     assert "load(sec, sec.dataset.name, false, true)" in body
     assert "run" not in body and "=1" not in body
@@ -370,6 +370,19 @@ def test_series_are_capped_and_pruned():
 def test_failed_timer_reload_rules():
     body = _fn("load")
     assert 'sec.classList.add("stale")' in body and "Showing data from" in body
-    assert "expired = true" in body and "quiet && !expired && ok" in body
+    assert "expired = expiredLink = true" in body and "quiet && !expired && ok" in body
     assert "stamp.dataset.ok = " in body  # age is that of the last success only
     assert "+stamp.dataset.ok || Date.now()" not in body
+
+
+def test_run_param_only_when_the_run_argument_is_true():
+    assert visual.PAGE.count("run=1") == 1
+    assert '${run ? "&run=1" : ""}' in _fn("load")
+    assert "expired = expiredLink = true" in _fn("load")  # a dead link stops the timers
+
+
+def test_timer_ticks_skip_fresh_views():
+    ticks = re.findall(r"setInterval\(\(\) => \{\n  (refresh\([^\n]*\));\n\}, (\w+)\);",
+                       visual.PAGE)
+    assert ticks == [("refresh(LIVE, LIVE_MS - SLACK)", "LIVE_MS"),
+                     ("refresh(SLOW, SLOW_MS - SLACK)", "SLOW_MS")]

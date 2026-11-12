@@ -296,7 +296,7 @@ h2{font-size:1.15rem;line-height:1.3;margin:0;margin-right:auto}
 .when{color:var(--mute);font-size:.875rem;width:100%;margin:2px 0 0}
 .body{margin-top:12px}
 .body>*+*{margin-top:16px}
-p{margin:0;text-wrap:pretty}
+p{margin:0;text-wrap:pretty;overflow-wrap:anywhere}
 h1,h2{text-wrap:balance}
 .mute{color:var(--mute)}
 .verdict{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px}
@@ -337,7 +337,8 @@ footer{border-top:1px solid var(--rule);background:var(--bg-alt)}
 footer .wrap{max-width:72rem;margin:auto;padding:24px 16px 48px}
 footer h2{margin-bottom:4px}
 code{font-family:var(--mono);font-size:.875rem}
-.cmds{display:grid;grid-template-columns:repeat(auto-fill,minmax(20rem,1fr));gap:12px 32px;
+.cmds{display:grid;gap:12px 32px;
+grid-template-columns:repeat(auto-fill,minmax(min(20rem,100%),1fr));
 margin:16px 0 0}
 .cmds div{border-bottom:1px solid var(--rule);padding-bottom:10px}
 .cmds dt code{color:var(--acc);font-weight:700}
@@ -807,6 +808,8 @@ const SLOW = new Set(["stats", "report", "history"]), SLOW_MS = 30000;
 const RUN_ONLY = new Set(["audit"]);
 const busy = new WeakMap(), last = new WeakMap(), inflight = new WeakSet();
 const loadedAt = new WeakMap();
+let expiredLink = false;
+const SLACK = 1000;  // a tick may land just before its view turns one cadence old
 const ranCache = new Map();  // name -> {parts text is rebuilt from d, at}
 // Swap a section's content in place: same height while it happens, open
 // details, horizontal scroll and a focused summary survive.
@@ -841,7 +844,7 @@ async function load(sec, name, run, quiet) {
   try {
     const r = await fetch(`/api/${name}?t=${encodeURIComponent(T)}${run ? "&run=1" : ""}`);
     if (r.status === 403) {
-      expired = true;
+      expired = expiredLink = true;  // the token is dead: the timers stop
       throw new Error("This link has expired. Open the address that " +
         "agentwatch visual printed in your terminal.");
     }
@@ -912,9 +915,9 @@ function feed(name, d, tick) {
   else if (name === "subagents") state.subs = d;
 }
 // Timer: reload every section of the current tab that is on *set*. Never
-// sends run=1; a section without data yet is skipped while its first load runs.
+// sends the run flag; a section without data yet is skipped while its first load runs.
 function refresh(set, minAge) {
-  if (document.hidden) return;
+  if (document.hidden || expiredLink) return;
   document.querySelectorAll("section[data-name]").forEach(sec => {
     if (!set.has(sec.dataset.name)) return;
     if (minAge && Date.now() - (loadedAt.get(sec) || 0) < minAge) return;
@@ -974,10 +977,10 @@ function show(id) {
   }
 }
 setInterval(() => {
-  refresh(LIVE);
+  refresh(LIVE, LIVE_MS - SLACK);
 }, LIVE_MS);
 setInterval(() => {
-  refresh(SLOW);
+  refresh(SLOW, SLOW_MS - SLACK);
 }, SLOW_MS);
 setInterval(tickAges, 1000);
 // Back on the tab: catch up now instead of waiting for the next tick.
