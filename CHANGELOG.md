@@ -6,6 +6,13 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Added
+
+- `visual`: each agent card on the Overview now says what that agent is doing: its last
+  action (tool and file or program, never arguments), its own health score and label, its own
+  cost, and whether it is working now. Served by a new read-only `/api/agents` on the 5 s
+  timer; each log is scored once per change.
+
 ### Changed
 
 - `visual`: redesigned around what is running now. The Overview opens with a plain-words

@@ -386,3 +386,31 @@ def test_timer_ticks_skip_fresh_views():
                        visual.PAGE)
     assert ticks == [("refresh(LIVE, LIVE_MS - SLACK)", "LIVE_MS"),
                      ("refresh(SLOW, SLOW_MS - SLACK)", "SLOW_MS")]
+
+# Per-agent status on the cards.
+
+@pytest.mark.parametrize("kw", [{"token": False}, {"host": "evil.example:80"}])
+def test_agents_endpoint_needs_token_and_host(server, kw):
+    r, _ = _get(server, "/api/agents", **kw)
+    assert r.status == 403
+
+
+def test_agents_endpoint_is_read_only_and_has_no_secret(server, sandbox, monkeypatch):
+    agent = AgentProcess(pid=7, agent_type="claude-code", working_directory=Path("/w"),
+                         log_file=sandbox / "leak.jsonl", command="claude")
+    monkeypatch.setattr("agentwatch.cli.find_running_agents", lambda: [agent, AGENT])
+    r, body = _get(server, "/api/agents")
+    data = json.loads(body)
+    assert r.status == 200 and [a["pid"] for a in data["agents"]] == [7, 42]
+    assert data["agents"][0]["last_action"]["tool"] == "Bash"
+    assert data["agents"][0]["last_action"]["target"] == "export"  # program only
+    assert data["agents"][1]["health"] is None  # no readable log
+    assert SECRET not in body and "cat .env" not in body
+    r, _ = _get(server, "/api/agents", method="POST")
+    assert r.status == 405
+
+
+def test_page_has_agent_status_refresh_path():
+    assert "agents" in _js_set("LIVE")
+    assert "/api/agents?t=" in visual.PAGE and "pullAgents" in visual.PAGE
+    assert "dataset.pid" in visual.PAGE
