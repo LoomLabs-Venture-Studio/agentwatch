@@ -30,11 +30,11 @@ recursively, as are scripts a shell or `. /dev/stdin` reads on stdin
 (heredocs, here-strings, what `echo` and `printf` print: `%b`, `%c`, `.N`, `*`,
 `\c`); `sh -c "$(curl ...)"`, `bash <(curl ...)`, `source <(wget ...)`, curl,
 wget or a decoder (`base64 -d`, `xxd`, `openssl`, `gunzip`, `tr`, ...) piped
-into a shell that reads stdin (not `-n`), and a decoder inside `$( )` or
+into a shell that reads stdin (not `-n` without `-i`), and a decoder inside `$( )` or
 backticks run as a script or command count as pipe to shell. Program
 names are lowercased, without `.exe` and directory (`/` or backslash). Nesting
 deeper than 3 (wrappers or substitutions) gets the raw patterns. A check that
-runs past _BUDGET_S (1 s) asks. Not caught:
+runs past _BUDGET_S (1 s) asks, as does an error in the guard itself. Not caught:
 `powershell -EncodedCommand`
 (not decoded), `wsl --shell-type X`, `script --command=...`, `curl | cmd` or
 `| powershell`, scripts passed through variables, aliases, function calls,
@@ -166,6 +166,7 @@ REASONS = {
     "fork_bomb": "agentwatch: this command is a fork bomb. Allow it?",
     "destructive": "agentwatch: this command looks destructive. Allow it?",
     "too_long": "agentwatch: this command is too long to check. Allow it?",
+    "unchecked": "agentwatch: the guard could not check this command. Allow it?",
     "secret": "agentwatch: this reads a file that may hold secrets ({}). Allow it?",
     "guard_off": "agentwatch: this turns off the agentwatch command guard. Allow it?",
 }
@@ -296,8 +297,9 @@ def _strip_prefixes(argv: list[str]) -> list[str]:
             i += 1
         elif word in ("function", "coproc"):  # function NAME { ...; }, coproc [NAME] cmd
             i += 1
-            if word == "function" or (i + 1 < len(argv) and argv[i + 1] in _COMPOUND):
-                i += 1  # the name
+            if (word == "function" and i < len(argv) and not _REDIR.fullmatch(argv[i])) or (
+                    word == "coproc" and i + 1 < len(argv) and argv[i + 1] in _COMPOUND):
+                i += 1  # the name (`function > /dev/sda` is a redirection, not a name)
         elif (prefix := _prog(word)) in _PREFIXES:
             i += 1
             while i < len(argv) and argv[i].startswith("-"):
@@ -348,12 +350,14 @@ def _runs_stdin(prog: str, args: list[str]) -> bool:
 
 
 def _script_on_stdin(prog: str, args: list[str]) -> bool:
-    """The shell reads its script from stdin: no -c and no script file (or -s, -)."""
+    """The shell reads its script from stdin: no -c and no script file (or -s, -).
+    -n (syntax check only) counts only without -i: bash ignores -n when interactive."""
     if prog not in _SHELLS:
         return True  # source /dev/stdin
+    interactive = any(re.fullmatch(r"-[a-zA-Z]*i[a-zA-Z]*", a) for a in args)
     skip = False
     for a in args:
-        if re.fullmatch(r"-[a-zA-Z]*n[a-zA-Z]*", a):
+        if re.fullmatch(r"-[a-zA-Z]*n[a-zA-Z]*", a) and not interactive:
             return False  # -n: syntax check only
         if skip:
             skip = False
@@ -677,7 +681,7 @@ class _Scan:
         parts, at = [], 0
         for a, b, filler in sorted(self.spans):
             if a >= at:
-                k = a + (1 if text[a] == "`" else 2)
+                k = a + (1 if text[a:a + 1] == "`" else 2)  # a:a+1: an empty heredoc ends text
                 if filler and (_DL_BODY.match(text, k, b) or _DECODE_STAGE.search(
                         text[k:b - 1])):
                     filler = _DL
@@ -972,12 +976,19 @@ class _Scan:
         return i
 
 
+class _ShlexError(ValueError):
+    """shlex could not split the command (unbalanced quotes)."""
+
+
 def _tokens(command: str) -> list[str]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>`\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     lexer.commenters = ""  # _Scan removes comments; shlex starts one mid-word
-    return list(lexer)
+    try:
+        return list(lexer)
+    except ValueError as e:
+        raise _ShlexError(str(e)) from None
 
 
 def _raw(command: str) -> str | None:
@@ -1010,8 +1021,14 @@ def _stdin_scripts(prog: str, argv: list[str]) -> list[str]:
     return out
 
 
-_DIRECTIVE = re.compile(r"%(?:%|[-+ #0']*(\*|\d*)(?:\.(\*|\d*))?([a-zA-Z]))")
+_DIRECTIVE = re.compile(r"%(?:%|[-+ #0']*(\*|[0-9]*)(?:\.(\*|[0-9]*))?([a-zA-Z]))")
 _PRINTF_MAX = 1_000_000
+
+
+def _count(text: str) -> int | None:
+    """A printf precision as a number: ASCII digits only, at most 9 of them
+    (`²`, `٣`, `-5`, a 5,000-digit number, `abc` -> None)."""
+    return int(text) if len(text) <= 9 and re.fullmatch(r"[0-9]+", text) else None
 
 
 def _printf(fmt: str, args: list[str]) -> str:
@@ -1046,7 +1063,8 @@ def _printf(fmt: str, args: list[str]) -> str:
             elif conv == "c":
                 val = val[:1]
             if prec is not None and conv in "sb":
-                val = val[:int(prec)] if prec.isdigit() else ("" if prec == "" else val)
+                n = _count(prec)  # else negative, huge or not a number: all of it
+                val = val[:n] if n is not None else ("" if prec == "" else val)
             out.append(val)
             size += len(val)
             if stop:
@@ -1059,7 +1077,7 @@ def _printf(fmt: str, args: list[str]) -> str:
 
 def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -> str | None:
     """Check each simple command. *heredocs* are the bodies cut from *command*,
-    in the order of its `<<` operators. Raises ValueError when shlex cannot parse."""
+    in the order of its `<<` operators. Raises _ShlexError when shlex cannot parse."""
     pipeline: set[str] = set()  # programs earlier in the current pipeline
     stdin: list[str] = []  # scripts flowing down the current pipeline
     checked: set[str] = set()
@@ -1121,6 +1139,8 @@ def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | Non
         return _check_command(command, depth, _sub)
     except _TimeUpError:
         return REASONS["too_long"]
+    except Exception:  # a bug in the guard asks, never allows
+        return REASONS["unchecked"]
     finally:
         _deadline, _legacy = None, False
 
@@ -1138,7 +1158,7 @@ def _check_command(command: str, depth: int, _sub: bool) -> str | None:
     except (_UnparsedError, RecursionError):
         try:
             reason = _check_tokens(command, depth)
-        except ValueError:
+        except _ShlexError:
             reason = None
         return reason or _raw(command)
     # Both views of the command: the full text (substitutions and heredoc lines
@@ -1149,7 +1169,7 @@ def _check_command(command: str, depth: int, _sub: bool) -> str | None:
         try:
             if reason := _check_tokens(text, depth):
                 return reason
-        except ValueError:
+        except _ShlexError:
             if reason := _raw(text):
                 return reason
     for body in dict.fromkeys(bodies):
@@ -1159,7 +1179,7 @@ def _check_command(command: str, depth: int, _sub: bool) -> str | None:
         return None
     try:
         return _check_tokens(skeleton, depth, heredocs)
-    except ValueError:
+    except _ShlexError:
         return _raw(skeleton)
 
 

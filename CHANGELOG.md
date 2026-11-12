@@ -25,7 +25,11 @@ numbers refer to the GitHub repository.
   (`base64 -d | sh`) or run from `$(...)`, and a `#` inside `(( ))`, `a[...]=`,
   an extglob group or after another mid-word `#` (`a##b`) no longer hide a
   dangerous command. The new reading runs next to the previous one, so a
-  command the guard asked about before is still asked.
+  command the guard asked about before is still asked. An error while
+  checking a Bash command now asks instead of letting the command through (a `printf` width or
+  precision such as `²` or a 5,000-digit number used to), `function > /dev/sda`
+  is checked as a redirection, and `bash -n` counts as a syntax check only
+  without `-i` (bash ignores `-n` when interactive).
 - `report`/`tools` error kinds: a Node.js crash that failed to open a file is
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
