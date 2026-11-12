@@ -5604,21 +5604,40 @@ Clear the Sprint 40/41 follow-ups, then prepare 0.2.2 on `develop`. Out of scope
 Clear the 0.2.1 security follow-ups (Sprint 38). All PRs target `develop`; nothing touches `main` (user rule 2026-11-06). 0.2.2 (#214) stays as is.
 
 **A. Fewer prompt-injection false positives** (`fix/injection-doc-fp`)
-- [ ] Reading a local file that only discusses injection (docs `.md`/`.rst`/`.txt`, `docs/`, test files, the agent's own CLAUDE.md/skills) no longer scores security 0 on its own: at most MEDIUM, never CRITICAL.
-- [ ] The same text in a web fetch result, an MCP tool result, a non-doc source file or a user prompt keeps today's severity.
-- [ ] Before/after counts on real logs under `~/.claude/projects`: CRITICAL injection findings drop, none of the dropped ones is a real attack (spot-checked).
-- [ ] Tests: doc read -> not CRITICAL; web fetch with the same text -> CRITICAL; test file; README.
+- [ ] Dropped: #219 closed 2026-11-07. Adversarial QA found the shell-command path could be bypassed (glued `&`, stdin redirects, sed `e`, awk `system`, UNC paths, laundering through a written `.md`) and the SIEM export lost a later CRITICAL. The narrowed rework (built-in read tools only) changed 0 findings on 154 real logs, so it was not worth its risk. Only 1 of 40 sessions at security 0 had a prompt-injection cause.
 
 **B. Secret findings: one per secret, own channel** (`fix/secret-fingerprint`)
-- [ ] Two different secrets of the same type in the same channel and file are two findings; the same secret seen twice is one. The dedup key holds a short hash of the secret, never the value.
-- [ ] Tool-result text is labelled channel `tool_result`, not `user_message`; SIEM, audit, history and alerts handle the new label (same severity as before unless argued otherwise).
-- [ ] History: findings keyed by the new dedup key re-sync without duplicates (note in CHANGELOG if old rows change).
+- [x] Two different secrets of the same type in the same channel and file are two findings; the same secret seen twice is one. Fingerprint = first 12 hex of HMAC-SHA256 under a per-user key (`data_dir()/secret-fingerprint.key`, 0600), never the value (#220).
+- [x] Tool-result text is channel `tool_result`; `audit` reports each secret once, under the live scanner's pattern (#220).
+- [x] History re-syncs without duplicates; changed logs get new secret keys once (#220, CHANGELOG).
 
 **C. Honest counts** (`fix/scan-counts`)
-- [ ] `security-scan` "Analyzed N actions" and JSON `action_count` give the number of actions scanned, not the buffer size.
-- [ ] `error_spiral` reports the real number of consecutive failures, not one capped at its look-back window.
+- [x] `security-scan` and `subagents` count every agent action (not the newest 500), without token-usage records (#218).
+- [x] `error_spiral` reports the whole run of failures (up to the buffer: 500 in scans, 2,000 in `watch-all`) (#218).
 
 **Later:** literal-prefix pre-check in the secret scanner (speed; after B, same file); Claude Code user text blocks; consumers serialising a call before its result lands.
+
+### Sprint 44 -- command detector false positives (2026-11-07)
+
+Analysis of 154 real logs: of 94 commands behind `dangerous_command`, `privilege_escalation` and `c2_beacon`, 93 were false positives (one real `sudo -n apt-get install`). 40 sessions scored security 0.
+
+- [x] #222 command guard (unreleased, since #193): `echo hi # c` + newline + `rm -rf ~` and `echo "$(rm -rf ~)"` were not asked. Guard now reads quoting like bash, checks substitutions in double quotes, heredoc/here-string/`echo|sh` scripts, leading redirections, `bash -c --`, `|&`, `eval $(curl)`; a shared 1 s budget answers ask (QA had found a 9 KB command that took 5 s, past the hook's 4 s watchdog, which fails open). 0 asked->allowed over 5,162 real and 309 attack commands.
+- [ ] Dropped: #223 closed by the board 2026-11-12. Detection was always kept (0 dropped over 150k+ generated and 4,162 real commands), but six review/QA rounds each found a harmful command lowered below CRITICAL (an option whose value is the next word read as the systemctl verb; `sudo -h`; `sudo service ../x`; `dnf builddep`/`snap try`; credential stores missed). After narrowing, it lowered only 2 of 48 real findings. Branch kept for reference.
+- [ ] #221 c2_beacon: closed 2026-11-07 after four QA rounds (lexer, exemption, denylist severity): each version let real beacons through or was quadratic; best case changed 2 sessions.
+
+**Lesson** (also in memory): never drop security findings by parsing bash to prove a command inert; keep the detection set and lower severity only for allowlisted shapes, with linear regexes. A change that only makes a guard stricter may parse.
+
+**Follow-ups:** remaining security-0 sessions are mostly piled-up `secret_leak` HIGH findings (cap points per signal?); heredoc prose that mentions `curl | sh` still makes the guard ask; guard "Not caught" list (`$'..'`, `coproc`, `base64 -d | bash`, variables).
+
+
+### Sprint 45 -- guard "Not caught" list and macOS sweep (2026-11-08)
+
+- [x] #225 command guard (merged 2026-11-12): `$'...'` quoting, `coproc` / `function` bodies, decoded or `printf` scripts piped into a shell, `xargs`, `#` inside arithmetic. Only makes the guard ask more. Review found a printf ValueError that skipped checks (now: any non-shlex error answers ask, reason `unchecked`); QA found a quadratic regex that outran the hook's 4 s watchdog (fail open), replaced by a linear scan and run after develop's full-text check. 400k differential fuzz: 0 develop-ask -> allow; 4,156 real commands: 0 new asks; worst hook time 0.75 s.
+- [x] macOS sweep (develop 95ec692, macOS 27.2 arm64, Python 3.12 via uv; system Python is 3.9): 3,439 passed / 0 failed, ruff clean. `ps`, `check`, `security-scan`, `watch`, `watch-all --headless`, `net`, `stats --all`, `history sync` / `report`, `audit`, `hook`, `statusline` correct against live Claude Code. Only Claude Code and Claude.app are installed; other agents not tested on macOS (#108 stays open).
+- [x] #226 `detect` listed browsers on macOS/Linux (exact Windows-style names never matched "Brave Browser Helper"). Now excluded by name (helper suffixes, truncated names, Linux `-bin`/`-stable`) or by a browser `.app` that is the first bundle in the path and sits in `/Applications`, `~/Applications` or AppTranslocation, so an agent in `~/Projects/Arc.app` still reports. Electron AI apps and `chrome-headless-shell` still report. QA: 2 rounds, 8 mutation probes killed (1 equivalent).
+- Follow-up #227: deliberate evasion (agent named `chrome`, or installed as `~/Applications/Arc.app`) hides it from `detect`; code-signature check would close it. Safari's shared `com.apple.WebKit.Networking` still reported.
+
+**Lesson:** a new worktree on this Mac has no git identity; agents commit with `-c user.name/-c user.email`.
 
 ### Sprint 46 -- `visual` redesign, live machine view (2026-11-12)
 
@@ -5642,3 +5661,7 @@ Board (2026-11-12): redesign `agentwatch visual`. ui-ux-pro-max decides the look
 - Run-1 guards and in-place refresh are tested as page source text, not behaviour; a JS behaviour harness would be stronger.
 - `cpu_percent` skews when two scans overlap (pre-existing; shared psutil Process objects).
 - ThreadingHTTPServer listen backlog (5) drops connections at 8+ simultaneous requests (curl 000, not 500); raise `request_queue_size` if many tabs matter.
+
+**Lessons (2026-11-12):** shell-command severity allowlists need every option and argument position pinned, or close them (#221, #223). Any guard regex over input up to 20k chars must be linear, and timing must be tested through the real hook process: the watchdog exits with no answer, which allows.
+
+**Follow-up:** the hook watchdog fails open; consider answering ask on timeout for PreToolUse (board decision).

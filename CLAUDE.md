@@ -221,6 +221,14 @@ src/agentwatch/
                        mkfs, curl|sh, ...; shlex-split, sudo/env/bash -c
                        unwrapped) or a secrets read (.env, SSH keys, cloud
                        creds) -> permissionDecision ask, fixed reason.
+                       A first pass reads quoting like bash (comments only
+                       at a word start; $( ), backticks, <( ), >( ) in
+                       unquoted and double-quoted text; heredoc/here-
+                       string/echo|sh scripts); the old full-text view is
+                       still checked, so it only asks more (#222). Shared
+                       1 s budget -> ask (the hook's watchdog fails open);
+                       any non-shlex parse error -> ask (`unchecked`, #225);
+                       regexes must stay linear (watchdog)
                        `agentwatch guard off` writes {"on": false} to
                        user_state_dir()/guard (coach.GUARD); only that
                        exact value turns it off (`on` deletes the file)
