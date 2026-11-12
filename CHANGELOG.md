@@ -42,6 +42,19 @@ numbers refer to the GitHub repository.
   `eval $(curl ...)`, `bash <(curl ...)` and `curl ... |& bash` now count as
   piping a download into a shell. A check that takes longer than a second
   asks instead of running on.
+- Command guard: `$'...'` and `$"..."` quoting (`$'rm' -rf ~`, `eval $'...'`),
+  `coproc` and function bodies, `xargs` running a guarded command
+  (`echo ~ | xargs rm -rf`), scripts printed by `printf` or read through
+  `. /dev/stdin` or `bash < <(...)`, a decoder piped into a shell
+  (`base64 -d | sh`) or run from `$(...)`, and a `#` inside `(( ))`, `a[...]=`,
+  an extglob group or after another mid-word `#` (`a##b`) no longer hide a
+  dangerous command. The new reading runs next to the previous one, so a
+  command the guard asked about before is still asked. An error while
+  checking a Bash command now asks instead of letting the command through (a `printf` width or
+  precision such as `²` or a 5,000-digit number used to), `function > /dev/sda`
+  is checked as a redirection, and `bash -n` counts as a syntax check only
+  without `-i` (bash ignores `-n` when interactive). The decoder check is
+  linear, so a long `|/|/...` run no longer stalls the hook past its watchdog.
 - `report`/`tools` error kinds: a Node.js crash that failed to open a file is
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
