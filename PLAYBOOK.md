@@ -5624,22 +5624,21 @@ Clear the 0.2.1 security follow-ups (Sprint 38). All PRs target `develop`; nothi
 
 Board (2026-11-12): redesign `agentwatch visual`. ui-ux-pro-max decides the look; the page must make it easy to understand what is going on on the machine, and every graph and value updates live. Reference skills (ui-ux-pro-max, mattpocock/skills `tdd` + `code-review`, ponytail) read from scratch, not installed (board 1b). All PRs target `develop`; nothing touches `main`.
 
-**PRs** (merge order: #231, #229, #230; each needs the board's go)
+**PRs** (all squash-merged to develop 2026-11-12, board go)
 - #231 `fix/discovery-thread-safe`: `find_running_agents()` raised KeyError under concurrent calls (psutil's shared Process cache; `process_iter(attrs=)` overwrites `proc.info`). New `proc_snapshot.snapshot()` (`as_dict`) in discovery, cursor/claude-desktop discovery, copilot_vscode and cline. Review APPROVE; thread test fails before, passes after; no slowdown.
 - #229 `feature/visual-redesign`: machine-first Overview (plain-words summary, tiles with SVG sparklines, one card per running agent); every view refreshes (5 s live, 30 s stats/report/history reads; audit/sync click-only); in-place swap; stale view on failure; expired link stops polling; 320 px without sideways scroll. Review CHANGES -> fixed; QA PASS WITH NOTES -> fixed.
 - #230 `feature/visual-per-agent` (stacked on #229): `agent_status.py` + `/api/agents`: per-agent last action (allow-listed program name or file base name, never args), own health and cost (match `check --log`), cached per (log, size, mtime_ns) under a lock. Review CHANGES (argument leaks, cache race) -> fixed; QA FAIL (discovery race) -> #231.
 - Combined QA (develop + #231 + #230): 3519 passed; 0 HTTP 500 across 1- and 2-tab probes; 10.5 min live, no run=1 without a click; 320 and 1280 px fit; expired link stops all polling.
 
-**Criteria** (checked after merge)
-- [ ] Design from ui-ux-pro-max, recorded in #229; system fonts, inline CSS/JS only.
-- [ ] Machine-first overview, per-agent cards with what each agent is doing (#230; board option a, 2026-11-12).
-- [ ] Live refresh of every view; audit/sync click-only with a ticking age.
-- [ ] Security unchanged: CSP, token, Host, 405, redact, textContent, no external hosts.
-- [ ] Accessibility: contrast (body 17.9/14.5, muted 7.6/8.2), keyboard tabs, focus, reduced motion.
-- [ ] Tests and QA green.
+**Criteria**
+- [x] Design from ui-ux-pro-max, recorded in #229; system fonts, inline CSS/JS only.
+- [x] Machine-first overview, per-agent cards with what each agent is doing (#230; board option a, 2026-11-12).
+- [x] Live refresh of every view; audit/sync click-only with a ticking age.
+- [x] Security unchanged: CSP, token, Host, 405, redact, textContent, no external hosts.
+- [x] Accessibility: contrast (body 17.9/14.5, muted 7.6/8.2), keyboard tabs, focus, reduced motion.
+- [x] Tests and QA green.
 
 **Follow-ups (tickets)**
 - Run-1 guards and in-place refresh are tested as page source text, not behaviour; a JS behaviour harness would be stronger.
 - `cpu_percent` skews when two scans overlap (pre-existing; shared psutil Process objects).
 - ThreadingHTTPServer listen backlog (5) drops connections at 8+ simultaneous requests (curl 000, not 500); raise `request_queue_size` if many tabs matter.
-- CLAUDE.md: add `proc_snapshot.py`, `agent_status.py` and the new `visual` behaviour after merge.
