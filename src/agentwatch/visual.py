@@ -714,7 +714,8 @@ function statusBox(pid) {
 }
 let pulling = false;
 async function pullAgents() {
-  if (pulling || document.hidden || !document.querySelector(".card[data-pid]")) return;
+  if (pulling || document.hidden || expiredLink) return;
+  if (!document.querySelector(".card[data-pid]")) return;
   pulling = true;
   try {
     const r = await fetch(`/api/agents?t=${encodeURIComponent(T)}`);
