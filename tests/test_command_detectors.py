@@ -733,3 +733,25 @@ def test_cd_rm_pairing_is_linear(command):
     t = time.perf_counter()
     analyze_command(command)
     assert time.perf_counter() - t < 0.25
+
+
+# --- sudo options: only an explicit safe list lowers severity ------------------
+
+@pytest.mark.parametrize("command", [
+    "sudo -h bash", "sudo -h x bash", "sudo -h", "sudo -hx apt update",
+    "sudo -nh x apt update", "sudo --host=x apt install y", "sudo --host x apt update",
+    "sudo --help", "sudo -V", "sudo -T 5 apt update", "sudo -X apt update",
+    "sudo --bogus apt update", "sudo --bogus=1 apt update", "sudo -n -Z apt update",
+    "sudo --non-interactive=x apt update", "sudo --list=x", "doas -h x apt update",
+    "pkexec --host x apt update",
+])
+def test_unknown_sudo_options_stay_critical(command):
+    assert _sev(command, PRIVILEGE) == CRIT
+
+
+@pytest.mark.parametrize("command", [
+    "sudo -n apt update", "sudo -u root apt update", "sudo --user=root apt update",
+    "sudo -D /tmp apt update", "sudo --non-interactive apt update", "sudo -k",
+])
+def test_known_sudo_options_still_high(command):
+    assert _sev(command, PRIVILEGE) == HIGH

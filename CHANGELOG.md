@@ -39,8 +39,9 @@ numbers refer to the GitHub repository.
     directory keeps it CRITICAL, as do targets such as `/usr/bin` or `~/.ssh`.
   - A `chmod` is MEDIUM only for a non-setuid mode on those same paths;
     setuid/setgid and anything unrecognized stay CRITICAL.
-  - `sudo`/`doas`/`pkexec` are HIGH only with allowlisted flags and either
-    no program (`sudo -l`) or a program from a short allowlist of
+  - `sudo`/`doas`/`pkexec` are HIGH only when every option is on an explicit
+    safe list (any other, such as `-h`/`--host` or `-T`, keeps CRITICAL)
+    and either no program (`sudo -l`) or a program from a short allowlist of
     non-interactive system tools (`apt`, `apt-get`, `dnf`, `yum`, `pacman`,
     `zypper`, `snap`, `flatpak`, `systemctl`, `service`, `umount`, `lsof`,
     `ss`, `netstat`), named exactly, with no `-o`/`--option`/`Invoke`

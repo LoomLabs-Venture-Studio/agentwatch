@@ -217,10 +217,12 @@ _CHMOD_SAFE_LONG = {"--recursive", "--verbose", "--changes", "--silent", "--quie
 # sudo/doas/pkexec short flags that neither open a shell, edit a file nor take
 # a value (no -i, -s, -e).
 _SUDO_SAFE_SHORT = set("nHkKvlbASP")  # not -E: it passes the caller's environment
-# short flags whose value is the rest of the cluster or the next word.
-_SUDO_VALUE_SHORT = set("ugpCUrtRDh")
+# short flags whose value is the rest of the cluster or the next word. Only
+# these and _SUDO_SAFE_SHORT are understood; any other option (-h/--host,
+# -T, -i, -s, -e, ...) keeps the command CRITICAL.
+_SUDO_VALUE_SHORT = set("ugpCUrtRD")
 # long flags that take a value (next word unless written with =).
-_SUDO_LONG_VALUE = {"user", "group", "chdir", "host", "prompt", "role", "type",
+_SUDO_LONG_VALUE = {"user", "group", "chdir", "prompt", "role", "type",
                     "other-user", "close-from", "command-timeout", "chroot"}
 _SUDO_LONG_SAFE = {"non-interactive", "set-home", "list", "validate",
                    "reset-timestamp", "remove-timestamp", "background", "askpass",
@@ -561,8 +563,8 @@ def _sudo_shape(words: list[str]) -> bool:
                 if not value:
                     i += 1  # the value is the next word
                 continue
-            if name not in _SUDO_LONG_SAFE:
-                return False  # --login, --shell, --edit or anything unknown
+            if name not in _SUDO_LONG_SAFE or value:
+                return False  # --login, --shell, --host, --edit, anything unknown
             continue
         body = flag[1:]
         if "R" in body:
