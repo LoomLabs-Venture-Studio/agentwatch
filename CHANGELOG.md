@@ -6,8 +6,32 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Added
+
+- `visual`: each agent card on the Overview now says what that agent is doing: its last
+  action (tool and file or program, never arguments), its own health score and label, its own
+  cost, and whether it is working now. Served by a new read-only `/api/agents` on the 5 s
+  timer; each log is scored once per change.
+
+### Changed
+
+- `visual`: redesigned around what is running now. The Overview opens with a plain-words
+  summary, tiles with live sparklines and one card per running agent; every view now
+  refreshes on its own while the page is visible (5 s for ps/check/security/subagents,
+  30 s for stats/report/history reads), updates in place, and shows a ticking "last
+  updated" time. The audit and history sync still run only on a click and show their age.
+
 ### Fixed
 
+- `find_running_agents()` (and the Cursor, Claude Desktop, Copilot VS Code and Cline
+  process checks) are now thread-safe: they no longer read psutil's shared
+  `proc.info`, which concurrent scans overwrote (`KeyError: 'pid'` / `'ppid'`, a
+  500 from the `visual` server's `/api/ps` when two requests overlapped).
+- `detect`: browsers are now excluded on macOS and Linux too (helper processes such
+  as `Brave Browser Helper (Renderer)`, executables inside a browser `.app`,
+  `google-chrome`, `firefox-bin`, truncated names). Electron AI apps (`Claude
+  Helper`, `Code Helper`, `Cursor Helper`) still report. Safari's shared
+  `com.apple.WebKit.Networking` is not excluded.
 - Command guard: a `#` in the middle of a word (`a#b`) no longer hides the rest
   of the line, and a comment no longer hides the command on the next line.
   Commands that run inside `$(...)` or backticks are now checked also inside
@@ -18,6 +42,19 @@ numbers refer to the GitHub repository.
   `eval $(curl ...)`, `bash <(curl ...)` and `curl ... |& bash` now count as
   piping a download into a shell. A check that takes longer than a second
   asks instead of running on.
+- Command guard: `$'...'` and `$"..."` quoting (`$'rm' -rf ~`, `eval $'...'`),
+  `coproc` and function bodies, `xargs` running a guarded command
+  (`echo ~ | xargs rm -rf`), scripts printed by `printf` or read through
+  `. /dev/stdin` or `bash < <(...)`, a decoder piped into a shell
+  (`base64 -d | sh`) or run from `$(...)`, and a `#` inside `(( ))`, `a[...]=`,
+  an extglob group or after another mid-word `#` (`a##b`) no longer hide a
+  dangerous command. The new reading runs next to the previous one, so a
+  command the guard asked about before is still asked. An error while
+  checking a Bash command now asks instead of letting the command through (a `printf` width or
+  precision such as `²` or a 5,000-digit number used to), `function > /dev/sda`
+  is checked as a redirection, and `bash -n` counts as a syntax check only
+  without `-i` (bash ignores `-n` when interactive). The decoder check is
+  linear, so a long `|/|/...` run no longer stalls the hook past its watchdog.
 - `report`/`tools` error kinds: a Node.js crash that failed to open a file is
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is

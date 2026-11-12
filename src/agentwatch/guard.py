@@ -4,34 +4,46 @@ Runs on Claude Code's PreToolUse, before the loop breaker. A match returns a
 fixed reason; coach turns it into `"permissionDecision": "ask"`, so Claude
 Code shows the user a permission prompt. A false positive costs one click.
 
-Bash commands are first read with bash's quoting rules (_Scan): comments
-(`#` at a word start, up to the newline) and `\<newline>` continuations are
-removed, and the commands bash runs inside `$(...)`, backticks, `<(...)` and
-`>(...)` are checked on their own, also inside double quotes, `${...}` and
-unquoted heredocs (not inside single quotes). The rest is split with shlex
-into simple commands (on `;`, `&&`, `||`,
+Bash commands are read twice under one clock, and either reading asking asks
+(check_command): the #222 reading below, and a new one that also decodes
+`$'...'` (`\n`, `\xHH`, `\NNN`, `\uHHHH`, ...), reads `$"..."` as `"..."`, checks
+`sh <(X)` / `sh < <(X)` as `X | bash`, and keeps `#` as code mid-word (`a##b`)
+and inside `(( ))` / `$(( ))` whose `))` closes on the same line, an
+`a[...]=` assignment subscript and an extglob group (`@( )`) closed on the same
+line. Each reading uses bash's quoting rules (_Scan): comments
+(`#` at a word start, up to the newline) and `\<newline>`
+continuations are removed, and the commands bash runs inside
+`$(...)`, backticks, `<(...)` and `>(...)` are checked on their own, also
+inside double quotes, `${...}` and unquoted heredocs (not inside single
+quotes). The rest is split with shlex into simple commands (on `;`, `&&`, `||`,
 `|`, `&`, newlines, `(`, `)`, backticks and `$(`), leading `sudo`, `env`,
-`VAR=value`, `timeout N`, `nohup`, `setsid`, `builtin`, `wsl [-d X] [-e]`, ...
-and shell keywords (`if`, `do`, `{`, `!`, ...) are skipped, and
-`bash/sh/zsh -c '<script>'`, `script -c '<cmd>'`, `eval ...`, `cmd /c|//c|/k ...`
-(also glued `/c"..."`) and `powershell/pwsh` (-c, -Command or a prefix from -com,
-or bare args) are checked recursively, as are scripts a shell reads on stdin
-(heredocs, here-strings, `echo`/`printf` piped to it); `sh -c "$(curl ...)"`,
-`bash <(curl ...)` and `source <(wget ...)` count as pipe to shell. Program
+`VAR=value`, `timeout N`, `nohup`, `setsid`, `builtin`, `wsl [-d X] [-e]`, ...,
+`coproc [NAME]`, `function NAME` and shell keywords (`if`, `do`, `{`, `!`, ...)
+are skipped, so a function body is checked as commands (a definition that only
+holds a guarded command asks too), and `bash/sh/zsh -c '<script>'`,
+`script -c '<cmd>'`, `eval ...`, `cmd /c|//c|/k ...` (also glued `/c"..."`),
+`powershell/pwsh` (-c, -Command or a prefix from -com, or bare args) and
+`xargs CMD` (CMD plus the items it reads when the guard knows them: echo or
+printf output, here-strings, heredocs; `-I` replaces per line, `-0`/`-d` read
+records; over _XARGS_MAX chars of input asks) are checked
+recursively, as are scripts a shell or `. /dev/stdin` reads on stdin
+(heredocs, here-strings, what `echo` and `printf` print: `%b`, `%c`, `.N`, `*`,
+`\c`); `sh -c "$(curl ...)"`, `bash <(curl ...)`, `source <(wget ...)`, curl,
+wget or a decoder (`base64 -d`, `xxd`, `openssl`, `gunzip`, `tr`, ...) piped
+into a shell that reads stdin (not `-n` without `-i`), and a decoder inside `$( )` or
+backticks run as a script or command count as pipe to shell. Program
 names are lowercased, without `.exe` and directory (`/` or backslash). Nesting
 deeper than 3 (wrappers or substitutions) gets the raw patterns. A check that
-runs past _BUDGET_S (1 s) asks. Not caught:
+runs past _BUDGET_S (1 s) asks, as does an error in the guard itself. Not caught:
 `powershell -EncodedCommand`
 (not decoded), `wsl --shell-type X`, `script --command=...`, `curl | cmd` or
-`| powershell`, scripts passed through variables, aliases, functions, traps,
-positional parameters or array subscripts (`x=...; sh -c "$x"`, `$x -rf ~`,
-`alias`, `function f { ...; }`, `trap '...' EXIT`, `sh -c '$1 ...' _ rm`,
+`| powershell`, scripts passed through variables, aliases, function calls,
+traps, positional parameters or array subscripts (`x=...; sh -c "$x"`,
+`$x -rf ~`, `alias`, `trap '...' EXIT`, `sh -c '$1 ...' _ rm`,
 `x='a[$(...)]'`, PS4, BASH_ENV), a program name built at run time (`$(echo rm)`,
-`${x:-rm}`), ANSI-C or locale quoting (`$'rm'`, `$"rm"`, `eval $'...'`),
-`coproc`, `xargs` running a guarded program, stdin scripts other than
-heredocs, here-strings and echo/printf (`base64 -d | bash`, `bash < <(echo
-...)`, `. /dev/stdin`, `printf '%s' ... | bash`), `#` inside `(( ))`, array
-subscripts or extglob patterns (read as a comment at a word start),
+`${x:-rm}`), xargs items the guard cannot see (`find / | xargs rm -rf`,
+`xargs -a FILE`), stdin scripts other programs print (`cat x.sh | bash`,
+`python -c ... | sh`), `$'...'` in a command that cannot be parsed,
 unquoted backslash program
 paths (shlex eats them), cmd's `^` escape (`g^it`), PowerShell syntax inside
 -Command (`& {...}`, `iex`, cmdlets such as `Remove-Item -Recurse -Force`; the
@@ -85,12 +97,17 @@ _PIECE = 500
 _SPLIT = re.compile(r"&&|\|\||[;\n]")
 # A piece without any of these cannot match a rule: skip its (~30 us) parse.
 _RELEVANT = re.compile(r"rm|git|mkfs|dd|chmod|curl|wget|/dev/|\.env|\.ssh|\.aws|netrc"
-                       r"|npmrc|pypirc|\.docker|\.kube|\.pem|\.key|agentwatch|agentguard",
+                       r"|npmrc|pypirc|\.docker|\.kube|\.pem|\.key|agentwatch|agentguard"
+                       r"|\$['\"]|base(?:32|64|nc)|xxd|uudecode|openssl|z(?:std)?cat|unzstd"
+                       r"|gunzip|gzip|bunzip2|bzcat|unxz|xzcat|unlzma|lzcat",
                        re.IGNORECASE)
 # ponytail: wall-clock cap on one check; past it the guard asks instead of
 # finishing. Raise it (under coach.BUDGET_S) if real commands hit it.
 _BUDGET_S = 1.0
 _deadline: float | None = None  # set by the outermost check_command
+_legacy = False  # the reading in progress (see check_command)
+# What the new reading reads differently: comments, $'...', $"...", <(...).
+_NEW_SYNTAX = re.compile(r"#|\$['\"]|<\(")
 _HOME_RE = re.compile(r"(?:~|\$HOME|\$\{HOME\})(?=/|$)")
 _DISK = re.compile(r"/dev/(?:sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|disk\d)")
 _HARMLESS_DEV = ("/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/")
@@ -105,6 +122,14 @@ _PREFIXES = {"sudo": {"-u", "-g", "-C", "-h", "-p"}, "doas": {"-u", "-C"},
 # Shell keywords and grouping words before a command; fi/done/esac/} stand alone.
 _KEYWORDS = {"{", "}", "!", "if", "then", "elif", "else", "do", "while", "until",
              "fi", "done", "esac"}
+# `coproc NAME <compound command>`: the NAME is skipped only before one of these.
+_COMPOUND = {"{", "while", "until", "if", "for", "case", "select", "[[", "(("}
+# Their output piped into a shell is a script nobody read (like curl | sh).
+_DOWNLOADERS = {"curl", "wget"}
+_DECODERS = {"base64", "base32", "basenc", "xxd", "uudecode", "openssl", "gzip", "gunzip",
+             "zcat", "bzip2", "bunzip2", "bzcat", "xz", "unxz", "xzcat", "lzma", "unlzma",
+             "lzcat", "zstd", "unzstd", "zstdcat", "rev", "tr"}
+_STDIN = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
 _SEPARATORS = set(";&|()`\n")
 _REDIR = re.compile(r"[<>]{1,3}[&|]?|&>{1,2}")  # shlex tokens of a redirection operator
 _PIPES = ("|", "|&")
@@ -141,6 +166,7 @@ REASONS = {
     "fork_bomb": "agentwatch: this command is a fork bomb. Allow it?",
     "destructive": "agentwatch: this command looks destructive. Allow it?",
     "too_long": "agentwatch: this command is too long to check. Allow it?",
+    "unchecked": "agentwatch: the guard could not check this command. Allow it?",
     "secret": "agentwatch: this reads a file that may hold secrets ({}). Allow it?",
     "guard_off": "agentwatch: this turns off the agentwatch command guard. Allow it?",
 }
@@ -269,6 +295,11 @@ def _strip_prefixes(argv: list[str]) -> list[str]:
             i += 1
         elif word in _KEYWORDS:
             i += 1
+        elif word in ("function", "coproc"):  # function NAME { ...; }, coproc [NAME] cmd
+            i += 1
+            if (word == "function" and i < len(argv) and not _REDIR.fullmatch(argv[i])) or (
+                    word == "coproc" and i + 1 < len(argv) and argv[i + 1] in _COMPOUND):
+                i += 1  # the name (`function > /dev/sda` is a redirection, not a name)
         elif (prefix := _prog(word)) in _PREFIXES:
             i += 1
             while i < len(argv) and argv[i].startswith("-"):
@@ -313,10 +344,121 @@ def _target(op: str) -> str | None:
     return None
 
 
-def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None:
+def _runs_stdin(prog: str, args: list[str]) -> bool:
+    """A shell, or `source`/`.` of /dev/stdin: it runs what it reads on stdin."""
+    return prog in _SHELLS or (prog in ("source", ".") and bool(args) and args[0] in _STDIN)
+
+
+def _script_on_stdin(prog: str, args: list[str]) -> bool:
+    """The shell reads its script from stdin: no -c and no script file (or -s, -).
+    -n (syntax check only) counts only without -i: bash ignores -n when interactive."""
+    if prog not in _SHELLS:
+        return True  # source /dev/stdin
+    interactive = any(re.fullmatch(r"-[a-zA-Z]*i[a-zA-Z]*", a) for a in args)
+    skip = False
+    for a in args:
+        if re.fullmatch(r"-[a-zA-Z]*n[a-zA-Z]*", a) and not interactive:
+            return False  # -n: syntax check only
+        if skip:
+            skip = False
+        elif a == "--":
+            continue
+        elif re.fullmatch(r"-[a-z]*c[a-z]*", a) or a == "--command":
+            return False
+        elif a in ("-o", "+o", "-O", "+O"):
+            skip = True
+        elif re.fullmatch(r"-[a-zA-Z]*s[a-zA-Z]*", a):
+            return True
+        elif not a.startswith(("-", "+")):
+            return a in _STDIN
+    return True
+
+
+_XARGS_VALUE = "adEILnPs"  # short options with a value (also -e, -i, -l when glued)
+_XARGS_LONG = {"arg-file", "delimiter", "max-args", "max-procs", "max-chars",
+               "process-slot-var"}
+_XARGS_LINES = 100
+_XARGS_MAX = 100_000  # more input than this asks (too_long): shlex is slow on it
+
+
+def _xargs(args: list[str], piped_from: set[str], depth: int, stdin: list[str]) -> str | None:
+    """xargs runs its command with the items it reads (when the guard knows them:
+    echo/printf, here-strings, heredocs) appended, or put in place of -I's string."""
+    if depth > 3:
+        return _raw(" ".join(args))
+    i, replace, reads_stdin, delim = 0, None, True, None
+    while i < len(args) and args[i].startswith("-") and args[i] != "-":
+        a = args[i]
+        i += 1
+        if a == "--":
+            break
+        if a.startswith("--"):
+            name, eq, val = a[2:].partition("=")
+            if name == "replace":
+                replace = val or "{}"
+            elif name == "null":
+                delim = ""
+            elif name == "delimiter":
+                delim = _decode(val or (args[i] if i < len(args) else ""), "fmt")[0][:1]
+            elif name == "arg-file":
+                reads_stdin = False
+            if not eq and name in _XARGS_LONG:
+                i += 1
+            continue
+        for j, o in enumerate(a[1:], 1):
+            if o == "0":
+                delim = ""
+            if o in _XARGS_VALUE or o in "eil":
+                val = a[j + 1:]
+                if not val and o in _XARGS_VALUE:
+                    val, i = (args[i] if i < len(args) else ""), i + 1
+                if o in "Ii":
+                    replace = val or "{}"
+                elif o == "a":
+                    reads_stdin = False
+                elif o == "d":
+                    delim = _decode(val, "fmt")[0][:1]
+                break
+    cmd = args[i:] or ["echo"]
+    text = "\n".join(stdin) if reads_stdin else ""
+    if len(text) > _XARGS_MAX:
+        return REASONS["too_long"]
+    if delim is not None:  # -0 / -d: records, not shell words
+        items = [r for piece in (stdin if reads_stdin else [])
+                 for r in piece.split(delim or "\0") if r]
+    if replace is None:
+        if delim is None:
+            text = text.replace("\0", " ")
+            try:
+                items = shlex.split(text)
+            except ValueError:
+                items = text.split()
+        argvs = [cmd + items]
+    else:
+        lines = items if delim is not None else [
+            ln.strip(" \t") for ln in text.split("\n") if ln.strip()]
+        lines = lines[:_XARGS_LINES]
+        if sum(len(ln) for ln in lines) * sum(a.count(replace) for a in cmd) > _PRINTF_MAX:
+            return REASONS["too_long"]
+        argvs = [[a.replace(replace, ln) for a in cmd] for ln in lines] or [cmd]
+    for inner in argvs:
+        _tick()
+        inner = _strip_prefixes(inner)
+        if inner and _prog(inner[0]) in _SHELLS and piped_from & (_DOWNLOADERS | _DECODERS):
+            return REASONS["pipe_shell"]
+        if reason := _check_argv(inner, piped_from, depth + 1):
+            return reason
+    return None
+
+
+def _check_argv(argv: list[str], piped_from: set[str], depth: int,
+                stdin: list[str] | None = None) -> str | None:
+    """*stdin*: the scripts the guard knows reach this command's stdin (for xargs)."""
     if not argv:
         return None
     prog, args = _prog(argv[0]), argv[1:]
+    if argv[0] == _DL:  # $(curl ...) or $(... | base64 -d) run as the command
+        return REASONS["pipe_shell"]
     for i, tok in enumerate(argv[:-1]):  # redirections, any program
         if tok in (">", ">>", ">|", "&>") and _DISK.match(argv[i + 1]):
             return REASONS["disk"]
@@ -332,9 +474,14 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int) -> str | None
     # try those.
     if _turns_guard_off(argv):
         return REASONS["guard_off"]
+    if prog == "xargs":
+        return _xargs(args, piped_from, depth, stdin or [])
     if prog == "eval":  # bash joins eval's args and parses them again
         return _script(" ".join(args), depth)
-    if prog in _SHELLS and piped_from & {"curl", "wget"}:
+    if prog in _SHELLS and piped_from & _DOWNLOADERS:
+        return REASONS["pipe_shell"]
+    if _runs_stdin(prog, args) and piped_from & (_DOWNLOADERS | _DECODERS) \
+            and _script_on_stdin(prog, args):  # base64 -d | sh, curl | . /dev/stdin
         return REASONS["pipe_shell"]
     if prog in _SHELLS or prog in ("source", "."):  # bash <(curl ...), . <(wget ...)
         if _DL in args or any(
@@ -404,14 +551,86 @@ _CODE_RUN = re.compile(r"[^ \t\n\\'\"`$#()<>;&|]+")
 _DQ_RUN = re.compile(r'[^\\"$`]+')
 _BRACE_RUN = re.compile(r"[^\\'\"`${}]+")
 _ANSI = re.compile(r"(?:[^\\']|\\.)*'", re.DOTALL)  # the rest of a $'...' string
+_HEX = r"\\(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|"
+# Per mode: $'...' (\cX is a control char), a printf format (\c is literal)
+# and printf's %b (\0NNN octal too; \c ends all output).
+_ESCAPE = {"ansi": re.compile(_HEX + r"([0-7]{1,3})|c(.)|(.))", re.DOTALL),
+           "fmt": re.compile(_HEX + r"([0-7]{1,3})|()(.))", re.DOTALL),
+           "b": re.compile(_HEX + r"(0[0-7]{0,3}|[0-7]{1,3})|(c)|(.))", re.DOTALL)}
+_ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n",
+            "r": "\r", "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+
+
+def _decode(text: str, mode: str) -> tuple[str, bool]:
+    r"""Backslash escapes as bash reads them in *mode*; True when %b's \c stopped
+    the output. In $'...' a NUL ends the string."""
+    out, at = [], 0
+    for m in _ESCAPE[mode].finditer(text):
+        out.append(text[at:m.start()])
+        at = m.end()
+        hx, u, big, octal, ctl, other = m.groups()
+        if other is not None:
+            out.append(_ESCAPES.get(other, "\\" + other))
+            continue
+        if ctl is not None:
+            if mode == "b":
+                return "".join(out), True
+            n = ord(ctl) & 0x1F
+        else:
+            n = int(octal, 8) & 0xFF if octal else int(hx or u or big, 16)
+        out.append(chr(n) if n < 0x110000 else "")
+    out.append(text[at:])
+    text = "".join(out)
+    return (text.split("\0", 1)[0] if mode == "ansi" else text), False
+
+
+def _unescape(text: str) -> str:
+    """bash's $'...' escapes; a NUL ends the string."""
+    return _decode(text, "ansi")[0]
+
+
+def _ansi_c(body: str) -> str:
+    """$'...' as the single-quoted word bash reads it: `$'r\x6d'` -> `'rm'`."""
+    return "'" + _unescape(body).replace("'", "'\\''") + "'"
 _BACKTICK = re.compile(r"(?:[^\\`]|\\.)*`", re.DOTALL)
 _WORD_END = " \t\n;&|()<>"
+# An array element assignment `a[...]=` (`+=`): bash reads the subscript as one
+# word, so a `#` in it is not a comment. Bounded so a scan stays linear.
+_ASSIGN_SUB = re.compile(r"[A-Za-z_]\w*\[[^]\n;&|()'\"`$\\]{0,500}\]\+?=")
 _MAX_NEST = 50
 _ECHOES = {"echo", "printf"}
 # The script a shell runs is the output of curl/wget: sh -c "$(curl -fsSL URL)".
 _DOWNLOAD = re.compile(r"\s*(?:\$\(|`)\s*(?:\S*[/\\])?(?:curl|wget)(?:\.exe)?\s",
                        re.IGNORECASE)
 _DL_BODY = re.compile(r"\s*(?:\S*[/\\])?(?:curl|wget)(?:\.exe)?\s", re.IGNORECASE)
+# A decoder in a substitution's pipeline: its output is no more reviewed than a
+# download (`eval "$(echo ... | base64 -d)"`). rev and tr count only in pipes.
+_DECODER = re.compile(
+    r"(?:base(?:32|64|nc)|xxd|uudecode|openssl|g?unzip|gzip"
+    r"|zcat|bzip2|bunzip2|bzcat|xz|unxz|xzcat|lzma|unlzma|lzcat|zstd|unzstd|zstdcat)"
+    r"(?:\.exe)?(?=[\s|)`]|$)", re.IGNORECASE)
+
+
+def _decode_stage(text: str) -> bool:
+    r"""A decoder starts a pipeline stage in *text*: what the regex
+    `(?:^|[|`(])\s*(?:\S*[/\\])?<decoder>` finds, in one linear pass (that regex
+    backtracks quadratically on a long run such as `|/|/|/...`)."""
+    starts = {m.start() for m in _DECODER.finditer(text)}
+    if not starts:
+        return False
+    # state: 1 after `^`/a separator and blanks, 2 in a word after that, 0 neither.
+    state, before, last = 1, 0, max(starts)
+    for i, c in enumerate(text[:last + 1]):
+        if i in starts and (state == 1 or (before and text[i - 1] in "/\\")):
+            return True
+        before = state
+        if c in "|`(":
+            state = 1
+        elif c.isspace():
+            state = 1 if state == 1 else 0
+        else:
+            state = 2 if state else 0
+    return False
 # In the skeleton a substitution running curl/wget becomes this word, so
 # `eval $(curl ...)` and `bash <(curl ...)` still read as pipe to shell.
 _DL = "__agentwatch_download__"
@@ -433,16 +652,39 @@ class _Scan:
 
     def __init__(self, s: str):
         self.s, self.out, self.n = s, [], 0
+        self.new = not _legacy  # False: the #222 reading (see check_command)
+        self._pairs: dict[int, int] | None = None
         self.level = 0  # enclosing substitutions
         self.nest = 0
         self.spans: list[tuple[int, int, str]] = []  # skeleton cuts (start, end, filler)
-        self.bodies: list[str | tuple[int, int]] = []
+        self.bodies: list[str | tuple[int, int, str]] = []
         self.heredocs: list[str] = []
         self.pending: list[tuple[str, bool, bool]] = []  # (delimiter, <<-, quoted)
 
     def result_bodies(self) -> list[str]:
         text = "".join(self.out)
-        return [b if isinstance(b, str) else text[b[0]:b[1]] for b in self.bodies]
+        return [b if isinstance(b, str) else text[b[0]:b[1]] + b[2] for b in self.bodies]
+
+    def closes_on_line(self, i: int) -> int | None:
+        """Index of the `)` matching the `(` at *i* on the same line (quotes
+        ignored), or None."""
+        if self._pairs is None:
+            self._pairs, stack = {}, []
+            for m in re.finditer(r"[()\n]", self.s):
+                c = m.group()
+                if c == "(":
+                    stack.append(m.start())
+                elif c == ")" and stack:
+                    self._pairs[stack.pop()] = m.start()
+                elif c == "\n":
+                    stack.clear()
+        return self._pairs.get(i)
+
+    def arithmetic(self, i: int) -> bool:
+        """`((` at *i* is arithmetic: its `))` closes on the same line. Otherwise
+        bash reads it as nested subshells, where `#` starts a comment."""
+        close = self.closes_on_line(i)
+        return close is not None and self.closes_on_line(i + 1) == close - 1
 
     def emit(self, text: str) -> None:
         self.out.append(text)
@@ -453,30 +695,45 @@ class _Scan:
         if self.nest > _MAX_NEST:
             raise _UnparsedError
 
-    def result(self) -> tuple[str, list[str], str | None, list[str]]:
+    def result(self) -> tuple[str, list[str], list[str]]:
         self.code(0, False)
-        text, bodies = "".join(self.out), self.result_bodies()
+        return "".join(self.out), self.result_bodies(), self.heredocs
+
+    def skeleton(self, text: str) -> str | None:
+        """The skeleton of result()'s *text*; None when nothing was cut."""
         if not self.spans:
-            return text, bodies, None, self.heredocs
+            return None
         parts, at = [], 0
         for a, b, filler in sorted(self.spans):
             if a >= at:
-                if filler and _DL_BODY.match(text, a + (1 if text[a] == "`" else 2), b):
+                k = a + (1 if text[a:a + 1] == "`" else 2)  # a:a+1: an empty heredoc ends text
+                if filler and (_DL_BODY.match(text, k, b) or _decode_stage(text[k:b - 1])):
                     filler = _DL
                 parts += [text[at:a], filler]
                 at = b
         parts.append(text[at:])
-        return text, bodies, "".join(parts), self.heredocs
+        return "".join(parts)
 
-    def code(self, i: int, closes: bool) -> int:
+    def code(self, i: int, closes: bool, arith: bool = False) -> int:
         """Unquoted shell code up to the `)` that closes a substitution (closes)
-        or the end; returns the index of that `)`."""
+        or the end; returns the index of that `)`. *arith*: inside `$((...))`,
+        where `#` is not a comment."""
         s, end = self.s, len(self.s)
         word_start = cmd_pos = True
+        new = self.new
+        arith = arith and new
+        shell = False  # the current command names a shell: `bash < <(...)` feeds it
         parens = cases = 0
+        quiet: list[int] = []  # paren depths where `((` or an extglob `@(` opened
         while i < end:
+            if new and word_start and cmd_pos and (m := _ASSIGN_SUB.match(s, i)):
+                self.emit(m.group())  # a[... # ...]= : one word, `#` is not a comment
+                i, word_start, cmd_pos = m.end(), False, False
+                continue
             if m := _CODE_RUN.match(s, i):
                 word = m.group()
+                if word_start and (_prog(word) in _SHELLS or word in ("source", ".")):
+                    shell = True
                 if cmd_pos and word == "case":
                     cases += 1
                 elif cmd_pos and word == "esac" and cases:
@@ -490,13 +747,18 @@ class _Scan:
                 self.emit(c)
                 i, word_start = i + 1, True
                 continue
+            if c == "#" and new and not (word_start and not (arith or quiet)):
+                self.emit(c)  # mid-word (a##b), or inside (( )), $(( )) or @( )
+                i, word_start, cmd_pos = i + 1, False, False
+                continue
             if c == "#" and word_start:  # a comment, up to the newline
                 nl = s.find("\n", i)
                 i = end if nl < 0 else nl
                 continue
             if c == "\n":
                 self.emit(c)
-                i, word_start, cmd_pos = i + 1, True, True
+                i, word_start, cmd_pos, shell = i + 1, True, True, False
+                quiet.clear()
                 if self.pending:
                     i = self.heredoc_bodies(i)
                 continue
@@ -525,14 +787,21 @@ class _Scan:
             elif s.startswith("<<", i):
                 i = self.heredoc_op(i)
             elif c in "<>" and s.startswith("(", i + 1):  # process substitution
-                i = self.sub(i, 2)
+                i = self.sub(i, 2, feeds_shell=new and shell and c == "<")
             else:  # ; & | ( ) < >
                 word_start, cmd_pos = True, c in "(;&|"
+                if c in ";&|()":
+                    shell = False
                 if c == "(":
+                    if new and ((s.startswith("((", i) and self.arithmetic(i)) or (
+                            i and s[i - 1] in "!@?*+" and self.closes_on_line(i))):
+                        quiet.append(parens)  # (( arithmetic )) or @(extglob)
                     parens += 1
                 elif c == ")":
                     if parens:
                         parens -= 1
+                        if quiet and parens <= quiet[-1]:
+                            quiet.pop()
                     elif cases:  # a case pattern: `a) cmd ;;`
                         cmd_pos = True
                     elif closes:
@@ -579,14 +848,16 @@ class _Scan:
         s = self.s
         nxt = s[i + 1:i + 2]
         if nxt == "(":  # $( and $(( (checked as a subshell; harmless for arithmetic)
-            return self.sub(i, 2)
+            return self.sub(i, 2, arith=s.startswith("(", i + 2) and self.arithmetic(i + 1))
         if nxt == "{":
             return self.brace(i + 2, quoted)
-        if nxt == "'" and not quoted:  # $'...' with backslash escapes
+        if nxt == "'" and not quoted:  # $'...': decoded, then single-quoted
             if not (m := _ANSI.match(s, i + 2)):
                 raise _UnparsedError
-            self.emit(s[i:m.end()])
+            self.emit(_ansi_c(s[i + 2:m.end() - 1]) if self.new else s[i:m.end()])
             return m.end()
+        if nxt == '"' and not quoted and self.new:  # $"...": a translated "..."
+            return self.dq(i + 2, False)
         self.emit("$")
         return i + 1
 
@@ -632,8 +903,9 @@ class _Scan:
                     return i
         raise _UnparsedError
 
-    def sub(self, i: int, op_len: int) -> int:
-        """$(...), <(...) or >(...)."""
+    def sub(self, i: int, op_len: int, arith: bool = False, feeds_shell: bool = False) -> int:
+        """$(...), <(...) or >(...). *feeds_shell*: a shell runs what the body
+        prints (`bash <(...)`, `bash < <(...)`), so it is checked as `body | bash`."""
         _tick()
         self.enter()
         start = self.n
@@ -641,11 +913,11 @@ class _Scan:
         body = self.n
         outer, self.pending = self.pending, []  # a heredoc must end inside
         self.level += 1
-        close = self.code(i + op_len, True)
+        close = self.code(i + op_len, True, arith)
         self.level -= 1
         self.pending = outer
         if not self.level:
-            self.bodies.append((body, self.n))
+            self.bodies.append((body, self.n, " | bash" if feeds_shell else ""))
         self.emit(")")
         if not self.level:
             self.spans.append((start, self.n, "_"))
@@ -728,12 +1000,19 @@ class _Scan:
         return i
 
 
+class _ShlexError(ValueError):
+    """shlex could not split the command (unbalanced quotes)."""
+
+
 def _tokens(command: str) -> list[str]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>`\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     lexer.commenters = ""  # _Scan removes comments; shlex starts one mid-word
-    return list(lexer)
+    try:
+        return list(lexer)
+    except ValueError as e:
+        raise _ShlexError(str(e)) from None
 
 
 def _raw(command: str) -> str | None:
@@ -745,7 +1024,8 @@ def _raw(command: str) -> str | None:
 
 def _script(script: str, depth: int) -> str | None:
     """A script a shell runs (-c, eval, its stdin)."""
-    if _DOWNLOAD.match(script) or script.strip() == _DL:
+    if _DOWNLOAD.match(script) or script.strip() == _DL or (
+            script.lstrip().startswith(("$(", "`")) and _decode_stage(script)):
         return REASONS["pipe_shell"]
     return check_command(script, depth + 1)
 
@@ -757,12 +1037,71 @@ def _stdin_scripts(prog: str, argv: list[str]) -> list[str]:
     if prog in _ECHOES:
         words = [a for a in argv[1:] if not re.fullmatch(r"-[neE]+", a)]
         out.append(" ".join(words).replace("\\n", "\n"))
+        if prog == "printf":
+            args = argv[1:]
+            args = args[1:] if args[:1] == ["--"] else args
+            if args and args[0] != "-v":
+                out.append(_printf(args[0], args[1:]))
     return out
+
+
+_DIRECTIVE = re.compile(r"%(?:%|[-+ #0']*(\*|[0-9]*)(?:\.(\*|[0-9]*))?([a-zA-Z]))")
+_PRINTF_MAX = 1_000_000
+
+
+def _count(text: str) -> int | None:
+    """A printf precision as a number: ASCII digits only, at most 9 of them
+    (`²`, `٣`, `-5`, a 5,000-digit number, `abc` -> None)."""
+    return int(text) if len(text) <= 9 and re.fullmatch(r"[0-9]+", text) else None
+
+
+def _printf(fmt: str, args: list[str]) -> str:
+    r"""What printf prints: the format reused until the arguments run out
+    (`printf '%s\n' a b` -> "a\nb\n"). %b expands escapes (its \c ends the
+    output), %c is one char, `.N` cuts %s/%b, `*` takes an argument. NULs are
+    kept (xargs -0 splits on them; _check_tokens drops them from a script)."""
+    out, k, size = [], 0, 0
+
+    def take() -> str:
+        nonlocal k
+        val = args[k] if k < len(args) else ""
+        k += 1
+        return val
+
+    while True:
+        at, start = 0, k
+        for m in _DIRECTIVE.finditer(fmt):
+            out.append(_decode(fmt[at:m.start()], "fmt")[0])
+            at = m.end()
+            if m.group() == "%%":
+                out.append("%")
+                continue
+            width, prec, conv = m.groups()
+            if width == "*":
+                take()
+            if prec == "*":
+                prec = take()
+            val, stop = take(), False
+            if conv == "b":
+                val, stop = _decode(val, "b")
+            elif conv == "c":
+                val = val[:1]
+            if prec is not None and conv in "sb":
+                n = _count(prec)  # else negative, huge or not a number: all of it
+                val = val[:n] if n is not None else ("" if prec == "" else val)
+            out.append(val)
+            size += len(val)
+            if stop:
+                return "".join(out)
+        out.append(_decode(fmt[at:], "fmt")[0])
+        size += len(fmt)
+        if k == start or k >= len(args) or size > _PRINTF_MAX:
+            return "".join(out)
 
 
 def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -> str | None:
     """Check each simple command. *heredocs* are the bodies cut from *command*,
-    in the order of its `<<` operators. Raises ValueError when shlex cannot parse."""
+    in the order of its `<<` operators. Raises _ShlexError when shlex cannot parse."""
     pipeline: set[str] = set()  # programs earlier in the current pipeline
     stdin: list[str] = []  # scripts flowing down the current pipeline
     checked: set[str] = set()
@@ -773,17 +1112,18 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
         argv = _strip_prefixes(argv)
         if sep not in _PIPES:
             pipeline, stdin = set(), []
-        reason = _check_argv(argv, pipeline, depth)
+        prog = _prog(argv[0]) if argv else ""
+        if argv:
+            mine += _stdin_scripts(prog, argv)
+        reason = _check_argv(argv, pipeline, depth, stdin + mine)
         if reason:
             return reason
         if argv:
-            prog = _prog(argv[0])
-            mine += _stdin_scripts(prog, argv)
-            if prog in _SHELLS:  # the shell reads its stdin: what it prints is not a script
+            if _runs_stdin(prog, argv[1:]):  # it reads its stdin: what it prints is not a script
                 for script in stdin + mine:
                     if script not in checked:
-                        checked.add(script)
-                        if reason := _script(script, depth):
+                        checked.add(script)  # bash skips NULs in a script
+                        if reason := _script(script.replace("\0", ""), depth):
                             return reason
                 stdin = []
             else:
@@ -803,17 +1143,30 @@ def _tick() -> None:
 
 def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | None:
     """The ask reason for a Bash command, or None. *_sub*: a substitution's body.
-    Past _BUDGET_S the answer is "too_long" (ask), never None."""
-    global _deadline
+    Past _BUDGET_S the answer is "too_long" (ask), never None.
+
+    Two readings share the clock: the #222 one (comments as before, `$'...'`
+    and `$"..."` left as they are) and the new one; either asking asks, so the
+    new reading can only add asks. The new one is skipped when the command has
+    nothing it reads differently."""
+    global _deadline, _legacy
     if _deadline is not None:  # a nested check: the outermost one owns the clock
         return _check_command(command, depth, _sub)
     _deadline = time.monotonic() + _BUDGET_S
     try:
+        _legacy = True
+        if reason := _check_command(command, depth, _sub):
+            return reason
+        if not _NEW_SYNTAX.search(command):
+            return None
+        _legacy = False
         return _check_command(command, depth, _sub)
     except _TimeUpError:
         return REASONS["too_long"]
+    except Exception:  # a bug in the guard asks, never allows
+        return REASONS["unchecked"]
     finally:
-        _deadline = None
+        _deadline, _legacy = None, False
 
 
 def _check_command(command: str, depth: int, _sub: bool) -> str | None:
@@ -825,32 +1178,35 @@ def _check_command(command: str, depth: int, _sub: bool) -> str | None:
     if len(command) > MAX_PARSE:
         return _check_long(command, depth)
     try:
-        text, bodies, skeleton, heredocs = _Scan(command).result()
+        scan = _Scan(command)
+        text, bodies, heredocs = scan.result()
     except (_UnparsedError, RecursionError):
         try:
             reason = _check_tokens(command, depth)
-        except ValueError:
+        except _ShlexError:
             reason = None
         return reason or _raw(command)
     # Both views of the command: the full text (substitutions and heredoc lines
     # read as commands, as before) and the skeleton, which follows bash's own
     # nesting. A substitution's heredoc is data unless a shell reads it, so a
     # commit message in `$(cat <<'EOF' ... EOF)` is not read as commands.
+    # The full text goes first, as on develop, so the skeleton's extra work
+    # (downloads, decoders) runs only when that check did not already ask.
     if not (_sub and heredocs):
         try:
             if reason := _check_tokens(text, depth):
                 return reason
-        except ValueError:
+        except _ShlexError:
             if reason := _raw(text):
                 return reason
     for body in dict.fromkeys(bodies):
         if reason := check_command(body, depth + 1, _sub=True):
             return reason
-    if skeleton is None:
+    if (skeleton := scan.skeleton(text)) is None:
         return None
     try:
         return _check_tokens(skeleton, depth, heredocs)
-    except ValueError:
+    except _ShlexError:
         return _raw(skeleton)
 
 

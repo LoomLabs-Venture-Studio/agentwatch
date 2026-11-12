@@ -5622,7 +5622,7 @@ Clear the 0.2.1 security follow-ups (Sprint 38). All PRs target `develop`; nothi
 Analysis of 154 real logs: of 94 commands behind `dangerous_command`, `privilege_escalation` and `c2_beacon`, 93 were false positives (one real `sudo -n apt-get install`). 40 sessions scored security 0.
 
 - [x] #222 command guard (unreleased, since #193): `echo hi # c` + newline + `rm -rf ~` and `echo "$(rm -rf ~)"` were not asked. Guard now reads quoting like bash, checks substitutions in double quotes, heredoc/here-string/`echo|sh` scripts, leading redirections, `bash -c --`, `|&`, `eval $(curl)`; a shared 1 s budget answers ask (QA had found a 9 KB command that took 5 s, past the hook's 4 s watchdog, which fails open). 0 asked->allowed over 5,162 real and 309 attack commands.
-- [ ] #223 dangerous_command / privilege_escalation: in rework after QA. Design: develop's detection set kept exactly (plus `rm -fr`, sudoers writes, setuid with leading zeros); severity lowered only for strict allowlisted shapes. Real logs: sessions at security 0 40 -> 32.
+- [ ] Dropped: #223 closed by the board 2026-11-12. Detection was always kept (0 dropped over 150k+ generated and 4,162 real commands), but six review/QA rounds each found a harmful command lowered below CRITICAL (an option whose value is the next word read as the systemctl verb; `sudo -h`; `sudo service ../x`; `dnf builddep`/`snap try`; credential stores missed). After narrowing, it lowered only 2 of 48 real findings. Branch kept for reference.
 - [ ] #221 c2_beacon: closed 2026-11-07 after four QA rounds (lexer, exemption, denylist severity): each version let real beacons through or was quadratic; best case changed 2 sessions.
 
 **Lesson** (also in memory): never drop security findings by parsing bash to prove a command inert; keep the detection set and lower severity only for allowlisted shapes, with linear regexes. A change that only makes a guard stricter may parse.
@@ -5632,9 +5632,36 @@ Analysis of 154 real logs: of 94 commands behind `dangerous_command`, `privilege
 
 ### Sprint 45 -- guard "Not caught" list and macOS sweep (2026-11-08)
 
-- [ ] #225 command guard: `$'...'` quoting, `coproc` / `function` bodies, decoded or `printf` scripts piped into a shell, `xargs`, `#` inside arithmetic. Only makes the guard ask more. Awaiting review + QA.
+- [x] #225 command guard (merged 2026-11-12): `$'...'` quoting, `coproc` / `function` bodies, decoded or `printf` scripts piped into a shell, `xargs`, `#` inside arithmetic. Only makes the guard ask more. Review found a printf ValueError that skipped checks (now: any non-shlex error answers ask, reason `unchecked`); QA found a quadratic regex that outran the hook's 4 s watchdog (fail open), replaced by a linear scan and run after develop's full-text check. 400k differential fuzz: 0 develop-ask -> allow; 4,156 real commands: 0 new asks; worst hook time 0.75 s.
 - [x] macOS sweep (develop 95ec692, macOS 27.2 arm64, Python 3.12 via uv; system Python is 3.9): 3,439 passed / 0 failed, ruff clean. `ps`, `check`, `security-scan`, `watch`, `watch-all --headless`, `net`, `stats --all`, `history sync` / `report`, `audit`, `hook`, `statusline` correct against live Claude Code. Only Claude Code and Claude.app are installed; other agents not tested on macOS (#108 stays open).
 - [x] #226 `detect` listed browsers on macOS/Linux (exact Windows-style names never matched "Brave Browser Helper"). Now excluded by name (helper suffixes, truncated names, Linux `-bin`/`-stable`) or by a browser `.app` that is the first bundle in the path and sits in `/Applications`, `~/Applications` or AppTranslocation, so an agent in `~/Projects/Arc.app` still reports. Electron AI apps and `chrome-headless-shell` still report. QA: 2 rounds, 8 mutation probes killed (1 equivalent).
 - Follow-up #227: deliberate evasion (agent named `chrome`, or installed as `~/Applications/Arc.app`) hides it from `detect`; code-signature check would close it. Safari's shared `com.apple.WebKit.Networking` still reported.
 
 **Lesson:** a new worktree on this Mac has no git identity; agents commit with `-c user.name/-c user.email`.
+
+### Sprint 46 -- `visual` redesign, live machine view (2026-11-12)
+
+Board (2026-11-12): redesign `agentwatch visual`. ui-ux-pro-max decides the look; the page must make it easy to understand what is going on on the machine, and every graph and value updates live. Reference skills (ui-ux-pro-max, mattpocock/skills `tdd` + `code-review`, ponytail) read from scratch, not installed (board 1b). All PRs target `develop`; nothing touches `main`.
+
+**PRs** (all squash-merged to develop 2026-11-12, board go)
+- #231 `fix/discovery-thread-safe`: `find_running_agents()` raised KeyError under concurrent calls (psutil's shared Process cache; `process_iter(attrs=)` overwrites `proc.info`). New `proc_snapshot.snapshot()` (`as_dict`) in discovery, cursor/claude-desktop discovery, copilot_vscode and cline. Review APPROVE; thread test fails before, passes after; no slowdown.
+- #229 `feature/visual-redesign`: machine-first Overview (plain-words summary, tiles with SVG sparklines, one card per running agent); every view refreshes (5 s live, 30 s stats/report/history reads; audit/sync click-only); in-place swap; stale view on failure; expired link stops polling; 320 px without sideways scroll. Review CHANGES -> fixed; QA PASS WITH NOTES -> fixed.
+- #230 `feature/visual-per-agent` (stacked on #229): `agent_status.py` + `/api/agents`: per-agent last action (allow-listed program name or file base name, never args), own health and cost (match `check --log`), cached per (log, size, mtime_ns) under a lock. Review CHANGES (argument leaks, cache race) -> fixed; QA FAIL (discovery race) -> #231.
+- Combined QA (develop + #231 + #230): 3519 passed; 0 HTTP 500 across 1- and 2-tab probes; 10.5 min live, no run=1 without a click; 320 and 1280 px fit; expired link stops all polling.
+
+**Criteria**
+- [x] Design from ui-ux-pro-max, recorded in #229; system fonts, inline CSS/JS only.
+- [x] Machine-first overview, per-agent cards with what each agent is doing (#230; board option a, 2026-11-12).
+- [x] Live refresh of every view; audit/sync click-only with a ticking age.
+- [x] Security unchanged: CSP, token, Host, 405, redact, textContent, no external hosts.
+- [x] Accessibility: contrast (body 17.9/14.5, muted 7.6/8.2), keyboard tabs, focus, reduced motion.
+- [x] Tests and QA green.
+
+**Follow-ups (tickets)**
+- Run-1 guards and in-place refresh are tested as page source text, not behaviour; a JS behaviour harness would be stronger.
+- `cpu_percent` skews when two scans overlap (pre-existing; shared psutil Process objects).
+- ThreadingHTTPServer listen backlog (5) drops connections at 8+ simultaneous requests (curl 000, not 500); raise `request_queue_size` if many tabs matter.
+
+**Lessons (2026-11-12):** shell-command severity allowlists need every option and argument position pinned, or close them (#221, #223). Any guard regex over input up to 20k chars must be linear, and timing must be tested through the real hook process: the watchdog exits with no answer, which allows.
+
+**Follow-up:** the hook watchdog fails open; consider answering ask on timeout for PreToolUse (board decision).

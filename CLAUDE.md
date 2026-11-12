@@ -226,7 +226,9 @@ src/agentwatch/
                        unquoted and double-quoted text; heredoc/here-
                        string/echo|sh scripts); the old full-text view is
                        still checked, so it only asks more (#222). Shared
-                       1 s budget -> ask (the hook's watchdog fails open)
+                       1 s budget -> ask (the hook's watchdog fails open);
+                       any non-shlex parse error -> ask (`unchecked`, #225);
+                       regexes must stay linear (watchdog)
                        `agentwatch guard off` writes {"on": false} to
                        user_state_dir()/guard (coach.GUARD); only that
                        exact value turns it off (`on` deletes the file)
@@ -324,12 +326,25 @@ src/agentwatch/
                        127.0.0.1 (--port, 0 = free) + one inline vanilla-JS
                        page (textContent only, CSP, no CDN). GET /api/<name>
                        (ps, check, subagents, security-scan, audit, stats,
-                       report, history) calls cli.py's --json builders (_ps_json,
+                       report, history, agents) calls cli.py's --json builders (_ps_json,
                        _check_json, _security_json, _audit_scan/_audit_json)
                        in process; every string through redact_truncate.
                        Token (?t=, compare_digest) + Host 127.0.0.1|localhost
                        :<port> or 403; non-GET 405; token masked in logs.
-                       audit and history sync only with ?run=1
+                       audit and history sync only with ?run=1, never on a
+                       timer. Page (Sprint 46): machine-first Overview (summary,
+                       SVG sparklines via createElementNS, one card per agent);
+                       LIVE views every 5 s, SLOW (stats/report/history reads)
+                       every 30 s, skipped while hidden or fresh; in-place swap;
+                       stale view on failure; a 403 stops polling (expired link)
+  agent_status.py      /api/agents: per running agent last action (tool +
+                       target: file base name or an allow-listed program
+                       name, else "a command"; never args/results), own
+                       health and cost (= `check --log`), log_expected;
+                       scored per (log, size, mtime_ns), cache under a lock
+  proc_snapshot.py     snapshot(attrs): process_iter() + as_dict() per
+                       process. Use it instead of process_iter(attrs=) /
+                       proc.info, which psutil shares across threads (#231)
   report.py            `agentwatch report`: build() (JSON schema 1, fields
                        only added) over sessions whose last action is in the
                        period, plus the previous one for the trend; unpriced
