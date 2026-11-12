@@ -23,6 +23,9 @@ class _FakeProcess:
             "create_time": 1_700_000_000.0,
         }
 
+    def as_dict(self, attrs=None):
+        return dict(self.info)
+
 
 def _iter(*procs):
     return lambda attrs=None: iter(list(procs))

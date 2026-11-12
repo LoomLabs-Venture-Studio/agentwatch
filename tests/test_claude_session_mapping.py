@@ -54,6 +54,9 @@ class _Machine:
                 self.pid = pid
                 self.info = dict(machine.procs[pid])
 
+            def as_dict(self, attrs=None):
+                return dict(self.info)
+
             def open_files(self):
                 machine.open_files_calls += 1
                 return [types.SimpleNamespace(path=str(p)) for p in machine.open_files.get(

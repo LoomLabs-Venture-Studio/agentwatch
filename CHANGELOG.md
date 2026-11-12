@@ -23,6 +23,10 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- `find_running_agents()` (and the Cursor, Claude Desktop, Copilot VS Code and Cline
+  process checks) are now thread-safe: they no longer read psutil's shared
+  `proc.info`, which concurrent scans overwrote (`KeyError: 'pid'` / `'ppid'`, a
+  500 from the `visual` server's `/api/ps` when two requests overlapped).
 - `detect`: browsers are now excluded on macOS and Linux too (helper processes such
   as `Brave Browser Helper (Renderer)`, executables inside a browser `.app`,
   `google-chrome`, `firefox-bin`, truncated names). Electron AI apps (`Claude

@@ -15,6 +15,7 @@ import psutil
 
 from agentwatch import agents as _agents
 from agentwatch.path_encoding import encode_path_for_claude
+from agentwatch.proc_snapshot import snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -196,30 +197,16 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
     When *cache* is provided, already-known PIDs reuse their previously
     resolved cwd/log-file instead of re-resolving cwd every scan.
     """
-    # Materialize once: psutil caches each attrs snapshot on `.info`, so
-    # both passes below read already-fetched data with no further syscalls.
-    procs = list(
-        psutil.process_iter(
-            attrs=[
-                "pid",
-                "ppid",
-                "cmdline",
-                "name",
-                "memory_info",
-                "cpu_percent",
-                "create_time",
-            ]
-        )
+    # One private snapshot per process (never psutil's shared ``.info``, which
+    # another thread's scan can overwrite); both passes below read it.
+    procs = snapshot(
+        ["pid", "ppid", "cmdline", "name", "memory_info", "cpu_percent", "create_time"]
     )
 
     # First pass: build complete PID -> PPID map for ancestor walking
     pid_to_ppid: dict[int, int] = {}
     for proc in procs:
-        try:
-            info = proc.info
-            pid_to_ppid[info["pid"]] = info["ppid"]
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
+        pid_to_ppid[proc["pid"]] = proc["ppid"]
 
     # Second pass: find agent processes
     agents: list[AgentProcess] = []
@@ -230,19 +217,16 @@ def find_running_agents(cache: DiscoveryCache | None = None) -> list[AgentProces
     claude_registered: set[int] = set()
 
     for proc in procs:
-        try:
-            info = proc.info
-            pid = info["pid"]
-            ppid = info["ppid"]
-            cmdline = info["cmdline"] or []
-            name = info["name"] or ""
-            command = " ".join(cmdline) or name
-            mem_info = info["memory_info"]
-            memory_mb = (mem_info.rss / (1024.0 * 1024.0)) if mem_info else 0.0
-            cpu_percent = info["cpu_percent"] or 0.0
-            create_time = info["create_time"]
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
+        info = proc
+        pid = info["pid"]
+        ppid = info["ppid"]
+        cmdline = info["cmdline"] or []
+        name = info["name"] or ""
+        command = " ".join(cmdline) or name
+        mem_info = info["memory_info"]
+        memory_mb = (mem_info.rss / (1024.0 * 1024.0)) if mem_info else 0.0
+        cpu_percent = info["cpu_percent"] or 0.0
+        create_time = info["create_time"]
 
         adapter = match_process_adapter(cmdline, name)
         if adapter is not None and pid not in seen_pids:
