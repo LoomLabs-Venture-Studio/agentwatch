@@ -99,9 +99,22 @@ _DEV_P_OTHER = _DEV_P[6:]
 
 _CAP = 20_000  # past this, a gated back-tracking pattern counts as matched
 
+# Literal gates must be a superset of develop's IGNORECASE regexes. Python's
+# re also matches these non-ASCII letters to ASCII ones under IGNORECASE (U+017F
+# long s, the Kelvin sign, dotted and dotless I), and str.lower() alone misses
+# them (casefold() misses dotless i). They are the only such code points: a
+# test scans every one.
+_FOLD = str.maketrans({"\u017f": "s", "\u212a": "k", "\u0130": "i", "\u0131": "i"})
+
+
+def _fold(text: str) -> str:
+    """*text* lowercased the way the gates compare it to their literals."""
+    return text.translate(_FOLD).lower()
+
 
 def _search(command: str, low: str, gated) -> bool:
-    """Any gated pattern matches *command* (same verdict as develop's regex)."""
+    """Any gated pattern matches *command* (same verdict as develop's regex).
+    *low* is _fold(command)."""
     for literals, pattern, backtracks in gated:
         if all(lit in low for lit in literals):
             if backtracks and len(command) > _CAP:
@@ -169,6 +182,19 @@ def _systemctl_read_only(args: list[str], sub: str) -> bool:
     paged = sub in _SYSTEMCTL_READ_PAGED or sub.startswith("list-")
     return paged and "--no-pager" in args
 
+
+# `service NAME VERB` runs /etc/init.d/NAME as root (or hands VERB to
+# systemctl): HIGH only for `service <plain name> status`. A name with a path
+# or `..` (`service ../../tmp/x start`), any flag (--status-all, --full-restart)
+# and every other verb stay CRITICAL, like systemctl's.
+_SERVICE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_@+-]*(?:\.[A-Za-z0-9_@+-]+)*")
+
+
+def _service_read_only(args: list[str]) -> bool:
+    return (len(args) == 2 and args[1] == "status"
+            and _SERVICE_NAME.fullmatch(args[0]) is not None)
+
+
 # credential directories: an rm/chmod target containing one stays CRITICAL.
 _CREDENTIAL_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".netrc",
                     ".password-store", "keyrings", "keychains", ".pgpass",
@@ -211,12 +237,12 @@ class CommandFinding:
 
 def _dev_dangerous(command: str) -> bool:
     """develop's dangerous_command verdict, made safe on long input."""
-    return _search(command, command.lower(), _DEV_D_ALL)
+    return _search(command, _fold(command), _DEV_D_ALL)
 
 
 def _rm_calls(command: str):
     """The operand list of each recursive+force `rm` in *command*."""
-    if "rm" not in command:
+    if "rm" not in _fold(command):
         return
     for m in _RM_SEG.finditer(command):
         flags = m.group("flags").split()
@@ -229,7 +255,7 @@ def _rm_calls(command: str):
 
 def _rm_flags_anywhere(command: str) -> bool:
     """`rm <x> -rf /`: GNU rm takes flags after operands too."""
-    if len(command) > _CAP or "rm" not in command:
+    if len(command) > _CAP or "rm" not in _fold(command):
         return False
     for segment in _segments(command):
         words = segment.split()
@@ -270,7 +296,7 @@ _PRIV_LITERALS = ("sudo", "su", "doas", "pkexec", "chmod", "chown", "chgrp", "se
 
 
 def _privilege_match(command: str) -> bool:
-    low = command.lower()
+    low = _fold(command)
     if not any(lit in low for lit in _PRIV_LITERALS):
         return False
     return bool(
@@ -289,7 +315,7 @@ def _unquote(op: str) -> str:
 
 def _prog(word: str) -> str:
     """Program name: lowercased basename without a .exe suffix."""
-    return word.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    return _fold(word.replace("\\", "/").rsplit("/", 1)[-1]).removesuffix(".exe")
 
 
 def _sudoers_write(command: str) -> bool:
@@ -297,7 +323,7 @@ def _sudoers_write(command: str) -> bool:
     just before it (inside its segment, at most _SUDOERS_WINDOW chars) ends in
     a redirect, `of=`, or a tee / cp / mv / install / ln / sed -i call. Linear:
     gated on the literal, bounded windows, capped number of occurrences."""
-    low = command.lower()
+    low = _fold(command)
     if _SUDOERS not in low:
         return False
     start, hits = 0, 0
@@ -330,7 +356,7 @@ def _writes_here(window: str) -> bool:
 def _chmod_setid(command: str) -> bool:
     """A chmod whose mode sets setuid/setgid: numeric (leading zeros allowed)
     or symbolic with `s`."""
-    if "chmod" not in command.lower():
+    if "chmod" not in _fold(command):
         return False
     for m in _CHMOD_CALL.finditer(command):
         mode = _unquote(m.group("mode"))
@@ -359,7 +385,7 @@ def _safe_words(segment: str) -> list[str] | None:
 
 def _credential(path: str) -> bool:
     """A path naming a credential store anywhere in it (case-insensitive)."""
-    parts = [p for p in path.lower().split("/") if p not in ("", ".")]
+    parts = [p for p in _fold(path).split("/") if p not in ("", ".")]
     joined = "/".join(parts)
     return bool(_CREDENTIAL_DIRS.intersection(parts)) or any(
         c in joined for c in _CREDENTIAL_PATHS)
@@ -369,7 +395,12 @@ def _safe_target(op: str) -> bool:
     """Allowlist for a path an rm/chmod may touch at the lower severity:
     (a) a relative literal path, not `.` or `..`, with no `..` segment, or
     (b) an absolute literal path under /tmp/ or /var/tmp/ (after collapsing
-    `//` and `/./`), with no `..` segment. Anything else is not safe."""
+    `//` and `/./`), with no `..` segment. Anything else is not safe.
+
+    Symlinks are trusted: the path is judged by its text, never resolved. A
+    link under /tmp (`rm -rf /tmp/x/` where x points at /etc) or a harmlessly
+    named relative link stays HIGH (MEDIUM for chmod). The finding is still
+    reported; only its severity can be too low."""
     if not _SAFE_PATH.fullmatch(op) or op.startswith("-"):
         return False
     parts = [p for p in op.split("/") if p not in ("", ".")]
@@ -392,7 +423,7 @@ def _all_occurrences_safe(command: str, progs: set[str], shape) -> bool | None:
         return False
     seen = False
     for segment in _segments(command):
-        low = segment.lower()
+        low = _fold(segment)
         if not any(p in low for p in progs):
             continue
         words = _safe_words(segment)
@@ -443,7 +474,10 @@ def _cd_shape(words: list[str]) -> bool:
 
 def _cd_joins_credential(command: str) -> bool:
     """A cd/pushd target joined with an rm target names a credential store
-    (`cd .config && rm -rf ./gcloud`)."""
+    (`cd .config && rm -rf ./gcloud`). Same verdict as _credential(d + "/" + t)
+    over every pair, in linear time: a credential part lies wholly in d or in
+    t, and a multi-part credential path crossing the join is some split
+    `head/tail` of it with d ending in head and t starting with tail."""
     dirs, targets = [], []
     for segment in _segments(command):
         words = _safe_words(segment) or []
@@ -453,7 +487,19 @@ def _cd_joins_credential(command: str) -> bool:
             dirs += words[1:]
         elif _prog(words[0]) == "rm":
             targets += [w for w in words[1:] if not w.startswith("-")]
-    return any(_credential(d + "/" + t) for d in dirs for t in targets)
+    if not dirs or not targets:
+        return False
+    if any(_credential(p) for p in dirs) or any(_credential(p) for p in targets):
+        return True
+    splits = [(c[:k], c[k + 1:]) for c in _CREDENTIAL_PATHS
+              for k, ch in enumerate(c) if ch == "/"]
+
+    def norm(path: str) -> str:
+        return "/".join(p for p in _fold(path).split("/") if p not in ("", "."))
+
+    heads = {h for d in map(norm, dirs) for h, _ in splits if d.endswith(h)}
+    tails = {t for p in map(norm, targets) for _, t in splits if p.startswith(t)}
+    return any(h in heads and t in tails for h, t in splits)
 
 
 def _rm_targets_critical(command: str) -> bool:
@@ -533,7 +579,7 @@ def _sudo_shape(words: list[str]) -> bool:
     prog, args = words[i], words[i + 1:]
     if prog not in _SUDO_PROGRAMS:
         return False  # NAME=value, a path, an interpreter, a shell, anything else
-    if any(a.startswith(("-o", "--option")) or "invoke" in a.lower() or "=" in a
+    if any(a.startswith(("-o", "--option")) or "invoke" in _fold(a) or "=" in a
            and a.split("=", 1)[0].isupper() for a in args):
         return False  # apt hook options and environment words
     if prog in _PKG_MANAGERS and not all(
@@ -545,6 +591,8 @@ def _sudo_shape(words: list[str]) -> bool:
     if sub in _SUDO_PROGRAM_DENY.get(prog, ()):
         return False
     if prog == "systemctl" and not _systemctl_read_only(args, sub):
+        return False
+    if prog == "service" and not _service_read_only(args):
         return False
     return True
 
@@ -573,7 +621,7 @@ def _privilege_finding(command: str) -> CommandFinding | None:
         return None
     if len(command) > _CAP:
         return CommandFinding(PRIVILEGE, Severity.CRITICAL, "privilege escalation")
-    low = command.lower()
+    low = _fold(command)
     best = None
 
     def worse(sev: Severity) -> None:
@@ -602,7 +650,7 @@ def _non_rm_dangerous(command: str) -> bool:
     """A dangerous rule other than develop's plain `rm -rf` target patterns
     (disk wipe, fork bomb, netcat, reverse shell, history wipe, SELinux or
     firewall off): always CRITICAL."""
-    return _search(command, command.lower(), _DEV_D_NON_RM)
+    return _search(command, _fold(command), _DEV_D_NON_RM)
 
 
 @lru_cache(maxsize=256)

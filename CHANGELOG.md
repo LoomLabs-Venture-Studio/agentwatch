@@ -52,7 +52,9 @@ numbers refer to the GitHub repository.
     CRITICAL. `systemctl` is HIGH only for a read-only verb (`is-*`, or
     `status`/`show`/`cat`/`help`/`list-*` with `--no-pager`); every other
     verb (`start`, `stop`, `enable`, `disable`, `mask`, `daemon-reload`,
-    ...) and any `--root`/`--image` option stays CRITICAL. Any other
+    ...) and any `--root`/`--image` option stays CRITICAL. `service` is HIGH
+    only as `service <plain name> status`; a name with a `/` or `..`, a flag
+    or any other verb (`stop`, `start`, ...) stays CRITICAL. Any other
     program, a path such as `./deploy.sh`, a
     `NAME=value` word, `-E`, `-R`/`--chroot`, `su`, `sudo -e`, a redirect or
     anything unrecognized stays CRITICAL.
@@ -61,8 +63,14 @@ numbers refer to the GitHub repository.
     stays CRITICAL.
   All other rules stay CRITICAL, and anything the allowlist cannot parse
   (quoting, wrappers, substitutions, very long input) stays CRITICAL.
+  Paths are judged by their text: a symlink is never resolved, so a link
+  under `/tmp/` or a harmlessly named relative link that points elsewhere
+  keeps the lower severity (the finding itself is still reported).
 - These detectors stay linear on hostile input: a 1 MB command is checked in
-  well under a second.
+  well under a second. Their literal pre-checks also catch the non-ASCII
+  letters Python's case-insensitive regexes treat as ASCII (`ſudo`,
+  `hiſtory -c`, the Kelvin sign `K`, dotted and dotless `i`), so they are
+  flagged as before.
 - Secret findings: two different secrets of the same type in the same
   channel and file are now two findings, and the same secret seen twice is
   still one. Each finding carries a `fingerprint`: the first 12 hex chars of
