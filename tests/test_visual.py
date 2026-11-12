@@ -26,6 +26,13 @@ AGENT = AgentProcess(pid=42, agent_type="claude-code", working_directory=Path("/
 
 
 SVG_NS = "http://www.w3.org/2000/svg"
+# The one place the namespace may appear: the constant that createElementNS uses.
+NS_DECL = f'SVGNS = "{SVG_NS}"'
+
+
+def _no_ns(page):
+    assert page.count(NS_DECL) == 1
+    return page.replace(NS_DECL, "SVGNS = ns")
 
 
 @pytest.fixture
@@ -112,7 +119,7 @@ def test_page_headers_and_no_external_urls(server):
     assert r.getheader("X-Content-Type-Options") == "nosniff"
     assert r.getheader("Referrer-Policy") == "no-referrer"
     assert r.getheader("Access-Control-Allow-Origin") is None
-    assert not re.search(r"https?://", body.replace(SVG_NS, ""))
+    assert not re.search(r"https?://", _no_ns(body))
     assert "innerHTML" not in body
 
 
@@ -309,7 +316,7 @@ def test_page_builds_dom_without_html_strings_or_foreign_resources():
                 "<canvas", "@import", "<link", "eval(", "new Function"):
         assert bad not in page, bad
     assert "createElementNS" in page
-    assert not re.search(r"https?://", page.replace(SVG_NS, ""))
+    assert not re.search(r"https?://", _no_ns(page))
     assert "url(" not in page
     for m in re.finditer(r"fetch\(([^)]*)\)", page):
         assert m.group(1).startswith("`/api/"), m.group(1)
@@ -326,3 +333,43 @@ def test_unauthenticated_page_still_403_and_authed_serves_new_page(server):
     assert r.status == 403
     r, body = _get(server, "/")
     assert r.status == 200 and "Last updated" in body
+
+
+def _fn(name):
+    m = re.search(rf"\n(?:async )?function {name}\(.*?\n\}}\n", visual.PAGE, re.S)
+    assert m, name
+    return m.group(0)
+
+
+def test_refresh_is_quiet_hidden_aware_and_never_runs():
+    body = _fn("refresh")
+    assert "if (document.hidden) return;" in body
+    assert body.count("load(") == 1
+    assert "load(sec, sec.dataset.name, false, true)" in body
+    assert "run" not in body and "=1" not in body
+
+
+def test_visibilitychange_only_refreshes_with_a_min_age():
+    m = re.search(r'addEventListener\("visibilitychange", (.*?)\n\}\);\n', visual.PAGE, re.S)
+    assert m
+    handler = m.group(1)
+    assert "load(" not in handler and "fetch" not in handler and "run" not in handler
+    assert "refresh(LIVE, LIVE_MS)" in handler and "refresh(SLOW, SLOW_MS)" in handler
+    assert "Date.now() - (loadedAt.get(sec) || 0) < minAge" in _fn("refresh")
+
+
+def test_series_are_capped_and_pruned():
+    assert "const SAMPLES = 60" in visual.PAGE
+    body = _fn("sample")
+    assert "a.length > SAMPLES" in body and "a.shift()" in body
+    feed = _fn("feed")
+    assert "series.delete(k)" in feed and 'k.startsWith("cpu:")' in feed
+    assert "tick || !series.has(k)" in feed  # manual Refresh does not add samples
+
+
+def test_failed_timer_reload_rules():
+    body = _fn("load")
+    assert 'sec.classList.add("stale")' in body and "Showing data from" in body
+    assert "expired = true" in body and "quiet && !expired && ok" in body
+    assert "stamp.dataset.ok = " in body  # age is that of the last success only
+    assert "+stamp.dataset.ok || Date.now()" not in body

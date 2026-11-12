@@ -662,7 +662,6 @@ function cards(list) {
   const g = el("div", null, "cards");
   for (const a of list) {
     const c = el("div", null, "card" + (a.depth > 0 ? " child" : ""));
-    sample("cpu:" + a.pid, a.cpu_percent);
     const row1 = el("div", null, "row"), row2 = el("div", null, "row");
     row1.append(el("span", "Running for"), el("b", a.uptime));
     row2.append(el("span", "CPU " + fmt("cpu_percent", a.cpu_percent) + ", memory " +
@@ -807,6 +806,7 @@ const LIVE = new Set(["ps", "check", "subagents", "security-scan"]), LIVE_MS = 5
 const SLOW = new Set(["stats", "report", "history"]), SLOW_MS = 30000;
 const RUN_ONLY = new Set(["audit"]);
 const busy = new WeakMap(), last = new WeakMap(), inflight = new WeakSet();
+const loadedAt = new WeakMap();
 const ranCache = new Map();  // name -> {parts text is rebuilt from d, at}
 // Swap a section's content in place: same height while it happens, open
 // details, horizontal scroll and a focused summary survive.
@@ -837,18 +837,21 @@ async function load(sec, name, run, quiet) {
     body.replaceChildren(el("p", run ? "Running. This can take a minute..." : "Loading...",
       "mute"));
   }
-  let parts, text, failed = false, d;
+  let parts, text, failed = false, expired = false, d;
   try {
     const r = await fetch(`/api/${name}?t=${encodeURIComponent(T)}${run ? "&run=1" : ""}`);
-    if (r.status === 403) throw new Error("This link has expired. Open the address that " +
-      "agentwatch visual printed in your terminal.");
+    if (r.status === 403) {
+      expired = true;
+      throw new Error("This link has expired. Open the address that " +
+        "agentwatch visual printed in your terminal.");
+    }
     text = await r.text();
     d = JSON.parse(text);
     if (d.error) parts = [problem("Nothing to show yet.", d.error)];
     else if (d.not_run) parts = [el("p", "Not run yet. The audit reads every saved session " +
       "log, so it can take a while.", "mute")];
     else {
-      feed(name, d);
+      feed(name, d, quiet);
       parts = VIEWS[name](d);
       if (RUN_ONLY.has(name)) {
         ranCache.set(name, {d, at: Date.now()});
@@ -865,16 +868,25 @@ async function load(sec, name, run, quiet) {
   inflight.delete(sec);
   body.removeAttribute("aria-busy");
   sec.querySelectorAll("button").forEach(b => { b.disabled = false; });
-  if (quiet && failed && body.childElementCount) {  // keep the last good view
+  if (failed) {
+    const ok = +stamp.dataset.ok;
+    // A timer miss keeps the last good view (its real age); an expired link, or
+    // a view that never loaded, shows the problem instead.
+    if (quiet && !expired && ok && body.childElementCount) {
+      sec.classList.add("stale");
+      stamp.replaceChildren(aged("Update failed. Showing data from", ok));
+      return;
+    }
+    swap(body, parts);
+    last.delete(sec);
     sec.classList.add("stale");
-    stamp.replaceChildren(aged("Update failed. Showing data from",
-      +stamp.dataset.ok || Date.now()));
+    stamp.replaceChildren(el("span", expired ? "Link expired" : "Not loaded"));
     return;
   }
   if (!(quiet && text !== undefined && text === last.get(sec))) swap(body, parts.filter(Boolean));
   last.set(sec, text);
   sec.classList.remove("stale");
-  stamp.dataset.ok = Date.now();
+  stamp.dataset.ok = loadedAt.set(sec, Date.now()).get(sec);
   const when = aged(sec.dataset.cadence ? "Last updated" : "Loaded", Date.now());
   const dot = el("span", null, "pulse");
   dot.setAttribute("aria-hidden", "true");
@@ -882,20 +894,31 @@ async function load(sec, name, run, quiet) {
   if (!sec.dataset.cadence || document.getElementById("summary")) summary();
 }
 // Series and cross-view state for the live charts and the summary.
-function feed(name, d) {
-  if (name === "ps") { state.ps = d; sample("n:ps", d.length); }
-  else if (name === "check") {
-    state.check = d; sample("n:health", d.overall_score);
-    sample("n:cost", d.efficiency ? d.efficiency.cost_total : null);
-  } else if (name === "security-scan") { state.sec = d; sample("n:sec", d.security_score); }
+// Samples are taken on timer ticks (and once to start a series), so a manual
+// Refresh or a tab switch does not bend the time axis.
+function feed(name, d, tick) {
+  const take = (k, v) => { if (tick || !series.has(k)) sample(k, v); };
+  if (name === "ps") {
+    state.ps = d; take("n:ps", d.length);
+    const live = new Set(d.map(a => "cpu:" + a.pid));
+    for (const k of [...series.keys()]) {
+      if (k.startsWith("cpu:") && !live.has(k)) series.delete(k);  // agent is gone
+    }
+    d.forEach(a => take("cpu:" + a.pid, a.cpu_percent));
+  } else if (name === "check") {
+    state.check = d; take("n:health", d.overall_score);
+    take("n:cost", d.efficiency ? d.efficiency.cost_total : null);
+  } else if (name === "security-scan") { state.sec = d; take("n:sec", d.security_score); }
   else if (name === "subagents") state.subs = d;
 }
 // Timer: reload every section of the current tab that is on *set*. Never
 // sends run=1; a section without data yet is skipped while its first load runs.
-function refresh(set) {
+function refresh(set, minAge) {
   if (document.hidden) return;
   document.querySelectorAll("section[data-name]").forEach(sec => {
-    if (set.has(sec.dataset.name)) load(sec, sec.dataset.name, false, true);
+    if (!set.has(sec.dataset.name)) return;
+    if (minAge && Date.now() - (loadedAt.get(sec) || 0) < minAge) return;
+    load(sec, sec.dataset.name, false, true);
   });
 }
 function problem(title, detail) {
@@ -958,7 +981,10 @@ setInterval(() => {
 }, SLOW_MS);
 setInterval(tickAges, 1000);
 // Back on the tab: catch up now instead of waiting for the next tick.
-document.addEventListener("visibilitychange", () => { refresh(LIVE); refresh(SLOW); });
+document.addEventListener("visibilitychange", () => {
+  refresh(LIVE, LIVE_MS);
+  refresh(SLOW, SLOW_MS);
+});
 const tabs = document.getElementById("tabs");
 TABS.forEach(([id, label]) => {
   const b = el("button", label);
