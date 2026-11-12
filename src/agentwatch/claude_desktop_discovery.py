@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-import psutil
+from agentwatch.proc_snapshot import snapshot
 
 from .cursor_discovery import _synthetic_pid
 from .discovery import AgentProcess
@@ -64,11 +64,8 @@ def claude_desktop_roots() -> list[Path]:
 def is_claude_desktop_running() -> bool:
     """Check whether the Claude Desktop app (not Claude Code) is running."""
     try:
-        for proc in psutil.process_iter(attrs=["exe"]):
-            try:
-                exe = proc.info.get("exe") or ""
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
+        for info in snapshot(["exe"]):
+            exe = info.get("exe") or ""
             if _APP_EXE_RE.search(exe):
                 return True
     except Exception:

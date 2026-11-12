@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import psutil
 import pytest
 
 from agentwatch import agents
@@ -115,11 +116,9 @@ class _Proc:
     def __init__(self, exe):
         self._exe = exe
 
-    @property
-    def info(self):
-        if self._exe is DENIED:
-            raise cdd.psutil.AccessDenied()
-        return {"exe": self._exe}
+    def as_dict(self, attrs=None):
+        # psutil's as_dict reports an unreadable attribute (AccessDenied) as None
+        return {"exe": None if self._exe is DENIED else self._exe}
 
 
 class TestRunningGate:
@@ -142,7 +141,7 @@ class TestRunningGate:
     )
     def test_exe_path(self, monkeypatch, exes, expected):
         monkeypatch.setattr(
-            cdd.psutil, "process_iter", lambda attrs=None: iter(_Proc(e) for e in exes)
+            psutil, "process_iter", lambda attrs=None: iter(_Proc(e) for e in exes)
         )
         assert cdd.is_claude_desktop_running() is expected
 
