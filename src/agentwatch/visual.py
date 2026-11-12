@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from agentwatch import cli
+from agentwatch.agent_status import build as agents_build
 from agentwatch.cc_stats import compute_stats, find_all_project_dirs
 from agentwatch.detectors.security.secret_scanner import assess_impact, redact_truncate
 from agentwatch.history import connect, sync
@@ -61,6 +62,10 @@ def _check(run: bool):
     report = cli.calculate_health(warnings, include_security=False)
     efficiency = cli.calculate_efficiency(warnings, buffer)
     return cli._check_json(report, efficiency, warnings, buffer, note)
+
+
+def _agents(run: bool):
+    return agents_build(cli.find_running_agents())
 
 
 def _subagents(run: bool):
@@ -115,6 +120,7 @@ def _history(run: bool):
 
 API = {
     "ps": _ps,
+    "agents": _agents,
     "check": _check,
     "subagents": _subagents,
     "security-scan": _security,
@@ -358,6 +364,11 @@ padding:12px 14px;min-width:0}
 .card .sub{color:var(--mute);font-size:.875rem;overflow-wrap:anywhere}
 .card .row{display:flex;justify-content:space-between;align-items:center;gap:8px;
 margin-top:8px;font-size:.9375rem}
+.card .status{margin:8px 0;padding:8px 0;border-top:1px solid var(--rule-strong);
+border-bottom:1px solid var(--rule-strong)}
+.card .status .row{flex-wrap:wrap;justify-content:flex-start;gap:4px 12px}
+.card .status .chip{min-width:0;overflow-wrap:anywhere}
+.card .status p{margin:0 0 6px;overflow-wrap:anywhere}
 .card.child{margin-left:12px;border-left:4px solid var(--acc)}
 .spark{display:block;width:100%;max-width:9rem;height:28px;margin-top:6px;overflow:visible}
 .spark path{fill:none;stroke:var(--acc);stroke-width:2;vector-effect:non-scaling-stroke;
@@ -659,17 +670,72 @@ function findings(list, empty) {
   ], plural(list.length, "finding"));
 }
 function note(text) { return text ? el("p", text, "mute") : null; }
+// What one agent is doing now, in words. Text and chips only, never colour alone.
+const VERBS = {Edit: "Edited", MultiEdit: "Edited", NotebookEdit: "Edited", Write: "Wrote",
+  Read: "Read", Bash: "Ran", Grep: "Searched", Glob: "Searched", WebFetch: "Fetched",
+  WebSearch: "Searched the web"};
+function statusParts(s) {
+  if (!s) return [el("p", "Checking what it is doing...", "mute")];
+  const out = [], la = s.last_action;
+  if (!la) out.push(el("p", s.health ? "No tool calls yet." :
+    s.log_expected === false ? "Activity not available for this agent type." :
+    "No session log found yet.",
+    "mute"));
+  else {
+    const p = el("p", null, "doing");
+    const sub = !la.target && (la.tool === "Agent" || la.tool === "Task");
+    const what = sub ? "Started a subagent" :
+      (VERBS[la.tool] || "Used " + la.tool) + (la.target ? " " + la.target : "");
+    p.append(aged(what, Date.now() - (la.age_s || 0) * 1000));
+    if (la.ok === false) p.append(" (failed)");
+    out.push(p);
+  }
+  const row = el("div", null, "row");
+  if (s.health) row.append(chip(`Health ${s.health.label} ${s.health.score}/100`,
+    tone(s.health.score)));
+  if (s.active !== null && s.active !== undefined)
+    row.append(el("span", s.active ? "Working now" : "Idle"));
+  if (s.health) row.append(el("span", "Cost " + money(s.cost_usd)));
+  if (row.childElementCount) out.push(row);
+  return out;
+}
+// Fill every card's status block in place; no card is rebuilt.
+function decorate() {
+  const by = new Map(((state.agents || {}).agents || []).map(a => [a.pid, a]));
+  document.querySelectorAll(".card[data-pid]").forEach(c => {
+    const box = c.querySelector(".status");
+    if (box && state.agents) box.replaceChildren(...statusParts(by.get(+c.dataset.pid)));
+  });
+}
+function statusBox(pid) {
+  const box = el("div", null, "status");
+  const s = ((state.agents || {}).agents || []).find(a => a.pid === pid);
+  box.append(...statusParts(state.agents ? s : null));
+  return box;
+}
+let pulling = false;
+async function pullAgents() {
+  if (pulling || document.hidden || expiredLink) return;
+  if (!document.querySelector(".card[data-pid]")) return;
+  pulling = true;
+  try {
+    const r = await fetch(`/api/agents?t=${encodeURIComponent(T)}`);
+    const d = JSON.parse(await r.text());
+    if (d.agents) { state.agents = d; decorate(); }
+  } catch (e) {} finally { pulling = false; }
+}
 function cards(list) {
   const g = el("div", null, "cards");
   for (const a of list) {
     const c = el("div", null, "card" + (a.depth > 0 ? " child" : ""));
+    c.dataset.pid = a.pid;
     const row1 = el("div", null, "row"), row2 = el("div", null, "row");
     row1.append(el("span", "Running for"), el("b", a.uptime));
     row2.append(el("span", "CPU " + fmt("cpu_percent", a.cpu_percent) + ", memory " +
       fmt("memory_mb", a.memory_mb)));
     c.append(el("h3", human(a.agent_type || "agent")),
       el("div", (a.project || "No project") + (a.team_name ? " - " + a.team_name : ""), "sub"),
-      el("div", a.working_directory || "", "sub code"), row1, row2,
+      el("div", a.working_directory || "", "sub code"), statusBox(a.pid), row1, row2,
       spark("cpu:" + a.pid, "CPU of " + a.agent_type), el("div", "PID " + a.pid, "sub"));
     g.append(c);
   }
@@ -803,7 +869,7 @@ function syncNote(s, at) {
 // Every view reloads on its own while the page is visible, except RUN_ONLY
 // ones: the audit reads every saved log, so only its button runs it. SLOW
 // ones read stored data (stats, report, history; never a sync).
-const LIVE = new Set(["ps", "check", "subagents", "security-scan"]), LIVE_MS = 5000;
+const LIVE = new Set(["ps", "agents", "check", "subagents", "security-scan"]), LIVE_MS = 5000;
 const SLOW = new Set(["stats", "report", "history"]), SLOW_MS = 30000;
 const RUN_ONLY = new Set(["audit"]);
 const busy = new WeakMap(), last = new WeakMap(), inflight = new WeakSet();
@@ -888,6 +954,7 @@ async function load(sec, name, run, quiet) {
   }
   if (!(quiet && text !== undefined && text === last.get(sec))) swap(body, parts.filter(Boolean));
   last.set(sec, text);
+  if (name === "ps" && !failed) pullAgents();  // one scan per tick, here
   sec.classList.remove("stale");
   stamp.dataset.ok = loadedAt.set(sec, Date.now()).get(sec);
   const when = aged(sec.dataset.cadence ? "Last updated" : "Loaded", Date.now());
