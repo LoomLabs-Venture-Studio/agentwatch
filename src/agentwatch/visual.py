@@ -25,6 +25,7 @@ from agentwatch.cc_stats import compute_stats, find_all_project_dirs
 from agentwatch.detectors.security.secret_scanner import assess_impact, redact_truncate
 from agentwatch.history import connect, sync
 from agentwatch.parser.logs import LogUnreadableError, UnsupportedLogFormatError
+from agentwatch.agent_status import build as agents_build
 from agentwatch.report import build
 from agentwatch.subagents import build as subagents_build
 from agentwatch.subagents import session_of
@@ -61,6 +62,10 @@ def _check(run: bool):
     report = cli.calculate_health(warnings, include_security=False)
     efficiency = cli.calculate_efficiency(warnings, buffer)
     return cli._check_json(report, efficiency, warnings, buffer, note)
+
+
+def _agents(run: bool):
+    return agents_build(cli.find_running_agents())
 
 
 def _subagents(run: bool):
@@ -115,6 +120,7 @@ def _history(run: bool):
 
 API = {
     "ps": _ps,
+    "agents": _agents,
     "check": _check,
     "subagents": _subagents,
     "security-scan": _security,
