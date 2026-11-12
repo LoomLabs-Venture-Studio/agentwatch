@@ -228,6 +228,8 @@ src/agentwatch/
                        still checked, so it only asks more (#222). Shared
                        1 s budget -> ask (the hook's watchdog fails open);
                        any non-shlex parse error -> ask (`unchecked`, #225);
+                       an unclear `#` (open (( / extglob across lines)
+                       -> ask; any shell name (bash5, ksh93, ...) (#228);
                        regexes must stay linear (watchdog)
                        `agentwatch guard off` writes {"on": false} to
                        user_state_dir()/guard (coach.GUARD); only that

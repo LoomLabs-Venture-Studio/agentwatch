@@ -10,7 +10,18 @@ Bash commands are read twice under one clock, and either reading asking asks
 `sh <(X)` / `sh < <(X)` as `X | bash`, and keeps `#` as code mid-word (`a##b`)
 and inside `(( ))` / `$(( ))` whose `))` closes on the same line, an
 `a[...]=` assignment subscript and an extglob group (`@( )`) closed on the same
-line. Each reading uses bash's quoting rules (_Scan): comments
+line. Since #228 the new reading also reads any `name[...]` at a command's start
+up to its `]` (quotes, `$` and `#` inside: `a[$i #x]=1`), asks when a comment
+with a quote or substitution sits inside a `((`, `$((` or extglob group still
+open from an earlier line (bash may read that `#` as code), checks a
+here-string, heredoc or `<(...)` on a group or loop end (`{ bash; } <<< X`,
+`( sh ) < <(X)`, `done < <(X)`) or a bare `exec` (`exec < <(X); bash`) as a
+script when the command names a shell anywhere, and both readings decode
+`echo` escapes (unless the last of -e/-E is -E; zsh and dash decode them by
+default), unwrap `env -S` / `--split-string` (3 levels, deeper asks), take
+`gxargs` as xargs, skip the value of a shell's long option (`bash --rcfile F`)
+and match any shell name (bash5, bash-5.2, ksh93, mksh, yash, ...; fish -C
+runs its script too). Each reading uses bash's quoting rules (_Scan): comments
 (`#` at a word start, up to the newline) and `\<newline>`
 continuations are removed, and the commands bash runs inside
 `$(...)`, backticks, `<(...)` and `>(...)` are checked on their own, also
@@ -112,6 +123,17 @@ _HOME_RE = re.compile(r"(?:~|\$HOME|\$\{HOME\})(?=/|$)")
 _DISK = re.compile(r"/dev/(?:sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|disk\d)")
 _HARMLESS_DEV = ("/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/")
 _SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
+# Any shell name, also versioned or renamed builds: bash5, bash-5.2, ksh93, mksh,
+# rbash, yash, tcsh, zsh-5.9 (_is_shell). Linear: no nested quantifiers.
+_SHELL_RE = re.compile(r"(?:(?:r?ba|da|z|k|mk|pdk|lk|ok|ya?|a|po|t?c|o|bo|hu)?sh|fish)"
+                       r"(?:[-_]?\d+(?:\.\d+)*)?")
+# Group and loop ends: a stdin redirection after one feeds every command inside.
+_CLOSERS = {"}", "done", "fi", "esac"}
+# bash/zsh long options that take no value; any other `--opt` is read as taking
+# the next word, so a value (`--rcfile /dev/null`) is never mistaken for a script file.
+_SHELL_LONG = {"login", "noediting", "noprofile", "norc", "posix", "protected", "restricted",
+               "verbose", "version", "help", "debugger", "dump-strings", "dump-po-strings",
+               "pretty-print", "interactive", "no-rcs", "no-globalrcs", "private", "features"}
 # Prefix programs and their options that take a value. timeout also takes a duration.
 _PREFIXES = {"sudo": {"-u", "-g", "-C", "-h", "-p"}, "doas": {"-u", "-C"},
              "env": {"-u", "-C"}, "nice": {"-n"}, "ionice": {"-c", "-n", "-p"},
@@ -138,7 +160,8 @@ _READERS = {"cat", "less", "more", "head", "tail", "cp", "scp", "bat"}
 # (coach.guard_path()); matching the tail also catches ~, $HOME and %VAR% spellings.
 _GUARD_FILE = "/agentwatch/coach/guard"
 _AW_NAMES = {"agentwatch", "agentwatch-monitor", "agentwatch.cli", "agentguard"}
-_LAUNCHERS = re.compile(r"python[\d.]*w?|py|uvx?|pipx|xargs|npx")
+_LAUNCHERS = re.compile(r"python[\d.]*w?|py|uvx?|pipx|g?xargs|npx")
+_XARGS = {"xargs", "gxargs"}  # gxargs: GNU xargs as Homebrew installs it
 _AW_RAW = re.compile(r"agent(?:watch|guard)", re.IGNORECASE)
 _GUARD_RAW = re.compile(r"\bguard\s+off\b|agentwatch[/\\]+coach[/\\]+guard\b", re.IGNORECASE)
 # PowerShell options that take a value: matched as a prefix of the long name,
@@ -205,6 +228,58 @@ def _prog(word: str) -> str:
     r"""Program name: the lowercased basename without .exe (`C:\...\CMD.exe` -> cmd)."""
     word = word.replace("\\", "/").rsplit("/", 1)[-1].lower()
     return word.removesuffix(".exe")
+
+
+def _is_shell(prog: str) -> bool:
+    """*prog* (from _prog) names a shell: sh, bash, bash5, ksh93, mksh, ..."""
+    return prog in _SHELLS or _SHELL_RE.fullmatch(prog) is not None
+
+
+def _mentions_shell(text: str) -> bool:
+    """A shell name (or /dev/stdin, for `. /dev/stdin`) appears as a word in *text*."""
+    return any(_is_shell(_prog(m.group())) or m.group() in _STDIN
+               for m in re.finditer(r"[^\s;&|()<>`'\"{}=]+", text))
+
+
+class _UnsureError(Exception):
+    """The guard cannot tell how bash reads the command: check_command asks."""
+
+
+_ENV_LONG_VALUE = ("unset", "chdir")  # env long options that take a value
+
+
+def _env_split(argv: list[str]) -> list[str] | None:
+    """argv with `env -S STRING` / `--split-string=STRING` replaced by the words
+    env splits STRING into (`env -S 'rm -rf ~'` -> env rm -rf ~); None without one."""
+    for k, w in enumerate(argv):
+        if _prog(w) == "env" and (split := _env_split_at(argv, k + 1)) is not None:
+            return split
+    return None
+
+
+def _env_split_at(argv: list[str], j: int) -> list[str] | None:
+    """_env_split for the env options that start at argv[j]."""
+    while j < len(argv) and argv[j].startswith("-") and argv[j] != "--":
+        a = argv[j]
+        name, eq, val = a[2:].partition("=")
+        if a.startswith("--") and name and "split-string".startswith(name):
+            after = j + 1 if eq else j + 2
+            val = val if eq else (argv[j + 1] if j + 1 < len(argv) else "")
+        elif m := re.fullmatch(r"-[0iv]*S(.*)", a, re.DOTALL):
+            after = j + 1 if m.group(1) else j + 2
+            val = m.group(1) or (argv[j + 1] if j + 1 < len(argv) else "")
+        else:
+            j += 2 if a in ("-u", "-C") or (
+                a.startswith("--") and not eq and name in _ENV_LONG_VALUE) else 1
+            continue
+        # env's own escapes: \_ \t \n are separators (or spaces); the rest as shlex reads them.
+        val = re.sub(r"\\[_tnvfr]", " ", val)
+        try:
+            words = shlex.split(val)
+        except ValueError:
+            words = val.split()
+        return argv[:j] + words + argv[after:]
+    return None
 
 
 def _rest(args: list[str], depth: int) -> str | None:
@@ -346,13 +421,13 @@ def _target(op: str) -> str | None:
 
 def _runs_stdin(prog: str, args: list[str]) -> bool:
     """A shell, or `source`/`.` of /dev/stdin: it runs what it reads on stdin."""
-    return prog in _SHELLS or (prog in ("source", ".") and bool(args) and args[0] in _STDIN)
+    return _is_shell(prog) or (prog in ("source", ".") and bool(args) and args[0] in _STDIN)
 
 
 def _script_on_stdin(prog: str, args: list[str]) -> bool:
     """The shell reads its script from stdin: no -c and no script file (or -s, -).
     -n (syntax check only) counts only without -i: bash ignores -n when interactive."""
-    if prog not in _SHELLS:
+    if not _is_shell(prog):
         return True  # source /dev/stdin
     interactive = any(re.fullmatch(r"-[a-zA-Z]*i[a-zA-Z]*", a) for a in args)
     skip = False
@@ -365,8 +440,9 @@ def _script_on_stdin(prog: str, args: list[str]) -> bool:
             continue
         elif re.fullmatch(r"-[a-z]*c[a-z]*", a) or a == "--command":
             return False
-        elif a in ("-o", "+o", "-O", "+O"):
-            skip = True
+        elif a in ("-o", "+o", "-O", "+O") or (
+                a.startswith("--") and "=" not in a and a[2:] not in _SHELL_LONG):
+            skip = True  # --rcfile FILE, --init-file FILE, an unknown --opt VALUE
         elif re.fullmatch(r"-[a-zA-Z]*s[a-zA-Z]*", a):
             return True
         elif not a.startswith(("-", "+")):
@@ -444,7 +520,7 @@ def _xargs(args: list[str], piped_from: set[str], depth: int, stdin: list[str]) 
     for inner in argvs:
         _tick()
         inner = _strip_prefixes(inner)
-        if inner and _prog(inner[0]) in _SHELLS and piped_from & (_DOWNLOADERS | _DECODERS):
+        if inner and _is_shell(_prog(inner[0])) and piped_from & (_DOWNLOADERS | _DECODERS):
             return REASONS["pipe_shell"]
         if reason := _check_argv(inner, piped_from, depth + 1):
             return reason
@@ -474,21 +550,32 @@ def _check_argv(argv: list[str], piped_from: set[str], depth: int,
     # try those.
     if _turns_guard_off(argv):
         return REASONS["guard_off"]
-    if prog == "xargs":
+    if prog in _XARGS:
         return _xargs(args, piped_from, depth, stdin or [])
     if prog == "eval":  # bash joins eval's args and parses them again
         return _script(" ".join(args), depth)
-    if prog in _SHELLS and piped_from & _DOWNLOADERS:
+    if _is_shell(prog) and piped_from & _DOWNLOADERS:
         return REASONS["pipe_shell"]
     if _runs_stdin(prog, args) and piped_from & (_DOWNLOADERS | _DECODERS) \
             and _script_on_stdin(prog, args):  # base64 -d | sh, curl | . /dev/stdin
         return REASONS["pipe_shell"]
-    if prog in _SHELLS or prog in ("source", "."):  # bash <(curl ...), . <(wget ...)
+    if _is_shell(prog) or prog in ("source", "."):  # bash <(curl ...), . <(wget ...)
         if _DL in args or any(
                 a == "<(" and _prog(b) in ("curl", "wget") for a, b in zip(args, args[1:])):
             return REASONS["pipe_shell"]
-    if prog in _SHELLS or prog == "script":
-        for i, a in enumerate(args[:-1]):
+    if _is_shell(prog) or prog == "script":
+        for i, a in enumerate(args):
+            if prog.startswith("fish") and (  # fish -C / --init-command runs a script too
+                    a.startswith("--init-command=") or (a.startswith("-C") and len(a) > 2)):
+                if reason := _script(a.split("=", 1)[1] if a.startswith("--") else a[2:], depth):
+                    return reason
+                continue
+            if i == len(args) - 1:
+                break
+            if prog.startswith("fish") and a in ("-C", "--init-command"):
+                if reason := _script(args[i + 1], depth):
+                    return reason
+                continue
             if re.fullmatch(r"-[a-z]*c[a-z]*", a) or a == "--command":
                 j = i + 1
                 while j < len(args) - 1 and args[j].startswith("-") and args[j] != "-":
@@ -597,6 +684,12 @@ _WORD_END = " \t\n;&|()<>"
 # An array element assignment `a[...]=` (`+=`): bash reads the subscript as one
 # word, so a `#` in it is not a comment. Bounded so a scan stays linear.
 _ASSIGN_SUB = re.compile(r"[A-Za-z_]\w*\[[^]\n;&|()'\"`$\\]{0,500}\]\+?=")
+# Any other `name[` at a command's start (bash reads it the same way): _Scan.subscript.
+_SUB_OPEN = re.compile(r"[A-Za-z_]\w*\[")
+_SUB_RUN = re.compile(r"[^\\'\"`$\[\]\n]+")
+_ASSIGN_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
+# A comment holding one of these could change how bash reads the lines after it.
+_PAIR_CHARS = re.compile(r"[\\'\"`$()]")
 _MAX_NEST = 50
 _ECHOES = {"echo", "printf"}
 # The script a shell runs is the output of curl/wget: sh -c "$(curl -fsSL URL)".
@@ -654,6 +747,7 @@ class _Scan:
         self.s, self.out, self.n = s, [], 0
         self.new = not _legacy  # False: the #222 reading (see check_command)
         self._pairs: dict[int, int] | None = None
+        self._has_shell: bool | None = None
         self.level = 0  # enclosing substitutions
         self.nest = 0
         self.spans: list[tuple[int, int, str]] = []  # skeleton cuts (start, end, filler)
@@ -679,6 +773,49 @@ class _Scan:
                 elif c == "\n":
                     stack.clear()
         return self._pairs.get(i)
+
+    def has_shell(self) -> bool:
+        """The command names a shell anywhere (_mentions_shell), computed once."""
+        if self._has_shell is None:
+            self._has_shell = _mentions_shell(self.s)
+        return self._has_shell
+
+    def subscript(self, i: int) -> int:
+        """`name[` at a command's start: bash reads the word up to the matching `]`,
+        across blanks and newlines, with quotes and substitutions inside and `#`
+        as code (`a[$i #x]=1`). Returns the index after the `]`."""
+        s, end, depth = self.s, len(self.s), 1
+        while i < end:
+            if m := _SUB_RUN.match(s, i):
+                self.emit(m.group())
+                i = m.end()
+                continue
+            c = s[i]
+            if c == "\\":
+                if not s.startswith("\n", i + 1):
+                    self.emit(s[i:i + 2])
+                i += 2
+            elif c == "'":
+                close = s.find("'", i + 1)
+                if close < 0:
+                    raise _UnparsedError
+                self.emit(s[i:close + 1])
+                i = close + 1
+            elif c == '"':
+                i = self.dq(i + 1, False)
+            elif c == "$":
+                i = self.dollar(i, False)
+            elif c == "`":
+                i = self.backtick(i, False)
+            elif c == "\n" and self.pending:
+                raise _UnparsedError  # a heredoc body inside a subscript: not read
+            else:
+                self.emit(c)
+                i += 1
+                depth += {"[": 1, "]": -1}.get(c, 0)
+                if not depth:
+                    return i
+        raise _UnparsedError
 
     def arithmetic(self, i: int) -> bool:
         """`((` at *i* is arithmetic: its `))` closes on the same line. Otherwise
@@ -723,22 +860,38 @@ class _Scan:
         new = self.new
         arith = arith and new
         shell = False  # the current command names a shell: `bash < <(...)` feeds it
+        # The current command is a group/loop end (`}`, `done`, a subshell's `)`) or
+        # `exec`: `{ bash; } < <(...)` and `exec < <(...); bash` feed a shell too.
+        group = False
+        assign = False  # the current word is an assignment: the next word is a command too
         parens = cases = 0
         quiet: list[int] = []  # paren depths where `((` or an extglob `@(` opened
+        # Paren depths where a `((`, `$((` or extglob group opened that does not close
+        # on its line: bash may read `#` there as code or as a comment (see "#" below).
+        unsure: list[int] = []
         while i < end:
-            if new and word_start and cmd_pos and (m := _ASSIGN_SUB.match(s, i)):
-                self.emit(m.group())  # a[... # ...]= : one word, `#` is not a comment
-                i, word_start, cmd_pos = m.end(), False, False
-                continue
+            if new and word_start and cmd_pos:
+                if m := _ASSIGN_SUB.match(s, i):
+                    self.emit(m.group())  # a[... # ...]= : one word, `#` is not a comment
+                    i, word_start, assign = m.end(), False, True
+                    continue
+                if m := _SUB_OPEN.match(s, i):  # a[$i #x]=1: bash reads up to the `]`
+                    self.emit(m.group())
+                    i, word_start = self.subscript(m.end()), False
+                    assign = cmd_pos = s.startswith(("=", "+="), i)
+                    continue
+                assign = _ASSIGN_WORD.match(s, i) is not None
             if m := _CODE_RUN.match(s, i):
                 word = m.group()
-                if word_start and (_prog(word) in _SHELLS or word in ("source", ".")):
+                if word_start and (_is_shell(_prog(word)) or word in ("source", ".")):
                     shell = True
                 if cmd_pos and word == "case":
                     cases += 1
                 elif cmd_pos and word == "esac" and cases:
                     cases -= 1
-                cmd_pos = cmd_pos and word in _KEYWORDS
+                if cmd_pos and (word in _CLOSERS or word == "exec"):
+                    group = True
+                cmd_pos = cmd_pos and (word in _KEYWORDS or (new and assign))
                 self.emit(word)
                 i, word_start = m.end(), False
                 continue
@@ -753,16 +906,23 @@ class _Scan:
                 continue
             if c == "#" and word_start:  # a comment, up to the newline
                 nl = s.find("\n", i)
-                i = end if nl < 0 else nl
+                nl = end if nl < 0 else nl
+                # Inside a `((`/extglob group still open from an earlier line, bash may
+                # read this `#` as code: a quote, `$`, backtick, backslash or paren in it
+                # could then hide what follows. Not sure how bash reads it: ask.
+                if unsure and _PAIR_CHARS.search(s, i, nl):
+                    raise _UnsureError
+                i = nl
                 continue
             if c == "\n":
                 self.emit(c)
-                i, word_start, cmd_pos, shell = i + 1, True, True, False
+                i, word_start, cmd_pos, shell, group = i + 1, True, True, False, False
                 quiet.clear()
                 if self.pending:
                     i = self.heredoc_bodies(i)
                 continue
-            word_start = cmd_pos = False
+            word_start = False
+            cmd_pos = cmd_pos and new and assign and c in "'\"$`\\"
             if c == "\\":
                 if s.startswith("\n", i + 1):  # line continuation
                     i += 2
@@ -787,21 +947,28 @@ class _Scan:
             elif s.startswith("<<", i):
                 i = self.heredoc_op(i)
             elif c in "<>" and s.startswith("(", i + 1):  # process substitution
-                i = self.sub(i, 2, feeds_shell=new and shell and c == "<")
+                i = self.sub(i, 2, feeds_shell=new and c == "<" and (
+                    shell or (group and self.has_shell())))
             else:  # ; & | ( ) < >
                 word_start, cmd_pos = True, c in "(;&|"
                 if c in ";&|()":
-                    shell = False
+                    shell = group = False
                 if c == "(":
                     if new and ((s.startswith("((", i) and self.arithmetic(i)) or (
                             i and s[i - 1] in "!@?*+" and self.closes_on_line(i))):
                         quiet.append(parens)  # (( arithmetic )) or @(extglob)
+                    elif new and (s.startswith("((", i) or (i and s[i - 1] in "!@?*+") or (
+                            i > 1 and s[i - 2:i] == "$(")):
+                        unsure.append(parens)  # may be arithmetic or extglob over lines
                     parens += 1
                 elif c == ")":
                     if parens:
                         parens -= 1
+                        group = True  # `( bash ) < <(...)`
                         if quiet and parens <= quiet[-1]:
                             quiet.pop()
+                        if unsure and parens <= unsure[-1]:
+                            unsure.pop()
                     elif cases:  # a case pattern: `a) cmd ;;`
                         cmd_pos = True
                     elif closes:
@@ -1037,6 +1204,16 @@ def _stdin_scripts(prog: str, argv: list[str]) -> list[str]:
     if prog in _ECHOES:
         words = [a for a in argv[1:] if not re.fullmatch(r"-[neE]+", a)]
         out.append(" ".join(words).replace("\\n", "\n"))
+        if prog == "echo":
+            # `echo -e` (and zsh's and dash's echo by default) decodes escapes like
+            # printf %b; only a last -E turns that off. Both texts are checked.
+            mode = ""
+            for a in argv[1:]:
+                if not re.fullmatch(r"-[neE]+", a):
+                    break
+                mode = a.replace("n", "")[-1:] or mode
+            if mode != "E":
+                out.append(_decode(" ".join(words), "b")[0])
         if prog == "printf":
             args = argv[1:]
             args = args[1:] if args[:1] == ["--"] else args
@@ -1106,18 +1283,46 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
     stdin: list[str] = []  # scripts flowing down the current pipeline
     checked: set[str] = set()
     docs = iter(heredocs or ())
+    has_shell = None  # computed when a group, subshell or exec gets a here-string or heredoc
     for argv, sep in _simple_commands(_tokens(command)):
         _tick()
         mine = [next(docs, "") for tok in argv if tok == "<<"] if heredocs else []
+        raw0 = argv[0] if argv else ""
+        alt = _env_split(argv)  # env -S 'cmd args': checked as the command env runs too
+        for _ in range(3):  # env -S "env -S '...'": unwrapped up to 3 times, then ask
+            if alt is None or (nested := _env_split(alt)) is None:
+                break
+            alt = nested
+        else:
+            raise _UnsureError
         argv = _strip_prefixes(argv)
         if sep not in _PIPES:
             pipeline, stdin = set(), []
         prog = _prog(argv[0]) if argv else ""
         if argv:
             mine += _stdin_scripts(prog, argv)
+        # `{ bash; } <<< X`, `( sh ) <<< X`, `done <<EOF`, `exec <<< X; bash`: the
+        # shell inside the group (or run after exec) reads X as its script.
+        if mine and (raw0 in _CLOSERS or sep == ")" or (_prog(raw0) == "exec" and (
+                not argv or argv[0].isdigit() or _REDIR.fullmatch(argv[0])))):
+            if has_shell is None:
+                has_shell = _mentions_shell(command)
+            if has_shell:
+                for script in mine:
+                    if reason := _script(script.replace("\0", ""), depth):
+                        return reason
         reason = _check_argv(argv, pipeline, depth, stdin + mine)
         if reason:
             return reason
+        if alt is not None:
+            alt = _strip_prefixes(alt)
+            alt_prog = _prog(alt[0]) if alt else ""
+            if alt:
+                mine += _stdin_scripts(alt_prog, alt)
+            if reason := _check_argv(alt, pipeline, depth, stdin + mine):
+                return reason
+            if alt and _runs_stdin(alt_prog, alt[1:]):
+                argv, prog = alt, alt_prog
         if argv:
             if _runs_stdin(prog, argv[1:]):  # it reads its stdin: what it prints is not a script
                 for script in stdin + mine:

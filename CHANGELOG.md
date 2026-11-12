@@ -55,6 +55,16 @@ numbers refer to the GitHub repository.
   is checked as a redirection, and `bash -n` counts as a syntax check only
   without `-i` (bash ignores `-n` when interactive). The decoder check is
   linear, so a long `|/|/...` run no longer stalls the hook past its watchdog.
+- Command guard (#228): a shell fed from a group, subshell or `exec`
+  (`{ bash; } < <(echo ...)`, `( sh ) <<< ...`, `exec 0<<<'...'; bash`), a decoder
+  or download piped into a shell with options or names the guard did not know
+  (`bash --rcfile /dev/null`, `bash5`, `bash-5.2`, `ksh93`, `mksh`, `yash`, `fish -C`),
+  a `#` inside an array subscript (`a[$i #x]=1; rm -rf ~`), `echo -e` escapes
+  piped into a shell (`echo -e '\x72m -rf ~' | bash`), `env -S` /
+  `env --split-string` and `gxargs` no longer hide a dangerous command. Where the
+  guard cannot tell whether bash reads a `#` as a comment (a `((`, `$((` or
+  extglob group open across lines, with a quote or substitution in the comment)
+  it now asks. Only adds asks.
 - `report`/`tools` error kinds: a Node.js crash that failed to open a file is
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is
