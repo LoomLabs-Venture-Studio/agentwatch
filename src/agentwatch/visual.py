@@ -296,7 +296,7 @@ h2{font-size:1.15rem;line-height:1.3;margin:0;margin-right:auto}
 .when{color:var(--mute);font-size:.875rem;width:100%;margin:2px 0 0}
 .body{margin-top:12px}
 .body>*+*{margin-top:16px}
-p{margin:0;text-wrap:pretty}
+p{margin:0;text-wrap:pretty;overflow-wrap:anywhere}
 h1,h2{text-wrap:balance}
 .mute{color:var(--mute)}
 .verdict{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px}
@@ -337,11 +337,41 @@ footer{border-top:1px solid var(--rule);background:var(--bg-alt)}
 footer .wrap{max-width:72rem;margin:auto;padding:24px 16px 48px}
 footer h2{margin-bottom:4px}
 code{font-family:var(--mono);font-size:.875rem}
-.cmds{display:grid;grid-template-columns:repeat(auto-fill,minmax(20rem,1fr));gap:12px 32px;
+.cmds{display:grid;gap:12px 32px;
+grid-template-columns:repeat(auto-fill,minmax(min(20rem,100%),1fr));
 margin:16px 0 0}
 .cmds div{border-bottom:1px solid var(--rule);padding-bottom:10px}
 .cmds dt code{color:var(--acc);font-weight:700}
 .cmds dd{margin:2px 0 0;color:var(--mute);font-size:.9375rem}
+/* Live overview: summary tiles, agent cards, charts. Charts are inline SVG and
+   always sit next to their value as text; colour is never the only signal. */
+.plain{font-size:1.15rem;max-width:60ch;margin:8px 0 0;text-wrap:pretty}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:12px;
+margin-top:16px}
+.tile,.card{background:var(--bg-alt);border:1px solid var(--rule-strong);border-radius:10px;
+padding:12px 14px;min-width:0}
+.tile .lbl{color:var(--mute);font-size:.875rem}
+.tile .val{font-size:1.75rem;font-weight:700;line-height:1.15;letter-spacing:-.02em}
+.tile .val small{font-size:.9rem;font-weight:400;color:var(--mute);letter-spacing:0}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:12px}
+.card h3{margin:0;font-size:1.05rem;line-height:1.3}
+.card .sub{color:var(--mute);font-size:.875rem;overflow-wrap:anywhere}
+.card .row{display:flex;justify-content:space-between;align-items:center;gap:8px;
+margin-top:8px;font-size:.9375rem}
+.card.child{margin-left:12px;border-left:4px solid var(--acc)}
+.spark{display:block;width:100%;max-width:9rem;height:28px;margin-top:6px;overflow:visible}
+.spark path{fill:none;stroke:var(--acc);stroke-width:2;vector-effect:non-scaling-stroke;
+stroke-linejoin:round;stroke-linecap:round}
+.spark circle{fill:var(--acc)}
+.bars{display:grid;grid-template-columns:minmax(6rem,12rem) minmax(0,1fr) auto;gap:6px 12px;
+align-items:center;font-size:.9375rem}
+.bars svg{width:100%;height:14px;display:block}
+.bars rect.bg{fill:var(--field)}.bars rect.fg{fill:var(--acc)}
+.bars .l{overflow-wrap:anywhere}.bars .v{text-align:right}
+.pulse{display:inline-block;width:.55em;height:.55em;border-radius:50%;background:var(--ok);
+margin-right:.4em}
+.stale .pulse{background:var(--degraded)}
+.stale .when{color:var(--degraded)}
 /* Phones: each table row becomes a short list of labelled values. */
 @media (max-width:44em){
   .bar{gap:0 12px}
@@ -356,7 +386,9 @@ margin:16px 0 0}
   .kv>tbody>tr>th,.kv>tbody>tr>td{display:block;border:0;padding:0}
 }
 @media (prefers-reduced-motion:no-preference){
-  .btn,[role=tab]{transition:color .15s,background-color .15s}}
+  .btn,[role=tab]{transition:color .15s,background-color .15s}
+  .live .pulse{animation:beat 2s ease-in-out infinite}
+  @keyframes beat{50%{opacity:.35}}}
 </style></head><body>
 <header><div class="bar">
 <span class="brand"><svg viewBox="0 0 24 24" aria-hidden="true">
@@ -413,8 +445,9 @@ const T = new URLSearchParams(location.search).get("t") || "";
 // Tools and Config tabs are added here once #198 and #196 merge.
 const TABS = [
   ["overview", "Overview",
-    "Your running agents, the newest session's health and its subagents' health.",
+    "What your AI agents are doing on this computer right now. Updates by itself.",
     ["ps", "Running agents", null], ["check", "Health of the newest session", null],
+    ["security-scan", "Security of the newest session", null],
     ["subagents", "Subagents of the newest session", null]],
   ["security", "Security", "Secrets, risky commands and data leaving your machine.",
     ["security-scan", "Security of the newest session", null],
@@ -478,6 +511,64 @@ function fmt(k, v) {
   if (typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:/.test(v)) return when(v);
   if (typeof v === "object") return JSON.stringify(v);
   return v;
+}
+// Samples kept in this page (last SAMPLES per series) to draw the live charts.
+const SAMPLES = 60, series = new Map(), SVGNS = "http://www.w3.org/2000/svg";
+function sample(key, v) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return;
+  const a = series.get(key) || [];
+  a.push(v);
+  if (a.length > SAMPLES) a.shift();
+  series.set(key, a);
+}
+function svg(tag, attrs) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, String(v));
+  return e;
+}
+// A sparkline of series *key*; the value is always shown next to it as text.
+function spark(key, label) {
+  const a = series.get(key) || [], w = 120, h = 28;
+  const s = svg("svg", {viewBox: `0 0 ${w} ${h}`, class: "spark", role: "img",
+    "aria-label": `${label}: ${a.length ? num(a[a.length - 1]) : "no data"}, ` +
+      `last ${a.length} samples`});
+  if (a.length < 2) return s;
+  const lo = Math.min(...a), hi = Math.max(...a), span = hi - lo || 1;
+  const pts = a.map((v, i) => [i / (a.length - 1) * (w - 4) + 2,
+    h - 3 - (v - lo) / span * (h - 6)]);
+  s.append(svg("path", {d: pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " +
+    p[1].toFixed(1)).join("")}), svg("circle", {cx: pts[pts.length - 1][0],
+    cy: pts[pts.length - 1][1], r: 3}));
+  return s;
+}
+// Horizontal bars: rows = [label, value, value text].
+function bars(rows) {
+  const g = el("div", null, "bars"), top = Math.max(...rows.map(r => r[1]), 1);
+  for (const [label, v, text] of rows) {
+    const s = svg("svg", {viewBox: "0 0 100 10", preserveAspectRatio: "none",
+      "aria-hidden": "true"});
+    s.append(svg("rect", {class: "bg", width: 100, height: 10, rx: 2}),
+      svg("rect", {class: "fg", width: Math.max(v / top * 100, 1), height: 10, rx: 2}));
+    g.append(el("span", label, "l"), s, el("span", text, "v"));
+  }
+  return g;
+}
+function ago(at) {
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  return s < 5 ? "just now" : s < 60 ? s + " s ago" : s < 3600 ? Math.floor(s / 60) +
+    " min ago" : Math.floor(s / 3600) + " h ago";
+}
+// A text that keeps counting its own age: data-at (ms) + data-prefix.
+function aged(prefix, at, cls) {
+  const e = el("span", null, cls);
+  e.dataset.at = at; e.dataset.prefix = prefix;
+  e.textContent = `${prefix} ${ago(at)}`;
+  return e;
+}
+function tickAges() {
+  document.querySelectorAll("[data-at]").forEach(e => {
+    e.textContent = `${e.dataset.prefix} ${ago(+e.dataset.at)}`;
+  });
 }
 function tone(score) {
   if (score === null || score === undefined) return "";
@@ -568,14 +659,60 @@ function findings(list, empty) {
   ], plural(list.length, "finding"));
 }
 function note(text) { return text ? el("p", text, "mute") : null; }
+function cards(list) {
+  const g = el("div", null, "cards");
+  for (const a of list) {
+    const c = el("div", null, "card" + (a.depth > 0 ? " child" : ""));
+    const row1 = el("div", null, "row"), row2 = el("div", null, "row");
+    row1.append(el("span", "Running for"), el("b", a.uptime));
+    row2.append(el("span", "CPU " + fmt("cpu_percent", a.cpu_percent) + ", memory " +
+      fmt("memory_mb", a.memory_mb)));
+    c.append(el("h3", human(a.agent_type || "agent")),
+      el("div", (a.project || "No project") + (a.team_name ? " - " + a.team_name : ""), "sub"),
+      el("div", a.working_directory || "", "sub code"), row1, row2,
+      spark("cpu:" + a.pid, "CPU of " + a.agent_type), el("div", "PID " + a.pid, "sub"));
+    g.append(c);
+  }
+  return g;
+}
+// The answer in words, from what the Overview views last loaded.
+const state = {};
+function summary() {
+  const box = document.getElementById("summary");
+  if (!box) return;
+  const {ps, check, sec, subs} = state, parts = [];
+  if (ps) parts.push(ps.length ? plural(ps.length, "AI agent") + " running on this computer."
+    : "No AI agents are running right now.");
+  if (check) parts.push(`The newest session is ${String(check.status).toLowerCase()} ` +
+    `(health ${check.overall_score}/100)` + (sec ? ` and ${String(sec.status).toLowerCase()} ` +
+    `(security ${sec.security_score}/100)` : "") + ".");
+  const cost = check && check.efficiency ? check.efficiency.cost_total : null;
+  if (cost !== null && cost !== undefined) parts.push(`It has cost about ${money(cost)} so far.`);
+  if (subs && subs.active) parts.push(`${plural(subs.active, "subagent")} working now.`);
+  const tile = (label, value, unit, cls, key, what) => {
+    const t = el("div", null, "tile"), v = el("div", null, "val");
+    v.append(String(value), el("small", unit));
+    t.append(el("div", label, "lbl"));
+    t.append(v);
+    if (cls) t.append(chip(what, cls));
+    t.append(spark(key, label));
+    return t;
+  };
+  const tiles = el("div", null, "tiles");
+  if (ps) tiles.append(tile("Agents running", ps.length, "", "", "n:ps", ""));
+  if (check) tiles.append(tile("Health", check.overall_score, " / 100", tone(check.overall_score),
+    "n:health", check.status));
+  if (sec) tiles.append(tile("Security", sec.security_score, " / 100", tone(sec.security_score),
+    "n:sec", sec.status));
+  if (cost !== null && cost !== undefined) tiles.append(tile("Cost so far", money(cost), "", "",
+    "n:cost", ""));
+  box.replaceChildren(el("p", parts.join(" ") || "Loading...", "plain"), tiles);
+}
 // Per report: the answer first, then all fields.
 const VIEWS = {
   ps: d => [
     el("p", d.length ? plural(d.length, "agent") + " running." : "No agents running right now."),
-    d.length ? table(d, [["agent_type", "Agent"], ["project", "Project"],
-      ["working_directory", "Folder", "code"], ["pid", "PID", "num"],
-      ["cpu_percent", "CPU", "num"], ["memory_mb", "Memory", "num"],
-      ["uptime", "Running for"]]) : null,
+    d.length ? cards(d) : null,
     d.length ? raw(d) : null],
   check: d => {
     const flagged = Object.entries(d.categories || {}).filter(([, c]) => c.warning_count);
@@ -610,6 +747,8 @@ const VIEWS = {
       ["Tool calls", num(d.tool_calls)], ["Tokens", num(t.total_tokens || 0)],
       ["Estimated cost", money(t.estimated_cost_usd)],
       ["Cache hits", fmt("_ratio", t.cache_hit_ratio)]]),
+      tools.length ? bars(tools.slice(0, 8).map(x => [x.name, x.total_tokens,
+        num(x.total_tokens) + " tokens"])) : null,
       tools.length ? table(tools, [["name", "Tool"], ["call_count", "Calls", "num"],
         ["total_tokens", "Tokens", "num"], ["estimated_cost_usd", "Estimated cost", "num"]],
         "By tool") : null,
@@ -643,9 +782,7 @@ const VIEWS = {
     ]) : null,
     d.subagents.length ? raw(d) : null],
   history: d => [
-    d.synced ? el("p", `Synced: ${d.synced.new} new, ${d.synced.updated} updated, ` +
-      `${d.synced.unchanged} unchanged` + (d.synced.active ? `, ${d.synced.active} skipped ` +
-      "because the agent wrote to them in the last minute" : "") + ".", "mute") : null,
+    d.synced ? syncNote(d.synced, Date.now()) : lastSync ? syncNote(lastSync.d, lastSync.at) : null,
     d.sessions.length ? table(d.sessions, [["agent", "Agent"], ["project", "Project"],
       ["ended", "Last active"], ["actions", "Actions", "num"], ["tokens", "Tokens", "num"],
       ["cost_usd", "Cost", "num"], ["health_score", "Health", "num"],
@@ -653,12 +790,44 @@ const VIEWS = {
       : el("p", "No sessions recorded yet. Sync history reads your agent logs into a local " +
         "database on this computer.", "mute")],
 };
-// Sections that reload on their own while the page is visible; the rest
-// read every saved log, so they stay on their buttons.
+// The sync result is only in the answer to the click: keep it, with its age.
+let lastSync = null;
+function syncNote(s, at) {
+  lastSync = {d: s, at};
+  const p = el("p", `Synced: ${s.new} new, ${s.updated} updated, ${s.unchanged} unchanged` +
+    (s.active ? `, ${s.active} skipped because the agent wrote to them in the last minute` : "")
+    + ". ", "mute");
+  p.append(aged("Ran", at));
+  return p;
+}
+// Every view reloads on its own while the page is visible, except RUN_ONLY
+// ones: the audit reads every saved log, so only its button runs it. SLOW
+// ones read stored data (stats, report, history; never a sync).
 const LIVE = new Set(["ps", "check", "subagents", "security-scan"]), LIVE_MS = 5000;
+const SLOW = new Set(["stats", "report", "history"]), SLOW_MS = 30000;
+const RUN_ONLY = new Set(["audit"]);
 const busy = new WeakMap(), last = new WeakMap(), inflight = new WeakSet();
+const loadedAt = new WeakMap();
+let expiredLink = false;
+const SLACK = 1000;  // a tick may land just before its view turns one cadence old
+const ranCache = new Map();  // name -> {parts text is rebuilt from d, at}
+// Swap a section's content in place: same height while it happens, open
+// details, horizontal scroll and a focused summary survive.
+function swap(body, parts) {
+  const open = [...body.querySelectorAll("details")].map(d => d.open);
+  const fi = body.contains(document.activeElement) ?
+    [...body.querySelectorAll("summary")].indexOf(document.activeElement) : -1;
+  const sx = [...body.querySelectorAll(".scroll")].map(s => s.scrollLeft);
+  body.style.minHeight = body.offsetHeight + "px";
+  body.replaceChildren(...parts);
+  body.querySelectorAll("details").forEach((d, i) => { d.open = !!open[i]; });
+  body.querySelectorAll(".scroll").forEach((s, i) => { s.scrollLeft = sx[i] || 0; });
+  if (fi >= 0) { const s = body.querySelectorAll("summary")[fi]; if (s) s.focus(); }
+  requestAnimationFrame(() => { body.style.minHeight = ""; });
+}
 // quiet: a timer reload. No "Loading...", buttons stay usable, skipped while
-// another load of the section runs, and the view is kept if nothing changed.
+// another load of the section runs, the view is kept if nothing changed or
+// the update failed.
 async function load(sec, name, run, quiet) {
   if (quiet && inflight.has(sec)) return;
   const body = sec.querySelector(".body"), stamp = sec.querySelector(".when");
@@ -671,31 +840,89 @@ async function load(sec, name, run, quiet) {
     body.replaceChildren(el("p", run ? "Running. This can take a minute..." : "Loading...",
       "mute"));
   }
-  let parts, text;
+  let parts, text, failed = false, expired = false, d;
   try {
     const r = await fetch(`/api/${name}?t=${encodeURIComponent(T)}${run ? "&run=1" : ""}`);
-    if (r.status === 403) throw new Error("This link has expired. Open the address that " +
-      "agentwatch visual printed in your terminal.");
+    if (r.status === 403) {
+      expired = expiredLink = true;  // the token is dead: the timers stop
+      throw new Error("This link has expired. Open the address that " +
+        "agentwatch visual printed in your terminal.");
+    }
     text = await r.text();
-    const d = JSON.parse(text);
+    d = JSON.parse(text);
     if (d.error) parts = [problem("Nothing to show yet.", d.error)];
     else if (d.not_run) parts = [el("p", "Not run yet. The audit reads every saved session " +
       "log, so it can take a while.", "mute")];
-    else parts = VIEWS[name](d);
+    else {
+      feed(name, d, quiet);
+      parts = VIEWS[name](d);
+      if (RUN_ONLY.has(name)) {
+        ranCache.set(name, {d, at: Date.now()});
+        parts.unshift(el("p", null, "mute"));
+        parts[0].append(aged("Ran", ranCache.get(name).at));
+      }
+    }
   } catch (e) {
+    failed = true;
     parts = [problem("Could not load this report.", e instanceof TypeError ?
       "agentwatch is not answering. Is agentwatch visual still running?" : e.message)];
   }
   if (busy.get(sec) !== seq) return;  // a newer load replaced this one
   inflight.delete(sec);
-  if (!(quiet && text !== undefined && text === last.get(sec))) {
-    body.replaceChildren(...parts.filter(Boolean));
-  }
-  last.set(sec, text);
   body.removeAttribute("aria-busy");
-  stamp.textContent = (sec.dataset.live ? "Live, updated " : "Updated ") +
-    new Date().toLocaleTimeString(undefined, {timeStyle: "short"});
   sec.querySelectorAll("button").forEach(b => { b.disabled = false; });
+  if (failed) {
+    const ok = +stamp.dataset.ok;
+    // A timer miss keeps the last good view (its real age); an expired link, or
+    // a view that never loaded, shows the problem instead.
+    if (quiet && !expired && ok && body.childElementCount) {
+      sec.classList.add("stale");
+      stamp.replaceChildren(aged("Update failed. Showing data from", ok));
+      return;
+    }
+    swap(body, parts);
+    last.delete(sec);
+    sec.classList.add("stale");
+    stamp.replaceChildren(el("span", expired ? "Link expired" : "Not loaded"));
+    return;
+  }
+  if (!(quiet && text !== undefined && text === last.get(sec))) swap(body, parts.filter(Boolean));
+  last.set(sec, text);
+  sec.classList.remove("stale");
+  stamp.dataset.ok = loadedAt.set(sec, Date.now()).get(sec);
+  const when = aged(sec.dataset.cadence ? "Last updated" : "Loaded", Date.now());
+  const dot = el("span", null, "pulse");
+  dot.setAttribute("aria-hidden", "true");
+  stamp.replaceChildren(...(sec.dataset.cadence ? [dot] : []), when);
+  if (!sec.dataset.cadence || document.getElementById("summary")) summary();
+}
+// Series and cross-view state for the live charts and the summary.
+// Samples are taken on timer ticks (and once to start a series), so a manual
+// Refresh or a tab switch does not bend the time axis.
+function feed(name, d, tick) {
+  const take = (k, v) => { if (tick || !series.has(k)) sample(k, v); };
+  if (name === "ps") {
+    state.ps = d; take("n:ps", d.length);
+    const live = new Set(d.map(a => "cpu:" + a.pid));
+    for (const k of [...series.keys()]) {
+      if (k.startsWith("cpu:") && !live.has(k)) series.delete(k);  // agent is gone
+    }
+    d.forEach(a => take("cpu:" + a.pid, a.cpu_percent));
+  } else if (name === "check") {
+    state.check = d; take("n:health", d.overall_score);
+    take("n:cost", d.efficiency ? d.efficiency.cost_total : null);
+  } else if (name === "security-scan") { state.sec = d; take("n:sec", d.security_score); }
+  else if (name === "subagents") state.subs = d;
+}
+// Timer: reload every section of the current tab that is on *set*. Never
+// sends the run flag; a section without data yet is skipped while its first load runs.
+function refresh(set, minAge) {
+  if (document.hidden || expiredLink) return;
+  document.querySelectorAll("section[data-name]").forEach(sec => {
+    if (!set.has(sec.dataset.name)) return;
+    if (minAge && Date.now() - (loadedAt.get(sec) || 0) < minAge) return;
+    load(sec, sec.dataset.name, false, true);
+  });
 }
 function problem(title, detail) {
   const p = el("div", null, "note err");
@@ -713,12 +940,21 @@ function show(id) {
   const main = document.getElementById("panel");
   main.setAttribute("aria-labelledby", "tab-" + tid);
   main.replaceChildren(el("h1", label), el("p", intro, "lead"));
+  if (tid === "overview") {
+    const box = el("div"); box.id = "summary";
+    main.append(box);
+    summary();
+  }
   for (const [name, title, button] of secs) {
     const sec = el("section"), head = el("div", null, "head");
     const h = el("h2", title), body = el("div", null, "body");
     h.id = "h-" + name;
     sec.setAttribute("aria-labelledby", h.id);
-    body.setAttribute("aria-live", "polite");
+    sec.dataset.name = name;
+    if (LIVE.has(name)) sec.dataset.cadence = LIVE_MS;
+    else if (SLOW.has(name)) sec.dataset.cadence = SLOW_MS;
+    if (sec.dataset.cadence) sec.classList.add("live");
+    else body.setAttribute("aria-live", "polite");  // timer updates stay silent
     const again = el("button", "Refresh", "btn quiet");
     again.type = "button";
     again.onclick = () => load(sec, name, false);
@@ -729,17 +965,29 @@ function show(id) {
       b.onclick = () => load(sec, name, true);
       head.append(b);
     }
-    head.append(again, el("p", null, "when"));
+    if (!RUN_ONLY.has(name)) head.append(again);  // a plain reload would hide the audit
+    head.append(el("p", null, "when"));
     sec.append(head, body); main.append(sec);
-    if (LIVE.has(name)) sec.dataset.live = name;
-    load(sec, name, false);
+    const kept = ranCache.get(name);
+    if (kept) {  // the audit's last result, kept while you look at other tabs
+      const parts = VIEWS[name](kept.d), age = el("p", null, "mute");
+      age.append(aged("Ran", kept.at));
+      body.replaceChildren(age, ...parts.filter(Boolean));
+    } else load(sec, name, false);
   }
 }
 setInterval(() => {
-  if (document.hidden) return;
-  document.querySelectorAll("section[data-live]").forEach(
-    sec => load(sec, sec.dataset.live, false, true));
+  refresh(LIVE, LIVE_MS - SLACK);
 }, LIVE_MS);
+setInterval(() => {
+  refresh(SLOW, SLOW_MS - SLACK);
+}, SLOW_MS);
+setInterval(tickAges, 1000);
+// Back on the tab: catch up now instead of waiting for the next tick.
+document.addEventListener("visibilitychange", () => {
+  refresh(LIVE, LIVE_MS);
+  refresh(SLOW, SLOW_MS);
+});
 const tabs = document.getElementById("tabs");
 TABS.forEach(([id, label]) => {
   const b = el("button", label);
