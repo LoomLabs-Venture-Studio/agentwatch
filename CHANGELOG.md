@@ -29,7 +29,8 @@ numbers refer to the GitHub repository.
   checking a Bash command now asks instead of letting the command through (a `printf` width or
   precision such as `²` or a 5,000-digit number used to), `function > /dev/sda`
   is checked as a redirection, and `bash -n` counts as a syntax check only
-  without `-i` (bash ignores `-n` when interactive).
+  without `-i` (bash ignores `-n` when interactive). The decoder check is
+  linear, so a long `|/|/...` run no longer stalls the hook past its watchdog.
 - `report`/`tools` error kinds: a Node.js crash that failed to open a file is
   counted as file not found, not as a plain nonzero exit. A failed
   command's line that starts with `Error:` (or `TypeError:` and the like) is

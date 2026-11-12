@@ -605,10 +605,32 @@ _DOWNLOAD = re.compile(r"\s*(?:\$\(|`)\s*(?:\S*[/\\])?(?:curl|wget)(?:\.exe)?\s"
 _DL_BODY = re.compile(r"\s*(?:\S*[/\\])?(?:curl|wget)(?:\.exe)?\s", re.IGNORECASE)
 # A decoder in a substitution's pipeline: its output is no more reviewed than a
 # download (`eval "$(echo ... | base64 -d)"`). rev and tr count only in pipes.
-_DECODE_STAGE = re.compile(
-    r"(?:^|[|`(])\s*(?:\S*[/\\])?(?:base(?:32|64|nc)|xxd|uudecode|openssl|g?unzip|gzip"
+_DECODER = re.compile(
+    r"(?:base(?:32|64|nc)|xxd|uudecode|openssl|g?unzip|gzip"
     r"|zcat|bzip2|bunzip2|bzcat|xz|unxz|xzcat|lzma|unlzma|lzcat|zstd|unzstd|zstdcat)"
     r"(?:\.exe)?(?=[\s|)`]|$)", re.IGNORECASE)
+
+
+def _decode_stage(text: str) -> bool:
+    r"""A decoder starts a pipeline stage in *text*: what the regex
+    `(?:^|[|`(])\s*(?:\S*[/\\])?<decoder>` finds, in one linear pass (that regex
+    backtracks quadratically on a long run such as `|/|/|/...`)."""
+    starts = {m.start() for m in _DECODER.finditer(text)}
+    if not starts:
+        return False
+    # state: 1 after `^`/a separator and blanks, 2 in a word after that, 0 neither.
+    state, before, last = 1, 0, max(starts)
+    for i, c in enumerate(text[:last + 1]):
+        if i in starts and (state == 1 or (before and text[i - 1] in "/\\")):
+            return True
+        before = state
+        if c in "|`(":
+            state = 1
+        elif c.isspace():
+            state = 1 if state == 1 else 0
+        else:
+            state = 2 if state else 0
+    return False
 # In the skeleton a substitution running curl/wget becomes this word, so
 # `eval $(curl ...)` and `bash <(curl ...)` still read as pipe to shell.
 _DL = "__agentwatch_download__"
@@ -673,22 +695,24 @@ class _Scan:
         if self.nest > _MAX_NEST:
             raise _UnparsedError
 
-    def result(self) -> tuple[str, list[str], str | None, list[str]]:
+    def result(self) -> tuple[str, list[str], list[str]]:
         self.code(0, False)
-        text, bodies = "".join(self.out), self.result_bodies()
+        return "".join(self.out), self.result_bodies(), self.heredocs
+
+    def skeleton(self, text: str) -> str | None:
+        """The skeleton of result()'s *text*; None when nothing was cut."""
         if not self.spans:
-            return text, bodies, None, self.heredocs
+            return None
         parts, at = [], 0
         for a, b, filler in sorted(self.spans):
             if a >= at:
                 k = a + (1 if text[a:a + 1] == "`" else 2)  # a:a+1: an empty heredoc ends text
-                if filler and (_DL_BODY.match(text, k, b) or _DECODE_STAGE.search(
-                        text[k:b - 1])):
+                if filler and (_DL_BODY.match(text, k, b) or _decode_stage(text[k:b - 1])):
                     filler = _DL
                 parts += [text[at:a], filler]
                 at = b
         parts.append(text[at:])
-        return text, bodies, "".join(parts), self.heredocs
+        return "".join(parts)
 
     def code(self, i: int, closes: bool, arith: bool = False) -> int:
         """Unquoted shell code up to the `)` that closes a substitution (closes)
@@ -1001,7 +1025,7 @@ def _raw(command: str) -> str | None:
 def _script(script: str, depth: int) -> str | None:
     """A script a shell runs (-c, eval, its stdin)."""
     if _DOWNLOAD.match(script) or script.strip() == _DL or (
-            script.lstrip().startswith(("$(", "`")) and _DECODE_STAGE.search(script)):
+            script.lstrip().startswith(("$(", "`")) and _decode_stage(script)):
         return REASONS["pipe_shell"]
     return check_command(script, depth + 1)
 
@@ -1154,7 +1178,8 @@ def _check_command(command: str, depth: int, _sub: bool) -> str | None:
     if len(command) > MAX_PARSE:
         return _check_long(command, depth)
     try:
-        text, bodies, skeleton, heredocs = _Scan(command).result()
+        scan = _Scan(command)
+        text, bodies, heredocs = scan.result()
     except (_UnparsedError, RecursionError):
         try:
             reason = _check_tokens(command, depth)
@@ -1165,6 +1190,8 @@ def _check_command(command: str, depth: int, _sub: bool) -> str | None:
     # read as commands, as before) and the skeleton, which follows bash's own
     # nesting. A substitution's heredoc is data unless a shell reads it, so a
     # commit message in `$(cat <<'EOF' ... EOF)` is not read as commands.
+    # The full text goes first, as on develop, so the skeleton's extra work
+    # (downloads, decoders) runs only when that check did not already ask.
     if not (_sub and heredocs):
         try:
             if reason := _check_tokens(text, depth):
@@ -1175,7 +1202,7 @@ def _check_command(command: str, depth: int, _sub: bool) -> str | None:
     for body in dict.fromkeys(bodies):
         if reason := check_command(body, depth + 1, _sub=True):
             return reason
-    if skeleton is None:
+    if (skeleton := scan.skeleton(text)) is None:
         return None
     try:
         return _check_tokens(skeleton, depth, heredocs)

@@ -730,3 +730,77 @@ def test_pr225_function_redirect_and_interactive_n_ask(command, word):
 ])
 def test_pr225_look_alikes_pass(command):
     assert _hook({"command": command}) is None
+
+
+# PR #225 QA: the decoder regex backtracked quadratically on a long `|/|/...`
+# run; the hook's watchdog fired and the command was allowed.
+_HANG = [
+    "echo $(" + "|/" * 9500 + "); rm -rf ~",
+    "echo `" + "|/" * 9500 + "`; cat ~/.ssh/id_rsa",
+    "git status $(" + "(/" * 4000 + ")" * 4000 + "); git push --force",
+    "eval \"$(" + "|/" * 9000 + "base64 -d)\"",
+]
+
+
+@pytest.mark.parametrize("command", _HANG)
+def test_qa225_regex_hang_asks_fast(command):
+    import time
+
+    start = time.perf_counter()
+    assert guard.check_command(command)
+    assert time.perf_counter() - start < 0.25
+
+
+@pytest.mark.parametrize("command", _HANG[:2])
+def test_qa225_regex_hang_asks_through_the_hook_process(tmp_path, command):
+    import os
+    import time
+
+    start = time.perf_counter()
+    proc = subprocess.run(
+        [sys.executable, "-c", "from agentwatch._entry import main; main()", "hook"],
+        input=_payload({"command": command}), capture_output=True, text=True,
+        timeout=30, env={"PATH": "", "HOME": str(tmp_path), "XDG_CACHE_HOME": str(tmp_path),
+                         "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")},
+        cwd=tmp_path,
+    )
+    assert time.perf_counter() - start < 1.0
+    assert proc.returncode == 0
+    assert _asks(proc.stdout)
+
+
+@pytest.mark.parametrize("text,found", [
+    ("|/" * 9500, False),
+    ("|/" * 9500 + "base64", True),
+    ("echo x | base64 -d", True),
+    ("echo x |/usr/bin/base64 -d", True),
+    ("echo x | a/b|c/xxd -r", True),
+    ("(gunzip)", True),
+    ("base64", True),
+    ("echo base64", False),
+    ("echo x/base64", False),
+    ("echo x | base64x", False),
+    ("echo x | base64/y", False),
+])
+def test_qa225_decode_stage(text, found):
+    assert guard._decode_stage(text) is found
+
+
+@pytest.mark.parametrize("command", [
+    "echo ~ | xargs --replace=X rm -rf X",
+    "echo ~ | xargs --replace rm -rf {}",
+    "printf 'a,~' | xargs --delimiter=, rm -rf",
+    "printf 'a,~' | xargs --delimiter , rm -rf",
+    "printf 'a,~' | xargs -d, rm -rf",
+])
+def test_qa225_xargs_long_options_ask(command):
+    assert _asks(_hook({"command": command}), "home")
+
+
+@pytest.mark.parametrize("command", [
+    "echo ~ | xargs --replace=X rm -rf {}",  # {} is not the replace string here
+    "printf 'a,~' | xargs --delimiter=';' rm -rf",  # one item: a,~
+    "printf 'a,~' | xargs rm -rf",
+])
+def test_qa225_xargs_long_options_look_alikes_pass(command):
+    assert _hook({"command": command}) is None
