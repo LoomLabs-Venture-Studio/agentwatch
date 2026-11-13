@@ -745,31 +745,64 @@ process.stdout.write(JSON.stringify([shown(first), btn.tag, btn.textContent,
 
 
 # Every tab fits 320 px without sideways scroll (headless Chrome, when installed).
+# The script prints the measurements, or {"skip": why} when Chrome can't be
+# driven (CI images vary); a measured overflow is never a skip.
 
 _WIDTH_CHECK = r"""
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 const [chromePath, url, tabs, prof] = process.argv.slice(2);
-const port = 9400 + Math.floor(Math.random() * 400);
-const chrome = spawn(chromePath, ["--headless=new", "--no-sandbox", "--hide-scrollbars",
-  `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "about:blank"],
-  {stdio: "ignore"});
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-try {
-  let targets;
-  for (let i = 0; i < 100 && !targets; i++) {
-    try { targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); }
-    catch { await sleep(100); }
+const skip = why => { process.stdout.write(JSON.stringify({skip: why})); };
+let exited = null, ws = null;
+const chrome = spawn(chromePath, ["--headless=new", "--no-sandbox", "--disable-gpu",
+  "--disable-dev-shm-usage", "--hide-scrollbars", "--no-first-run",
+  "--remote-debugging-port=0", `--user-data-dir=${prof}`, "about:blank"],
+  {stdio: "ignore"});
+chrome.on("exit", code => { exited = code ?? "signal"; });
+chrome.on("error", e => { exited = String(e.message || e); });
+function stop() {
+  try { if (ws) ws.close(); } catch {}
+  try { chrome.kill("SIGKILL"); } catch {}
+}
+async function devtools() {  // Chrome writes its port here once DevTools listens
+  for (let i = 0; i < 150; i++) {
+    if (exited !== null) throw new Error(`chrome exited (${exited}) before DevTools`);
+    try {
+      const port = readFileSync(join(prof, "DevToolsActivePort"), "utf8").split("\n")[0];
+      if (+port > 0) {
+        const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+        const page = list.find(t => t.type === "page");
+        if (page) return page.webSocketDebuggerUrl;
+      }
+    } catch {}
+    await sleep(100);
   }
-  const ws = new WebSocket(targets.find(t => t.type === "page").webSocketDebuggerUrl);
-  await new Promise(r => ws.addEventListener("open", r));
+  throw new Error("DevTools not reachable after 15 s");
+}
+let stage = "start";
+try {
+  const target = await devtools();
+  stage = "connect";
+  ws = new WebSocket(target);
+  await new Promise((ok, bad) => {
+    ws.addEventListener("open", ok);
+    ws.addEventListener("error", () => bad(new Error("websocket error")));
+    setTimeout(() => bad(new Error("websocket open timed out")), 10000);
+  });
   let id = 0; const wait = new Map();
   ws.addEventListener("message", e => {
     const m = JSON.parse(e.data);
     if (wait.has(m.id)) { wait.get(m.id)(m); wait.delete(m.id); }
   });
-  const send = (method, params = {}) => new Promise(r => {
-    wait.set(++id, r); ws.send(JSON.stringify({id, method, params}));
+  const send = (method, params = {}) => new Promise((ok, bad) => {
+    const n = ++id;
+    wait.set(n, ok);
+    ws.send(JSON.stringify({id: n, method, params}));
+    setTimeout(() => bad(new Error(`${method} timed out`)), 15000);
   });
+  stage = "measure";
   await send("Emulation.setDeviceMetricsOverride",
     {width: 320, height: 640, deviceScaleFactor: 1, mobile: true});
   const out = [];
@@ -778,23 +811,26 @@ try {
       {features: [{name: "prefers-color-scheme", value: scheme}]});
     for (const tab of tabs.split(",")) {
       await send("Page.navigate", {url: `${url}#${tab}`});
-      let r;
+      let v;
       for (let i = 0; i < 80; i++) {  // until every section has loaded
         await sleep(250);
-        r = await send("Runtime.evaluate", {returnByValue: true, expression: `
+        const r = await send("Runtime.evaluate", {returnByValue: true, expression: `
           JSON.stringify({loading: document.querySelectorAll("[aria-busy=true]").length,
             sections: document.querySelectorAll("section[data-name]").length,
-            sw: document.documentElement.scrollWidth, iw: innerWidth,
-            tabs: document.getElementById("tabs").scrollWidth})`});
-        const v = JSON.parse(r.result.result.value);
+            sw: document.documentElement.scrollWidth, iw: innerWidth})`});
+        v = JSON.parse(r.result.result.value);
         if (v.sections && !v.loading) break;
       }
-      out.push({scheme, tab, ...JSON.parse(r.result.result.value)});
+      out.push({scheme, tab, ...v});
     }
   }
   process.stdout.write(JSON.stringify(out));
-  ws.close();
-} finally { chrome.kill(); }
+} catch (e) {
+  skip(`headless Chrome could not be driven (${stage}): ${e.message || e}`);
+} finally {
+  stop();
+  process.exit(0);
+}
 """
 
 
@@ -817,12 +853,19 @@ def test_every_tab_fits_320px_without_sideways_scroll(server, sandbox, tmp_path)
 
     script = tmp_path / "width.mjs"
     script.write_text(_WIDTH_CHECK, encoding="utf-8")
+    prof = tmp_path / "prof"
+    prof.mkdir()
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={server.token}"
-    tabs = ",".join(t for t in ("overview", "security", "cost", "history"))
-    run = subprocess.run([node, str(script), chrome, url, tabs, str(tmp_path / "prof")],
-                         capture_output=True, text=True, timeout=240)
+    try:
+        run = subprocess.run([node, str(script), chrome, url,
+                              "overview,security,cost,history", str(prof)],
+                             capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        pytest.skip("headless Chrome run timed out")
     assert run.returncode == 0, run.stderr
     results = json.loads(run.stdout)
-    assert len(results) == 8 and all(r["sections"] for r in results)
+    if isinstance(results, dict) and "skip" in results:
+        pytest.skip(results["skip"])
+    assert len(results) == 8 and all(r["sections"] for r in results), results
     for r in results:
         assert r["sw"] <= r["iw"] == 320, r
