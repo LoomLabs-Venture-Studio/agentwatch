@@ -28,10 +28,13 @@ from .security_patterns import (
 def __getattr__(name: str):
     # DEFAULT_SEARCH_PATHS (common agent log locations) is lazy: Path.home()
     # raises without a home dir, and that must not break importing the parser.
+    # Claude Code: projects/ and logs/ under each config dir ($CLAUDE_CONFIG_DIR,
+    # ~/.claude; claude_config.config_dirs()).
     if name == "DEFAULT_SEARCH_PATHS":
+        from agentwatch.claude_config import config_dirs
+
         return [
-            Path.home() / ".claude" / "projects",
-            Path.home() / ".claude" / "logs",
+            *(d / sub for d in config_dirs() for sub in ("projects", "logs")),
             Path.home() / ".moltbot" / "agents",
             Path.home() / ".clawdbot" / "agents",
             Path.cwd() / ".logs",

@@ -38,6 +38,7 @@ from pathlib import Path, PurePath
 from typing import Any
 from urllib.parse import urlsplit
 
+from agentwatch import claude_config
 from agentwatch.detectors.security.injection import (
     _COMMENT_KEYWORD_RE,
     PromptInjectionDetector,
@@ -751,37 +752,48 @@ class Scanner:
         from agentwatch.vscode_paths import default_user_dir
 
         p, home = self.project, self.home
-        claude = Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude")
+        # Every Claude Code config dir: $CLAUDE_CONFIG_DIR and ~/.claude (each
+        # existing one once). ~/.claude.json sits in home for ~/.claude, and in
+        # the config dir itself for $CLAUDE_CONFIG_DIR.
+        claudes = claude_config.config_dirs(home)
+        env_claude = claude_config.env_config_dir()
+        cj_paths = [home / ".claude.json"]
+        if env_claude is not None:
+            cj_paths.insert(0, claude_config.resolved(env_claude) / ".claude.json")
+        cj_paths = list(dict.fromkeys(cj_paths))
 
         # Claude Code
-        self.claude_settings(claude / "settings.json", user=True)
-        self.claude_settings(claude / "settings.local.json", user=True)
+        for claude in claudes:
+            self.claude_settings(claude / "settings.json", user=True)
+            self.claude_settings(claude / "settings.local.json", user=True)
         self.claude_settings(p / ".claude" / "settings.json", user=False)
         self.claude_settings(p / ".claude" / "settings.local.json", user=False)
         self.json_mcp(p / ".mcp.json", "claude-code")
-        cj_path = (claude if os.environ.get("CLAUDE_CONFIG_DIR") else home) / ".claude.json"
-        cj = self.load(cj_path, "claude-code", MAX_CLAUDE_JSON_BYTES)
-        if isinstance(cj, dict):
+        for cj_path in cj_paths:
+            cj = self.load(cj_path, "claude-code", MAX_CLAUDE_JSON_BYTES)
+            if not isinstance(cj, dict):
+                continue
             self.mcp_servers(cj.get("mcpServers"), "claude-code", cj_path, "mcpServers")
             projects = cj.get("projects")
             for proj, entry in (projects.items() if isinstance(projects, dict) else ()):
                 if isinstance(entry, dict):
                     self.mcp_servers(entry.get("mcpServers"), "claude-code", cj_path,
                                      f'projects["{show(proj)}"].mcpServers')
-        for md in (claude / "CLAUDE.md", p / "CLAUDE.md", p / "CLAUDE.local.md",
+        for md in (*(c / "CLAUDE.md" for c in claudes), p / "CLAUDE.md", p / "CLAUDE.local.md",
                    p / ".claude" / "CLAUDE.md"):
             self.markdown(md, "claude-code")
-        for base in (claude, p / ".claude"):
+        for base in (*claudes, p / ".claude"):
             self.walk_md(base / "skills", "claude-code", "SKILL.md")
             self.walk_md(base / "commands", "claude-code")
             self.walk_md(base / "agents", "claude-code")
-        installed = self.load(claude / "plugins" / "installed_plugins.json", "claude-code")
-        plugins = installed.get("plugins") if isinstance(installed, dict) else None
-        for entries in (plugins.values() if isinstance(plugins, dict) else ()):
-            for e in entries if isinstance(entries, list) else ():
-                ip = e.get("installPath") if isinstance(e, dict) else None
-                if isinstance(ip, str) and Path(ip).resolve().is_relative_to(home):
-                    self.plugin(Path(ip))
+        for claude in claudes:
+            installed = self.load(claude / "plugins" / "installed_plugins.json", "claude-code")
+            plugins = installed.get("plugins") if isinstance(installed, dict) else None
+            for entries in (plugins.values() if isinstance(plugins, dict) else ()):
+                for e in entries if isinstance(entries, list) else ():
+                    ip = e.get("installPath") if isinstance(e, dict) else None
+                    if isinstance(ip, str) and Path(ip).resolve().is_relative_to(home):
+                        self.plugin(Path(ip))
 
         # Cursor, VS Code (Copilot)
         self.json_mcp(home / ".cursor" / "mcp.json", "cursor")
