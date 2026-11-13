@@ -962,6 +962,23 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
 # ---------------------------------------------------------------------------
 
 
+def find_session_logs(session_id: str) -> list[Path]:
+    """Every top-level session log whose id is *session_id* or starts with it
+    (a short prefix), in every project of every config dir (projects_dirs()).
+    An exact id wins over prefix matches; a session copied into two config
+    dirs has one log in each."""
+    session_id = session_id.strip()
+    if not session_id or any(c in session_id for c in "/\\*?[]"):
+        return []
+    exact: list[Path] = []
+    prefix: list[Path] = []
+    for pdir in find_all_project_dirs():
+        for jsonl in pdir.glob(f"{session_id}*.jsonl"):
+            if jsonl.is_file():
+                (exact if jsonl.stem == session_id else prefix).append(jsonl)
+    return sorted(exact or prefix)
+
+
 def compute_stats(
     *,
     project_dir: Path | None = None,
@@ -975,12 +992,24 @@ def compute_stats(
             (the project's dir in every config dir).
         all_projects: If True, scan all projects under ~/.claude/projects/
             (and $CLAUDE_CONFIG_DIR/projects/).
-        session_id: If set, parse only this specific session.
+        session_id: If set, parse only this session (its id or a prefix of it,
+            searched in every project of every config dir, whatever
+            *project_dir* / *all_projects* say). See find_session_logs().
 
     Returns:
         Merged StatsReport across all matching sessions.
     """
     merged = StatsReport()
+
+    if session_id:
+        for jsonl_path in find_session_logs(session_id):
+            try:
+                merged.merge(parse_session_stats(jsonl_path))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not merged.project_name:
+                merged.project_name = project_dir_to_name(jsonl_path.parent)
+        return merged
 
     if all_projects:
         dirs = find_all_project_dirs()
@@ -994,13 +1023,7 @@ def compute_stats(
         proj_name = project_dir_to_name(pdir)
         names.add(proj_name)
 
-        if session_id:
-            jsonl = pdir / f"{session_id}.jsonl"
-            files = [jsonl] if jsonl.is_file() else []
-        else:
-            files = sorted(pdir.glob("*.jsonl"))
-
-        for jsonl_path in files:
+        for jsonl_path in sorted(pdir.glob("*.jsonl")):
             try:
                 session_report = parse_session_stats(jsonl_path)
                 merged.merge(session_report)

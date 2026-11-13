@@ -55,7 +55,7 @@ from agentwatch.statusline import _cost, state_dirs
 from agentwatch.themes import ascii_safe, get_current_theme_name, get_theme
 from agentwatch.ui import machine
 from agentwatch.ui.app import WarningsList, _hm, hang, plain_notify, show
-from agentwatch.ui.detail import DetailScreen
+from agentwatch.ui.detail import DetailScreen, SessionDetailScreen
 from agentwatch.ui.help import HelpScreen
 from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
 
@@ -578,7 +578,7 @@ class MultiAgentWatchApp(App):
         if self.selected_path is None:
             self.selected_path = log_path
         if log_path == self.session:
-            self.push_screen(DetailScreen(log_path))
+            self.push_screen(self._detail_screen(log_path))
         if self._loaded_until is None:
             name = who(state.get("label") or item.agent_type or state.get("agent_name"),
                        item.project_name)
@@ -690,7 +690,11 @@ class MultiAgentWatchApp(App):
         if not table.row_count or table.coordinate_to_cell_key(
                 (table.cursor_row, 0)).row_key.value != str(self.selected_path):
             return  # a team or fold row, or a filter that matches nothing
-        self.push_screen(DetailScreen(self.selected_path))
+        self.push_screen(self._detail_screen(self.selected_path))
+
+    def _detail_screen(self, path: Path) -> DetailScreen:
+        """watch-all: q goes back to the table; `watch` (one session): q quits."""
+        return SessionDetailScreen(path) if self.session is not None else DetailScreen(path)
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Main-screen keys are off (and out of the footer) in the detail view."""

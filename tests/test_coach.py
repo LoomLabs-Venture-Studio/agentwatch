@@ -164,6 +164,25 @@ def test_entry_fast_path_fails_open_in_real_process(tmp_path):
     assert proc.stdout == ""
 
 
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_entry_hook_help_prints_and_skips_cli(flag):
+    """QA sweep: `agentwatch hook --help` printed nothing (it waited on stdin
+    and failed open). The fast path prints the help without cli.py."""
+    code = ("import sys\nfrom agentwatch._entry import main\nsys.argv = ['agentwatch', "
+            f"'hook', {flag!r}]\ntry:\n    main()\nexcept SystemExit as e:\n"
+            "    print('EXIT', e.code, 'agentwatch.cli' in sys.modules, 'click' in sys.modules)")
+    proc = subprocess.run([sys.executable, "-c", code], stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, timeout=60)
+    assert proc.stdout.startswith("Usage: agentwatch hook\n")
+    assert "Not meant to be run by hand" in proc.stdout
+    assert proc.stdout.rstrip().endswith("EXIT 0 False False")
+
+
+def test_cli_hook_help_same_text():
+    result = CliRunner().invoke(cli, ["hook", "--help"])
+    assert result.exit_code == 0 and result.output == coach.HELP + "\n"
+
+
 def test_watchdog_exits_zero_silently_on_timeout():
     # stdin never closes, so the read hangs until the BUDGET_S watchdog fires.
     proc = subprocess.Popen(

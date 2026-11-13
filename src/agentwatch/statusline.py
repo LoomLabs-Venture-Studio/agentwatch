@@ -40,6 +40,10 @@ from agentwatch.coach import (
 STALE_S = 600
 # The usage cache is block-<hash>.json, one per Claude Code config dir
 # (block_cache_path()); the old shared block.json is no longer read.
+# Seconds to wait for stdin (Claude Code writes it at once). A stdin that
+# never closes (a terminal, a stuck pipe) exits 0 silently, like coach's
+# watchdog, instead of hanging until the next update cancels us.
+STDIN_TIMEOUT_S = 2.0
 BLOCK_TTL_S = 60
 # A straight-line projection from a block's first minutes is mostly noise.
 PROJECT_AFTER_S = 15 * 60
@@ -235,10 +239,18 @@ def _health(stdin_text: str, ok: bool) -> str:
 
 def main(ok: bool = False, cost: bool = False) -> None:
     """Entry for `agentwatch statusline [--ok] [--cost]`: always exits 0."""
+    import threading  # stdlib, ~2 ms; only the stdin read is timed
+
+    watchdog = threading.Timer(STDIN_TIMEOUT_S, os._exit, args=(0,))
+    watchdog.daemon = True
     try:
-        stdin = getattr(sys.stdin, "buffer", None)
-        # utf-8-sig: a PowerShell pipe (`$json | agentwatch statusline`) adds a BOM.
-        text = stdin.read().decode("utf-8-sig", "replace") if stdin else sys.stdin.read()
+        watchdog.start()
+        try:
+            stdin = getattr(sys.stdin, "buffer", None)
+            # utf-8-sig: a PowerShell pipe (`$json | agentwatch statusline`) adds a BOM.
+            text = stdin.read().decode("utf-8-sig", "replace") if stdin else sys.stdin.read()
+        finally:
+            watchdog.cancel()
         out = render(text, ok, cost)
         if out:
             # UTF-8 bytes: a piped stdout on Windows is cp1252, which has no ⚠/✓.

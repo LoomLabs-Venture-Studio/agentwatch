@@ -294,3 +294,22 @@ def test_empty_or_relative_pointer_falls_back_to_plugin_glob(tmp_path, monkeypat
         pointer.write_text(text, encoding="utf-8")
         dirs = statusline.state_dirs()
         assert plugin in dirs and Path(".") not in dirs and Path("relative/dir") not in dirs
+
+
+def test_stdin_that_never_closes_exits_silently(tmp_path):
+    """QA sweep: no stdin within STDIN_TIMEOUT_S -> nothing printed, exit 0
+    (the pipe stays open: the parent never writes or closes it)."""
+    proc = subprocess.Popen(ENTRY, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=_env(tmp_path))
+    start = time.perf_counter()
+    try:
+        rc = proc.wait(timeout=30)  # stdin left open on purpose
+        elapsed = time.perf_counter() - start
+        out, err = proc.stdout.read(), proc.stderr.read()
+    finally:
+        proc.kill()
+        proc.stdin.close()
+        proc.stdout.close()
+        proc.stderr.close()
+    assert (rc, out, err) == (0, b"", b"")
+    assert statusline.STDIN_TIMEOUT_S <= elapsed + 0.5 and elapsed < 25

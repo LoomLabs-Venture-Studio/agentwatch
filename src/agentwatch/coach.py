@@ -64,6 +64,15 @@ from pathlib import Path
 # tempfile, threading and datetime are imported where used: `agentwatch statusline`
 # imports this module for its state helpers on every status line update.
 
+HELP = """Usage: agentwatch hook
+
+  Claude Code hook (installed by the agentwatch plugin, plugin/hooks/hooks.json).
+  Reads one hook event as JSON on stdin: PostToolUse/PostToolUseFailure feed the
+  health detectors and may add a short coaching note; PreToolUse runs the command
+  guard and loop breaker; Notification/Stop send attention alerts when
+  `agentwatch notify on`. Not meant to be run by hand. It always exits 0 and
+  prints JSON for Claude Code or nothing (fails open)."""
+
 EVENTS = ("PostToolUse", "PostToolUseFailure")
 # Seconds before the watchdog exits 0 silently: under hooks.json's PreToolUse
 # timeout (5 s; PostToolUse allows 10).

@@ -482,3 +482,70 @@ class TestStatuslineConfigDir:
         monkeypatch.setattr(statusline, "user_state_dir", lambda: tmp_path / "user")
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", "  ~/.claude-alt  ")
         assert coach in statusline.state_dirs()
+
+
+# --- stats --session (QA sweep 2026-11-13) ---------------------------------------------
+
+
+def _billed(config: Path, cwd: Path, session_id: str, tokens: int) -> Path:
+    path = _transcript(config, cwd, session_id)
+    path.write_text(path.read_text() + json.dumps({
+        "type": "assistant", "sessionId": session_id, "timestamp": "2026-11-13T10:00:00Z",
+        "message": {"id": f"m-{session_id}", "model": "claude-sonnet-4-5",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": tokens, "output_tokens": 1}},
+    }) + "\n")
+    return path
+
+
+class TestStatsSession:
+    @pytest.fixture
+    def two_roots(self, home, monkeypatch, tmp_path):
+        """A session under $CLAUDE_CONFIG_DIR in another project, a second
+        one under ~/.claude, run from an unrelated directory."""
+        alt = _billed(home / ".claude-alt", home / "proj-b", SID, 111)
+        other = _billed(home / ".claude", home / "proj-c", "bbbbbbbb-1111", 222)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / ".claude-alt"))
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        return alt, other
+
+    def test_find_session_logs_every_root_exact_and_prefix(self, two_roots):
+        alt, other = two_roots
+        assert cc_stats.find_session_logs(SID) == [alt]
+        assert cc_stats.find_session_logs("bbbb") == [other]
+        assert cc_stats.find_session_logs("zzz") == []
+        assert cc_stats.find_session_logs("*") == []  # never a glob
+        assert cc_stats.find_session_logs("") == []
+
+    @pytest.mark.parametrize("sid, tokens", [(SID, 111), ("aaaaaaaa", 111),
+                                             ("bbbbbbbb-1111", 222), ("bbb", 222)])
+    def test_cli_finds_session_outside_this_project(self, two_roots, sid, tokens):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        r = CliRunner().invoke(cli, ["stats", "--session", sid, "--json"])
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["totals"]["input_tokens"] == tokens
+
+    def test_cli_not_found_names_the_id(self, two_roots):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        r = CliRunner().invoke(cli, ["stats", "--session", "nope"])
+        assert r.exit_code == 1
+        assert "No session matching nope found" in r.output
+        assert "for this project" not in r.output
+
+    def test_cli_ambiguous_prefix_is_a_usage_error(self, two_roots, home):
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        _billed(home / ".claude", home / "proj-c", "bbbbbbbb-2222", 5)
+        r = CliRunner().invoke(cli, ["stats", "--session", "bbbbbbbb"])
+        assert r.exit_code == 2
+        assert "matches 2 sessions" in r.output
