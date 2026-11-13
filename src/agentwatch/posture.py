@@ -6,7 +6,9 @@ cheap to read and already on this machine:
 * approvals: who approves the agent's tool calls? "skipped" (nobody),
   "auto" (a classifier/reviewer model, not a human), "on" (a human), or
   "unknown". From the process's own argv plus the agent's config files
-  (Claude Code settings, Codex config.toml and profiles, Gemini settings).
+  (Claude Code settings, Codex config.toml, profiles and project layers,
+  Gemini settings). Claude Code allow rules that pre-approve every command
+  (``Bash``, ``Bash(*)``, ``*``) make "on" low confidence.
 * sandbox: "sandboxed", "container", "none" or "unknown". From the process's
   ancestors (srt, bwrap, firejail, nsjail, sandbox-exec, codex-linux-sandbox;
   docker/podman/containerd), marker files seen through ``/proc/<pid>/root``
@@ -26,7 +28,7 @@ Results are cached per (pid, create_time), so a reused pid is read again.
 Argv is parsed per CLI library: clap (Codex), commander (Claude Code,
 Copilot CLI) and yargs (Gemini CLI): ``--x V``, ``--x=V``, ``-sV``, ``-s V``,
 ``-s=V``, grouped short booleans (``-dy``) and, for yargs, ``--x=true``,
-``--x true``, ``--no-x`` and camelCase names. Everything after ``--`` and
+``--x true``, ``--no-x``, camelCase names and no dash word as a value. Everything after ``--`` and
 every positional (a prompt) is ignored.
 
 Sources (checked 2026-11-13):
@@ -55,10 +57,22 @@ Sources (checked 2026-11-13):
   over config.toml): codex-rs/utils/cli/src/shared_options.rs L34-56;
   ``-a/--ask-for-approval on-request|never``: approval_mode_cli_arg.rs L9-15;
   ``-c/--config key=value`` (value parsed as TOML, else a string);
-  layers system ``/etc/codex/config.toml`` < ``$CODEX_HOME/config.toml`` <
-  profile < runtime overrides; a legacy ``profile = "x"`` selector or
-  ``[profiles.x]`` table: config/src/loader/mod.rs L120-140, L293-321;
-  ``approvals_reviewer``: config/src/lib.rs (``auto_review``).
+  layers, lowest first: system ``/etc/codex/config.toml`` <
+  ``$CODEX_HOME/config.toml`` < profile < project ``.codex/config.toml`` in
+  each directory from the repo root (first ``.git`` up from the cwd, else
+  the cwd alone) down to the cwd, the closest winning (honoured only in
+  trusted projects, which agentwatch can't see, so a value from there is low
+  confidence; ``profile``/``profiles`` are not read from them) < runtime
+  overrides (``-c``, then ``-s``/``-a``): config/src/loader/mod.rs L124-136,
+  project denylist L90-103, discover_project_root L1709, discover_project_layers
+  L1857; a legacy ``profile = "x"`` selector or ``[profiles.x]`` table:
+  L293-321; ``approvals_reviewer``: config/src/lib.rs (``auto_review``).
+  ``codex exec``/``e``/``review`` force approval_policy Never unless the
+  reviewer resolves to auto_review (exec/src/lib.rs L629-633, L844-875).
+  Permission profiles ``default_permissions`` / ``[permissions]``
+  (config/src/config_toml.rs L237-244; only ``-s`` beats them,
+  config/src/permission_config.rs); built-in ``:danger-full-access`` is no
+  sandbox (protocol/src/models.rs L419-425), any other name is not followed.
   ``--full-auto`` (removed in #20133/#36054; was on-failure + workspace-write)
   for old installs. Linux helper ``codex-linux-sandbox`` (sandboxing/src/
   landlock.rs L7), macOS ``/usr/bin/sandbox-exec`` (seatbelt.rs L61).
@@ -74,7 +88,14 @@ Sources (checked 2026-11-13):
   docs.github.com copilot-cli-reference L676-750.
 * sandbox-runtime: bin ``srt`` (package.json), bubblewrap / sandbox-exec
   (README L5). Flatpak apps run under bwrap with ``/.flatpak-info`` in their
-  root.
+  root. A bwrap, firejail, nsjail or sandbox-exec ancestor is low
+  confidence: what it confines is in its argv (``bwrap --bind / /`` and
+  ``sandbox-exec -p "(allow default)"`` confine nothing), which is never
+  read. srt and codex-linux-sandbox (fixed agent policies) stay high.
+* Gemini argv is yargs-parser's: a word starting with ``-`` is never an
+  option's value, a boolean takes a following word only if it is
+  ``true``/``false``, and in a short group (``-ms``) every letter but the
+  last is a flag.
 """
 
 from __future__ import annotations
@@ -111,6 +132,10 @@ _SANDBOX_PROGRAMS = {
     "sandbox-exec": "sandbox-exec",
     "codex-linux-sandbox": "codex sandbox",
 }
+# Launchers whose argv decides whether anything is confined (``bwrap --bind /
+# /`` and ``sandbox-exec -p "(allow default)"`` confine nothing); argv is
+# never read, so they are low confidence.
+_CONFIGURABLE_LAUNCHERS = frozenset({"bwrap", "firejail", "nsjail", "sandbox-exec"})
 # Container runtimes whose processes parent a container's first process
 # (exact program names; containerd-shim also as containerd-shim-runc-v2).
 _CONTAINER_PROGRAMS = frozenset({"containerd-shim", "conmon", "runc", "crun", "docker-init",
@@ -185,11 +210,69 @@ def _kebab(name: str) -> str:
     return re.sub(r"(?<=[a-z0-9])([A-Z])", lambda m: "-" + m.group(1).lower(), name)
 
 
-def _parse(argv: list[str], cli: _Cli, bools: frozenset[str] = frozenset()) -> list:
+_YARGS_NUMBER = re.compile(r"-?\d+(\.\d*)?(e-?\d+)?")
+_YARGS_DASH = re.compile(r"(-|--)[^-]")
+# Marker in _parse's output: a yargs short group where a value option is
+# followed by more letters (``-ms``). yargs reads every letter as a flag; if
+# that reading is ever wrong the later letters were a value, so a flag found
+# only there must not count as proof of anything safe.
+_GROUP_AMBIGUOUS = "?group"
+
+
+def _yargs_short(arg: str, argv: list[str], i: int, cli: _Cli, bools: frozenset[str],
+                 out: list) -> int:
+    """One yargs short group (``-abc``), the way yargs-parser reads it: each
+    letter but the last is a flag unless ``=``, a non-word character or a
+    number follows it (then the rest is its value); the last letter takes the
+    next word, which is never a dash word, and for a boolean only a literal
+    ``true``/``false``. Returns the new index into *argv*."""
+    body = arg[1:]
+    letters = body[:-1]
+    broken = False
+    for j, ch in enumerate(letters):
+        name = cli.aliases.get(ch, ch)
+        rest = body[j + 1:]
+        if j + 1 < len(letters) and letters[j + 1] == "=":
+            out.append((name, body[j + 2:]))
+            broken = True
+            break
+        if rest == "-":
+            out.append((name, "-"))
+            continue
+        if ch.isascii() and ch.isalpha() and _YARGS_NUMBER.fullmatch(rest):
+            out.append((name, rest))
+            broken = True
+            break
+        if j + 1 < len(letters) and re.match(r"[^A-Za-z0-9_]", letters[j + 1]):
+            out.append((name, rest))
+            broken = True
+            break
+        out.append((name, True))
+        if ch in cli.value_short:
+            out.append((_GROUP_AMBIGUOUS, True))
+    last = body[-1]
+    if broken or last == "-":
+        return i
+    name = cli.aliases.get(last, last)
+    nxt = argv[i] if i < len(argv) else None
+    # "--" and "-" do not match yargs' dash test, so they are values here.
+    if nxt is not None and not _YARGS_DASH.match(nxt) and name not in bools:
+        out.append((name, nxt))
+        return i + 1
+    if nxt in ("true", "false"):
+        out.append((name, nxt))
+        return i + 1
+    out.append((name, True))
+    return i
+
+
+def _parse(argv: list[str], cli: _Cli, bools: frozenset[str] = frozenset(),
+           positionals: list[str] | None = None) -> list:
     """[(long name, value)] in argv order; value is the option's string, True
-    for a bare flag, False for yargs ``--no-x``. Positionals and everything
-    after ``--`` are dropped. *bools*: yargs booleans that may take a
-    following ``true``/``false``."""
+    for a bare flag, False for yargs ``--no-x``. Positionals (collected into
+    *positionals* when given) and everything after ``--`` are dropped.
+    *bools*: yargs booleans, which take a following word only when it is
+    ``true``/``false``. For yargs a dash word is never an option's value."""
     out: list[tuple[str, Any]] = []
     i = 0
     while i < len(argv):
@@ -204,15 +287,23 @@ def _parse(argv: list[str], cli: _Cli, bools: frozenset[str] = frozenset()) -> l
                 name = _kebab(name)
                 if name.startswith("no-") and not eq:
                     name, value = name[3:], False
-            if not eq and value is True:
-                if name in cli.value_long and i < len(argv):
-                    value = argv[i]
-                    i += 1
-                elif cli.yargs and name in bools and i < len(argv) and argv[i] in (
-                        "true", "false"):
-                    value = argv[i]
+            if not eq and value is True and i < len(argv):
+                nxt = argv[i]
+                if cli.yargs:
+                    if name in bools:
+                        if nxt in ("true", "false"):
+                            value = nxt
+                            i += 1
+                    elif name in cli.value_long and not nxt.startswith("-"):
+                        value = nxt
+                        i += 1
+                elif name in cli.value_long:
+                    value = nxt
                     i += 1
             out.append((name, value))
+        elif cli.yargs and arg.startswith("-") and len(arg) > 1 and not (
+                _YARGS_NUMBER.fullmatch(arg)):
+            i = _yargs_short(arg, argv, i, cli, bools, out)
         elif arg.startswith("-") and len(arg) > 1 and not arg[1].isdigit():
             body = arg[1:]
             for j, ch in enumerate(body):
@@ -232,6 +323,8 @@ def _parse(argv: list[str], cli: _Cli, bools: frozenset[str] = frozenset()) -> l
                     out.append((name, rest[1:]))
                     break
                 out.append((name, True))
+        elif positionals is not None:
+            positionals.append(arg)
     return out
 
 
@@ -368,6 +461,38 @@ def _claude_version(proc) -> tuple[int, ...] | None:
     return tuple(int(x) for x in m.groups()) if m else None
 
 
+# Allow rules that pre-approve every shell command (or every tool): with one of
+# these a human never sees a Bash prompt, so "approvals on" is not certain.
+_ALLOW_EVERYTHING = frozenset({"bash", "bash(*)", "bash(:*)", "*"})
+
+
+def _allows_everything(rules: Any) -> bool:
+    return isinstance(rules, list) and any(
+        isinstance(r, str) and r.strip().lower() in _ALLOW_EVERYTHING for r in rules)
+
+
+def _claude_flag_allows_everything(argv: list[str]) -> bool:
+    """``--allowedTools``/``--allowed-tools`` (variadic: every word up to the
+    next option, each comma or space separated) holding an allow-all rule."""
+    names = ("--allowedTools", "--allowed-tools")
+    words: list[str] = []
+    collecting = False
+    for arg in argv:
+        if arg == "--":
+            break
+        name, eq, val = arg.partition("=")
+        if name in names:
+            collecting = not eq
+            if eq:
+                words.append(val)
+            continue
+        if arg.startswith("-"):
+            collecting = False
+        elif collecting:
+            words.append(arg)
+    return _allows_everything([w for word in words for w in re.split(r"[,\s]+", word) if w])
+
+
 def _claude_code(argv: list[str], ctx: _Ctx) -> _Verdict:
     from agentwatch.discovery import _claude_home
 
@@ -430,7 +555,11 @@ def _claude_code(argv: list[str], ctx: _Ctx) -> _Verdict:
                 reasons.append("settings: sandbox.enabled")
             break
 
-    if _last(opts, "allowed-tools", "allowedTools") is not None:
+    allow_all = any(_allows_everything(perms(d).get("allow")) for _, d in layers) or (
+        _claude_flag_allows_everything(argv))
+    if allow_all:
+        reasons.append("all commands pre-approved")
+    elif _last(opts, "allowed-tools", "allowedTools") is not None:
         reasons.append("some tools pre-approved")
     if _last(opts, "allow-dangerously-skip-permissions") is not None and not no_bypass:
         reasons.append("bypass allowed")
@@ -489,7 +618,7 @@ def _claude_code(argv: list[str], ctx: _Ctx) -> _Verdict:
     if unreadable:
         high = False
         reasons.append("managed settings unreadable")
-    if "bypass allowed" in reasons:
+    if "bypass allowed" in reasons or allow_all:
         high = False
     if any(r.startswith("settings: ") and r != "settings: sandbox.enabled" for r in reasons):
         high = False  # a file can change after the process started
@@ -531,12 +660,85 @@ def _toml_value(text: str) -> Any:
         return text.strip()
 
 
+_PROJECT_WALK_MAX = 64  # directories walked up from the cwd looking for the repo root
+# Keys a project layer may not set (loader/mod.rs L90-103); the rest apply.
+_CODEX_PROJECT_DENY = frozenset({"profile", "profiles"})
+_CODEX_HEADLESS = frozenset({"exec", "e", "review"})  # cli/src/main.rs L155-159
+
+
+def _codex_cwd(proc, ctx: _Ctx, cd: Any) -> Path | None:
+    """The directory Codex loads project config for: the process's own cwd
+    (else the discovered working directory), then ``-C/--cd`` against it."""
+    try:
+        base: Path | None = Path(proc.cwd())
+    except _ERRORS:
+        base = ctx.cwd
+    if isinstance(cd, str) and cd:
+        path = Path(cd).expanduser()
+        if not path.is_absolute():
+            if base is None:
+                return None
+            path = base / path
+        return path
+    return base
+
+
+def _codex_project_layers(cwd: Path | None, home: Path) -> tuple[list[dict], bool]:
+    """The project ``.codex/config.toml`` layers, lowest first (the repo root
+    down to the cwd, so the closest directory wins), and whether they could
+    not all be read. The walk stops at the first directory holding ``.git``
+    (a directory with HEAD, or a worktree's file), else only the cwd counts
+    (loader/mod.rs discover_project_root L1709-1745, discover_project_layers
+    L1857-1985)."""
+    if cwd is None:
+        return [], True
+    try:
+        start = Path(os.path.abspath(cwd))
+    except (OSError, ValueError):
+        return [], True
+    chain: list[Path] = []
+    root: Path | None = None
+    for d in (start, *start.parents):
+        if len(chain) >= _PROJECT_WALK_MAX:
+            return [], True  # too deep to tell where the project starts
+        chain.append(d)
+        git = d / ".git"
+        try:
+            if git.is_file() or (git.is_dir() and (git / "HEAD").exists()):
+                root = d
+                break
+        except OSError:
+            return [], True
+    dirs = chain if root is not None else chain[:1]
+    try:
+        home_resolved = home.resolve()
+    except (OSError, RuntimeError):
+        home_resolved = home
+    layers: list[dict] = []
+    for d in reversed(dirs):
+        dot = d / ".codex"
+        try:
+            if not dot.is_dir() or dot.resolve() == home_resolved:
+                continue
+        except (OSError, RuntimeError):
+            return [], True
+        data = _read_toml(dot / "config.toml")
+        if data is _MISSING:
+            continue
+        if not isinstance(data, dict):
+            return [], True  # exists but can't be read or parsed
+        layers.append({k: v for k, v in data.items() if k not in _CODEX_PROJECT_DENY})
+    return layers, False
+
+
 def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
-    opts = _parse(argv, _CODEX)
+    positionals: list[str] = []
+    opts = _parse(argv, _CODEX, positionals=positionals)
     reasons: list[str] = []
     if any(_last(opts, n) is not None for n in (
             "dangerously-bypass-approvals-and-sandbox", "yolo")):
         return "skipped", True, "none", True, ["--dangerously-bypass-approvals-and-sandbox"]
+    headless = bool(positionals) and positionals[0] in _CODEX_HEADLESS
 
     # Runtime overrides: -c key=value (last wins), then the explicit flags.
     overrides: dict[str, Any] = {}
@@ -544,19 +746,24 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
         if name == "config" and isinstance(value, str) and "=" in value:
             key, _, raw = value.partition("=")
             key = key.strip()
-            if key in (*_CODEX_KEYS, "profile"):
+            top = key.split(".", 1)[0]
+            if key in (*_CODEX_KEYS, "profile", "default_permissions"):
                 overrides[key] = _toml_value(raw)
                 reasons.append(f"-c {key}")
+            elif top in ("permissions", "project_root_markers"):
+                overrides[top] = True  # only whether it is set matters
+                reasons.append(f"-c {top}")
 
-    # Config layers, lowest first: system, user, profile.
-    layers: list[dict] = []
+    # Config layers, lowest first: system, user, profile, project (repo root
+    # down to the cwd), then the -c overrides.
+    layers: list[tuple[str, dict]] = []
     unknown_config = False
     home = _codex_home(ctx.proc)
     user: dict = {}
     for path in ([_CODEX_SYSTEM] if sys.platform != "win32" else []) + [home / "config.toml"]:
         data = _read_toml(path)
         if isinstance(data, dict):
-            layers.append(data)
+            layers.append(("config", data))
             if path.name == "config.toml" and path.parent == home:
                 user = data
         elif data is None:
@@ -567,10 +774,10 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
         legacy = (user.get("profiles") or {}).get(profile) if isinstance(
             user.get("profiles"), dict) else None
         if isinstance(data, dict):
-            layers.append(data)
+            layers.append(("config", data))
             reasons.append("--profile")
         elif isinstance(legacy, dict):
-            layers.append(legacy)
+            layers.append(("config", legacy))
             reasons.append("--profile")
         else:
             return "unknown", False, "unknown", False, ["--profile unreadable"]
@@ -580,18 +787,32 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
             legacy = (user.get("profiles") or {}).get(selector) if isinstance(
                 user.get("profiles"), dict) else None
             if isinstance(legacy, dict):
-                layers.append(legacy)
+                layers.append(("config", legacy))
                 reasons.append("config: profile")
             else:
                 return "unknown", False, "unknown", False, ["config profile unreadable"]
 
+    # A custom project_root_markers moves the project root: not followed.
+    project_unknown = "project_root_markers" in overrides or any(
+        "project_root_markers" in d for _, d in layers)
+    project, unreadable = _codex_project_layers(
+        _codex_cwd(ctx.proc, ctx, _last(opts, "cd")), home)
+    if unreadable:
+        project_unknown = True
+    layers += [("project", d) for d in project]
+    if project:
+        reasons.append("project config")
+    if project_unknown:
+        reasons.append("project config unknown")
+
     def setting(key: str) -> tuple[Any, str]:
-        """(value, source): 'flag' for a runtime override, 'config', or ''."""
+        """(value, source): 'flag' for a runtime override, 'project' or
+        'config' for a file layer, or ''."""
         if key in overrides:
             return overrides[key], "flag"
-        for layer in reversed(layers):
+        for src, layer in reversed(layers):
             if key in layer:
-                return layer[key], "config"
+                return layer[key], src
         return None, ""
 
     approval, ap_src = setting("approval_policy")
@@ -624,34 +845,86 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
                        in _CODEX_APPROVALS else "--ask-for-approval")
     for key, value, src in (("approval_policy", approval, ap_src),
                             ("sandbox_mode", sandbox, sb_src)):
-        if src == "config":
+        if src in ("config", "project"):
             reasons.append(f"config: {key} {value}" if isinstance(value, str) and value in (
                 *_CODEX_APPROVALS, *_CODEX_SANDBOXES) else f"config: {key}")
 
     if approval is None:
         approvals = "unknown" if unknown_config else "on"
-        if not unknown_config:
+        if not unknown_config and not headless:
             reasons.append("default approvals")
     elif isinstance(approval, str) and approval in _CODEX_APPROVALS:
         approvals = _CODEX_APPROVALS[approval]
     else:
         approvals = "unknown"  # a granular table or a value this version doesn't know
-    if approvals == "on" and reviewer == "auto_review":
+    auto_review = reviewer == "auto_review"
+    if approvals == "on" and auto_review:
         approvals = "auto"
-        if rv_src == "config":
+        if rv_src in ("config", "project"):
             reasons.append("config: approvals_reviewer auto_review")
+    # The reviewer could come from a project layer we can't see.
+    reviewer_sure = rv_src == "flag" or (rv_src == "config" and not project_unknown)
     approvals_high = ap_src == "flag" and approvals != "unknown" and (
-        approvals != "auto" or rv_src == "flag")
+        approvals != "auto" or rv_src == "flag") and (
+        rv_src == "flag" or not project_unknown) and rv_src != "project"
 
-    if sandbox is None:
-        own = "unknown" if unknown_config else "sandboxed"
-        if not unknown_config:
-            reasons.append("default sandbox")
-    elif isinstance(sandbox, str) and sandbox in _CODEX_SANDBOXES:
-        own = _CODEX_SANDBOXES[sandbox]
+    if headless:
+        # codex exec forces approval_policy Never (above -c approval_policy),
+        # unless the resolved reviewer is auto_review: then it rebuilds without
+        # it (exec/src/lib.rs L629-633, L844-875). Whether exec honours a root
+        # -a is not confirmed: unknown.
+        reasons.append("codex exec (no approvals)")
+        # Whether Never beats -c approval_policy is not proven either.
+        if isinstance(_last(opts, "ask-for-approval"), str) or "approval_policy" in overrides:
+            approvals, approvals_high = "unknown", False
+        elif auto_review:
+            approvals_high = approvals_high and reviewer_sure
+        else:
+            approvals = "skipped"
+            approvals_high = not (unknown_config or project_unknown or rv_src == "project")
+
+    # Permission profiles: default_permissions (a named profile) or a
+    # [permissions] table (config_toml.rs L237-244). Only -s beats them
+    # (permission config resolve_permission_config); a built-in
+    # ":danger-full-access" is no sandbox, any other name is not followed.
+    named, named_src = None, ""
+    for src, layer in layers:
+        if "default_permissions" in layer:
+            named, named_src = layer["default_permissions"], src
+        elif "sandbox_mode" in layer and named is not None:
+            named, named_src = None, ""  # a later layer's sandbox_mode wins
+    if "default_permissions" in overrides:
+        named, named_src = overrides["default_permissions"], "flag"
+    elif "sandbox_mode" in overrides:
+        named, named_src = None, ""
+    permissions_set = named is not None or "permissions" in overrides or any(
+        "permissions" in d for _, d in layers)
+    # Any selector anywhere, even one a later sandbox_mode beats: not certain.
+    selector_seen = permissions_set or "default_permissions" in overrides or any(
+        "default_permissions" in d for _, d in layers)
+    if selector_seen:
+        reasons.append("permission profile")
+
+    if sb_src == "flag" and isinstance(flag_sandbox, str):
+        own = _CODEX_SANDBOXES.get(flag_sandbox, "unknown")
+        own_high = own != "unknown" and not selector_seen and not project_unknown
+    elif named is not None:
+        own = "none" if named == ":danger-full-access" else "unknown"
+        own_high = own == "none" and named_src == "flag"
+    elif permissions_set:
+        own, own_high = "unknown", False
     else:
-        own = "unknown"
-    return approvals, approvals_high, own, sb_src == "flag" and own != "unknown", reasons
+        if sandbox is None:
+            own = "unknown" if unknown_config else "sandboxed"
+            if not unknown_config:
+                reasons.append("default sandbox")
+        elif isinstance(sandbox, str) and sandbox in _CODEX_SANDBOXES:
+            own = _CODEX_SANDBOXES[sandbox]
+        else:
+            own = "unknown"
+        own_high = sb_src == "flag" and own != "unknown" and not (
+            project_unknown or selector_seen)
+    return approvals, approvals_high, own, own_high, reasons
 
 
 # -- Gemini CLI -----------------------------------------------------------
@@ -690,6 +963,9 @@ def _gemini(argv: list[str], ctx: _Ctx) -> _Verdict:
     if isinstance(mode, str):
         reasons.append(f"--approval-mode {mode}" if mode in _GEMINI_MODES
                        else "--approval-mode")
+    elif isinstance(yolo, str) and yolo not in ("true", "false"):
+        mode = "?"  # --yolo=1 / =TRUE: how yargs coerces it is not relied on
+        reasons.append("--yolo")
     elif _on(yolo):
         mode = "yolo"
         reasons.append("--yolo")
@@ -710,7 +986,13 @@ def _gemini(argv: list[str], ctx: _Ctx) -> _Verdict:
     flag = _last(opts, "sandbox")
     own = None
     if flag is not None:
-        if _on(flag):
+        if isinstance(flag, str) and flag not in ("true", "false"):
+            own = "unknown"
+            reasons.append("--sandbox")
+        elif _on(flag) and _last(opts, _GROUP_AMBIGUOUS) is not None:
+            own = "unknown"  # read from a group like -ms: not proof of a sandbox
+            reasons.append("--sandbox")
+        elif _on(flag):
             own = "sandboxed"
             reasons.append("--sandbox")
     else:
@@ -914,8 +1196,10 @@ def _compute(agent: AgentProcess, proc, create_time: float, match) -> Posture:
         if launcher is not None:
             kind, why = launcher
             sandbox = "sandboxed" if kind == "flatpak" else kind
-            sandbox_high = kind == "sandboxed"
+            sandbox_high = kind == "sandboxed" and why not in _CONFIGURABLE_LAUNCHERS
             reasons.append(why)
+            if why in _CONFIGURABLE_LAUNCHERS:
+                reasons.append("launcher options not read")
         elif _marker(agent.pid, (_FLATPAK_MARKER,)):
             sandbox, sandbox_high = "sandboxed", False
             reasons.append("flatpak")

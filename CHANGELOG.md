@@ -23,10 +23,16 @@ numbers refer to the GitHub repository.
   one-line advisory in `check` (no score or exit-code change). Windows: sandbox is `unknown`.
   Flags are read the way each CLI parses them (`-sV`, `-s=V`, grouped `-dy`, yargs
   `--yolo=true` / `--no-yolo` / `--approvalMode`), plus Codex `-c key=value`, profiles
-  (`-p NAME` -> `NAME.config.toml`, legacy `[profiles.NAME]` and `profile =`) and the
-  process's own `CODEX_HOME`, and Claude Code `--settings`, managed settings, project
-  settings and its built-in auto default. Anything not certain is `unknown` or low
-  confidence; green needs a human approving inside a real sandbox.
+  (`-p NAME` -> `NAME.config.toml`, legacy `[profiles.NAME]` and `profile =`), project
+  `.codex/config.toml` layers (repo root down to the agent's cwd, closest wins; low
+  confidence, since project trust is not read), `codex exec` (no approvals unless
+  auto-review), permission profiles (`default_permissions`, `[permissions]`: sandbox
+  `unknown`, `:danger-full-access` = none) and the process's own `CODEX_HOME`, and Claude
+  Code `--settings`, managed settings, project settings and its built-in auto default.
+  Gemini argv follows yargs-parser (a dash word is never an option's value). Anything not
+  certain is `unknown` or low confidence: a bwrap, firejail, nsjail or sandbox-exec parent (its
+  options are not read) and a Claude Code allow rule that pre-approves every command (`Bash`, `Bash(*)`,
+  `*`) are low confidence. Green needs a human approving inside a real sandbox.
 - `agentwatch budget set [--session USD] [--block USD] [--day USD] [--action ask|deny]`,
   `budget off` and `budget status`: spend caps for interactive Claude Code sessions,
   enforced by the plugin's PreToolUse hook after the command guard and the loop breaker

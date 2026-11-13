@@ -216,21 +216,40 @@ src/agentwatch/
                        ~/.codex; layers /etc/codex/config.toml < config.toml
                        < profile (-p NAME -> NAME.config.toml, else legacy
                        [profiles.NAME]; top-level profile = selector;
-                       named but unreadable -> unknown) < -c/--config
-                       key=value (TOML) < -s/-a flags; approvals_reviewer
-                       auto_review / --approve-for-me -> auto; an unreadable
-                       config -> unknown unless set by flag. Gemini:
-                       --approval-mode > --yolo > settings
-                       general.defaultApprovalMode (not yolo); -s/--sandbox
-                       or tools.sandbox -> own sandbox. Copilot: allow-all
+                       named but unreadable -> unknown) < project
+                       .codex/config.toml per dir from the repo root (first
+                       .git up from the process cwd, then -C; else the cwd
+                       only; <= 64 dirs) down to the cwd, closest wins,
+                       profile/profiles ignored; a value from there is low
+                       (trust not read); unreadable/cut/custom
+                       project_root_markers -> "project config unknown",
+                       low) < -c/--config key=value (TOML) < -s/-a flags;
+                       approvals_reviewer auto_review / --approve-for-me ->
+                       auto; an unreadable config -> unknown unless set by
+                       flag. `codex exec|e|review` -> skipped ("codex exec
+                       (no approvals)") unless the reviewer is auto_review;
+                       with -a or -c approval_policy -> unknown. default_permissions / a
+                       [permissions] table in any layer or -c: sandbox
+                       unknown (":danger-full-access" -> none); -s still
+                       wins but low. Gemini (yargs-parser rules: a dash
+                       word is never a value; a boolean takes only a
+                       following true/false; `--yolo=1`-style values ->
+                       unknown; `-ms` sandbox -> unknown): --approval-mode
+                       > --yolo > settings general.defaultApprovalMode (not
+                       yolo); -s/--sandbox or tools.sandbox -> own sandbox.
+                       Claude allow rule or --allowedTools entry `Bash`,
+                       `Bash(*)` or `*` -> "all commands pre-approved",
+                       low. Copilot: allow-all
                        flags; partial allows only add "some tools
                        pre-approved". Sandbox: nearest ancestor (<= 16;
-                       cut -> "ancestry too deep") srt/bwrap/firejail/
-                       nsjail/sandbox-exec/codex-linux-sandbox -> sandboxed
-                       (high); bwrap under flatpak (flatpak parent, /app/
-                       program, /.flatpak-info) -> sandboxed (low); exact
-                       names containerd-shim*/conmon/runc/crun/docker-init/
-                       dockerd/podman -> container (low); else /proc/<pid>/
+                       cut -> "ancestry too deep") srt/codex-linux-sandbox
+                       -> sandboxed (high); bwrap/firejail/nsjail/
+                       sandbox-exec -> sandboxed (low, "launcher options not
+                       read": argv never read); bwrap under flatpak
+                       (flatpak parent, /app/ program, /.flatpak-info) ->
+                       sandboxed (low); exact names containerd-shim*/
+                       conmon/runc/crun/docker-init/dockerd/podman/
+                       containerd -> container (low); else /proc/<pid>/
                        root markers; else the agent's own sandbox; else
                        none. Windows: sandbox unknown unless explicitly
                        off. Editor kinds, zombies, unreadable or

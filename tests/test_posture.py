@@ -273,7 +273,9 @@ def test_other_agents_are_unknown_approvals(procs):
 def test_sandbox_launcher_ancestor(procs, launcher, reason):
     p = run(procs, ["claude", "--dangerously-skip-permissions"], "claude-code",
             ["bash"], launcher, ["bash", "-c", "x"])
-    assert (p.sandbox, p.confidence) == ("sandboxed", "high")
+    # bwrap/firejail/nsjail/sandbox-exec argv decides what is confined: low
+    expected = "high" if reason == "srt" else "low"
+    assert (p.sandbox, p.confidence) == ("sandboxed", expected)
     assert reason in p.reasons and not p.risky
 
 
@@ -281,6 +283,10 @@ def test_sandbox_launcher_ancestor(procs, launcher, reason):
 def test_codex_linux_sandbox_ancestor(procs):
     p = run(procs, ["claude"], "claude-code", ["codex"], ["codex-linux-sandbox", "--"])
     assert p.sandbox == "sandboxed" and "codex sandbox" in p.reasons
+    posture.clear_cache()
+    p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code",
+            ["codex-linux-sandbox", "--"])
+    assert p.confidence == "high"  # a fixed Codex policy: stays high
 
 
 @linux_only
@@ -630,7 +636,7 @@ def test_parse_forms():
     (["codex", "-s=danger-full-access", "-a=never"], "skipped", "none"),
     (["codex", "-sread-only", "-anever"], "skipped", "sandboxed"),
     (["codex", "exec", "--yolo", "do it"], "skipped", "none"),
-    (["codex", "exec", "explain --yolo"], "on", "sandboxed"),
+    (["codex", "exec", "explain --yolo"], "skipped", "sandboxed"),  # exec: Never
     (["codex", "--not-so-yolo"], "auto", "sandboxed"),
 ])
 def test_codex_short_flag_forms(procs, argv, approvals, sandbox):
@@ -830,7 +836,8 @@ def test_claude_disable_auto_mode(procs, tmp_path):
 
 @linux_only
 def test_claude_partial_allows(procs):
-    p = _one(procs, ["claude", "--permission-mode", "default", "--allowedTools", "Bash"])
+    p = _one(procs, ["claude", "--permission-mode", "default", "--allowedTools",
+                     "Bash(git status:*)"])
     assert p.approvals == "on" and "some tools pre-approved" in p.reasons
     p = _one(procs, ["copilot", "--allow-tool", "shell"], "copilot")
     assert p.approvals == "on" and "some tools pre-approved" in p.reasons
@@ -850,7 +857,7 @@ def test_claude_partial_allows(procs):
     (["gemini", "--approvalMode=auto_edit"], "on"),
     (["gemini", "--approval-mode", "bogus"], "unknown"),
     (["gemini", "-p", "explain --yolo"], "on"),
-    (["gemini", "-m", "-y"], "on"),  # -y is -m's value
+    (["gemini", "-m", "-y"], "skipped"),  # yargs never takes a dash word as a value
 ])
 def test_gemini_yargs_forms(procs, argv, approvals):
     assert _one(procs, argv, "gemini").approvals == approvals
@@ -907,11 +914,11 @@ def test_flatpak_bwrap_is_low_confidence(procs, monkeypatch, tmp_path):
 
 @linux_only
 def test_good_tone_needs_human_and_real_sandbox(procs):
-    p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code", ["bwrap"])
+    p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code", ["srt"])
     assert (p.approvals, p.sandbox, p.confidence) == ("on", "sandboxed", "high")
     assert posture.tone(p) == "good"
     posture.clear_cache()
-    p = run(procs, ["claude", "--permission-mode", "auto"], "claude-code", ["bwrap"])
+    p = run(procs, ["claude", "--permission-mode", "auto"], "claude-code", ["srt"])
     assert posture.tone(p) == "neutral"  # auto review is not a human
     posture.clear_cache()
     p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code", ["conmon"])
@@ -921,3 +928,258 @@ def test_good_tone_needs_human_and_real_sandbox(procs):
 def test_auto_labels():
     p = Posture("auto", "none", "high")
     assert posture.label(p) == "auto-review · no sandbox" and posture.tone(p) == "neutral"
+
+
+# -- QA round 2 (PR #241): project config, exec, permission profiles, yargs,
+# configurable launchers, allow-all rules -----------------------------------
+
+
+def _srt(procs, cmdline, agent_type="codex") -> Posture:
+    """The agent under srt (a real sandbox, high confidence), fresh cache."""
+    posture.clear_cache()
+    return run(procs, cmdline, agent_type, ["srt"])
+
+
+def _repo(path: Path) -> Path:
+    (path / ".git").mkdir(parents=True)
+    (path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    return path
+
+
+def _codex_project(path: Path, text: str) -> None:
+    (path / ".codex").mkdir(parents=True, exist_ok=True)
+    (path / ".codex" / "config.toml").write_text(text)
+
+
+GOOD_CODEX = ["codex", "-s", "workspace-write", "-a", "on-request"]
+
+
+@linux_only
+def test_codex_flags_under_srt_are_green(procs):
+    """The baseline the next tests break: explicit flags in a real sandbox."""
+    assert posture.tone(_srt(procs, GOOD_CODEX)) == "good"
+
+
+@linux_only
+def test_codex_project_reviewer_is_not_green(procs):  # finding 1 (QA repro)
+    _codex_project(CWD[0], 'approvals_reviewer = "auto_review"\n')
+    p = _srt(procs, GOOD_CODEX)
+    assert p.approvals == "auto" and posture.tone(p) != "good"
+    assert "project config" in p.reasons
+
+
+@linux_only
+def test_codex_project_layer_precedence(procs, tmp_path):  # finding 1
+    repo = _repo(tmp_path / "proj")
+    sub = repo / "pkg" / "app"
+    sub.mkdir(parents=True)
+    (tmp_path / "codex" / "config.toml").write_text('approval_policy = "on-request"\n')
+    _codex_project(repo, 'approval_policy = "never"\nsandbox_mode = "danger-full-access"\n')
+    CWD[0] = sub
+    p = _one(procs, ["codex"], "codex")
+    assert (p.approvals, p.sandbox, p.confidence) == ("skipped", "none", "low")  # project > user
+    _codex_project(sub, 'approval_policy = "on-request"\n')
+    p = _one(procs, ["codex"], "codex")  # the closest directory wins, per key
+    assert (p.approvals, p.sandbox) == ("on", "none") and p.confidence == "low"
+    p = _one(procs, ["codex", "-c", "approval_policy=never"], "codex")  # -c > project
+    assert p.approvals == "skipped"
+    p = _one(procs, ["codex", "-a", "on-request", "-s", "read-only"], "codex")  # flags > project
+    assert (p.approvals, p.sandbox) == ("on", "sandboxed")
+
+
+@linux_only
+def test_codex_project_walk_stops_at_repo_root(procs, tmp_path):  # finding 1
+    outer = tmp_path / "outer"
+    repo = _repo(outer / "repo")
+    _codex_project(outer, 'approval_policy = "never"\n')
+    CWD[0] = repo
+    assert _one(procs, ["codex"], "codex").approvals == "on"  # above the root: not read
+    # No repo root at all: only the cwd's own .codex counts.
+    plain = tmp_path / "plain" / "sub"
+    plain.mkdir(parents=True)
+    _codex_project(tmp_path / "plain", 'approval_policy = "never"\n')
+    CWD[0] = plain
+    assert _one(procs, ["codex"], "codex").approvals == "on"
+    _codex_project(plain, 'approval_policy = "never"\n')
+    assert _one(procs, ["codex"], "codex").approvals == "skipped"
+
+
+@linux_only
+def test_codex_project_unknowns_are_never_green(procs, monkeypatch):  # finding 1
+    _codex_project(CWD[0], "not = [toml")
+    p = _srt(procs, GOOD_CODEX)
+    assert posture.tone(p) != "good" and "project config unknown" in p.reasons
+    (CWD[0] / ".codex" / "config.toml").unlink()
+    monkeypatch.setattr(posture, "_PROJECT_WALK_MAX", 1)  # walk cut before any root
+    p = _srt(procs, GOOD_CODEX)
+    assert posture.tone(p) != "good" and "project config unknown" in p.reasons
+
+
+@linux_only
+def test_codex_project_cwd_and_denylist(procs, tmp_path):  # finding 1
+    elsewhere = tmp_path / "elsewhere"
+    _codex_project(elsewhere, 'approval_policy = "never"\n')
+
+    class CwdProc(FakeProc):
+        def cwd(self):
+            return str(elsewhere)
+
+    procs[PID] = CwdProc(PID, ["codex"], parent=FakeProc(1, ["/sbin/init"]))
+    posture.clear_cache()
+    assert posture.posture(agent("codex")).approvals == "skipped"  # the process's own cwd
+    # -C/--cd moves the project, relative to the process cwd
+    _codex_project(elsewhere / "inner", 'approval_policy = "on-request"\n')
+    procs[PID] = CwdProc(PID, ["codex", "-C", "inner"], parent=FakeProc(1, ["/sbin/init"]))
+    posture.clear_cache()
+    assert posture.posture(agent("codex")).approvals == "on"
+    # profile/profiles are not honoured from a project layer
+    _codex_project(CWD[0], 'profile = "gone"\n')
+    p = _one(procs, ["codex"], "codex")
+    assert p.approvals == "on" and "config profile unreadable" not in p.reasons
+
+
+@linux_only
+@pytest.mark.parametrize("argv, approvals", [  # finding 2
+    (["codex", "exec", "fix it"], "skipped"),
+    (["codex", "e", "fix it"], "skipped"),
+    (["codex", "review"], "skipped"),
+    (["codex", "exec", "-s", "workspace-write", "fix it"], "skipped"),
+    (["codex", "exec", "-c", "approval_policy=on-request", "x"], "unknown"),  # unproven
+    (["codex", "-a", "on-request", "exec", "x"], "unknown"),  # -a is not an exec option
+    (["codex", "exec", "--approve-for-me", "x"], "auto"),
+])
+def test_codex_exec_has_no_approvals(procs, argv, approvals):
+    p = _one(procs, argv, "codex")
+    assert p.approvals == approvals and posture.tone(p) != "good"
+    assert "codex exec (no approvals)" in p.reasons
+    assert "default approvals" not in p.reasons
+
+
+@linux_only
+def test_codex_exec_with_config_reviewer(procs, tmp_path):  # finding 2
+    (tmp_path / "codex" / "config.toml").write_text(
+        'approvals_reviewer = "auto_review"\napproval_policy = "on-request"\n')
+    assert _one(procs, ["codex", "exec", "x"], "codex").approvals == "auto"
+
+
+@linux_only
+def test_codex_permission_profiles(procs, tmp_path):  # finding 3
+    cfg = tmp_path / "codex" / "config.toml"
+    cfg.write_text('default_permissions = ":danger-full-access"\n')
+    p = _srt(procs, ["codex", "-a", "on-request"])
+    assert p.approvals == "on" and "permission profile" in p.reasons
+    p = _one(procs, ["codex", "-a", "on-request"], "codex")
+    assert p.sandbox == "none"  # QA repro: never "sandboxed"
+    cfg.write_text('default_permissions = "mine"\n[permissions.mine]\n')
+    assert _one(procs, ["codex"], "codex").sandbox == "unknown"
+    cfg.write_text('[permissions.mine]\n')
+    assert _one(procs, ["codex"], "codex").sandbox == "unknown"
+    cfg.write_text("")
+    p = _one(procs, ["codex", "-c", 'default_permissions=":danger-full-access"',
+                     "-a", "on-request"], "codex")
+    assert p.sandbox == "none" and "-c default_permissions" in p.reasons
+    assert _one(procs, ["codex", "-c", "default_permissions=mine"], "codex").sandbox == "unknown"
+    _codex_project(CWD[0], 'default_permissions = "mine"\n')
+    assert _one(procs, ["codex"], "codex").sandbox == "unknown"  # project layer too
+
+
+@linux_only
+def test_codex_sandbox_flag_with_permission_profile_is_low(procs, tmp_path):  # finding 3
+    (tmp_path / "codex" / "config.toml").write_text('default_permissions = "mine"\n')
+    p = _one(procs, GOOD_CODEX, "codex")  # -s beats the profile, but low confidence
+    assert (p.sandbox, p.confidence) == ("sandboxed", "low")
+    p = _one(procs, ["codex", "-c", "sandbox_mode=workspace-write"], "codex")
+    assert p.sandbox == "sandboxed" and p.confidence == "low"
+
+
+@linux_only
+@pytest.mark.parametrize("argv, approvals", [  # finding 4
+    (["gemini", "-m", "--yolo"], "skipped"),
+    (["gemini", "-p", "--yolo", "task"], "skipped"),
+    (["gemini", "--model", "--yolo"], "skipped"),
+    (["gemini", "-m", "x", "-y"], "skipped"),
+    (["gemini", "-my"], "skipped"),
+    (["gemini", "-y", "true"], "skipped"),
+    (["gemini", "-y", "false"], "on"),  # yargs: true/false after a boolean is its value
+    (["gemini", "-y", "task"], "skipped"),  # a boolean never takes another word
+    (["gemini", "--yolo=1"], "unknown"),  # odd boolean values: not guessed
+    (["gemini", "--yolo=TRUE"], "unknown"),
+])
+def test_gemini_dash_words_are_not_values(procs, argv, approvals):
+    assert _one(procs, argv, "gemini").approvals == approvals
+
+
+@linux_only
+@pytest.mark.parametrize("argv, sandbox", [  # finding 4
+    (["gemini", "-s"], "sandboxed"),
+    (["gemini", "-s", "false"], "none"),
+    (["gemini", "-s", "task"], "sandboxed"),
+    (["gemini", "-ms"], "unknown"),  # a value option inside a group: not proof
+    (["gemini", "-m", "-s"], "sandboxed"),
+    (["gemini", "--sandbox=1"], "unknown"),
+])
+def test_gemini_short_sandbox_forms(procs, argv, sandbox):
+    p = _one(procs, argv, "gemini")
+    assert p.sandbox == sandbox and posture.tone(p) != "good"
+
+
+def test_yargs_short_groups():
+    cli, bools = posture._GEMINI, posture._GEMINI_BOOLS
+
+    def parse(argv):
+        return posture._parse(argv, cli, bools)
+
+    assert posture._last(parse(["-mgemini-pro"]), "model") is True  # yargs: each letter a flag
+    assert posture._last(parse(["-m=x"]), "model") == "x"
+    assert posture._last(parse(["-m", "-"]), "model") == "-"
+    assert posture._last(parse(["-m", "--"]), "model") == "--"
+    assert posture._last(parse(["--model", "-y"]), "yolo") is True
+    assert posture._last(parse(["-y=false"]), "yolo") == "false"
+
+
+@linux_only
+@pytest.mark.parametrize("launcher", [  # finding 5
+    ["bwrap", "--bind", "/", "/"], ["bwrap", "--ro-bind", "/", "/"], ["firejail", "--noprofile"],
+    ["nsjail", "--"], ["/usr/bin/sandbox-exec", "-p", "(allow default)"],
+])
+def test_configurable_launchers_are_low_confidence(procs, launcher):
+    p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code", launcher)
+    assert (p.sandbox, p.confidence) == ("sandboxed", "low")
+    assert posture.tone(p) != "good" and "launcher options not read" in p.reasons
+    assert "/" not in " ".join(p.reasons)  # launcher argv never echoed
+
+
+@linux_only
+@pytest.mark.parametrize("rule", ["Bash", "Bash(*)", "*", "bash"])  # finding 6
+def test_claude_allow_all_rule_is_not_green(procs, tmp_path, rule):
+    (tmp_path / "claude" / "settings.json").write_text(
+        json.dumps({"permissions": {"allow": ["Read", rule]}}))
+    p = _srt(procs, ["claude", "--permission-mode", "plan"], "claude-code")
+    assert (p.approvals, p.confidence) == ("on", "low") and posture.tone(p) != "good"
+    assert "all commands pre-approved" in p.reasons
+    assert all(rule not in r for r in p.reasons if r.startswith("Bash"))
+
+
+@linux_only
+@pytest.mark.parametrize("argv", [  # finding 6
+    ["--allowedTools", "Bash"],
+    ["--allowedTools", "Edit,Bash"],
+    ["--allowed-tools", "Edit", "Bash(*)"],
+    ["--allowedTools=*"],
+])
+def test_claude_allowed_tools_flag_allow_all(procs, argv):
+    p = _srt(procs, ["claude", "--permission-mode", "plan", *argv], "claude-code")
+    assert p.confidence == "low" and "all commands pre-approved" in p.reasons
+
+
+@linux_only
+def test_claude_narrow_allow_rules_stay_green(procs, tmp_path):  # finding 6: narrow
+    (tmp_path / "claude" / "settings.json").write_text(
+        json.dumps({"permissions": {"allow": ["Bash(git status:*)", "Edit"]}}))
+    p = _srt(procs, ["claude", "--permission-mode", "plan", "--allowedTools", "Read"],
+             "claude-code")
+    assert posture.tone(p) == "good" and "all commands pre-approved" not in p.reasons
+    # an allow-all word that is a prompt, not the option's value, is not read
+    p = _srt(procs, ["claude", "--permission-mode", "plan", "--allowedTools", "Read", "--",
+                     "Bash"], "claude-code")
+    assert posture.tone(p) == "good"
