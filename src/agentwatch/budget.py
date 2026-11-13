@@ -10,8 +10,11 @@ the estimated spend reaches it:
   coach's state file (`cost_usd`, `cost_scan`); PreToolUse only reads it.
 - block: the current 5-hour usage block, all sessions; day: today (local
   time), all sessions. Both come from the `statusline --cost` cache
-  (block.json). PreToolUse never computes them: with no cache, or one older
-  than CACHE_FRESH_S, those caps are skipped.
+  (block-<hash>.json, one per config dir). The hook reads the cache of its
+  own CLAUDE_CONFIG_DIR (else ~/.claude): Claude Code passes its
+  CLAUDE_CONFIG_DIR down to hooks and the status line, so that is the
+  session's config dir. PreToolUse never computes them: with no cache, or
+  one older than CACHE_FRESH_S, those caps are skipped.
 
 Every number is an estimate at list price (cc_stats.usage_cost_usd); a
 model with no listed price adds nothing. Subscription users pay no list
@@ -50,7 +53,7 @@ ACTIONS = ("ask", "deny")
 MAX_USD = 1_000_000.0
 ADVISE_AT = 0.8
 STEP = 0.25  # re-ask at 125%, 150%, ... of a cap
-# The status line refreshes block.json at most every 60 s, and only after an
+# The status line refreshes the cache at most every 60 s, and only after an
 # assistant message; allow one missed refresh before calling it stale.
 CACHE_FRESH_S = 120
 # Transcript bytes the PostToolUse pass reads per call: a long session's
@@ -219,9 +222,9 @@ def post_tool_use(payload: dict, transcript: Path, old_state: dict, session_id: 
 # --- PreToolUse -----------------------------------------------------------------
 
 def _usage_cache(now: float) -> dict | None:
-    from agentwatch.statusline import BLOCK_CACHE
+    from agentwatch.statusline import block_cache_path
 
-    path = user_state_dir() / BLOCK_CACHE
+    path = block_cache_path()  # this session's config dir, see the module docstring
     try:
         if not 0 <= now - path.stat().st_mtime < CACHE_FRESH_S:
             return None  # stale: skip, never recompute here

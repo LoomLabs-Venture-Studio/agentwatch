@@ -262,7 +262,8 @@ src/agentwatch/
                        {session|block|day: USD, action: ask|deny} (0600,
                        mkstemp). Session spend = coach state cost_usd of the
                        session + its <sid>.<agent> files; block/day from
-                       statusline's block.json only when < 120 s old (never
+                       the statusline cache of the hook's own
+                       CLAUDE_CONFIG_DIR, only when < 120 s old (never
                        computed in the hook; skipped otherwise). Over a cap:
                        ask (fixed "about $X (cap $Y). Continue?") or deny;
                        an ask is approved when that tool_use_id's PostToolUse
@@ -286,7 +287,9 @@ src/agentwatch/
                        nothing, exit 0. No transcript parsing; imports only
                        stdlib + coach (~150 ms on Windows). `--cost`: the
                        active 5-hour block (spend -> projection · resets)
-                       from a 60 s cache (user_state_dir()/block.json); a
+                       from a 60 s cache per config dir (user_state_dir()/
+                       block-<16 hex of sha256 of the resolved config
+                       dir>.json; one shared file mixed dirs, #240); a
                        miss imports cc_stats and scans transcripts modified
                        in the last 24 h; the cache also holds today's spend
                        ({"day": {start: local midnight, cost_usd}}, via

@@ -38,7 +38,8 @@ from agentwatch.coach import (
 )
 
 STALE_S = 600
-BLOCK_CACHE = "block.json"
+# The usage cache is block-<hash>.json, one per Claude Code config dir
+# (block_cache_path()); the old shared block.json is no longer read.
 BLOCK_TTL_S = 60
 # A straight-line projection from a block's first minutes is mostly noise.
 PROJECT_AFTER_S = 15 * 60
@@ -108,6 +109,17 @@ def _cost(value: object) -> str:
     return "" if text is None else f" {text}" if text.startswith("<") else f" ~{text}"
 
 
+def block_cache_path() -> Path:
+    """The usage cache for agentwatch's own config dir (claude_config.
+    default_config_dir(): $CLAUDE_CONFIG_DIR, else ~/.claude, resolved). The
+    scan's dirs depend on it, so two config dirs never share a cache. Claude
+    Code passes its CLAUDE_CONFIG_DIR down to the status line and hooks."""
+    import hashlib
+
+    key = str(claude_config.default_config_dir()).encode("utf-8", "surrogatepass")
+    return user_state_dir() / f"block-{hashlib.sha256(key).hexdigest()[:16]}.json"
+
+
 def day_start(now: float) -> int:
     """Epoch seconds of the local midnight that starts *now*'s day."""
     from datetime import datetime
@@ -121,7 +133,7 @@ def usage_summary(now: float) -> dict:
     "day": {start, cost_usd} for today (local time)}. Cached in the per-user
     state dir; recomputed when older than BLOCK_TTL_S. `agentwatch hook` reads
     the same cache for budget caps (budget.py) and never recomputes it."""
-    path = user_state_dir() / BLOCK_CACHE
+    path = block_cache_path()
     try:
         if 0 <= now - path.stat().st_mtime < BLOCK_TTL_S:
             cached = json.loads(path.read_text(encoding="utf-8"))

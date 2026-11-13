@@ -233,7 +233,7 @@ def test_unpriced_model_adds_nothing(tmp_path):
 def _cache(block_cost: float | None = None, day_cost: float | None = None,
            age: float = 0.0) -> None:
     now = time.time()
-    cache = coach.user_state_dir() / statusline.BLOCK_CACHE
+    cache = statusline.block_cache_path()
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps({
         "block": None if block_cost is None else {
@@ -263,7 +263,7 @@ def test_day_cap_and_yesterdays_total_ignored():
     out = _out(_pre())
     assert out["permissionDecision"] == "deny"
     assert "spend today is about $12.00" in out["permissionDecisionReason"]
-    cache = coach.user_state_dir() / statusline.BLOCK_CACHE
+    cache = statusline.block_cache_path()
     data = json.loads(cache.read_text())
     data["day"]["start"] -= 86400  # written yesterday
     cache.write_text(json.dumps(data))
@@ -350,3 +350,24 @@ def test_hook_end_to_end(home, tmp_path):
     budget.budget_path().write_text("{corrupt", encoding="utf-8")
     pre = _hook(home, {**base, "hook_event_name": "PreToolUse", "tool_use_id": "t2"})
     assert (pre.returncode, pre.stdout) == (0, "")
+
+
+def test_block_cap_reads_its_own_config_dirs_cache(home, tmp_path, monkeypatch):
+    """The hook reads the cache of the CLAUDE_CONFIG_DIR it runs with (#240)."""
+    _set(block=20.0)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "orca"))
+    _cache(block_cost=25.0)  # orca is over its cap
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    _cache(block_cost=5.0)  # ~/.claude is not
+    assert _pre() is None
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "orca"))
+    assert _out(_pre())["permissionDecision"] == "ask"
+    # The same through a real `agentwatch hook` process.
+    payload = {"session_id": SID, "transcript_path": "/none.jsonl", "tool_name": "Bash",
+               "hook_event_name": "PreToolUse", "tool_input": {"command": "ls"},
+               "tool_use_id": "e1"}
+    for config, decision in ((str(tmp_path / "orca"), "ask"), ("", None)):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", config)
+        proc = _hook(home, payload)
+        assert proc.returncode == 0
+        assert _out(proc.stdout or None).get("permissionDecision") == decision

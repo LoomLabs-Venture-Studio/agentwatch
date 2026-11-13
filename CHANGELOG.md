@@ -19,8 +19,10 @@ numbers refer to the GitHub repository.
   is missing or older than 2 minutes. Estimates at list price. Settings in the per-user
   state dir (0600). No caps by default: without the settings file PreToolUse does one
   failed open more.
-- `statusline --cost` shows `cap $Y` with a block cap set; its cache (block.json) now also
-  holds today's spend.
+- `statusline --cost` shows `cap $Y` with a block cap set; its cache now also holds today's
+  spend and is kept per Claude Code config dir (`block-<hash>.json`), so windows on
+  `~/.claude` and on another `CLAUDE_CONFIG_DIR` no longer overwrite each other's block
+  (#240). The budget hook reads the cache of its own `CLAUDE_CONFIG_DIR`.
 
 ### Changed
 
