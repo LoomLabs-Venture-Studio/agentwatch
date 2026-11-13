@@ -127,6 +127,35 @@ async def test_long_warning_list_scrolls_nothing_clipped(size):
         assert "before editing again." in text  # suggestions are wrapped, not cut
 
 
+def test_scroll_action_lives_on_detail_screen_itself():
+    """Sweep regression: action_scroll slid onto SessionDetailScreen, leaving
+    watch-all's arrow/PgUp/PgDn bindings with no handler."""
+    from agentwatch.ui.detail import SessionDetailScreen
+
+    assert "action_scroll" in DetailScreen.__dict__
+    assert issubclass(SessionDetailScreen, DetailScreen)
+    assert {"action_back", "action_tab", "action_next_tab"} <= set(DetailScreen.__dict__)
+
+
+async def test_arrow_keys_scroll_the_watch_all_detail_pane():
+    app = MultiAgentWatchApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        warnings = [_warning(Severity.MEDIUM, f"sig{i}") for i in range(40)]
+        _seed(app, "a", warnings=warnings)
+        app.refresh_ui()
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait(pilot, lambda: isinstance(app.screen, DetailScreen) and app.screen.ready)
+        assert type(app.screen) is DetailScreen  # watch-all, not the `watch` subclass
+        pane = app.screen.query_one("#health .pane", VerticalScroll)
+        await _wait(pilot, lambda: pane.max_scroll_y > 0)
+        assert pane.scroll_y == 0
+        await pilot.press("down", "down")
+        await _wait(pilot, lambda: pane.scroll_y > 0)
+        await pilot.press("up", "up")
+        await _wait(pilot, lambda: pane.scroll_y == 0)
+
+
 async def test_health_tab_is_compact():
     app = MultiAgentWatchApp()
     async with app.run_test(size=(120, 40)) as pilot:

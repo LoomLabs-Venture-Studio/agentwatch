@@ -89,6 +89,9 @@ agentwatch check
 agentwatch check --security --log session.jsonl
 ```
 
+With `--security` the report opens with the security verdict (secure, at risk
+or compromised), and the health score on the line below it.
+
 ### security-scan
 
 Runs only the security checks on one session and prints a verdict: secure, at
@@ -148,7 +151,7 @@ Claude Code token use, broken down by tool and by kind of command.
 | Option | What it does |
 | --- | --- |
 | `--all` | All projects, not only the current folder's |
-| `--session ID` | One session |
+| `--session ID` | One session, by its id or the start of it, wherever it is |
 | `--burn` | How many tokens went on simple commands you could have run yourself |
 | `--json` | Output as JSON |
 
@@ -166,7 +169,7 @@ the assistant's replies.
 | Command | What it does |
 | --- | --- |
 | `history sync` | Record new or changed sessions (`report` does this for you) |
-| `history prune --older-than 90d` | Delete sessions older than 90 days |
+| `history prune --older-than 90d` | Delete sessions older than 90 days (at least `1d`) |
 | `history path` | Print where the history file is |
 
 ## Secrets and privacy
@@ -200,6 +203,7 @@ writes a cleaned copy next to the original (`notes.txt` becomes
 | `--dry-run` | List what would be hidden; write nothing |
 | `--in-place` | Overwrite the file, keeping the original as `<file>.bak` |
 | `--secrets-only` | Hide secrets only, not personal information |
+| `--force` | Replace an existing `.scrubbed` copy (without it, `scrub` stops) |
 | `--json` | Output as JSON |
 
 ```bash
@@ -271,9 +275,11 @@ agentwatch --theme classic check
 
 ### agentguard
 
-AgentWatch also installs a second command, `agentguard`, with security turned on
-by default: `agentguard scan`, `agentguard check`, `agentguard watch`,
-`agentguard watch-all` and `agentguard audit`.
+AgentWatch also installs a second command, `agentguard`, with security always
+on: `agentguard scan`, `agentguard check`, `agentguard watch`,
+`agentguard watch-all`, `agentguard audit` and `agentguard config-scan`. Each
+takes the same options as its `agentwatch` command (`scan` is `security-scan`),
+and `agentguard --theme <name>` works too.
 
 ## Use in CI
 

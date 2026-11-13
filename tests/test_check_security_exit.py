@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from agentwatch.cli import cli
@@ -61,3 +62,27 @@ def test_check_security_clean_log_matches_plain_check():
     secure = CliRunner().invoke(cli, ["check", "--log", str(CLEAN_FIXTURE), "--security"])
     assert plain.exit_code == 0, plain.output
     assert secure.exit_code == plain.exit_code, secure.output
+
+
+def test_check_security_headline_is_the_security_verdict():
+    """QA sweep: the headline said PRODUCTIVE (82%) while exiting 2. In
+    security mode it is the security verdict, the health status below it."""
+    res = CliRunner().invoke(cli, ["check", "--log", str(FIXTURE), "--security"])
+    assert res.exit_code == 2, res.output
+    lines = [line.strip() for line in res.output.splitlines()]
+    sec = next(i for i, line in enumerate(lines) if line.startswith("Security:"))
+    assert "COMPROMISED (0%)" in lines[sec]
+    assert lines[sec + 1].startswith("Health:")
+    assert not any(line.startswith("Overall:") for line in lines)
+
+
+@pytest.mark.parametrize("fixture, verdict", [(MEDIUM_FIXTURE, "AT RISK (85%)"),
+                                              (CLEAN_FIXTURE, "SECURE (100%)")])
+def test_check_security_headline_tiers(fixture, verdict):
+    res = CliRunner().invoke(cli, ["check", "--log", str(fixture), "--security"])
+    assert f"{verdict}" in res.output
+
+
+def test_plain_check_keeps_overall_headline():
+    res = CliRunner().invoke(cli, ["check", "--log", str(CLEAN_FIXTURE)])
+    assert "Overall:" in res.output and "Security:" not in res.output

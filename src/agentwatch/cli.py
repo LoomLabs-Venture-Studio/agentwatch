@@ -285,8 +285,13 @@ def print_health_report(
     stats=None,
     efficiency=None,
     note: str | None = None,
+    security_score: int | None = None,
 ) -> None:
     """Print a formatted health report to stdout.
+
+    With *security_score* (`check --security`), the headline is the security
+    verdict (SECURE / AT RISK / COMPROMISED, the tier the exit code uses),
+    with the health status on the line below it.
 
     `stats` (a `SessionStats`, optional) surfaces `peak_context_tokens` --
     the high-water mark of any single action's context size, which survives
@@ -307,8 +312,18 @@ def print_health_report(
     # Overall score - use theme-aware colors
     theme = get_theme()
     status_color = theme.color_for(report.status)
+    if security_score is not None:
+        tier_status = security_status_from_score(security_score)
+        click.echo(
+            f"  Security:  {theme.emoji_for(tier_status)} "
+            + click.style(
+                f"{security_label_from_score(security_score)} ({security_score}%)",
+                fg=theme.color_for(tier_status),
+                bold=True,
+            )
+        )
     click.echo(
-        f"  Overall:   {report.emoji} "
+        f"  {'Health:' if security_score is not None else 'Overall:':10} {report.emoji} "
         + click.style(
             f"{report.status.upper()} ({report.overall_score}%)",
             fg=status_color,
@@ -538,6 +553,7 @@ def check(
             stats=buffer.stats,
             efficiency=efficiency,
             note=note,
+            security_score=calculate_security_score(warnings) if security else None,
         )
 
         # Extra security output
@@ -1662,7 +1678,8 @@ def themes():
     "--session", "session_id",
     type=str,
     default=None,
-    help="Analyze a specific session ID",
+    help="Analyze one session: its ID or a unique prefix of it (searched in "
+         "every project and config dir)",
 )
 @click.option(
     "--json", "json_output",
@@ -1743,10 +1760,26 @@ def stats(
     if fmt == "csv" and burn:
         raise click.UsageError("--burn (or --list/--prompts) has no --format csv output")
 
+    if session_id:
+        from agentwatch.cc_stats import find_session_logs
+
+        ids = sorted({p.stem for p in find_session_logs(session_id)})
+        if not ids:
+            click.echo(f"No session matching {session_id} found.", err=True)
+            sys.exit(1)
+        if len(ids) > 1:
+            shown = ", ".join(ids[:5]) + (", ..." if len(ids) > 5 else "")
+            raise click.UsageError(
+                f"--session {session_id} matches {len(ids)} sessions ({shown}); "
+                "give more of the id"
+            )
+
     report = compute_stats(all_projects=all_projects, session_id=session_id)
 
     if report.message_count == 0:
-        if all_projects:
+        if session_id:
+            click.echo(f"Session {session_id} has no messages to count.", err=True)
+        elif all_projects:
             click.echo("No Claude Code session logs found.", err=True)
         else:
             click.echo(
@@ -2460,7 +2493,8 @@ def history_sync(days: float | None, include_active: bool):
 
 @history.command("prune")
 @click.option("--older-than", "older_than", required=True, metavar="Nd",
-              help="Delete sessions last active more than N days ago, e.g. 90d")
+              help="Delete sessions last active more than N days ago, e.g. 90d "
+                   "(N >= 1)")
 def history_prune(older_than: str):
     """Delete old sessions. A later sync without --days reads their logs
     again if they are still on disk."""
@@ -2471,6 +2505,10 @@ def history_prune(older_than: str):
     m = re.fullmatch(r"(\d+)d?", older_than.strip())
     if not m:
         raise click.BadParameter("use a number of days, e.g. 90d", param_hint="--older-than")
+    if int(m.group(1)) < 1:  # 0d would delete every session
+        raise click.BadParameter("must be at least 1 day (0d would delete everything); "
+                                 "to start over, delete the file `agentwatch history path` "
+                                 "prints", param_hint="--older-than")
     n = prune(_history_db(), int(m.group(1)))
     click.echo(f"Removed {n} session(s) last active more than {m.group(1)} days ago")
 
@@ -2615,12 +2653,16 @@ def subagents(log: Path | None, show_all: bool, active_only: bool, json_output: 
         click.echo("\n".join(render(data)))
 
 
-@cli.command(hidden=True)
-def hook():
+@cli.command(hidden=True, add_help_option=False)
+@click.option("--help", "-h", "show_help", is_flag=True, hidden=True)
+def hook(show_help: bool):
     """Claude Code coach hook: reads hook JSON on stdin (see plugin/)."""
-    from agentwatch.coach import main as coach_main
+    from agentwatch import coach
 
-    coach_main()
+    if show_help:  # same text as the console script's fast path (_entry.py)
+        click.echo(coach.HELP)
+        sys.exit(0)
+    coach.main()
 
 
 @cli.command()
@@ -2866,20 +2908,23 @@ def budget_status():
 )
 @click.option("--dry-run", is_flag=True, help="List what would be hidden; write nothing")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
-def scrub(path: Path, secrets_only: bool, in_place: bool, dry_run: bool, json_output: bool):
+@click.option("--force", is_flag=True, help="Overwrite an existing .scrubbed copy")
+def scrub(path: Path, secrets_only: bool, in_place: bool, dry_run: bool, json_output: bool,
+          force: bool):
     """Hide secrets and personal info in one file before sharing it.
 
     \b
     Writes a cleaned copy beside the file (notes.txt -> notes.scrubbed.txt)
-    unless --in-place. Exit codes: 0 done (dry run: nothing found),
-    1 dry run found something, 2 error.
+    unless --in-place; an existing copy is kept unless --force. Exit codes:
+    0 done (dry run: nothing found), 1 dry run found something, 2 error.
     """
     from agentwatch.detectors.security.pii import _PII_PATTERNS
     from agentwatch.detectors.security.secret_scanner import _SECRET_PATTERNS, scrub_file
 
     patterns = _SECRET_PATTERNS if secrets_only else _SECRET_PATTERNS + _PII_PATTERNS
     try:
-        r = scrub_file(path, patterns=patterns, in_place=in_place, dry_run=dry_run)
+        r = scrub_file(path, patterns=patterns, in_place=in_place, dry_run=dry_run,
+                       force=force)
     except (OSError, ValueError, UnicodeError) as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(2)
@@ -3107,78 +3152,57 @@ def main():
     cli()
 
 
+# agentguard command -> (its agentwatch command, help). Each alias takes the
+# command's own options (copied from the Click command, so they can't drift);
+# the only difference is security on by default (`-s` is accepted, a no-op).
+_GUARD_ALIASES = {
+    "scan": ("security_scan", "Run security scan."),
+    "watch": ("watch", "Watch one session for security issues in real-time."),
+    "check": ("check", "Run full check with security enabled."),
+    "watch-all": ("watch_all", "Watch all agents for security issues."),
+    "audit": ("audit", "Audit log history for leaked secrets."),
+    "config-scan": ("config_scan", "Check agent configs (MCP, hooks, permissions, skills) "
+                                   "offline."),
+}
+
+
+def _guard_alias(name: str, target: click.Command, help_text: str) -> click.Command:
+    """*target* under the name *name*, with its options and security forced on."""
+    import copy
+
+    params = []
+    for param in target.params:
+        param = copy.copy(param)
+        if param.name == "security":
+            param.default = True
+            param.help = "Security detectors (always on in agentguard)"
+        params.append(param)
+
+    def callback(**kwargs):
+        if "security" in kwargs:
+            kwargs["security"] = True
+        return click.get_current_context().invoke(target.callback, **kwargs)
+
+    return click.Command(name, params=params, callback=callback, help=help_text)
+
+
 def _build_guard_cli():
     """Construct the `agentguard` Click group (security-focused CLI).
 
     Factored out of `security_main()` so it can be reached directly (e.g. by
     tests using Click's `CliRunner`) without spawning a real process.
     """
-    # Override defaults to always include security
-    @click.group()
-    @click.version_option(version=__version__)
-    def guard_cli():
-        """AgentGuard - Security monitoring for AI agents."""
-        pass
+    import copy
 
-    @guard_cli.command(name="scan")
-    @click.option("--log", "-l", type=_LOG_FILE)
-    @click.option("--json", "json_output", is_flag=True)
-    def guard_scan(log, json_output):
-        """Run security scan."""
-        ctx = click.Context(security_scan)
-        ctx.invoke(security_scan, log=log, json_output=json_output)
-
-    @guard_cli.command(name="watch")
-    @click.option("--log", "-l", type=_LOG_FILE)
-    def guard_watch(log):
-        """Watch for security issues in real-time."""
-        ctx = click.Context(watch)
-        ctx.invoke(watch, log=log, security=True)
-
-    @guard_cli.command(name="check")
-    @click.option("--log", "-l", type=_LOG_FILE)
-    @click.option("--json", "json_output", is_flag=True)
-    def guard_check(log, json_output):
-        """Run full check with security enabled."""
-        ctx = click.Context(check)
-        ctx.invoke(check, log=log, security=True, json_output=json_output)
-
-    @guard_cli.command(name="watch-all")
-    @click.option("--all-logs", is_flag=True, help="Scan all log directories")
-    def guard_watch_all(all_logs):
-        """Watch all agents for security issues."""
-        ctx = click.Context(watch_all)
-        ctx.invoke(watch_all, security=True, all_logs=all_logs)
-
-    @guard_cli.command(name="audit")
-    @click.option("--all", "all_projects", is_flag=True, help="Scan all projects")
-    @click.option("--session", "session_id", type=str, default=None)
-    @click.option("--json", "json_output", is_flag=True)
-    @click.option("--redact", is_flag=True, help="Replace secrets with [REDACTED]")
-    @click.option("--dry-run", is_flag=True, help="Print report without modifying files")
-    @click.option("--force", is_flag=True, help="Redact active session logs too")
-    def guard_audit(all_projects, session_id, json_output, redact, dry_run, force):
-        """Audit log history for leaked secrets."""
-        ctx = click.Context(audit)
-        ctx.invoke(
-            audit,
-            all_projects=all_projects,
-            session_id=session_id,
-            json_output=json_output,
-            redact=redact,
-            dry_run=dry_run,
-            force=force,
-        )
-
-    @guard_cli.command(name="config-scan")
-    @click.option("--json", "json_output", is_flag=True)
-    @click.option("--path", "project",
-                  type=click.Path(exists=True, file_okay=False, path_type=Path))
-    def guard_config_scan(json_output, project):
-        """Check agent configs (MCP, hooks, permissions, skills) offline."""
-        ctx = click.Context(config_scan)
-        ctx.invoke(config_scan, json_output=json_output, project=project)
-
+    guard_cli = click.Group(
+        "agentguard",
+        params=[copy.copy(p) for p in cli.params],  # --version, -t/--theme
+        callback=cli.callback,
+        help="AgentGuard - Security monitoring for AI agents.",
+    )
+    commands = globals()
+    for name, (target, help_text) in _GUARD_ALIASES.items():
+        guard_cli.add_command(_guard_alias(name, commands[target], help_text))
     return guard_cli
 
 

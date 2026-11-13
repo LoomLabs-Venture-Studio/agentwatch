@@ -1603,14 +1603,19 @@ def scrub_file(
     patterns: list[tuple[re.Pattern, str]] = _SECRET_PATTERNS,
     in_place: bool = False,
     dry_run: bool = False,
+    force: bool = False,
 ) -> ScrubResult:
     """Redact *patterns* in one file; write a ``.scrubbed`` copy or, with
     *in_place*, replace the file keeping ``<name>.bak``. Raises ``ValueError``
-    for a binary file or an existing ``.bak`` (it would be stale), ``OSError``
-    on I/O failure. *dry_run* does all the work but writes nothing.
+    for a binary file or an existing ``.bak`` (it would be stale),
+    ``FileExistsError`` for an existing ``.scrubbed`` copy unless *force*,
+    ``OSError`` on I/O failure. *dry_run* does all the work but writes nothing.
     """
     if in_place:
         _refuse_symlink(path)
+    copy = path.with_name(path.stem + ".scrubbed" + path.suffix)
+    if not in_place and not dry_run and not force and os.path.lexists(copy):
+        raise FileExistsError(f"{copy} already exists; use --force to overwrite it")
     original = path.read_bytes()
     if b"\0" in original[:8192]:
         raise ValueError(f"{path} looks like a binary file (NUL byte); not scrubbed")
@@ -1651,8 +1656,8 @@ def scrub_file(
         _atomic_write_bytes(path, data, mode)
         result.output, result.backup = path, backup
     else:
-        result.output = path.with_name(path.stem + ".scrubbed" + path.suffix)
-        _atomic_write_bytes(result.output, data, mode)
+        result.output = copy
+        _atomic_write_bytes(copy, data, mode, exclusive=not force)  # one made meanwhile
     return result
 
 

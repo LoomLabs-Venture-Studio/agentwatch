@@ -7,9 +7,12 @@ import sys
 
 def main() -> None:
     if sys.argv[1:2] == ["hook"]:
-        from agentwatch.coach import main as coach_main
+        from agentwatch import coach
 
-        coach_main()
+        if {"--help", "-h"} & set(sys.argv[2:]):  # Claude Code passes no args
+            print(coach.HELP)
+            sys.exit(0)
+        coach.main()
     if sys.argv[1:2] == ["statusline"] and set(sys.argv[2:]) <= {"--ok", "--cost"}:
         from agentwatch.statusline import main as statusline_main
 

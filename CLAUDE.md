@@ -75,14 +75,24 @@ src/agentwatch/
                        `budget off`, `budget status` (budget.py).
                        `report`/`stats`/`tools` take --format text|json|csv.
                        `scrub PATH` redacts secrets + PII in one
-                       file (copy by default, `--in-place`/`--dry-run`/
+                       file (copy by default, an existing .scrubbed copy
+                       refused unless `--force`; `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
                        (output without `--pii` unchanged)
                        `check --security` exits with the worse of the health
                        and security codes (`_security_exit_code`; security-scan
-                       thresholds: 100 -> 0, 50-99 -> 1, under 50 -> 2)
+                       thresholds: 100 -> 0, 50-99 -> 1, under 50 -> 2);
+                       its text report's headline is the security verdict
+                       (`Security:`), the health status below (`Health:`)
+                       `stats --session ID|prefix` searches every config
+                       dir (cc_stats.find_session_logs; ambiguous prefix ->
+                       usage error). `history prune --older-than` >= 1d
                        Entry points: `agentwatch` and `agentguard`
-                       (security-first alias), both -> agentwatch.cli
+                       (security-first alias), both -> agentwatch.cli.
+                       agentguard's commands (_GUARD_ALIASES) are built from
+                       the agentwatch commands' own params (copied, security
+                       forced on), group -t/--theme too; test_guard_cli.py
+                       checks they match
   __init__.py          Public package API re-exporting detectors/health/parser/etc.
   agents/              One adapter per agent: AgentAdapter protocol +
                        BaseAdapter defaults (base.py) and the ordered
@@ -192,7 +202,9 @@ src/agentwatch/
                        attributable(): process-kind adapters only, minus
                        Codex app-server threads, `kilo serve`/`opencode
                        serve` and Aider (synthetic timestamps)
-  coach.py             `agentwatch hook` (hidden): Claude Code PostToolUse/
+  coach.py             `agentwatch hook` (hidden; `--help`/`-h` prints
+                       coach.HELP and exits 0, in _entry.py before any
+                       stdin read): Claude Code PostToolUse/
                        PostToolUseFailure hook. Tail (4 MB) of
                        transcript_path -> parse_claude_code_entry ->
                        health registry; new HIGH/CRITICAL PROGRESS/ERRORS
@@ -274,7 +286,8 @@ src/agentwatch/
                        <sid>..budget.json (never a coach state name). List
                        price estimates; unpriced models add nothing
   statusline.py        `agentwatch statusline [--ok] [--cost]`: Claude Code statusLine
-                       command. Stdin session_id -> newest coach state file
+                       command. Stdin read under a 2 s watchdog
+                       (STDIN_TIMEOUT_S, os._exit(0), silent). Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
                        user_state_dir()/state-dir (coach.POINTER, written
                        by the hook; the status line gets no
@@ -343,7 +356,8 @@ src/agentwatch/
   history.py           `agentwatch history`: stdlib sqlite3 at data_dir()/
                        history.db (%LOCALAPPDATA%\agentwatch, else
                        $XDG_DATA_HOME or ~/.local/share + agentwatch; dir via
-                       coach._private_dir, 0700). PRAGMA user_version +
+                       coach._private_dir, 0700; on POSIX the DB is created
+                       0600 and an existing one we own tightened to 0600). PRAGMA user_version +
                        _MIGRATIONS (statement lists, IF NOT EXISTS) run
                        under BEGIN IMMEDIATE, version re-read inside.
                        sessions keyed by log_hash (sha256
