@@ -19,6 +19,7 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Input, Static, TabbedContent
 
+from agentwatch import posture as _posture
 from agentwatch import subagents
 from agentwatch.agents import DISPLAY_NAMES, adapter_for, display_name
 from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
@@ -424,6 +425,8 @@ class MultiAgentWatchApp(App):
         self._holding = False  # at startup, an Alerter pass for a session in its window
         self._header_text = ""
         self._selected_sig: tuple = ()  # what the Selected strip shows (_update_selected)
+        # pid -> sandbox/permission posture, read on the discovery thread
+        self._postures: dict[int, _posture.Posture] = {}
         self._blocks = 0  # loop-breaker blocks seen this run (incl. already at startup)
         self._held_blocks = 0  # ... of those, seen in the startup window
         self._coach_next = 0.0  # monotonic time of the next coach state pass
@@ -1017,10 +1020,14 @@ class MultiAgentWatchApp(App):
             if self._narrow:  # no AGENT column: the tree is in PROJECT
                 project = f"{indent} {project}"
         health = f"{score}%"
+        badge = self._posture_badge(item.pid)
+        if badge:  # "! " before the project: approvals skipped (red: no sandbox too)
+            project = badge[0] + project
         cells = {
             "dot": (ascii_safe("●", "*") if active else ascii_safe("○", "o"), color),
             "agent": (agent, AGENT_COLORS.get(item.agent_type or data.get("agent_name"), "")),
-            "project": (project, ""),
+            "project": (project, "", ((0, len(badge[0]), badge[1]),)) if badge
+            else (project, ""),
             "health": (f"{health} {trend}", color, ((len(health) + 1, len(health) + 2,
                                                    trend_style),)) if trend else (health, color),
             "cost": ("n/a" if cost is None else format_usd(cost).lstrip("~"), "")
@@ -1570,11 +1577,23 @@ class MultiAgentWatchApp(App):
 
     # -- Selected strip ---------------------------------------------------
 
+    def _posture_badge(self, pid: int | None) -> tuple[str, str] | None:
+        """("! ", style) for a session whose approvals are skipped: red with
+        no sandbox, yellow otherwise; None for the rest."""
+        p = self._postures.get(pid) if pid is not None else None
+        if p is None or p.approvals != "skipped":
+            return None
+        theme = get_theme()
+        return "! ", "bold " + _color(theme.color_3 if p.risky else theme.color_1)
+
     def _title(self, data: dict) -> str:
         item: AgentItem = data["item"]
         title = [item.project_name or item.log_path.name, self._agent_name(data)]
         if item.pid:
             title.append(f"pid {item.pid}")
+            p = self._postures.get(item.pid)
+            if p is not None and p != _posture.UNKNOWN:
+                title.append(_posture.label(p, " / "))
         if item.uptime:
             title.append(item.uptime)
         if item.process_status == "stopped":
@@ -1940,6 +1959,12 @@ class MultiAgentWatchApp(App):
             if w.severity.value == "critical":
                 self.bell()
 
+    def _scan_processes(self) -> tuple[list[AgentProcess], dict[int, _posture.Posture]]:
+        """Discovery plus each process's posture (cached per pid and start
+        time, so only a new process costs a psutil walk). Off the event loop."""
+        processes = subagents.with_subagents(find_running_agents(self._discovery_cache))
+        return processes, {p.pid: _posture.posture(p) for p in processes}
+
     async def _refresh_processes(self) -> None:
         """Periodically re-scan running processes and update agent list."""
         if not self._process_mode:
@@ -1953,13 +1978,13 @@ class MultiAgentWatchApp(App):
             # entirely on repeat scans. Everything below touches Textual
             # widgets/app state and must stay on the event loop, so we don't
             # offload any further.
-            processes = await asyncio.to_thread(
-                lambda: subagents.with_subagents(find_running_agents(self._discovery_cache)))
+            processes, postures = await asyncio.to_thread(self._scan_processes)
         finally:
             self._scanning = False
         if self.session is not None:  # `watch`: only its own agent, never others
             processes = [p for p in processes if p.log_file == self.session]
 
+        self._postures = postures
         new_agents = self.watcher.refresh_processes(processes)
         scanned = {t.team_id: t for t in build_teams(processes) if t.member_count > 1}
 

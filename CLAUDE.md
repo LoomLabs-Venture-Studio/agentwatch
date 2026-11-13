@@ -64,7 +64,8 @@ want a "fitness tracker + security guard" for those agents.
 ## Architecture
 ```
 src/agentwatch/
-  cli.py              Click command group: check, watch, watch-all, ps,
+  cli.py              Click command group: check, watch, watch-all, ps
+                       (POSTURE column: posture.py),
                        detect, net, list-detectors, security-scan, config-scan, themes, stats,
                        visual,
                        audit, scrub, report, tools, subagents, history sync|prune|path, notify on|off|status
@@ -202,6 +203,94 @@ src/agentwatch/
                        attributable(): process-kind adapters only, minus
                        Codex app-server threads, `kilo serve`/`opencode
                        serve` and Aider (synthetic timestamps)
+  posture.py           Sandbox/permission posture (Sprint 48), stdlib +
+                       psutil: posture(AgentProcess) -> Posture(approvals
+                       skipped|auto|on|unknown (auto = a classifier or
+                       reviewer model approves), sandbox sandboxed|
+                       container|none|unknown, confidence high|low,
+                       reasons = fixed strings, never argv). Argv parsed per
+                       CLI library (_Cli/_parse: --x V, --x=V, -sV, -s V,
+                       -s=V, grouped -dy; yargs --x=true, --no-x,
+                       camelCase); positionals and after `--` ignored.
+                       Claude Code: flag > permissions.defaultMode from
+                       managed (/etc/claude-code, macOS /Library/
+                       Application Support/ClaudeCode, C:\Program Files\
+                       ClaudeCode; + managed-settings.d) > --settings (JSON
+                       or path; unreadable -> unknown) > local > project
+                       (bypass/auto not honoured there) > user > built-in
+                       default (auto from 2.1.283, read from the native
+                       exe's versions/<v> path; -p and disableAutoMode ->
+                       Manual); disableBypassPermissionsMode / --restricted
+                       refuse bypass. Codex: CODEX_HOME from the process's
+                       own environ (that key only) > agentwatch's >
+                       ~/.codex; layers /etc/codex/config.toml < config.toml
+                       < profile (-p NAME -> NAME.config.toml, else legacy
+                       [profiles.NAME]; top-level profile = selector;
+                       named but unreadable -> unknown) < project
+                       .codex/config.toml per dir from the repo root (first
+                       .git up from the process cwd (else the realpath of
+                       the discovered dir), then -C; else the cwd
+                       only; <= 64 dirs) down to the cwd, closest wins,
+                       profile/profiles ignored; a value from there is low
+                       (trust not read); unreadable/cut/custom
+                       project_root_markers -> "project config unknown",
+                       low) < -c/--config key=value (TOML) < -s/-a flags;
+                       approvals_reviewer auto_review (or its alias
+                       guardian_subagent) / --approve-for-me -> auto, any
+                       other reviewer -> unknown; -c profiles.NAME.KEY
+                       applied to the active profile, any -c profiles.*
+                       -> low; an unreadable config -> unknown unless set by
+                       flag. `codex exec|e|review` -> skipped ("codex exec
+                       (no approvals)") unless the reviewer is auto_review;
+                       with -a or -c approval_policy -> unknown. default_permissions / a
+                       [permissions] table in any layer or -c: sandbox
+                       unknown (":danger-full-access" -> none); -s still
+                       wins but low. Gemini (yargs-parser rules: a dash
+                       word is never a value; a boolean takes only a
+                       following true/false; `--yolo=1`-style values ->
+                       unknown; `-ms` sandbox -> unknown): --approval-mode
+                       > --yolo > settings general.defaultApprovalMode (not
+                       yolo); -s/--sandbox or tools.sandbox -> own sandbox;
+                       run_shell_command, ShellTool or any `*` entry in
+                       --allowed-tools or tools.allowed (user or <cwd>/
+                       .gemini settings) -> "all commands pre-approved",
+                       low; unreadable settings -> low; --policy/
+                       --admin-policy or any *.toml (or unreadable dir) in
+                       /etc/gemini-cli/policies (macOS /Library/Application
+                       Support/GeminiCli, Windows C:\ProgramData\
+                       gemini-cli), ~/.gemini/policies or <cwd>/.gemini/
+                       policies -> "policy files not read", low.
+                       Claude --permission-prompt-tool -> "prompts answered
+                       by a tool": on -> auto, low.
+                       Claude allow rule or --allowedTools entry `Bash`,
+                       `Bash(*)`, `Bash(**)`, `*` or a shell prefix
+                       (`Bash(sh -c:*)`, `Bash(bash:*)`, ...) -> "all commands pre-approved",
+                       low. Copilot: allow-all
+                       flags; partial allows only add "some tools
+                       pre-approved". Sandbox: nearest ancestor (<= 16;
+                       cut -> "ancestry too deep") srt/codex-linux-sandbox
+                       -> sandboxed (high); bwrap/firejail/nsjail/
+                       sandbox-exec -> sandboxed (low, "launcher options not
+                       read": argv never read); bwrap under flatpak
+                       (flatpak parent, /app/ program, /.flatpak-info) ->
+                       sandboxed (low); exact names containerd-shim*/
+                       conmon/runc/crun/docker-init/dockerd/podman/
+                       containerd -> container (low); else /proc/<pid>/
+                       root markers; else the agent's own sandbox; else
+                       none. Windows: sandbox unknown unless explicitly
+                       off. Editor kinds, zombies, unreadable or
+                       non-matching pids -> UNKNOWN. Cached per (pid,
+                       create_time). tone(): bad = skipped + none, warn =
+                       skipped, good = on + sandboxed + high confidence
+                       only, else neutral. Surfaces: ps POSTURE column
+                       (theme color_3/1/0, ascii sep " / "), ps --json and
+                       /api/ps `posture`, visual card chip (its own row,
+                       same short words, wraps) + summary count, watch-all
+                       `! ` before PROJECT (red risky / yellow skipped) +
+                       label in the Selected title (postures computed on
+                       the discovery thread), check text-mode advisory when
+                       skipped + none and the log changed in the last 10
+                       min (score/exit unchanged)
   coach.py             `agentwatch hook` (hidden; `--help`/`-h` prints
                        coach.HELP and exits 0, in _entry.py before any
                        stdin read): Claude Code PostToolUse/

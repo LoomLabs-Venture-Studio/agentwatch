@@ -8,6 +8,37 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- Sandbox and permission posture for each running agent (`posture.py`): approvals
+  (`skipped` / `auto` (a classifier reviews, shown as `auto-review`) / `on` / `unknown`) from the process's own flags (Claude Code
+  `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`, user settings
+  `permissions.defaultMode`; Codex `--yolo`, `--dangerously-bypass-approvals-and-sandbox`,
+  `-s/--sandbox`, `-a/--ask-for-approval never`, `--full-auto`, config.toml; Gemini CLI
+  `--yolo` and `--approval-mode yolo`; Copilot CLI `--allow-all-tools`, `--allow-all`,
+  `--yolo`), and sandbox (`sandboxed` / `container` / `none` / `unknown`) from parent
+  processes (srt, bwrap, firejail, nsjail, sandbox-exec, codex-linux-sandbox; docker, podman,
+  containerd) and container marker files. Fixed reason strings only, never argv. Shown in
+  `ps` (POSTURE column, red for `yolo · no sandbox`), `ps --json` and `/api/ps` (`posture`
+  object), `visual` (a chip on each agent card, a count in the summary), `watch-all` (a `!`
+  before the project, red or yellow, and the full posture in the Selected strip), and as a
+  one-line advisory in `check` (no score or exit-code change). Windows: sandbox is `unknown`.
+  Flags are read the way each CLI parses them (`-sV`, `-s=V`, grouped `-dy`, yargs
+  `--yolo=true` / `--no-yolo` / `--approvalMode`), plus Codex `-c key=value`, profiles
+  (`-p NAME` -> `NAME.config.toml`, legacy `[profiles.NAME]` and `profile =`), project
+  `.codex/config.toml` layers (repo root down to the agent's cwd, closest wins; low
+  confidence, since project trust is not read), `codex exec` (no approvals unless
+  auto-review), permission profiles (`default_permissions`, `[permissions]`: sandbox
+  `unknown`, `:danger-full-access` = none), `approvals_reviewer` (`guardian_subagent` is
+  auto-review; an unknown value is `unknown`), `-c profiles.NAME.KEY` and the process's own
+  `CODEX_HOME`, and Claude Code `--settings`, `--permission-prompt-tool` (auto-review, low),
+  managed settings, project settings and its built-in auto default.
+  Gemini argv follows yargs-parser (a dash word is never an option's value). Anything not
+  certain is `unknown` or low confidence: a bwrap, firejail, nsjail or sandbox-exec parent
+  (its options are not read), a Claude Code allow rule that pre-approves every command
+  (`Bash`, `Bash(*)`, `*`, or a shell prefix such as `Bash(sh -c:*)`), Gemini
+  `run_shell_command`, `ShellTool` or `*` in `--allowed-tools` or `tools.allowed`, Gemini
+  policy files (`--policy`, `--admin-policy`, or any `*.toml` in a policies dir; never read)
+  and an unreadable Gemini settings file are low confidence. Green needs a
+  human approving inside a real sandbox.
 - `agentwatch budget set [--session USD] [--block USD] [--day USD] [--action ask|deny]`,
   `budget off` and `budget status`: spend caps for interactive Claude Code sessions,
   enforced by the plugin's PreToolUse hook after the command guard and the loop breaker

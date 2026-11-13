@@ -8,6 +8,7 @@ import math
 import re
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -564,6 +565,8 @@ def check(
             _print_llm_assessments(warnings)
             _print_goal_alignment(goal_alignment)
 
+        _print_posture_advisory(log)
+
     # Exit code based on score thresholds (theme-independent)
     # < 40 = level_3 (critical/stuck) -> exit 2
     # < 60 = level_2 (warning/spinning) -> exit 1
@@ -574,6 +577,33 @@ def check(
         # security tier also decides the exit code (the worse one wins).
         exit_code = max(exit_code, _security_exit_code(calculate_security_score(warnings)))
     sys.exit(exit_code)
+
+
+POSTURE_ADVISORY_RECENT_S = 600  # check's advisory: only logs written in the last 10 min
+
+
+def _print_posture_advisory(log: Path) -> None:
+    """One line when the process writing *log* runs with approvals skipped
+    and no sandbox. Advisory only: never changes the score or exit code."""
+    if log.suffix == ".vscdb":
+        return  # Cursor: no process of its own
+    try:
+        # A log nobody wrote lately has no live agent: skip discovery (~350 ms).
+        if time.time() - log.stat().st_mtime > POSTURE_ADVISORY_RECENT_S:
+            return
+        target = log.resolve()
+        proc = next((a for a in find_running_agents()
+                     if a.log_file and a.log_file.resolve() == target), None)
+        p = posture_of(proc) if proc is not None else None
+    except Exception:
+        return
+    if p is None or not p.risky:
+        return
+    why = ", ".join(r for r in p.reasons if r.startswith("-") or r.startswith("settings"))
+    click.echo(click.style(
+        "  Advisory: this session's agent runs with approvals skipped and no sandbox"
+        + (f" ({why})" if why else "") + ". Not scored.", fg=get_theme().color_1))
+    click.echo()
 
 
 def _check_json(report, efficiency, warnings, buffer, note, goal_alignment=None) -> dict:
@@ -830,9 +860,29 @@ def _ps_json(agents: list[AgentProcess]) -> list[dict]:
             "cpu_percent": a.cpu_percent,
             "memory_mb": round(a.memory_mb, 1),
             "uptime": a.uptime,
+            "posture": posture_of(a).to_dict(),
         }
         for a in agents
     ]
+
+
+def posture_of(agent: AgentProcess):
+    """The agent's sandbox/permission posture (agentwatch.posture)."""
+    from agentwatch.posture import posture
+
+    return posture(agent)
+
+
+def _posture_cell(agent: AgentProcess) -> str:
+    """'yolo · no sandbox' in the theme's critical colour, 'approvals ·
+    sandboxed' in its best colour; yellow for skipped approvals otherwise."""
+    from agentwatch.posture import label, tone
+
+    p = posture_of(agent)
+    text = label(p, ascii_safe(" · ", " / "))
+    theme = get_theme()
+    color = {"bad": theme.color_3, "warn": theme.color_1, "good": theme.color_0}.get(tone(p))
+    return click.style(text, fg=color, bold=tone(p) == "bad") if color else text
 
 
 @cli.command()
@@ -1224,6 +1274,7 @@ def _print_agents_view(agents: list[AgentProcess]) -> None:
     # Table header
     click.echo(
         f"  {'PID':<12}{'TYPE':<16}{'PROJECT':<18}{'SESSION':<10}{'CPU':>6}{'MEM':>8}{'STATUS':>10}"
+        f"  POSTURE"
     )
 
     for a in agents:
@@ -1238,7 +1289,7 @@ def _print_agents_view(agents: list[AgentProcess]) -> None:
 
         click.echo(
             f"  {a.pid:<12}{a.agent_type:<16}{project:<18}{session:<10}"
-            f"{cpu_str:>6}{mem_str:>8}   {status}"
+            f"{cpu_str:>6}{mem_str:>8}   {status}   {_posture_cell(a)}"
         )
 
     click.echo()
@@ -1260,7 +1311,7 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
         # Table header
         click.echo(
             f"    {'PID':<12}{'TYPE':<16}{'PROJECT':<16}{'SESSION':<10}"
-            f"{'CPU':>6}{'MEM':>8}{'ROLE':>8}"
+            f"{'CPU':>6}{'MEM':>8}{'ROLE':>8}  POSTURE"
         )
 
         for a in team.members:
@@ -1283,7 +1334,8 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
 
             click.echo(
                 f"    {a.pid:<12}{a.agent_type:<16}{proj_col:<16}{session:<10}"
-                f"{cpu_str:>6}{mem_str:>8}   {role}"
+                f"{cpu_str:>6}{mem_str:>8}   {role}{' ' * (7 - len(click.unstyle(role)))}"
+                f"{_posture_cell(a)}"
             )
 
         click.echo()

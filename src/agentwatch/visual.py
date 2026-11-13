@@ -454,6 +454,8 @@ text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
 .doing .v .age{font-weight:400;color:var(--mute)}
 .doing .why{font-size:.875rem;color:var(--mute)}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
+.card>.posture{align-self:flex-start;white-space:normal}
+.card>.posture>span{overflow:visible;overflow-wrap:anywhere}
 .status{display:flex;flex-direction:column;gap:12px}
 .card details{border-top:1px solid var(--line);margin-top:auto}
 .card summary{min-height:44px;font-size:.8125rem}
@@ -1029,6 +1031,27 @@ async function pullAgents() {
 function initials(name) {
   return name.split(" ").map(w => w.charAt(0)).join("").slice(0, 2).toUpperCase();
 }
+// Sandbox/permission posture (agentwatch.posture): one pill with the same
+// short words and tones as `agentwatch ps` (posture.label / posture.tone).
+const APPROVALS = {skipped: "yolo", auto: "auto-review", on: "approvals"};
+const SANDBOX = {sandboxed: "sandboxed", container: "container", none: "no sandbox"};
+const APPROVAL_TIPS = {skipped: "approvals skipped", auto: "a classifier reviews actions",
+  on: "you approve actions", unknown: "approvals unknown"};
+function postureTone(p) {
+  if (p.approvals === "skipped") return p.sandbox === "none" ? "bad" : "warn";
+  return p.approvals === "on" && p.sandbox === "sandboxed" && p.confidence === "high" ?
+    "good" : "neutral";
+}
+function postureChip(p) {
+  if (!p || typeof p !== "object") return null;
+  const ap = APPROVALS[p.approvals], sb = SANDBOX[p.sandbox];
+  if (!ap && !sb) return null;
+  const c = pill((ap || "approvals ?") + " · " + (sb || "sandbox ?"), postureTone(p));
+  c.classList.add("posture");
+  c.title = "Posture: " + (APPROVAL_TIPS[p.approvals] || APPROVAL_TIPS.unknown) + ", " +
+    (sb || "sandbox unknown") + (p.confidence === "low" ? " (low confidence)" : "");
+  return c;
+}
 function cards(list) {
   const g = el("div", null, "cards");
   for (const a of list) {
@@ -1055,7 +1078,8 @@ function cards(list) {
       dl.append(el("dt", k), v instanceof Node ? v : el("dd", v));
     }
     det.append(el("summary", "Process details"), dl);
-    c.append(top, box, det);
+    const pc = postureChip(a.posture);
+    c.append(...(pc ? [top, pc, box, det] : [top, box, det]));
     g.append(c);
   }
   return g;
@@ -1078,6 +1102,10 @@ function summary() {
   const {ps, check, sec, subs, agents} = state, parts = [];
   if (ps) parts.push(ps.length ? plural(ps.length, "AI agent") + " running on this computer."
     : "No AI agents are running right now.");
+  const open = (ps || []).filter(a => a.depth === 0 && a.posture &&
+    a.posture.approvals === "skipped" && a.posture.sandbox === "none").length;
+  if (open) parts.push(`${plural(open, "agent")} ${open === 1 ? "runs" : "run"} with ` +
+    "approvals skipped and no sandbox.");
   if (check) parts.push(`The newest session is ${label(check.status).toLowerCase()} ` +
     `(health ${num(check.overall_score)}/100)` + (sec ? ` and ` +
     `${label(sec.status).toLowerCase()} (security ${num(sec.security_score)}/100)` : "") + ".");
