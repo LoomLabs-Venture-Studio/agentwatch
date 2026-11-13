@@ -14,6 +14,7 @@ from pathlib import Path
 import psutil
 
 from agentwatch import agents as _agents
+from agentwatch import claude_config
 from agentwatch.path_encoding import encode_path_for_claude
 from agentwatch.proc_snapshot import snapshot
 
@@ -537,13 +538,63 @@ def _find_open_jsonl(pid: int, project_dir: Path) -> Path | None:
     return None
 
 
-def _claude_home() -> Path:
-    return Path.home() / ".claude"
+# Config dir of each Claude Code process, keyed by (pid, start time) so a
+# reused pid is read again. None: its environment could not be read.
+_config_dir_by_proc: dict[tuple[int, float | None], Path | None] = {}
+_CONFIG_DIR_CACHE_MAX = 512
 
 
-def _claude_project_dir(cwd: Path) -> Path:
+def _process_config_dir(pid: int, create_time: float | None) -> Path | None:
+    """Process *pid*'s config dir from its own environment: its
+    ``CLAUDE_CONFIG_DIR``, or ``~/.claude`` when that is unset or empty (as
+    Claude Code itself does). A relative value is taken against the
+    process's own cwd; if that cannot be read either, the value is ignored.
+    None when the environment cannot be read (access denied, gone,
+    unsupported platform, anything else). Resolved, like
+    claude_config.config_dirs(), so one dir has one spelling.
+
+    Only that one variable is looked at; the rest of the environment is never
+    stored or logged.
+    """
+    key = (pid, create_time)
+    if key in _config_dir_by_proc:
+        return _config_dir_by_proc[key]
+    result: Path | None = None
+    try:
+        own = claude_config.env_config_dir(psutil.Process(pid).environ())
+        if own is not None and not own.is_absolute():
+            cwd = _get_process_cwd(pid)
+            own = cwd / own if cwd is not None else None
+            if own is None:
+                raise LookupError("relative CLAUDE_CONFIG_DIR, cwd unreadable")
+        result = claude_config.resolved(own or Path.home() / ".claude")
+    except Exception:  # never let one process's environment break discovery
+        result = None
+    if len(_config_dir_by_proc) >= _CONFIG_DIR_CACHE_MAX:
+        _config_dir_by_proc.clear()
+    _config_dir_by_proc[key] = result
+    return result
+
+
+def _claude_home(pid: int | None = None, create_time: float | None = None) -> Path:
+    """Claude Code's config dir: process *pid*'s own (from its environment),
+    else agentwatch's CLAUDE_CONFIG_DIR, else ``~/.claude``."""
+    if pid is not None:
+        own = _process_config_dir(pid, create_time)
+        if own is not None:
+            return own
+    return claude_config.default_config_dir()
+
+
+def _claude_homes() -> list[Path]:
+    """Every known config dir (claude_config.config_dirs()), for lookups with
+    no process to ask; ``[_claude_home()]`` when none exists."""
+    return claude_config.config_dirs() or [_claude_home()]
+
+
+def _claude_project_dir(cwd: Path, home: Path | None = None) -> Path:
     """Where Claude Code keeps the transcripts of sessions started in *cwd*."""
-    return _claude_home() / "projects" / encode_path_for_claude(cwd)
+    return (home or _claude_home()) / "projects" / encode_path_for_claude(cwd)
 
 
 @dataclass(frozen=True)
@@ -619,7 +670,7 @@ def _read_claude_session_record(
     present but unreadable (caught mid-rewrite) comes back with
     ``session_id=None``. Only these few fields are read.
     """
-    path = _claude_home() / "sessions" / f"{pid}.json"
+    path = _claude_home(pid, create_time) / "sessions" / f"{pid}.json"
     try:
         with open(path, "rb") as f:
             raw = f.read(_SESSION_RECORD_MAX_BYTES + 1)
@@ -664,15 +715,18 @@ def _process_create_time(pid: int) -> float | None:
         return None
 
 
-def _find_claude_transcript(session_id: str, project_dirs: list[Path]) -> Path | None:
-    """The ``<session_id>.jsonl`` transcript, looked for in *project_dirs* first."""
+def _find_claude_transcript(
+    session_id: str, project_dirs: list[Path], home: Path | None = None
+) -> Path | None:
+    """The ``<session_id>.jsonl`` transcript, looked for in *project_dirs* first,
+    then in every project dir under config dir *home*."""
     for project_dir in project_dirs:
         path = project_dir / f"{session_id}.jsonl"
         if path.is_file():
             return path
     # A resumed session keeps writing to the project dir it began in, which
     # need not match the process's cwd. session_id has no glob characters.
-    projects = _claude_home() / "projects"
+    projects = (home or _claude_home()) / "projects"
     return next((p for p in projects.glob(f"*/{session_id}.jsonl") if p.is_file()), None)
 
 
@@ -734,26 +788,40 @@ def _resolve_claude_code_log(
     share one project dir. ``find_running_agents()`` (``_assign_claude_logs``)
     decides whether a process with no record can still take the newest
     unclaimed log. Without *pid* there is no process to match, so this is
-    the most recently modified log in the project dir.
+    the most recently modified log in the project dir of any known config dir.
+
+    The config dir is the process's own ``CLAUDE_CONFIG_DIR``, else
+    agentwatch's, else ``~/.claude`` (``_claude_home``).
     """
-    project_dir = _claude_project_dir(cwd)
-
     if pid is None:
-        log_file = _newest_claude_log(project_dir)
-        return (log_file, _claude_session_id(log_file)) if log_file else (None, None)
+        newest, newest_mtime = None, 0.0
+        for home in _claude_homes():
+            log_file = _newest_claude_log(_claude_project_dir(cwd, home))
+            if log_file is None:
+                continue
+            try:
+                mtime = log_file.stat().st_mtime
+            except OSError:
+                continue
+            if newest is None or mtime > newest_mtime:
+                newest, newest_mtime = log_file, mtime
+        return (newest, _claude_session_id(newest)) if newest else (None, None)
 
+    create_time = _process_create_time(pid)
+    home = _claude_home(pid, create_time)
+    project_dir = _claude_project_dir(cwd, home)
     if project_dir.is_dir():
         log_file = _find_open_jsonl(pid, project_dir)
         if log_file is not None:
             return log_file, _claude_session_id(log_file)
 
-    record = _read_claude_session_record(pid, _process_create_time(pid))
+    record = _read_claude_session_record(pid, create_time)
     if record is None or record.session_id is None:
         return None, None
     project_dirs = [project_dir]
     if record.cwd is not None:
-        project_dirs.append(_claude_project_dir(record.cwd))
-    return _find_claude_transcript(record.session_id, project_dirs), record.session_id
+        project_dirs.append(_claude_project_dir(record.cwd, home))
+    return _find_claude_transcript(record.session_id, project_dirs, home), record.session_id
 
 
 def _assign_claude_logs(
@@ -800,7 +868,10 @@ def _assign_claude_logs(
             and agent.pid not in displaced
             and agent.working_directory is not None
         ):
-            unmatched.setdefault(_claude_project_dir(agent.working_directory), []).append(agent)
+            home = _claude_home(agent.pid, started[agent.pid])
+            unmatched.setdefault(
+                _claude_project_dir(agent.working_directory, home), []
+            ).append(agent)
 
     claimed = {a.log_file for a in agents if a.log_file is not None}
     for project_dir, group in unmatched.items():

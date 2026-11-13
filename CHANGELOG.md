@@ -25,11 +25,34 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- Command guard (#228): a shell fed from a group, subshell or `exec`
+  (`{ bash; } < <(echo ...)`, `( sh ) <<< ...`, `exec 0<<<'...'; bash`), a decoder
+  or download piped into a shell with options or names the guard did not know
+  (`bash --rcfile /dev/null`, `bash5`, `bash-5.2`, `ksh93`, `mksh`, `yash`, `fish -C`),
+  a `#` inside an array subscript (`a[$i #x]=1; rm -rf ~`), `echo -e` escapes
+  piped into a shell (`echo -e '\x72m -rf ~' | bash`), `env -S` /
+  `env --split-string` and `gxargs` no longer hide a dangerous command. Where the
+  guard cannot tell whether bash reads a `#` as a comment (a `((`, `$((` or
+  extglob group open across lines, with a quote or substitution in the comment)
+  it now asks. Also caught: `(bash)<<<'...'`, a subshell's script piped on past a
+  redirection (`(echo ...) 2>/dev/null | bash`), `exec` after `VAR=`, `command` or
+  `--`, with `-a NAME` or a `{fd}` redirection, `env -S 'bash -s' < <(...)`, `env -S`
+  strings cut by `\c`, and a prefix assignment to an array element
+  (`a[1]=1 rm -rf ~`). Only adds asks.
+- Claude Code sessions run with `CLAUDE_CONFIG_DIR` set are found again. `ps`, `watch-all` and
+  `visual` read each Claude Code process's own `CLAUDE_CONFIG_DIR` (`~/.claude` when it has none; agentwatch's own
+  value only when the process environment cannot be read) and look for its session log there, instead of showing "No session log found
+  yet". `stats`, `audit` (per project and `--all`), `history sync`, `check`'s default log,
+  `config-scan` and `watch-all --all-logs` cover both `$CLAUDE_CONFIG_DIR` and `~/.claude`;
+  a project with sessions in both counts once. Config dirs are compared by resolved path, so a
+  symlinked or relative `CLAUDE_CONFIG_DIR` does not record the same sessions twice in history. Only that one variable is read
+  from a process's environment, once per process; nothing else is stored or logged.
 - `visual`: concurrent `/api/stats` requests failed with "input() already active";
   `cc_stats` read session files through the module-global `fileinput.input()`, and now opens
   each file itself.
 - `ps --json`, `/api/ps` and `/api/agents` showed the user name as the project of an agent
   running in the home folder; it is now "~", the same rule as history.
+
 
 ## [0.2.2] - 2026-11-12
 
