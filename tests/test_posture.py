@@ -102,6 +102,7 @@ def procs(monkeypatch, tmp_path):
 
     (tmp_path / "gemini").mkdir()
     monkeypatch.setattr(gemini_agent, "_gemini_dir", lambda: tmp_path / "gemini")
+    monkeypatch.setattr(posture, "_gemini_system_policies", lambda: tmp_path / "gemini-sys")
     (tmp_path / "proj").mkdir()
     CWD[0] = tmp_path / "proj"
     posture.clear_cache()
@@ -1294,3 +1295,73 @@ def test_codex_cwd_fallback_is_realpath(procs, tmp_path):  # finding 5
     CWD[0] = link  # FakeProc has no cwd(): the discovered directory is used
     p = _srt(procs, GOOD_CODEX)
     assert p.approvals == "auto" and posture.tone(p) != "good"
+
+
+# -- QA round 4 (PR #241) ---------------------------------------------------
+
+GEMINI_OK = ["gemini", "--approval-mode", "default"]
+
+
+@linux_only
+@pytest.mark.parametrize("entry", ["ShellTool", "*", "run_shell*", "ShellTool(ls)"])  # B1
+def test_gemini_shell_aliases_and_wildcards(procs, tmp_path, entry):
+    p = _srt(procs, [*GEMINI_OK, "--allowed-tools", entry], "gemini")
+    assert "all commands pre-approved" in p.reasons and posture.tone(p) != "good"
+    (tmp_path / "gemini" / "settings.json").write_text(
+        json.dumps({"tools": {"allowed": [entry]}}))
+    p = _srt(procs, GEMINI_OK, "gemini")
+    assert "all commands pre-approved" in p.reasons and posture.tone(p) != "good"
+
+
+@linux_only
+@pytest.mark.parametrize("where", ["user", "workspace", "system"])  # B2
+def test_gemini_policy_dirs(procs, tmp_path, where):
+    assert posture.tone(_srt(procs, GEMINI_OK, "gemini")) == "good"
+    d = {"user": tmp_path / "gemini" / "policies",
+         "workspace": CWD[0] / ".gemini" / "policies",
+         "system": tmp_path / "gemini-sys"}[where]
+    d.mkdir(parents=True)
+    (d / "notes.txt").write_text("x")
+    assert posture.tone(_srt(procs, GEMINI_OK, "gemini")) == "good"  # only *.toml counts
+    (d / "a.toml").write_text('[[rule]]\ntoolName = "run_shell_command"\ndecision = "allow"\n')
+    p = _srt(procs, GEMINI_OK, "gemini")
+    assert "policy files not read" in p.reasons and posture.tone(p) != "good"
+
+
+@linux_only
+@pytest.mark.parametrize("flag", [["--policy", "/x/a.toml"], ["--admin-policy=/x/a.toml"]])
+def test_gemini_policy_flags(procs, flag):  # B2
+    p = _srt(procs, [*GEMINI_OK, *flag], "gemini")
+    assert "policy files not read" in p.reasons and posture.tone(p) != "good"
+    assert all("/x" not in r for r in p.reasons)
+
+
+@linux_only
+def test_gemini_unreadable_policy_dir(procs, monkeypatch):  # B2
+    def boom(self, pattern):
+        raise PermissionError
+
+    (CWD[0] / ".gemini" / "policies").mkdir(parents=True)
+    monkeypatch.setattr(posture.Path, "glob", boom)
+    p = _srt(procs, GEMINI_OK, "gemini")
+    assert "policy files not read" in p.reasons and posture.tone(p) != "good"
+
+
+@linux_only
+@pytest.mark.parametrize("rule", [  # Claude shell-prefix allow-alls
+    "Bash(sh:*)", "Bash(bash:*)", "Bash(bash -c:*)", "Bash(sh -c:*)", "Bash(**)",
+    "Bash( sh -c : * )", "Bash(bash  -c:*)", "Bash(*:*)", "Bash(*)\u200b",
+])
+def test_claude_shell_prefix_allow_all(procs, tmp_path, rule):
+    (tmp_path / "claude" / "settings.json").write_text(
+        json.dumps({"permissions": {"allow": [rule]}}))
+    p = _srt(procs, ["claude", "--permission-mode", "plan"], "claude-code")
+    assert "all commands pre-approved" in p.reasons and posture.tone(p) != "good"
+
+
+@linux_only
+def test_claude_shell_prefix_narrow_rules_stay_green(procs, tmp_path):
+    (tmp_path / "claude" / "settings.json").write_text(
+        json.dumps({"permissions": {"allow": ["Bash(shellcheck:*)", "Bash(bashate:*)"]}}))
+    p = _srt(procs, ["claude", "--permission-mode", "plan"], "claude-code")
+    assert posture.tone(p) == "good"

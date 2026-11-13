@@ -241,13 +241,20 @@ src/agentwatch/
                        unknown; `-ms` sandbox -> unknown): --approval-mode
                        > --yolo > settings general.defaultApprovalMode (not
                        yolo); -s/--sandbox or tools.sandbox -> own sandbox;
-                       run_shell_command in --allowed-tools or tools.allowed
-                       (user or <cwd>/.gemini settings) -> "all commands
-                       pre-approved", low; unreadable settings -> low.
+                       run_shell_command, ShellTool or any `*` entry in
+                       --allowed-tools or tools.allowed (user or <cwd>/
+                       .gemini settings) -> "all commands pre-approved",
+                       low; unreadable settings -> low; --policy/
+                       --admin-policy or any *.toml (or unreadable dir) in
+                       /etc/gemini-cli/policies (macOS /Library/Application
+                       Support/GeminiCli, Windows C:\ProgramData\
+                       gemini-cli), ~/.gemini/policies or <cwd>/.gemini/
+                       policies -> "policy files not read", low.
                        Claude --permission-prompt-tool -> "prompts answered
                        by a tool": on -> auto, low.
                        Claude allow rule or --allowedTools entry `Bash`,
-                       `Bash(*)` or `*` -> "all commands pre-approved",
+                       `Bash(*)`, `Bash(**)`, `*` or a shell prefix
+                       (`Bash(sh -c:*)`, `Bash(bash:*)`, ...) -> "all commands pre-approved",
                        low. Copilot: allow-all
                        flags; partial allows only add "some tools
                        pre-approved". Sandbox: nearest ancestor (<= 16;

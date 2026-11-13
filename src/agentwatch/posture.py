@@ -8,7 +8,8 @@ cheap to read and already on this machine:
   "unknown". From the process's own argv plus the agent's config files
   (Claude Code settings, Codex config.toml, profiles and project layers,
   Gemini settings). Claude Code allow rules that pre-approve every command
-  (``Bash``, ``Bash(*)``, ``*``) make "on" low confidence.
+  (``Bash``, ``Bash(*)``, ``Bash(**)``, ``*``, or a shell as the prefix such
+  as ``Bash(sh -c:*)``) make "on" low confidence.
 * sandbox: "sandboxed", "container", "none" or "unknown". From the process's
   ancestors (srt, bwrap, firejail, nsjail, sandbox-exec, codex-linux-sandbox;
   docker/podman/containerd), marker files seen through ``/proc/<pid>/root``
@@ -84,8 +85,12 @@ Sources (checked 2026-11-13):
   ``--approval-mode default|auto_edit|yolo|plan``, ``-s/--sandbox``, short
   value options m p i w e r o, booleans d s y l: packages/cli/src/config/
   config.ts L298-353; ``--allowed-tools`` / settings ``tools.allowed`` (user
-  and the cwd's ``.gemini/settings.json``) holding ``run_shell_command`` is
-  low confidence, as is a settings file that can't be read; approval
+  and the cwd's ``.gemini/settings.json``) holding ``run_shell_command``,
+  ``ShellTool`` (shell-utils.ts L58) or a ``*`` wildcard is low confidence,
+  as is a settings file that can't be read; so are ``--policy`` /
+  ``--admin-policy`` and any *.toml in the system, user or workspace policy
+  dir (policy-config.ts L102-122; storage.ts getSystemConfigDir), which are
+  never read; approval
   mode = flag, else ``--yolo``, else settings
   ``general.defaultApprovalMode`` unless "yolo" (L776-813); ``tools.sandbox``
   setting (sandboxConfig.ts).
@@ -470,12 +475,26 @@ def _claude_version(proc) -> tuple[int, ...] | None:
 
 # Allow rules that pre-approve every shell command (or every tool): with one of
 # these a human never sees a Bash prompt, so "approvals on" is not certain.
-_ALLOW_EVERYTHING = frozenset({"bash", "bash(*)", "bash(:*)", "*"})
+# (a shell itself as the command prefix runs anything: ``Bash(sh -c:*)``).
+_ALLOW_EVERYTHING = frozenset({
+    "bash", "bash(*)", "bash(:*)", "bash(**)", "bash(*:*)", "*",
+    "bash(sh:*)", "bash(bash:*)", "bash(sh -c:*)", "bash(bash -c:*)",
+})
+
+
+def _rule_key(rule: str) -> str:
+    """An allow rule compared loosely: lower case, invisible format
+    characters dropped, runs of whitespace one space, none next to ( ) or :."""
+    import unicodedata
+
+    text = "".join(c for c in rule if unicodedata.category(c) != "Cf").lower()
+    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r" ?([():]) ?", r"\1", text)
 
 
 def _allows_everything(rules: Any) -> bool:
     return isinstance(rules, list) and any(
-        isinstance(r, str) and r.strip().lower() in _ALLOW_EVERYTHING for r in rules)
+        isinstance(r, str) and _rule_key(r) in _ALLOW_EVERYTHING for r in rules)
 
 
 def _allowed_tool_words(argv: list[str]) -> list[str]:
@@ -995,6 +1014,48 @@ _GEMINI_BOOLS = frozenset({"yolo", "sandbox", "debug", "list-extensions", "acp",
 _GEMINI_MODES = {"yolo": "skipped", "auto_edit": "on", "default": "on", "plan": "on"}
 
 
+# Shell tool names (packages/core/src/utils/shell-utils.ts L58); an entry with
+# a wildcard (``*``, ``run_shell*``) is read as allowing everything too.
+_GEMINI_SHELL_TOOLS = frozenset({"run_shell_command", "shelltool"})
+
+
+def _gemini_allows_shell(entry: str) -> bool:
+    name = entry.strip().split("(", 1)[0].strip().lower()
+    return "*" in entry or name in _GEMINI_SHELL_TOOLS
+
+
+def _gemini_system_policies() -> Path:
+    """Gemini's system policy dir (packages/core/src/config/storage.ts
+    getSystemConfigDir + ``policies``; no env override)."""
+    if sys.platform == "win32":
+        return Path(r"C:\ProgramData\gemini-cli\policies")
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/GeminiCli/policies")
+    return Path("/etc/gemini-cli/policies")
+
+
+def _gemini_policy_files(opts: list, ctx: _Ctx) -> bool:
+    """Policy rules can allow a tool without a prompt and are not read: True
+    for ``--policy``/``--admin-policy`` or any *.toml in the system, user
+    (~/.gemini/policies) or workspace (<cwd>/.gemini/policies) policy dir
+    (packages/cli/src/config/policy-config.ts L102-122); an unreadable dir
+    counts too."""
+    from agentwatch.agents.gemini import _gemini_dir
+
+    if _last(opts, "policy", "admin-policy") is not None:
+        return True
+    dirs = [_gemini_system_policies(), _gemini_dir() / "policies"]
+    if ctx.cwd is not None:
+        dirs.append(ctx.cwd / ".gemini" / "policies")
+    for d in dirs:
+        try:
+            if d.is_dir() and any(d.glob("*.toml")):
+                return True
+        except OSError:
+            return True
+    return False
+
+
 def _gemini(argv: list[str], ctx: _Ctx) -> _Verdict:
     from agentwatch.agents.gemini import _gemini_dir
 
@@ -1014,7 +1075,8 @@ def _gemini(argv: list[str], ctx: _Ctx) -> _Verdict:
         tools_ = layer.get("tools") if isinstance(layer, dict) else None
         if isinstance(tools_, dict) and isinstance(tools_.get("allowed"), list):
             allowed += [t for t in tools_["allowed"] if isinstance(t, str)]
-    shell_allowed = any(re.match(r"\s*run_shell_command\b", t) for t in allowed)
+    shell_allowed = any(_gemini_allows_shell(t) for t in allowed)
+    policy = _gemini_policy_files(opts, ctx)
     general = settings.get("general") if isinstance(settings.get("general"), dict) else {}
     tools = settings.get("tools") if isinstance(settings.get("tools"), dict) else {}
 
@@ -1048,6 +1110,9 @@ def _gemini(argv: list[str], ctx: _Ctx) -> _Verdict:
         reasons.append("some tools pre-approved")
     if unreadable:
         reasons.append("settings unreadable")
+        high = False
+    if policy:
+        reasons.append("policy files not read")
         high = False
 
     flag = _last(opts, "sandbox")

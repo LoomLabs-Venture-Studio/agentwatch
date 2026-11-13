@@ -34,8 +34,10 @@ numbers refer to the GitHub repository.
   Gemini argv follows yargs-parser (a dash word is never an option's value). Anything not
   certain is `unknown` or low confidence: a bwrap, firejail, nsjail or sandbox-exec parent
   (its options are not read), a Claude Code allow rule that pre-approves every command
-  (`Bash`, `Bash(*)`, `*`), Gemini `run_shell_command` in `--allowed-tools` or
-  `tools.allowed`, and an unreadable Gemini settings file are low confidence. Green needs a
+  (`Bash`, `Bash(*)`, `*`, or a shell prefix such as `Bash(sh -c:*)`), Gemini
+  `run_shell_command`, `ShellTool` or `*` in `--allowed-tools` or `tools.allowed`, Gemini
+  policy files (`--policy`, `--admin-policy`, or any `*.toml` in a policies dir; never read)
+  and an unreadable Gemini settings file are low confidence. Green needs a
   human approving inside a real sandbox.
 - `agentwatch budget set [--session USD] [--block USD] [--day USD] [--action ask|deny]`,
   `budget off` and `budget status`: spend caps for interactive Claude Code sessions,
