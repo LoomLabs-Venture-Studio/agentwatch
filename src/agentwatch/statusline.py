@@ -26,6 +26,7 @@ import sys
 import time
 from pathlib import Path
 
+from agentwatch import claude_config
 from agentwatch.coach import (
     POINTER,
     _atomic_write,
@@ -71,8 +72,8 @@ def state_dirs() -> list[Path]:
     except OSError:
         plugin = []
     if not plugin or not plugin[0].is_absolute():
-        config = os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude"
-        plugin = sorted((Path(config) / "plugins" / "data").glob("agentwatch-*/coach"))
+        config = claude_config.env_config_dir() or Path.home() / ".claude"
+        plugin = sorted((config / "plugins" / "data").glob("agentwatch-*/coach"))
     return list(dict.fromkeys([state_dir(), *plugin, user]))
 
 

@@ -111,14 +111,20 @@ src/agentwatch/
                        heuristics. Claude Code's config dir per process:
                        its own CLAUDE_CONFIG_DIR (psutil environ(), only
                        that key, cached per (pid, create_time); readable
-                       but unset -> ~/.claude), else (unreadable)
+                       but unset -> ~/.claude; relative -> against the
+                       process cwd, ignored if that is unreadable;
+                       resolved), else (unreadable, any exception)
                        agentwatch's, else ~/.claude (`_claude_home`)
   claude_config.py     Claude Code config dirs (stdlib only):
                        default_config_dir() ($CLAUDE_CONFIG_DIR, ~
                        expanded, empty ignored, else ~/.claude);
                        config_dirs() for whole-history scans
-                       ($CLAUDE_CONFIG_DIR + ~/.claude, existing, deduped
-                       by resolved path; no ~/.claude-* guessing)
+                       ($CLAUDE_CONFIG_DIR + ~/.claude, existing, returned
+                       resolved and once each, so history's path hashes
+                       stay stable; no ~/.claude-* guessing). Also used
+                       by config_scan (settings/md/plugins per dir;
+                       .claude.json in home for ~/.claude, inside
+                       $CLAUDE_CONFIG_DIR for it) and statusline
   ai_detect.py         Machine-wide AI-use detection for `agentwatch detect`:
                        resolves AI_PROVIDERS domains to IPs, attributes
                        psutil socket-table connections to PIDs, checks
@@ -440,7 +446,9 @@ src/agentwatch/
                        nothing, delegates watch/parse to claude-code)
   cc_stats.py          Parses <config dir>/projects/*.jsonl for every
                        claude_config.config_dirs() root (projects_dirs();
-                       an assigned CLAUDE_PROJECTS_DIR replaces them) for token-usage /
+                       an assigned CLAUDE_PROJECTS_DIR replaces them;
+                       cwd_to_project_dirs(): a project's dir in each, used
+                       by stats/audit/check; a project counts once) for token-usage /
                        burn-rate stats; opens files with explicit
                        encoding="utf-8", errors="ignore" (matches
                        parser/logs.py's precedent) so a stray non-UTF-8

@@ -547,8 +547,11 @@ _CONFIG_DIR_CACHE_MAX = 512
 def _process_config_dir(pid: int, create_time: float | None) -> Path | None:
     """Process *pid*'s config dir from its own environment: its
     ``CLAUDE_CONFIG_DIR``, or ``~/.claude`` when that is unset or empty (as
-    Claude Code itself does). None when the environment cannot be read
-    (access denied, gone, unsupported platform).
+    Claude Code itself does). A relative value is taken against the
+    process's own cwd; if that cannot be read either, the value is ignored.
+    None when the environment cannot be read (access denied, gone,
+    unsupported platform, anything else). Resolved, like
+    claude_config.config_dirs(), so one dir has one spelling.
 
     Only that one variable is looked at; the rest of the environment is never
     stored or logged.
@@ -556,10 +559,16 @@ def _process_config_dir(pid: int, create_time: float | None) -> Path | None:
     key = (pid, create_time)
     if key in _config_dir_by_proc:
         return _config_dir_by_proc[key]
+    result: Path | None = None
     try:
-        env = psutil.Process(pid).environ()
-        result = claude_config.env_config_dir(env) or Path.home() / ".claude"
-    except (psutil.Error, OSError, RuntimeError, NotImplementedError, AttributeError):
+        own = claude_config.env_config_dir(psutil.Process(pid).environ())
+        if own is not None and not own.is_absolute():
+            cwd = _get_process_cwd(pid)
+            own = cwd / own if cwd is not None else None
+            if own is None:
+                raise LookupError("relative CLAUDE_CONFIG_DIR, cwd unreadable")
+        result = claude_config.resolved(own or Path.home() / ".claude")
+    except Exception:  # never let one process's environment break discovery
         result = None
     if len(_config_dir_by_proc) >= _CONFIG_DIR_CACHE_MAX:
         _config_dir_by_proc.clear()
