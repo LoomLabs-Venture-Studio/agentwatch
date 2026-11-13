@@ -13,7 +13,9 @@ and inside `(( ))` / `$(( ))` whose `))` closes on the same line, an
 line. Since #228 a third reading (the new one, run when the command has a `[`)
 also reads any `name[...]` at a command's start up to its `]` (quotes, `$` and
 `#` inside: `a[$i #x]=1`; without a `]` it is an ordinary word, a second one
-asks). The new readings ask when a comment
+asks). A fourth reading (the new one, run when a redirection follows a `)` or
+is glued to an operator) splits `)<<<` and keeps a subshell with redirections
+on its pipeline (`(echo X) 2>/dev/null | bash`). The new readings ask when a comment
 with a quote or substitution sits inside a `((`, `$((` or extglob group still
 open from an earlier line (bash may read that `#` as code), checks a
 here-string, heredoc or `<(...)` on a group or loop end (`{ bash; } <<< X`,
@@ -122,8 +124,12 @@ _BUDGET_S = 1.0
 _deadline: float | None = None  # set by the outermost check_command
 _legacy = False  # the reading in progress (see check_command)
 _subscripts = False  # the third reading: `name[...]` read up to its `]`
+_split_ops = False  # the fourth reading: `)<<<` split, redirections after `)` (see check_command)
+# A redirection glued to an operator (`)<<<`, `;<`) or after a subshell's `)`
+# (`) 2>/dev/null`): the fourth reading runs only then. Linear: \s* then one char.
+_GROUP_REDIR = re.compile(r"[;&|(]<|\)[ \t]*(?:\d+|\{\w+\})?[<>]")
 # What the new reading reads differently: comments, $'...', $"...", <(...).
-_NEW_SYNTAX = re.compile(r"#|\$['\"]|<\(|[;&|()]<")  # [;&|()]<: a glued `)<<<`
+_NEW_SYNTAX = re.compile(r"#|\$['\"]|<\(")
 _HOME_RE = re.compile(r"(?:~|\$HOME|\$\{HOME\})(?=/|$)")
 _DISK = re.compile(r"/dev/(?:sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|disk\d)")
 _HARMLESS_DEV = ("/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/")
@@ -357,7 +363,7 @@ def _simple_commands(tokens: list[str]) -> list[tuple[list[str], str]]:
     """(argv, separator before it) per simple command."""
     out, argv, sep = [], [], ""
     for tok in tokens:
-        if not _legacy and (k := tok.find("<")) > 0 and set(tok[:k]) <= _OPS \
+        if _split_ops and (k := tok.find("<")) > 0 and set(tok[:k]) <= _OPS \
                 and set(tok[k:]) <= _OPS | {"<", ">"}:
             # `( bash )<<<'x'`: shlex glues `)<<<`; the new reading splits it.
             if argv:
@@ -391,6 +397,20 @@ def _assign_end(argv: list[str], i: int) -> int | None:
     return None
 
 
+def _only_redirs(argv: list[str]) -> bool:
+    """argv (after _strip_prefixes) is only redirections: `2 > x`, `< y`, `{fd}<<< z`."""
+    i, n = 0, len(argv)
+    while i < n:
+        if _REDIR.fullmatch(argv[i]):
+            i += 2
+        elif i + 1 < n and _REDIR.fullmatch(argv[i + 1]) and (
+                argv[i].isdigit() or re.fullmatch(r"\{\w+\}", argv[i])):
+            i += 3
+        else:
+            return False
+    return n > 0
+
+
 def _bare_exec(argv: list[str]) -> bool:
     """`exec` with only redirections, also after VAR=x, `command`, `builtin` and
     with -a NAME / -c / -l: it changes the shell's own stdin (`exec <<< X; bash`)."""
@@ -399,12 +419,14 @@ def _bare_exec(argv: list[str]) -> bool:
         word = argv[i]
         if not seen and (j := _assign_end(argv, i)) is not None:
             i = j
-        elif not seen and word in ("command", "builtin", "-p"):
+        elif not seen and word in ("command", "builtin", "-p", "--"):
             i += 1
         elif not seen and word == "exec":
             seen, i = True, i + 1
-            while i < n and re.fullmatch(r"-[acl]+", argv[i]):
+            while i < n and re.fullmatch(r"-[acl]+|--", argv[i]):
                 i += 2 if "a" in argv[i] else 1
+                if argv[i - 1] == "--":
+                    break
         elif _REDIR.fullmatch(word):
             i += 2
         elif i + 1 < n and _REDIR.fullmatch(argv[i + 1]) and (
@@ -972,7 +994,9 @@ class _Scan:
                 if (cmd_pos and word in _CLOSERS) or ((cmd_pos or pre) and word == "exec") or (
                         word_start and _prog(word) == "env"):
                     group = True
-                pre = (cmd_pos or pre) and word in ("command", "builtin", "-p")
+                if word_start:  # `command`, `--`, `x=1` before exec keep it at a command's start
+                    pre = (cmd_pos or pre) and (word in ("command", "builtin", "-p", "--")
+                                                or _ASSIGN_WORD.match(word) is not None)
                 cmd_pos = cmd_pos and (word in _KEYWORDS or (subs and assign))
                 self.emit(word)
                 i, word_start = m.end(), False
@@ -1003,7 +1027,8 @@ class _Scan:
                 if self.pending:
                     i = self.heredoc_bodies(i)
                 continue
-            word_start = pre = False
+            word_start = False
+            pre = pre and c in "'\"$`\\"  # a quoted or substituted assignment value
             cmd_pos = cmd_pos and subs and assign and c in "'\"$`\\"
             if c == "\\":
                 if s.startswith("\n", i + 1):  # line continuation
@@ -1378,7 +1403,10 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
         else:
             raise _UnsureError
         argv = _strip_prefixes(argv)
-        if sep not in _PIPES:
+        # `(echo X) 2>/dev/null | bash`: the redirections belong to the subshell,
+        # which stays on the pipeline (fourth reading only).
+        group_redir = _split_ops and sep == ")" and _only_redirs(argv)
+        if sep not in _PIPES and not group_redir:
             pipeline, stdin = set(), []
         prog = _prog(argv[0]) if argv else ""
         if argv:
@@ -1438,12 +1466,13 @@ def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | Non
     """The ask reason for a Bash command, or None. *_sub*: a substitution's body.
     Past _BUDGET_S the answer is "too_long" (ask), never None.
 
-    Up to three readings share the clock: the #222 one (comments as before,
-    `$'...'` and `$"..."` left as they are), the new one, and (when the command
-    has a `[`) the new one reading `name[...]` up to its `]` (#228); any asking
-    asks, so each later reading can only add asks. The new ones are skipped
-    when the command has nothing they read differently."""
-    global _deadline, _legacy, _subscripts
+    Up to four readings share the clock: the #222 one (comments as before,
+    `$'...'` and `$"..."` left as they are), the new one, (when the command has
+    a `[`) the new one reading `name[...]` up to its `]`, and (when a redirection
+    follows a `)` or is glued to an operator) the new one with `)<<<` split and
+    redirections after a subshell's `)` kept on its pipeline (#228). Any asking
+    asks, so each extra reading can only add asks; develop's two run unchanged."""
+    global _deadline, _legacy, _subscripts, _split_ops
     if _deadline is not None:  # a nested check: the outermost one owns the clock
         return _check_command(command, depth, _sub)
     _deadline = time.monotonic() + _BUDGET_S
@@ -1451,6 +1480,11 @@ def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | Non
         _legacy = True
         if reason := _check_command(command, depth, _sub):
             return reason
+        if _GROUP_REDIR.search(command):  # a fourth reading: `(bash)<<<X`, `(...)2>x | sh`
+            _legacy, _split_ops = False, True
+            if reason := _check_command(command, depth, _sub):
+                return reason
+            _split_ops = False
         if not _NEW_SYNTAX.search(command):
             return None
         _legacy = False
@@ -1465,7 +1499,7 @@ def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | Non
     except Exception:  # a bug in the guard asks, never allows
         return REASONS["unchecked"]
     finally:
-        _deadline, _legacy, _subscripts = None, False, False
+        _deadline, _legacy, _subscripts, _split_ops = None, False, False, False
 
 
 def _check_command(command: str, depth: int, _sub: bool) -> str | None:

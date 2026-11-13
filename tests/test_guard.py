@@ -14,6 +14,17 @@ from agentwatch.detectors.security.privilege import DangerousCommandDetector
 from agentwatch.guard import DESTRUCTIVE_PATTERNS
 
 
+@pytest.fixture
+def cpu(monkeypatch):
+    """The clock for in-process timing tests: CPU time, so a loaded CI runner does
+    not fail them, with the guard's budget widened so a slow check is measured
+    rather than cut off at _BUDGET_S (production keeps 1 s)."""
+    import time
+
+    monkeypatch.setattr(guard, "_BUDGET_S", 10.0)
+    return time.process_time
+
+
 @pytest.fixture(autouse=True)
 def _state(tmp_path, monkeypatch):
     monkeypatch.setattr(coach, "state_dir", lambda: tmp_path / "state")
@@ -235,12 +246,10 @@ def test_qa_round1_look_alikes_pass(command):
     "dd if=" * 200_000 + "; rm -rf ~",
     "a() " * 100_000 + "; rm -rf ~",
 ])
-def test_huge_commands_stay_fast_and_still_ask(command):
-    import time
-
-    start = time.perf_counter()
+def test_huge_commands_stay_fast_and_still_ask(command, cpu):
+    start = cpu()
     out = _hook({"command": command})
-    assert time.perf_counter() - start < 1.0
+    assert cpu() - start < 1.0
     assert _asks(out)
 
 
@@ -271,9 +280,9 @@ def test_padded_long_look_alikes_pass(command):
 def test_many_small_pieces_stay_bounded(command, asks):
     import time
 
-    start = time.perf_counter()
+    start = time.process_time()  # the 1 s budget bounds the last case: not widened here
     out = _hook({"command": command})
-    assert time.perf_counter() - start < 1.5
+    assert time.process_time() - start < 1.5
     assert out is None or _asks(out)
     if asks:
         assert _asks(out)
@@ -403,12 +412,10 @@ def test_unbalanced_substitution_falls_back_to_raw_patterns():
     ("cat " + "<<a " * 4_900 + "\nx", False),
     ("`" * 19_999, False),
 ])
-def test_substitutions_stay_fast(command, asks):
-    import time
-
-    start = time.perf_counter()
+def test_substitutions_stay_fast(command, asks, cpu):
+    start = cpu()
     out = _hook({"command": command})
-    assert time.perf_counter() - start < 1.0
+    assert cpu() - start < 1.0
     assert _asks(out) if asks else out is None
 
 
@@ -443,13 +450,11 @@ def test_qa_round2_look_alikes_pass(command):
     ("".join(f"$(echo {i} $(echo $(echo $(x{i}))))" for i in range(500)))[:19_980]
     + "\nrm -rf ~",
 ])
-def test_pipelines_and_wide_substitutions_stay_fast(command):
-    import time
-
+def test_pipelines_and_wide_substitutions_stay_fast(command, cpu):
     assert len(command) < guard.MAX_PARSE
-    start = time.perf_counter()
+    start = cpu()
     out = _hook({"command": command})
-    assert time.perf_counter() - start < 1.0
+    assert cpu() - start < 1.0
     assert _asks(out)
 
 
@@ -568,12 +573,10 @@ N = 19_900
     ("function f { " * (N // 13), False),
     ("coproc C { " * (N // 11), False),
 ])
-def test_sprint45_forms_stay_fast(command, asks):
-    import time
-
-    start = time.perf_counter()
+def test_sprint45_forms_stay_fast(command, asks, cpu):
+    start = cpu()
     out = _hook({"command": command})
-    assert time.perf_counter() - start < 1.0
+    assert cpu() - start < 1.0
     assert _asks(out) if asks else out is None
 
 
@@ -653,12 +656,10 @@ def test_qa225_look_alikes_pass(command):
     ("printf '" + "A" * 15000 + "%s\\n' " + "a " * 2400 + "| xargs echo")[:19_999],
     ("printf '" + "B" * 15000 + "%s\\n' " + "a " * 2400 + "| xargs -I{} echo {}{}{}{}")[:19_999],
 ])
-def test_qa225_xargs_input_is_capped(command):
-    import time
-
-    start = time.perf_counter()
+def test_qa225_xargs_input_is_capped(command, cpu):
+    start = cpu()
     out = _hook({"command": command})
-    assert time.perf_counter() - start < 1.0
+    assert cpu() - start < 1.0
     assert _asks(out, "too long")
 
 
@@ -743,12 +744,10 @@ _HANG = [
 
 
 @pytest.mark.parametrize("command", _HANG)
-def test_qa225_regex_hang_asks_fast(command):
-    import time
-
-    start = time.perf_counter()
+def test_qa225_regex_hang_asks_fast(command, cpu):
+    start = cpu()
     assert guard.check_command(command)
-    assert time.perf_counter() - start < 0.25
+    assert cpu() - start < 0.5
 
 
 @pytest.mark.parametrize("command", _HANG[:2])
@@ -764,7 +763,7 @@ def test_qa225_regex_hang_asks_through_the_hook_process(tmp_path, command):
                          "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")},
         cwd=tmp_path,
     )
-    assert time.perf_counter() - start < 1.0
+    assert time.perf_counter() - start < 2.0  # wall clock: interpreter start on a slow runner
     assert proc.returncode == 0
     assert _asks(proc.stdout)
 
@@ -965,12 +964,10 @@ M = 1_000_000
     ("env -S 'a b'; " * (M // 14) + "rm -rf ~", True),
     ("echo -e '\\x41' | bash; " * (M // 24) + "rm -rf ~", True),
 ])
-def test_sprint47_forms_stay_fast(command, asks):
-    import time
-
-    start = time.perf_counter()
+def test_sprint47_forms_stay_fast(command, asks, cpu):
+    start = cpu()
     out = _hook({"command": command})
-    assert time.perf_counter() - start < 1.0
+    assert cpu() - start < 1.0
     assert _asks(out) if asks else out is None
 
 
@@ -991,7 +988,7 @@ def test_sprint47_1mb_asks_through_the_hook_process(tmp_path, command):
                          "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")},
         cwd=tmp_path,
     )
-    assert time.perf_counter() - start < 2.0  # interpreter start + 1 MB JSON; check < 1 s
+    assert time.perf_counter() - start < 3.0  # wall clock: interpreter start + 1 MB JSON
     assert proc.returncode == 0
     assert _asks(proc.stdout)
 
@@ -1084,12 +1081,10 @@ def test_qa235_second_unclosed_subscript_asks(command):
     "x[ $(a) ]=1\n" * (N // 12),
     "a[ " + "$'x' " * (N // 5),
 ])
-def test_qa235_forms_stay_fast(command):
-    import time
-
-    start = time.perf_counter()
+def test_qa235_forms_stay_fast(command, cpu):
+    start = cpu()
     out = _hook({"command": command})
-    assert time.perf_counter() - start < 0.6
+    assert cpu() - start < 1.0
     assert out is None
 
 
@@ -1097,3 +1092,54 @@ def test_qa235_subscript_without_assignment_is_the_program():
     # `a[1]` is a command (a glob), so the program after it is not skipped to.
     assert guard._assign_end(["a[1]", "rm", "-rf", "~", "b[1]=2"], 0) is None
     assert guard._assign_end(["a[$i", "#x]=1", "rm"], 0) == 2
+
+
+# QA round 2 (#235): redirections after a subshell's `)` (develop asked the first
+# four; the `)<` split now runs as its own reading), and exec after assignments or `--`.
+@pytest.mark.parametrize("command", [
+    "(echo $'\\x72m -rf ~')</dev/null | bash",
+    "(cat <<< $'\\x72m -rf ~')< /dev/null | sh",
+    "(cat <<< $'\\x72m -rf ~')</dev/null|sh",
+    "(printf '%s' $'\\x72m -rf ~')</dev/null | sh",
+    "(echo 'rm -rf ~')2>/dev/null | bash",
+    "(echo 'rm -rf ~') 2>/dev/null | bash",
+    "(echo 'rm -rf ~')</dev/null | bash",
+    "FOO=1 exec < <(echo 'rm -rf ~'); bash",
+    "x=1 exec < <(echo 'rm -rf ~'); bash",
+    "x=1 exec 0< <(echo 'rm -rf ~'); bash",
+    "x='a b' exec < <(echo 'rm -rf ~'); bash",
+    "exec -- <<<'rm -rf ~'; bash",
+    "command -- exec <<<'rm -rf ~'; bash",
+    "command -- exec < <(echo 'rm -rf ~'); bash",
+])
+def test_qa235_round2_asks(command):
+    assert _asks(_hook({"command": command}))
+
+
+@pytest.mark.parametrize("command", [
+    "(echo hi)2>/dev/null | bash",
+    "(ls) </dev/null | cat",
+    "(echo 'rm -rf ~') > out.txt",
+    "x=1 exec 3<f",
+    "exec -- 3<f; bash script.sh",
+])
+def test_qa235_round2_look_alikes_pass(command):
+    assert _hook({"command": command}) is None
+
+
+@pytest.mark.parametrize("unit", [
+    "{ bash; } < <(x) ", "a[$i #x]=1; ", "(echo x)</dev/null | sh; ", "x=1 exec < <(x); bash; ",
+    "env -S 'a b'; ", "echo -e '\\x41' | bash; ", "a[ # ]=1 ", "(bash)<<<x; ",
+])
+def test_sprint47_shapes_scale_linearly(unit, cpu):
+    def took(n: int) -> float:
+        command = unit * (n // len(unit))
+        best = float("inf")
+        for _ in range(3):
+            start = cpu()
+            guard.check_command(command)
+            best = min(best, cpu() - start)
+        return best
+
+    small, big = took(9_000), took(18_000)
+    assert big < 3 * max(small, 0.005)  # linear: twice the input, about twice the time

@@ -64,8 +64,9 @@ numbers refer to the GitHub repository.
   `env --split-string` and `gxargs` no longer hide a dangerous command. Where the
   guard cannot tell whether bash reads a `#` as a comment (a `((`, `$((` or
   extglob group open across lines, with a quote or substitution in the comment)
-  it now asks. Also caught: `(bash)<<<'...'`, `exec` after `VAR=` or `command`,
-  with `-a NAME` or a `{fd}` redirection, `env -S 'bash -s' < <(...)`, `env -S`
+  it now asks. Also caught: `(bash)<<<'...'`, a subshell's script piped on past a
+  redirection (`(echo ...) 2>/dev/null | bash`), `exec` after `VAR=`, `command` or
+  `--`, with `-a NAME` or a `{fd}` redirection, `env -S 'bash -s' < <(...)`, `env -S`
   strings cut by `\c`, and a prefix assignment to an array element
   (`a[1]=1 rm -rf ~`). Only adds asks.
 - `report`/`tools` error kinds: a Node.js crash that failed to open a file is
