@@ -3,89 +3,121 @@
 ``posture(agent)`` answers two questions for one live agent, from what is
 cheap to read and already on this machine:
 
-* approvals: does the agent ask before it runs a tool? ("skipped", "on",
-  "unknown"), from the process's own argv flags plus, where it is one small
-  file, the agent's own config (Claude Code user settings, Codex
-  config.toml).
-* sandbox: does it run inside a sandbox? ("sandboxed", "container", "none",
-  "unknown"), from the process's ancestors (srt, bwrap, firejail, nsjail,
-  sandbox-exec, codex-linux-sandbox; docker/podman/containerd), container
-  marker files seen through ``/proc/<pid>/root``, and the agent's own
-  command sandbox (Codex sandbox modes, Claude Code ``sandbox.enabled``).
+* approvals: who approves the agent's tool calls? "skipped" (nobody),
+  "auto" (a classifier/reviewer model, not a human), "on" (a human), or
+  "unknown". From the process's own argv plus the agent's config files
+  (Claude Code settings, Codex config.toml and profiles, Gemini settings).
+* sandbox: "sandboxed", "container", "none" or "unknown". From the process's
+  ancestors (srt, bwrap, firejail, nsjail, sandbox-exec, codex-linux-sandbox;
+  docker/podman/containerd), marker files seen through ``/proc/<pid>/root``
+  (.dockerenv, run/.containerenv, .flatpak-info), and the agent's own
+  command sandbox (Codex sandbox modes, Claude Code ``sandbox.enabled``,
+  Gemini ``--sandbox``).
 
-``reasons`` are short fixed strings (flag names, never their argv, env or
-paths). Every psutil call is wrapped: an error means "unknown". Results are
-cached per (pid, create_time), so a reused pid is read again.
+The rule throughout: when a value is not certain it is "unknown" or low
+confidence, never the green "good" tone (``tone()``), which needs high
+confidence that a human approves AND a real sandbox. This is the posture the
+process started with; a user can still switch modes inside a session.
 
-Flag sources (checked 2026-11-13; see also the report in the PR):
+``reasons`` are short fixed strings (flag names and known values, never argv
+text, env or paths). Every psutil call is wrapped: an error means "unknown".
+Results are cached per (pid, create_time), so a reused pid is read again.
 
-* Claude Code: ``--dangerously-skip-permissions``, ``--permission-mode
-  <mode>`` (``bypassPermissions``), ``--allow-dangerously-skip-permissions``
-  (bypass allowed but not on): code.claude.com/docs/en/cli-reference and
-  ``claude --help`` 2.1.323. ``permissions.defaultMode: bypassPermissions``
-  takes effect from user or managed settings only since 2.1.257
-  (code.claude.com/docs/en/settings), so only the user settings file is
-  read. ``sandbox.enabled`` (code.claude.com/docs/en/sandboxing): Bash
-  commands run sandboxed.
-* Codex: ``--dangerously-bypass-approvals-and-sandbox`` with its hidden
-  alias ``--yolo`` (openai/codex codex-rs/utils/cli/src/shared_options.rs
-  L54-56; cli/src/main.rs L2143-2149 sets approval never + danger-full-access);
-  ``-s/--sandbox read-only|workspace-write|danger-full-access``
-  (shared_options.rs L40, sandbox_mode_cli_arg.rs L12-16); ``-a/
-  --ask-for-approval on-request|never`` (approval_mode_cli_arg.rs L9-15);
-  ``--approve-for-me``/``--not-so-yolo`` (shared_options.rs L44-46:
-  on-request + workspace-write); ``--full-auto`` (removed in #20133 and
-  #36054; was ``-a on-failure --sandbox workspace-write``, tag rust-v0.40.0
-  tui/src/cli.rs L53) for older installs. config.toml ``sandbox_mode`` and
-  ``approval_policy`` (learn.chatgpt.com/docs/config-file/config-reference).
-  The Linux helper re-runs Codex as ``codex-linux-sandbox`` (sandboxing/src/
-  landlock.rs L7, arg0/src/lib.rs L72); macOS uses ``/usr/bin/sandbox-exec``
-  (sandboxing/src/seatbelt.rs L61).
-* Gemini CLI: ``--yolo``/``-y``, ``--approval-mode default|auto_edit|yolo|
-  plan`` (google-gemini/gemini-cli packages/cli/src/config/config.ts
-  L343-353).
-* Copilot CLI: ``--allow-all-tools``, ``--allow-all``, ``--yolo``
-  (docs.github.com/en/copilot/reference/copilot-cli-reference/
-  cli-command-reference L676, L679, L750).
-* sandbox-runtime: bin ``srt`` (anthropic-experimental/sandbox-runtime
-  package.json), bubblewrap on Linux, sandbox-exec on macOS (README L5).
+Argv is parsed per CLI library: clap (Codex), commander (Claude Code,
+Copilot CLI) and yargs (Gemini CLI): ``--x V``, ``--x=V``, ``-sV``, ``-s V``,
+``-s=V``, grouped short booleans (``-dy``) and, for yargs, ``--x=true``,
+``--x true``, ``--no-x`` and camelCase names. Everything after ``--`` and
+every positional (a prompt) is ignored.
+
+Sources (checked 2026-11-13):
+
+* Claude Code 2.1.323: ``--dangerously-skip-permissions``,
+  ``--permission-mode <mode>`` (default/manual, acceptEdits, plan, auto,
+  dontAsk, bypassPermissions), ``--allow-dangerously-skip-permissions``,
+  ``--settings <file-or-json>``, ``--restricted`` (ignores user/project/local
+  settings, refuses bypassPermissions), ``--allowedTools``: ``claude --help``
+  and code.claude.com/docs/en/cli-reference. Starting mode: flag, then
+  ``permissions.defaultMode`` (bypassPermissions/auto from project or local
+  files do not apply), then the built-in default: Manual for ``-p`` and when
+  ``disableAutoMode`` is "disable", else auto (v2.1.283+; v2.1.228+ on some
+  plans; Manual before 2.1.228): code.claude.com/docs/en/permission-modes
+  "Which mode a session starts in". ``disableBypassPermissionsMode``:
+  docs/en/permissions. Managed settings, above every other level:
+  ``/etc/claude-code/managed-settings.json`` (Linux, WSL),
+  ``/Library/Application Support/ClaudeCode/managed-settings.json`` (macOS),
+  ``C:\\Program Files\\ClaudeCode\\managed-settings.json`` (Windows), plus
+  ``managed-settings.d/*.json``: docs/en/managed-settings. ``sandbox.enabled``:
+  docs/en/sandboxing.
+* Codex (openai/codex main 69231e1; codex-cli 0.160.0):
+  ``--dangerously-bypass-approvals-and-sandbox`` alias ``--yolo``,
+  ``-s/--sandbox``, ``--approve-for-me`` alias ``--not-so-yolo`` (auto review
+  + workspace-write), ``-p/--profile`` (loads ``$CODEX_HOME/<name>.config.toml``
+  over config.toml): codex-rs/utils/cli/src/shared_options.rs L34-56;
+  ``-a/--ask-for-approval on-request|never``: approval_mode_cli_arg.rs L9-15;
+  ``-c/--config key=value`` (value parsed as TOML, else a string);
+  layers system ``/etc/codex/config.toml`` < ``$CODEX_HOME/config.toml`` <
+  profile < runtime overrides; a legacy ``profile = "x"`` selector or
+  ``[profiles.x]`` table: config/src/loader/mod.rs L120-140, L293-321;
+  ``approvals_reviewer``: config/src/lib.rs (``auto_review``).
+  ``--full-auto`` (removed in #20133/#36054; was on-failure + workspace-write)
+  for old installs. Linux helper ``codex-linux-sandbox`` (sandboxing/src/
+  landlock.rs L7), macOS ``/usr/bin/sandbox-exec`` (seatbelt.rs L61).
+* Gemini CLI (google-gemini/gemini-cli b977656, 0.62.0): ``-y/--yolo``,
+  ``--approval-mode default|auto_edit|yolo|plan``, ``-s/--sandbox``, short
+  value options m p i w e r o, booleans d s y l: packages/cli/src/config/
+  config.ts L298-353; approval mode = flag, else ``--yolo``, else settings
+  ``general.defaultApprovalMode`` unless "yolo" (L776-813); ``tools.sandbox``
+  setting (sandboxConfig.ts).
+* Copilot CLI 1.0.90: ``--allow-all-tools``, ``--allow-all``, ``--yolo``
+  (all permissions); ``--allow-tool``, ``--allow-all-paths``,
+  ``--allow-all-urls`` (partial): ``copilot --help`` and
+  docs.github.com copilot-cli-reference L676-750.
+* sandbox-runtime: bin ``srt`` (package.json), bubblewrap / sandbox-exec
+  (README L5). Flatpak apps run under bwrap with ``/.flatpak-info`` in their
+  root.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import psutil
 
 if TYPE_CHECKING:
     from agentwatch.discovery import AgentProcess
 
-APPROVALS = ("skipped", "on", "unknown")
+APPROVALS = ("skipped", "auto", "on", "unknown")
 SANDBOXES = ("sandboxed", "container", "none", "unknown")
 
 MAX_DEPTH = 16  # ancestors walked
 _CONFIG_MAX = 1024 * 1024  # a config file larger than this is not read
 _CACHE_MAX = 512
-_ERRORS = (psutil.Error, OSError, ValueError, TypeError)
+_ERRORS = (psutil.Error, OSError, ValueError, TypeError, AttributeError)
 
 # Program names (basename, no .exe) of sandbox launchers seen as an ancestor.
 _SANDBOX_PROGRAMS = {
     "srt": "srt",
     "bwrap": "bwrap",
+    "flatpak-bwrap": "flatpak",
     "firejail": "firejail",
     "nsjail": "nsjail",
     "sandbox-exec": "sandbox-exec",
     "codex-linux-sandbox": "codex sandbox",
 }
-# Container runtimes whose processes parent a container's first process.
-_CONTAINER_PROGRAMS = ("containerd-shim", "conmon", "runc", "crun", "docker-init",
-                       "dockerd", "podman")
+# Container runtimes whose processes parent a container's first process
+# (exact program names; containerd-shim also as containerd-shim-runc-v2).
+_CONTAINER_PROGRAMS = frozenset({"containerd-shim", "conmon", "runc", "crun", "docker-init",
+                                 "dockerd", "podman", "containerd"})
+_CONTAINER_SHIM = re.compile(r"containerd-shim(-[a-z0-9]+)*")
 _CONTAINER_MARKERS = (".dockerenv", "run/.containerenv")
+_FLATPAK_MARKER = ".flatpak-info"
 _process = psutil.Process  # tests swap in fakes
 
 
@@ -112,24 +144,26 @@ class Posture:
 
 UNKNOWN = Posture()
 
-_APPROVAL_WORDS = {"skipped": "yolo", "on": "approvals", "unknown": "approvals ?"}
+_APPROVAL_WORDS = {"skipped": "yolo", "auto": "auto-review", "on": "approvals",
+                   "unknown": "approvals ?"}
 _SANDBOX_WORDS = {"sandboxed": "sandboxed", "container": "container", "none": "no sandbox",
                   "unknown": "sandbox ?"}
 
 
 def label(p: Posture, sep: str = " · ") -> str:
-    """'yolo · no sandbox', 'approvals · sandboxed', ..."""
+    """'yolo · no sandbox', 'auto-review · sandboxed', 'approvals · sandboxed', ..."""
     return f"{_APPROVAL_WORDS[p.approvals]}{sep}{_SANDBOX_WORDS[p.sandbox]}"
 
 
 def tone(p: Posture) -> str:
-    """'bad' (skipped, no sandbox), 'warn' (skipped otherwise), 'good'
-    (approvals on inside a sandbox or container), else 'neutral'."""
+    """'bad' (skipped, no sandbox), 'warn' (skipped otherwise), 'good' (a human
+    approves inside a real sandbox, high confidence), else 'neutral' (auto
+    review, a container, anything not certain)."""
     if p.risky:
         return "bad"
     if p.approvals == "skipped":
         return "warn"
-    if p.approvals == "on" and p.sandbox in ("sandboxed", "container"):
+    if p.approvals == "on" and p.sandbox == "sandboxed" and p.confidence == "high":
         return "good"
     return "neutral"
 
@@ -137,151 +171,580 @@ def tone(p: Posture) -> str:
 # -- argv ---------------------------------------------------------------
 
 
-def _flag(argv: list[str], *names: str) -> str | None:
-    """Value of the last ``--name value`` / ``--name=value`` / ``-n value`` in
-    *argv* (before a bare ``--``); None when absent."""
-    value = None
-    for i, arg in enumerate(argv):
+@dataclass(frozen=True)
+class _Cli:
+    """How one agent's CLI reads its argv."""
+
+    value_long: frozenset[str] = frozenset()  # long options that take a value
+    value_short: str = ""  # short options that take a value
+    aliases: dict[str, str] = field(default_factory=dict)  # short -> long name
+    yargs: bool = False  # --no-x, --x=true, --x true, camelCase
+
+
+def _kebab(name: str) -> str:
+    return re.sub(r"(?<=[a-z0-9])([A-Z])", lambda m: "-" + m.group(1).lower(), name)
+
+
+def _parse(argv: list[str], cli: _Cli, bools: frozenset[str] = frozenset()) -> list:
+    """[(long name, value)] in argv order; value is the option's string, True
+    for a bare flag, False for yargs ``--no-x``. Positionals and everything
+    after ``--`` are dropped. *bools*: yargs booleans that may take a
+    following ``true``/``false``."""
+    out: list[tuple[str, Any]] = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        i += 1
         if arg == "--":
             break
-        for name in names:
-            if arg == name and i + 1 < len(argv):
-                value = argv[i + 1]
-            elif arg.startswith(name + "="):
-                value = arg[len(name) + 1:]
+        if arg.startswith("--") and len(arg) > 2:
+            name, eq, val = arg[2:].partition("=")
+            value: Any = val if eq else True
+            if cli.yargs:
+                name = _kebab(name)
+                if name.startswith("no-") and not eq:
+                    name, value = name[3:], False
+            if not eq and value is True:
+                if name in cli.value_long and i < len(argv):
+                    value = argv[i]
+                    i += 1
+                elif cli.yargs and name in bools and i < len(argv) and argv[i] in (
+                        "true", "false"):
+                    value = argv[i]
+                    i += 1
+            out.append((name, value))
+        elif arg.startswith("-") and len(arg) > 1 and not arg[1].isdigit():
+            body = arg[1:]
+            for j, ch in enumerate(body):
+                name = cli.aliases.get(ch, ch)
+                rest = body[j + 1:]
+                if ch in cli.value_short:
+                    if rest:
+                        value = rest[1:] if rest.startswith("=") else rest
+                    elif i < len(argv):
+                        value = argv[i]
+                        i += 1
+                    else:
+                        value = True
+                    out.append((name, value))
+                    break
+                if rest.startswith("="):  # -y=true
+                    out.append((name, rest[1:]))
+                    break
+                out.append((name, True))
+    return out
+
+
+def _last(opts: list, *names: str) -> Any:
+    """The last value given for any of *names*; None when absent."""
+    value = None
+    for name, v in opts:
+        if name in names:
+            value = v
     return value
 
 
-def _has(argv: list[str], *names: str) -> bool:
-    for arg in argv:
-        if arg == "--":
-            return False
-        if arg in names:
-            return True
-    return False
+def _on(value: Any) -> bool:
+    """A boolean option's value: a bare flag, or yargs "true"."""
+    return value is True or (isinstance(value, str) and value.lower() == "true")
 
 
-def _read_json(path: Path) -> dict | None:
+# -- config files -------------------------------------------------------
+
+
+def _read_text(path: Path) -> str | None:
     try:
         if path.stat().st_size > _CONFIG_MAX:
             return None
-        data = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
+        return path.read_text(encoding="utf-8-sig", errors="replace")
     except (OSError, ValueError):
+        return None
+
+
+_MISSING = object()  # a config file that does not exist (unlike one that can't be read)
+
+
+def _read_json(path: Path) -> Any:
+    """The JSON object in *path*; _MISSING if there is no such file, None if it
+    can't be read or parsed."""
+    try:
+        if not path.exists():
+            return _MISSING
+    except OSError:
+        return None
+    text = _read_text(path)
+    if text is None:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
         return None
     return data if isinstance(data, dict) else None
 
 
-def _read_toml(path: Path) -> dict | None:
+def _read_toml(path: Path) -> Any:
     try:
-        if path.stat().st_size > _CONFIG_MAX:
-            return None
-        return tomllib.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        if not path.exists():
+            return _MISSING
+    except OSError:
+        return None
+    text = _read_text(path)
+    if text is None:
+        return None
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
         return None
 
 
-# Each returns (approvals, approvals_high, own_sandbox, own_sandbox_high,
+def _environ_value(proc, key: str) -> str | None:
+    """One variable from the process's own environment (nothing else is
+    kept); None when unset or unreadable."""
+    try:
+        value = proc.environ().get(key)
+    except Exception:
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+@dataclass
+class _Ctx:
+    proc: Any
+    pid: int
+    create_time: float
+    cwd: Path | None
+
+
+# Each rule returns (approvals, approvals_high, own_sandbox, own_sandbox_high,
 # reasons); own_sandbox is the agent's own command sandbox: "sandboxed",
-# "none" (explicitly off) or None (not known from the agent).
+# "none" (explicitly off), "unknown" (named but unreadable) or None.
 _Verdict = tuple[str, bool, str | None, bool, list[str]]
 
 
-def _claude_code(argv: list[str], pid: int, create_time: float) -> _Verdict:
+# -- Claude Code ----------------------------------------------------------
+
+_CLAUDE = _Cli(
+    value_long=frozenset({
+        "permission-mode", "settings", "setting-sources", "model", "allowed-tools",
+        "allowedTools", "disallowed-tools", "disallowedTools", "add-dir", "mcp-config",
+        "append-system-prompt", "system-prompt", "system-prompt-file", "session-id",
+        "output-format", "input-format", "tools", "agents", "agent", "fallback-model",
+        "permission-prompt-tool", "permission-prompts", "debug-file", "betas",
+        "plugin-dir", "max-turns", "max-budget-usd", "json-schema", "name",
+    }),
+    value_short="",
+)
+_CLAUDE_MODES = {"bypassPermissions": "skipped", "auto": "auto", "default": "on",
+                 "manual": "on", "acceptEdits": "on", "plan": "on", "dontAsk": "on"}
+# Built-in auto default: v2.1.283+ everywhere (terminal, VS Code), plan-dependent
+# from 2.1.228, Manual before.
+_AUTO_DEFAULT = (2, 1, 283)
+_AUTO_MAYBE = (2, 1, 228)
+
+
+def _managed_claude_paths() -> list[Path]:
+    if sys.platform == "win32":
+        base = Path(r"C:\Program Files\ClaudeCode")
+    elif sys.platform == "darwin":
+        base = Path("/Library/Application Support/ClaudeCode")
+    else:
+        base = Path("/etc/claude-code")
+    paths = [base / "managed-settings.json"]
+    try:
+        paths += sorted((base / "managed-settings.d").glob("*.json"))
+    except OSError:
+        pass
+    return paths
+
+
+def _claude_version(proc) -> tuple[int, ...] | None:
+    """The native install's version from its executable path
+    (``.../claude/versions/2.1.323``); None for npm installs and errors."""
+    try:
+        exe = proc.exe()
+    except Exception:
+        return None
+    m = re.search(r"[/\\]versions[/\\](\d+)\.(\d+)\.(\d+)$", exe or "")
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _claude_code(argv: list[str], ctx: _Ctx) -> _Verdict:
     from agentwatch.discovery import _claude_home
 
+    opts = _parse(argv, _CLAUDE)
     reasons: list[str] = []
-    settings = _read_json(_claude_home(pid, create_time) / "settings.json") or {}
-    sandbox_cfg = settings.get("sandbox")
+    restricted = _last(opts, "restricted") is not None
+    if restricted:
+        reasons.append("--restricted")
+
+    # Settings layers, highest first: managed, --settings, local, project, user.
+    layers: list[tuple[str, dict]] = []
+    unreadable = False
+    for path in _managed_claude_paths():
+        data = _read_json(path)
+        if isinstance(data, dict):
+            layers.append(("managed", data))
+        elif data is None:
+            unreadable = True  # a managed file that exists but can't be read
+    settings_arg = _last(opts, "settings")
+    if isinstance(settings_arg, str):
+        data = None
+        if settings_arg.lstrip().startswith("{"):
+            try:
+                data = json.loads(settings_arg)
+            except ValueError:
+                data = None
+        else:
+            path = Path(settings_arg).expanduser()
+            if not path.is_absolute() and ctx.cwd is not None:
+                path = ctx.cwd / path
+            data = _read_json(path)
+        if isinstance(data, dict):
+            layers.append(("cli", data))
+        else:
+            return "unknown", False, None, False, ["--settings unreadable", *reasons]
+    if not restricted:
+        if ctx.cwd is not None:
+            for kind, name in (("local", "settings.local.json"), ("project", "settings.json")):
+                data = _read_json(ctx.cwd / ".claude" / name)
+                if isinstance(data, dict):
+                    layers.append((kind, data))
+        data = _read_json(_claude_home(ctx.pid, ctx.create_time) / "settings.json")
+        if isinstance(data, dict):
+            layers.append(("user", data))
+
+    def perms(d: dict) -> dict:
+        p = d.get("permissions")
+        return p if isinstance(p, dict) else {}
+
+    no_bypass = any(perms(d).get("disableBypassPermissionsMode") == "disable"
+                    for _, d in layers)
+    no_auto = any(perms(d).get("disableAutoMode") == "disable" for _, d in layers)
+
     own = None
-    if isinstance(sandbox_cfg, dict) and sandbox_cfg.get("enabled") is True:
-        own = "sandboxed"
-        reasons.append("settings: sandbox.enabled")
+    for _, d in layers:
+        sb = d.get("sandbox")
+        if isinstance(sb, dict) and isinstance(sb.get("enabled"), bool):
+            if sb["enabled"]:
+                own = "sandboxed"
+                reasons.append("settings: sandbox.enabled")
+            break
 
-    if _has(argv, "--dangerously-skip-permissions"):
-        return "skipped", True, own, False, ["--dangerously-skip-permissions", *reasons]
-    mode = _flag(argv, "--permission-mode")
-    if mode is not None:
-        if mode == "bypassPermissions":
-            return "skipped", True, own, False, ["--permission-mode bypassPermissions",
-                                                 *reasons]
-        allowed = _has(argv, "--allow-dangerously-skip-permissions")
-        return "on", not allowed, own, False, (
-            ["--permission-mode", *(["bypass allowed"] if allowed else []), *reasons])
-    perms = settings.get("permissions")
-    if isinstance(perms, dict) and perms.get("defaultMode") == "bypassPermissions":
-        # The file may have changed since the process started: low confidence.
-        return "skipped", False, own, False, ["settings: bypassPermissions", *reasons]
-    if _has(argv, "--allow-dangerously-skip-permissions"):
-        return "on", False, own, False, ["bypass allowed", *reasons]
-    return "on", True, own, False, ["default mode", *reasons]
+    if _last(opts, "allowed-tools", "allowedTools") is not None:
+        reasons.append("some tools pre-approved")
+    if _last(opts, "allow-dangerously-skip-permissions") is not None and not no_bypass:
+        reasons.append("bypass allowed")
+
+    # Starting mode: the flag, then permissions.defaultMode, then the default.
+    mode: str | None = None
+    high = False
+    if _last(opts, "dangerously-skip-permissions") is not None:
+        mode, high = "bypassPermissions", True
+        reasons.insert(0, "--dangerously-skip-permissions")
+    elif isinstance(_last(opts, "permission-mode"), str):
+        mode, high = _last(opts, "permission-mode"), True
+        reasons.insert(0, f"--permission-mode {mode}" if mode in _CLAUDE_MODES
+                       else "--permission-mode")
+    else:
+        for kind, d in layers:
+            value = perms(d).get("defaultMode")
+            if not isinstance(value, str):
+                continue
+            if kind in ("local", "project") and value == "bypassPermissions":
+                mode = "default"  # not honoured from project files: Manual
+            elif kind in ("local", "project") and value == "auto":
+                mode = None  # not honoured: the built-in default
+            else:
+                mode = value
+                reasons.insert(0, f"settings: {value}" if value in _CLAUDE_MODES
+                               else "settings: defaultMode")
+            break
+    if mode is None:  # the built-in default
+        version = _claude_version(ctx.proc)
+        if _last(opts, "print", "p") is not None or no_auto:
+            mode, high = "default", True
+            reasons.insert(0, "default mode")
+        elif version is not None and version >= _AUTO_DEFAULT:
+            mode, high = "auto", True
+            reasons.insert(0, "default mode (auto)")
+        elif version is not None and version < _AUTO_MAYBE:
+            mode, high = "default", True
+            reasons.insert(0, "default mode")
+        else:  # npm install (version unknown) or plan-dependent: probably auto
+            mode, high = "auto", False
+            reasons.insert(0, "default mode (auto)")
+
+    if mode == "manual":
+        mode = "default"
+    if mode == "bypassPermissions" and (no_bypass or restricted):
+        mode, high = "default", False
+        if no_bypass:
+            reasons.append("bypass disabled")
+    if mode == "auto" and no_auto:
+        mode = "default"
+        reasons.append("auto disabled")
+    approvals = _CLAUDE_MODES.get(mode or "", "unknown")
+    if approvals == "unknown":
+        high = False
+    if unreadable:
+        high = False
+        reasons.append("managed settings unreadable")
+    if "bypass allowed" in reasons:
+        high = False
+    if any(r.startswith("settings: ") and r != "settings: sandbox.enabled" for r in reasons):
+        high = False  # a file can change after the process started
+    return approvals, high, own, False, reasons
 
 
-def _codex(argv: list[str], pid: int, create_time: float) -> _Verdict:
-    from agentwatch.discovery import _codex_sessions_root
+# -- Codex ----------------------------------------------------------------
 
-    if _has(argv, "--dangerously-bypass-approvals-and-sandbox", "--yolo"):
-        return "skipped", True, "none", True, ["--dangerously-bypass-approvals-and-sandbox"]
-    sandbox = _flag(argv, "-s", "--sandbox")
-    approval = _flag(argv, "-a", "--ask-for-approval")
+_CODEX = _Cli(
+    value_long=frozenset({
+        "sandbox", "ask-for-approval", "config", "profile", "model", "cd", "image",
+        "add-dir", "local-provider", "enable", "disable", "output-schema", "color",
+        "output-last-message", "remote", "remote-auth-token-env",
+    }),
+    value_short="sacpmCi",
+    aliases={"s": "sandbox", "a": "ask-for-approval", "c": "config", "p": "profile",
+             "m": "model", "C": "cd", "i": "image"},
+)
+_CODEX_APPROVALS = {"never": "skipped", "on-request": "on", "on-failure": "on",
+                    "untrusted": "on"}
+_CODEX_SANDBOXES = {"read-only": "sandboxed", "workspace-write": "sandboxed",
+                    "danger-full-access": "none"}
+_CODEX_KEYS = ("approval_policy", "sandbox_mode", "approvals_reviewer")
+_CODEX_SYSTEM = Path("/etc/codex/config.toml")  # Unix system layer (loader/mod.rs L127)
+
+
+def _codex_home(proc) -> Path:
+    """The process's own CODEX_HOME (only that key is read), else
+    agentwatch's, else ~/.codex."""
+    value = _environ_value(proc, "CODEX_HOME") or os.environ.get("CODEX_HOME")
+    return Path(value).expanduser() if value else Path.home() / ".codex"
+
+
+def _toml_value(text: str) -> Any:
+    """A ``-c key=value`` value: TOML if it parses, else the raw string (as Codex)."""
+    try:
+        return tomllib.loads(f"v = {text}")["v"]
+    except (tomllib.TOMLDecodeError, KeyError):
+        return text.strip()
+
+
+def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
+    opts = _parse(argv, _CODEX)
     reasons: list[str] = []
-    if _has(argv, "--full-auto", "--approve-for-me", "--not-so-yolo"):
-        sandbox = sandbox or "workspace-write"
-        approval = approval or "on-request"
-        reasons.append("--full-auto" if _has(argv, "--full-auto") else "--approve-for-me")
-    high_sb, high_ap = sandbox is not None, approval is not None
-    if sandbox is not None:
-        reasons.append(f"--sandbox {sandbox}" if sandbox in (
-            "read-only", "workspace-write", "danger-full-access") else "--sandbox")
-    if approval is not None:
-        reasons.append(f"--ask-for-approval {approval}" if approval in (
-            "never", "on-request", "on-failure", "untrusted") else "--ask-for-approval")
-    if sandbox is None or approval is None:
-        config = _read_toml(_codex_sessions_root().parent / "config.toml") or {}
-        profiles = config.get("profiles")
-        profile_name = _flag(argv, "-p", "--profile")
-        profile = (profiles.get(profile_name) if isinstance(profiles, dict) and profile_name
-                   else None)
-        profile = profile if isinstance(profile, dict) else {}
-        if sandbox is None:
-            sandbox = profile.get("sandbox_mode", config.get("sandbox_mode"))
-            if isinstance(sandbox, str):
-                reasons.append(f"config: sandbox_mode {sandbox}" if sandbox in (
-                    "read-only", "workspace-write", "danger-full-access") else "config")
-        if approval is None:
-            approval = profile.get("approval_policy", config.get("approval_policy"))
-            if isinstance(approval, str):
-                reasons.append(f"config: approval_policy {approval}" if approval in (
-                    "never", "on-request", "on-failure", "untrusted") else "config")
-    approvals = "skipped" if approval == "never" else "on"
+    if any(_last(opts, n) is not None for n in (
+            "dangerously-bypass-approvals-and-sandbox", "yolo")):
+        return "skipped", True, "none", True, ["--dangerously-bypass-approvals-and-sandbox"]
+
+    # Runtime overrides: -c key=value (last wins), then the explicit flags.
+    overrides: dict[str, Any] = {}
+    for name, value in opts:
+        if name == "config" and isinstance(value, str) and "=" in value:
+            key, _, raw = value.partition("=")
+            key = key.strip()
+            if key in (*_CODEX_KEYS, "profile"):
+                overrides[key] = _toml_value(raw)
+                reasons.append(f"-c {key}")
+
+    # Config layers, lowest first: system, user, profile.
+    layers: list[dict] = []
+    unknown_config = False
+    home = _codex_home(ctx.proc)
+    user: dict = {}
+    for path in ([_CODEX_SYSTEM] if sys.platform != "win32" else []) + [home / "config.toml"]:
+        data = _read_toml(path)
+        if isinstance(data, dict):
+            layers.append(data)
+            if path.name == "config.toml" and path.parent == home:
+                user = data
+        elif data is None:
+            unknown_config = True  # exists but can't be read or parsed
+    profile = _last(opts, "profile")
+    if isinstance(profile, str):
+        data = _read_toml(home / f"{profile}.config.toml")
+        legacy = (user.get("profiles") or {}).get(profile) if isinstance(
+            user.get("profiles"), dict) else None
+        if isinstance(data, dict):
+            layers.append(data)
+            reasons.append("--profile")
+        elif isinstance(legacy, dict):
+            layers.append(legacy)
+            reasons.append("--profile")
+        else:
+            return "unknown", False, "unknown", False, ["--profile unreadable"]
+    else:
+        selector = overrides.get("profile", user.get("profile"))
+        if isinstance(selector, str):
+            legacy = (user.get("profiles") or {}).get(selector) if isinstance(
+                user.get("profiles"), dict) else None
+            if isinstance(legacy, dict):
+                layers.append(legacy)
+                reasons.append("config: profile")
+            else:
+                return "unknown", False, "unknown", False, ["config profile unreadable"]
+
+    def setting(key: str) -> tuple[Any, str]:
+        """(value, source): 'flag' for a runtime override, 'config', or ''."""
+        if key in overrides:
+            return overrides[key], "flag"
+        for layer in reversed(layers):
+            if key in layer:
+                return layer[key], "config"
+        return None, ""
+
+    approval, ap_src = setting("approval_policy")
+    sandbox, sb_src = setting("sandbox_mode")
+    reviewer, rv_src = setting("approvals_reviewer")
+    if unknown_config:  # a config file Codex reads that we can't: only flags count
+        approval, ap_src = (approval, ap_src) if ap_src == "flag" else ("?", "")
+        sandbox, sb_src = (sandbox, sb_src) if sb_src == "flag" else ("?", "")
+        reasons.append("config unreadable")
+
+    flag_sandbox = _last(opts, "sandbox")
+    flag_approval = _last(opts, "ask-for-approval")
+    if _last(opts, "approve-for-me", "not-so-yolo") is not None:
+        flag_sandbox = flag_sandbox if isinstance(flag_sandbox, str) else "workspace-write"
+        reviewer, rv_src = "auto_review", "flag"
+        approval, ap_src = (approval, ap_src) if isinstance(flag_approval, str) else (
+            "on-request", "flag")
+        reasons.append("--approve-for-me")
+    elif _last(opts, "full-auto") is not None:
+        flag_sandbox = flag_sandbox if isinstance(flag_sandbox, str) else "workspace-write"
+        flag_approval = flag_approval if isinstance(flag_approval, str) else "on-failure"
+        reasons.append("--full-auto")
+    if isinstance(flag_sandbox, str):
+        sandbox, sb_src = flag_sandbox, "flag"
+        reasons.append(f"--sandbox {flag_sandbox}" if flag_sandbox in _CODEX_SANDBOXES
+                       else "--sandbox")
+    if isinstance(flag_approval, str):
+        approval, ap_src = flag_approval, "flag"
+        reasons.append(f"--ask-for-approval {flag_approval}" if flag_approval
+                       in _CODEX_APPROVALS else "--ask-for-approval")
+    for key, value, src in (("approval_policy", approval, ap_src),
+                            ("sandbox_mode", sandbox, sb_src)):
+        if src == "config":
+            reasons.append(f"config: {key} {value}" if isinstance(value, str) and value in (
+                *_CODEX_APPROVALS, *_CODEX_SANDBOXES) else f"config: {key}")
+
     if approval is None:
-        reasons.append("default approvals")
-    if sandbox == "danger-full-access":
-        own = "none"
-    else:  # read-only, workspace-write, or Codex's default (one of them)
-        own = "sandboxed"
-        if sandbox is None:
+        approvals = "unknown" if unknown_config else "on"
+        if not unknown_config:
+            reasons.append("default approvals")
+    elif isinstance(approval, str) and approval in _CODEX_APPROVALS:
+        approvals = _CODEX_APPROVALS[approval]
+    else:
+        approvals = "unknown"  # a granular table or a value this version doesn't know
+    if approvals == "on" and reviewer == "auto_review":
+        approvals = "auto"
+        if rv_src == "config":
+            reasons.append("config: approvals_reviewer auto_review")
+    approvals_high = ap_src == "flag" and approvals != "unknown" and (
+        approvals != "auto" or rv_src == "flag")
+
+    if sandbox is None:
+        own = "unknown" if unknown_config else "sandboxed"
+        if not unknown_config:
             reasons.append("default sandbox")
-    return approvals, high_ap, own, high_sb, reasons
+    elif isinstance(sandbox, str) and sandbox in _CODEX_SANDBOXES:
+        own = _CODEX_SANDBOXES[sandbox]
+    else:
+        own = "unknown"
+    return approvals, approvals_high, own, sb_src == "flag" and own != "unknown", reasons
 
 
-def _gemini(argv: list[str], pid: int, create_time: float) -> _Verdict:
-    mode = _flag(argv, "--approval-mode")
-    if mode == "yolo":
-        return "skipped", True, None, False, ["--approval-mode yolo"]
-    if _has(argv, "--yolo", "-y"):
-        return "skipped", True, None, False, ["--yolo"]
-    if mode is not None:
-        return "on", True, None, False, ["--approval-mode"]
-    # Settings can set a default mode; not read: low confidence.
-    return "on", False, None, False, ["default mode"]
+# -- Gemini CLI -----------------------------------------------------------
+
+_GEMINI = _Cli(
+    value_long=frozenset({
+        "model", "prompt", "prompt-interactive", "worktree", "approval-mode", "policy",
+        "admin-policy", "allowed-mcp-server-names", "allowed-tools", "extensions", "resume",
+        "session-file", "session-id", "delete-session", "include-directories",
+        "output-format", "fake-responses", "fake-responses-non-strict", "record-responses",
+    }),
+    value_short="mpiwero",
+    aliases={"y": "yolo", "s": "sandbox", "d": "debug", "m": "model", "p": "prompt",
+             "i": "prompt-interactive", "w": "worktree", "e": "extensions", "r": "resume",
+             "o": "output-format", "l": "list-extensions"},
+    yargs=True,
+)
+_GEMINI_BOOLS = frozenset({"yolo", "sandbox", "debug", "list-extensions", "acp",
+                           "experimental-acp", "skip-trust", "screen-reader"})
+_GEMINI_MODES = {"yolo": "skipped", "auto_edit": "on", "default": "on", "plan": "on"}
 
 
-def _copilot(argv: list[str], pid: int, create_time: float) -> _Verdict:
-    for flag in ("--allow-all-tools", "--allow-all", "--yolo"):
-        if _has(argv, flag):
-            return "skipped", True, None, False, [flag]
+def _gemini(argv: list[str], ctx: _Ctx) -> _Verdict:
+    from agentwatch.agents.gemini import _gemini_dir
+
+    opts = _parse(argv, _GEMINI, _GEMINI_BOOLS)
+    reasons: list[str] = []
+    settings = _read_json(_gemini_dir() / "settings.json")
+    settings = settings if isinstance(settings, dict) else {}
+    general = settings.get("general") if isinstance(settings.get("general"), dict) else {}
+    tools = settings.get("tools") if isinstance(settings.get("tools"), dict) else {}
+
+    mode = _last(opts, "approval-mode")
+    yolo = _last(opts, "yolo")
+    high = True
+    if isinstance(mode, str):
+        reasons.append(f"--approval-mode {mode}" if mode in _GEMINI_MODES
+                       else "--approval-mode")
+    elif _on(yolo):
+        mode = "yolo"
+        reasons.append("--yolo")
+    else:
+        default = general.get("defaultApprovalMode")
+        high = False  # settings or the built-in default: the file can change
+        if isinstance(default, str) and default != "yolo":
+            mode = default
+            reasons.append(f"settings: {default}" if default in _GEMINI_MODES
+                           else "settings: defaultApprovalMode")
+        else:
+            mode = "default"
+            reasons.append("default mode")
+    approvals = _GEMINI_MODES.get(mode, "unknown")
+    if _last(opts, "allowed-tools") is not None:
+        reasons.append("some tools pre-approved")
+
+    flag = _last(opts, "sandbox")
+    own = None
+    if flag is not None:
+        if _on(flag):
+            own = "sandboxed"
+            reasons.append("--sandbox")
+    else:
+        setting = tools.get("sandbox")
+        if setting is True or (isinstance(setting, str) and setting not in ("", "false")):
+            own = "sandboxed"
+            reasons.append("settings: tools.sandbox")
+    return approvals, high and approvals != "unknown", own, False, reasons
+
+
+# -- Copilot CLI ----------------------------------------------------------
+
+_COPILOT = _Cli(
+    value_long=frozenset({
+        "prompt", "model", "add-dir", "allow-tool", "deny-tool", "available-tools",
+        "excluded-tools", "allow-url", "deny-url", "resume", "log-level", "log-dir",
+        "agent", "config-dir", "max-autopilot-continues",
+    }),
+    value_short="pr",
+    aliases={"p": "prompt", "r": "resume"},
+)
+
+
+def _copilot(argv: list[str], ctx: _Ctx) -> _Verdict:
+    opts = _parse(argv, _COPILOT)
+    for flag in ("allow-all-tools", "allow-all", "yolo"):
+        if _last(opts, flag) is not None:
+            return "skipped", True, None, False, [f"--{flag}"]
+    reasons = ["no allow-all flag"]
+    if any(_last(opts, n) is not None for n in ("allow-tool", "allow-all-paths",
+                                                "allow-all-urls", "allow-url")):
+        reasons.append("some tools pre-approved")
     # COPILOT_ALLOW_ALL (env) also skips them; env is never read: low.
-    return "on", False, None, False, ["no allow-all flag"]
+    return "on", False, None, False, reasons
 
 
 _AGENTS = {"claude-code": _claude_code, "codex": _codex, "gemini": _gemini,
@@ -291,9 +754,10 @@ _AGENTS = {"claude-code": _claude_code, "codex": _codex, "gemini": _gemini,
 # -- sandbox ------------------------------------------------------------
 
 
-def _program(proc: psutil.Process) -> str:
-    """Basename (no .exe, lower case) of the program a process runs: the
-    script after an interpreter, else argv[0], else its name."""
+def _program(proc) -> tuple[str, str]:
+    """(basename without .exe, lower case; full program path) of what a
+    process runs: the script after an interpreter, else argv[0], else its
+    name."""
     from agentwatch.discovery import program_path
 
     try:
@@ -304,64 +768,84 @@ def _program(proc: psutil.Process) -> str:
         name = proc.name()
     except _ERRORS:
         name = ""
-    path = program_path(cmdline, name) or name
-    base = PurePath(path.replace("\\", "/")).name.lower()
+    path = (program_path(cmdline, name) or name).replace("\\", "/")
+    base = PurePath(path).name.lower()
     if base.endswith(".exe"):
         base = base[:-4]
     # srt runs as node .../@anthropic-ai/sandbox-runtime/dist/cli.js
-    if "sandbox-runtime" in path.replace("\\", "/").split("/"):
-        return "srt"
-    return base or name.lower()
+    if "sandbox-runtime" in path.split("/"):
+        return "srt", path
+    return base or name.lower(), path
 
 
-def _classify(proc: psutil.Process) -> tuple[str, str] | None:
-    """("sandboxed", reason) / ("container", reason) for a launcher process."""
-    prog = _program(proc)
-    if prog in _SANDBOX_PROGRAMS:
-        return "sandboxed", _SANDBOX_PROGRAMS[prog]
+def _classify(proc) -> tuple[str, str] | None:
+    """("sandboxed", reason) / ("container", reason) / ("flatpak", reason)
+    for a launcher process; exact program names only."""
+    prog, _ = _program(proc)
     try:
         name = proc.name().lower()
     except _ERRORS:
         name = ""
-    for candidate in {prog, name}:
-        if any(candidate.startswith(c) for c in _CONTAINER_PROGRAMS):
+    for candidate in (prog, name):
+        if candidate.startswith("flatpak"):
+            return "flatpak", "flatpak"
+        if candidate in _SANDBOX_PROGRAMS:
+            return "sandboxed", _SANDBOX_PROGRAMS[candidate]
+        if candidate in _CONTAINER_PROGRAMS or _CONTAINER_SHIM.fullmatch(candidate):
             return "container", "container runtime"
     return None
 
 
-def _ancestry(proc: psutil.Process) -> tuple[tuple[str, str] | None, bool]:
+def _ancestry(proc) -> tuple[tuple[str, str] | None, str]:
     """The nearest sandbox/container launcher among *proc*'s ancestors, and
-    whether the walk reached the top (pid 1 or 0) without an error."""
+    how the walk ended: "top" (pid 1/0 or no parent), "denied" (an error) or
+    "deep" (MAX_DEPTH reached). A bwrap with a flatpak process above it is
+    reported as ("flatpak", ...)."""
     current = proc
+    found: tuple[str, str] | None = None
     for _ in range(MAX_DEPTH):
         try:
             parent = current.parent()
         except _ERRORS:
-            return None, False
+            return found, "denied"
         if parent is None:
-            return None, True
+            return found, "top"
         hit = _classify(parent)
+        if found is not None:  # look one level above a bwrap for flatpak
+            return (("flatpak", "flatpak") if hit and hit[0] == "flatpak" else found), "top"
         if hit:
-            return hit, True
+            if hit[0] == "flatpak" or hit[1] != "bwrap":
+                return hit, "top"
+            found = hit
         if parent.pid in (0, 1):
-            return None, True
+            return found, "top"
         current = parent
-    return None, False
+    return found, "deep"
 
 
-def _container_marker(pid: int) -> bool:
-    """/.dockerenv or /run/.containerenv in the process's own root. Read only
-    when /proc/<pid>/root is accessible; otherwise False."""
+def _marker(pid: int, names: tuple[str, ...]) -> bool:
+    """One of *names* in the process's own root. Read only when
+    /proc/<pid>/root is accessible; otherwise False."""
     if not sys.platform.startswith("linux"):
         return False
     root = _proc_root(pid)
-    for marker in _CONTAINER_MARKERS:
+    for marker in names:
         try:
             if (root / marker).exists():
                 return True
         except OSError:
             return False
     return False
+
+
+def _flatpak(proc, pid: int) -> bool:
+    """A Flatpak app: its program under /app/, or /.flatpak-info in its root
+    (FLATPAK_ID is env, never read)."""
+    return _program(proc)[1].startswith("/app/") or _marker(pid, (_FLATPAK_MARKER,))
+
+
+def _container_marker(pid: int) -> bool:
+    return _marker(pid, _CONTAINER_MARKERS)
 
 
 # -- entry --------------------------------------------------------------
@@ -396,8 +880,7 @@ def posture(agent: AgentProcess) -> Posture:
     return result
 
 
-def _compute(agent: AgentProcess, proc: psutil.Process, create_time: float,
-             match) -> Posture:
+def _compute(agent: AgentProcess, proc, create_time: float, match) -> Posture:
     try:
         argv = proc.cmdline()  # read in memory only: never stored or shown
         name = proc.name()
@@ -410,9 +893,10 @@ def _compute(agent: AgentProcess, proc: psutil.Process, create_time: float,
         return UNKNOWN  # a synthetic pid (Codex app-server thread) or a reused one
 
     rule = _AGENTS.get(agent.agent_type)
+    ctx = _Ctx(proc=proc, pid=agent.pid, create_time=create_time,
+               cwd=agent.working_directory)
     if rule is not None:
-        approvals, approvals_high, own, own_high, reasons = rule(argv[1:], agent.pid,
-                                                                  create_time)
+        approvals, approvals_high, own, own_high, reasons = rule(argv[1:], ctx)
     else:
         approvals, approvals_high, own, own_high, reasons = "unknown", False, None, False, []
 
@@ -424,11 +908,17 @@ def _compute(agent: AgentProcess, proc: psutil.Process, create_time: float,
         if not explicit_off:
             reasons.append("windows")
     else:
-        launcher, complete = _ancestry(proc)
+        launcher, ended = _ancestry(proc)
+        if launcher == ("sandboxed", "bwrap") and _flatpak(proc, agent.pid):
+            launcher = ("flatpak", "flatpak")
         if launcher is not None:
-            sandbox, why = launcher
-            sandbox_high = sandbox == "sandboxed"
+            kind, why = launcher
+            sandbox = "sandboxed" if kind == "flatpak" else kind
+            sandbox_high = kind == "sandboxed"
             reasons.append(why)
+        elif _marker(agent.pid, (_FLATPAK_MARKER,)):
+            sandbox, sandbox_high = "sandboxed", False
+            reasons.append("flatpak")
         elif _container_marker(agent.pid):
             sandbox, sandbox_high = "container", False
             reasons.append("container marker")
@@ -437,8 +927,10 @@ def _compute(agent: AgentProcess, proc: psutil.Process, create_time: float,
             if own == "sandboxed":
                 reasons.append("own sandbox")
         else:
-            sandbox, sandbox_high = "none", complete
-            if not complete:
+            sandbox, sandbox_high = "none", ended == "top"
+            if ended == "deep":
+                reasons.append("ancestry too deep")
+            elif ended == "denied":
                 reasons.append("ancestry partly unreadable")
 
     high = approvals_high and sandbox_high and "unknown" not in (approvals, sandbox)

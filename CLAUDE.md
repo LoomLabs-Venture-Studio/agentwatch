@@ -193,31 +193,57 @@ src/agentwatch/
                        serve` and Aider (synthetic timestamps)
   posture.py           Sandbox/permission posture (Sprint 48), stdlib +
                        psutil: posture(AgentProcess) -> Posture(approvals
-                       skipped|on|unknown, sandbox sandboxed|container|
-                       none|unknown, confidence high|low, reasons = fixed
-                       strings, never argv). Approvals from the process's
-                       own argv (claude-code, codex, gemini, copilot; flag
-                       sources cited in the module docstring) + Claude Code
-                       user settings.json (defaultMode, sandbox.enabled;
-                       project files ignored, as Claude Code 2.1.257+) and
-                       Codex config.toml (sandbox_mode/approval_policy,
-                       --profile). Sandbox: nearest ancestor (<= 16) srt/
-                       bwrap/firejail/nsjail/sandbox-exec/codex-linux-
-                       sandbox -> sandboxed (high); containerd-shim/conmon/
-                       runc/crun/docker-init -> container (low); else
-                       /proc/<pid>/root/.dockerenv|run/.containerenv ->
-                       container; else the agent's own sandbox (Codex
-                       modes, CC sandbox.enabled); else none. Windows:
-                       sandbox unknown unless explicitly off. Editor kinds,
-                       zombies, unreadable or non-matching pids (Codex
-                       app-server threads, reuse) -> UNKNOWN. Cached per
-                       (pid, create_time). Surfaces: ps POSTURE column
+                       skipped|auto|on|unknown (auto = a classifier or
+                       reviewer model approves), sandbox sandboxed|
+                       container|none|unknown, confidence high|low,
+                       reasons = fixed strings, never argv). Argv parsed per
+                       CLI library (_Cli/_parse: --x V, --x=V, -sV, -s V,
+                       -s=V, grouped -dy; yargs --x=true, --no-x,
+                       camelCase); positionals and after `--` ignored.
+                       Claude Code: flag > permissions.defaultMode from
+                       managed (/etc/claude-code, macOS /Library/
+                       Application Support/ClaudeCode, C:\Program Files\
+                       ClaudeCode; + managed-settings.d) > --settings (JSON
+                       or path; unreadable -> unknown) > local > project
+                       (bypass/auto not honoured there) > user > built-in
+                       default (auto from 2.1.283, read from the native
+                       exe's versions/<v> path; -p and disableAutoMode ->
+                       Manual); disableBypassPermissionsMode / --restricted
+                       refuse bypass. Codex: CODEX_HOME from the process's
+                       own environ (that key only) > agentwatch's >
+                       ~/.codex; layers /etc/codex/config.toml < config.toml
+                       < profile (-p NAME -> NAME.config.toml, else legacy
+                       [profiles.NAME]; top-level profile = selector;
+                       named but unreadable -> unknown) < -c/--config
+                       key=value (TOML) < -s/-a flags; approvals_reviewer
+                       auto_review / --approve-for-me -> auto; an unreadable
+                       config -> unknown unless set by flag. Gemini:
+                       --approval-mode > --yolo > settings
+                       general.defaultApprovalMode (not yolo); -s/--sandbox
+                       or tools.sandbox -> own sandbox. Copilot: allow-all
+                       flags; partial allows only add "some tools
+                       pre-approved". Sandbox: nearest ancestor (<= 16;
+                       cut -> "ancestry too deep") srt/bwrap/firejail/
+                       nsjail/sandbox-exec/codex-linux-sandbox -> sandboxed
+                       (high); bwrap under flatpak (flatpak parent, /app/
+                       program, /.flatpak-info) -> sandboxed (low); exact
+                       names containerd-shim*/conmon/runc/crun/docker-init/
+                       dockerd/podman -> container (low); else /proc/<pid>/
+                       root markers; else the agent's own sandbox; else
+                       none. Windows: sandbox unknown unless explicitly
+                       off. Editor kinds, zombies, unreadable or
+                       non-matching pids -> UNKNOWN. Cached per (pid,
+                       create_time). tone(): bad = skipped + none, warn =
+                       skipped, good = on + sandboxed + high confidence
+                       only, else neutral. Surfaces: ps POSTURE column
                        (theme color_3/1/0, ascii sep " / "), ps --json and
-                       /api/ps `posture`, visual card chip + summary count,
-                       watch-all `! ` before PROJECT (red risky / yellow
-                       skipped) + label in the Selected title (postures
-                       computed on the discovery thread), check text-mode
-                       advisory when skipped + none (score/exit unchanged)
+                       /api/ps `posture`, visual card chip (its own row,
+                       same short words, wraps) + summary count, watch-all
+                       `! ` before PROJECT (red risky / yellow skipped) +
+                       label in the Selected title (postures computed on
+                       the discovery thread), check text-mode advisory when
+                       skipped + none and the log changed in the last 10
+                       min (score/exit unchanged)
   coach.py             `agentwatch hook` (hidden): Claude Code PostToolUse/
                        PostToolUseFailure hook. Tail (4 MB) of
                        transcript_path -> parse_claude_code_entry ->

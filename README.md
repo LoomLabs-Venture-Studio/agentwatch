@@ -37,9 +37,10 @@ agentwatch ps              # running agents, with approvals and sandbox posture
 
 `agentwatch ps` has a POSTURE column: `yolo · no sandbox` (red) means an agent
 runs with approvals skipped and outside any sandbox; `approvals · sandboxed`
-(green) is the safe end. It reads the agent's own flags (Claude Code, Codex,
-Gemini CLI, Copilot CLI) and its parent processes (srt, bwrap, firejail,
-sandbox-exec, containers). `ps --json` has it as a `posture` object.
+(green) is the safe end; `auto-review` means a model, not you, approves
+actions. It reads the agent's own flags and config (Claude Code, Codex, Gemini
+CLI, Copilot CLI) and its parent processes (srt, bwrap, firejail, sandbox-exec,
+containers). `ps --json` has it as a `posture` object.
 
 Run `agentwatch --help` for all commands, or see
 [agentwatch.info/commands](https://agentwatch.info/commands/).

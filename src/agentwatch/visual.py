@@ -454,7 +454,8 @@ text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
 .doing .v .age{font-weight:400;color:var(--mute)}
 .doing .why{font-size:.875rem;color:var(--mute)}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
-.card .who .posture{margin-top:6px}
+.card>.posture{align-self:flex-start;white-space:normal}
+.card>.posture>span{overflow:visible;overflow-wrap:anywhere}
 .status{display:flex;flex-direction:column;gap:12px}
 .card details{border-top:1px solid var(--line);margin-top:auto}
 .card summary{min-height:44px;font-size:.8125rem}
@@ -1030,20 +1031,25 @@ async function pullAgents() {
 function initials(name) {
   return name.split(" ").map(w => w.charAt(0)).join("").slice(0, 2).toUpperCase();
 }
-// Sandbox/permission posture (agentwatch.posture): one pill, red when
-// approvals are skipped with no sandbox.
-const APPROVALS = {skipped: "Approvals skipped", on: "Approvals on"};
-const SANDBOX = {sandboxed: "sandboxed", container: "in a container", none: "no sandbox"};
+// Sandbox/permission posture (agentwatch.posture): one pill with the same
+// short words and tones as `agentwatch ps` (posture.label / posture.tone).
+const APPROVALS = {skipped: "yolo", auto: "auto-review", on: "approvals"};
+const SANDBOX = {sandboxed: "sandboxed", container: "container", none: "no sandbox"};
+const APPROVAL_TIPS = {skipped: "approvals skipped", auto: "a classifier reviews actions",
+  on: "you approve actions", unknown: "approvals unknown"};
+function postureTone(p) {
+  if (p.approvals === "skipped") return p.sandbox === "none" ? "bad" : "warn";
+  return p.approvals === "on" && p.sandbox === "sandboxed" && p.confidence === "high" ?
+    "good" : "neutral";
+}
 function postureChip(p) {
   if (!p || typeof p !== "object") return null;
   const ap = APPROVALS[p.approvals], sb = SANDBOX[p.sandbox];
   if (!ap && !sb) return null;
-  const tone = p.approvals === "skipped" ? (p.sandbox === "none" ? "bad" : "warn") :
-    p.approvals === "on" && (p.sandbox === "sandboxed" || p.sandbox === "container") ?
-      "good" : "neutral";
-  const c = pill((ap || "Approvals unknown") + " \u00b7 " + (sb || "sandbox unknown"), tone);
+  const c = pill((ap || "approvals ?") + " · " + (sb || "sandbox ?"), postureTone(p));
   c.classList.add("posture");
-  c.title = "Sandbox and permission posture" + (p.confidence === "low" ? " (low confidence)" : "");
+  c.title = "Posture: " + (APPROVAL_TIPS[p.approvals] || APPROVAL_TIPS.unknown) + ", " +
+    (sb || "sandbox unknown") + (p.confidence === "low" ? " (low confidence)" : "");
   return c;
 }
 function cards(list) {
@@ -1058,8 +1064,6 @@ function cards(list) {
     av.setAttribute("aria-hidden", "true");
     proj.append(icon("folder"), el("span", folder(a.project, a.working_directory)));
     who.append(el("h3", a.depth > 0 ? `${name} subagent` : name), proj);
-    const pc = postureChip(a.posture);
-    if (pc) who.append(pc);
     const st = el("div", null, "state"), s = ((state.agents || {}).agents || [])
       .find(x => x.pid === a.pid);
     st.append(stateOf(state.agents ? s : null));
@@ -1074,7 +1078,8 @@ function cards(list) {
       dl.append(el("dt", k), v instanceof Node ? v : el("dd", v));
     }
     det.append(el("summary", "Process details"), dl);
-    c.append(top, box, det);
+    const pc = postureChip(a.posture);
+    c.append(...(pc ? [top, pc, box, det] : [top, box, det]));
     g.append(c);
   }
   return g;

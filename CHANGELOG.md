@@ -9,7 +9,7 @@ numbers refer to the GitHub repository.
 ### Added
 
 - Sandbox and permission posture for each running agent (`posture.py`): approvals
-  (`skipped` / `on` / `unknown`) from the process's own flags (Claude Code
+  (`skipped` / `auto` (a classifier reviews, shown as `auto-review`) / `on` / `unknown`) from the process's own flags (Claude Code
   `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`, user settings
   `permissions.defaultMode`; Codex `--yolo`, `--dangerously-bypass-approvals-and-sandbox`,
   `-s/--sandbox`, `-a/--ask-for-approval never`, `--full-auto`, config.toml; Gemini CLI
@@ -21,6 +21,12 @@ numbers refer to the GitHub repository.
   object), `visual` (a chip on each agent card, a count in the summary), `watch-all` (a `!`
   before the project, red or yellow, and the full posture in the Selected strip), and as a
   one-line advisory in `check` (no score or exit-code change). Windows: sandbox is `unknown`.
+  Flags are read the way each CLI parses them (`-sV`, `-s=V`, grouped `-dy`, yargs
+  `--yolo=true` / `--no-yolo` / `--approvalMode`), plus Codex `-c key=value`, profiles
+  (`-p NAME` -> `NAME.config.toml`, legacy `[profiles.NAME]` and `profile =`) and the
+  process's own `CODEX_HOME`, and Claude Code `--settings`, managed settings, project
+  settings and its built-in auto default. Anything not certain is `unknown` or low
+  confidence; green needs a human approving inside a real sandbox.
 
 ### Changed
 

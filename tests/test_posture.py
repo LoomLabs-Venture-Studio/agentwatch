@@ -25,8 +25,10 @@ linux_only = pytest.mark.skipif(sys.platform == "win32", reason="ancestry is not
 
 class FakeProc:
     def __init__(self, pid, cmdline, name=None, parent=None, create_time=1000.0,
-                 status=psutil.STATUS_RUNNING, deny=()):
+                 status=psutil.STATUS_RUNNING, deny=(), exe="", env=None):
         self.pid = pid
+        self._exe = exe
+        self._env = env or {}
         self._cmdline = cmdline
         self._name = name or (Path(cmdline[0]).name if cmdline else "")
         self._parent = parent
@@ -52,6 +54,14 @@ class FakeProc:
 
     def status(self):
         return self._status
+
+    def exe(self):
+        self._check("exe")
+        return self._exe
+
+    def environ(self):
+        self._check("environ")
+        return dict(self._env)
 
     def parent(self):
         self._check("parent")
@@ -83,13 +93,27 @@ def procs(monkeypatch, tmp_path):
     monkeypatch.setattr(discovery, "_claude_home", lambda pid=None, ct=None: claude_home)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     (tmp_path / "codex").mkdir()
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    monkeypatch.setattr(posture, "_managed_claude_paths",
+                        lambda: sorted(managed.glob("*.json")))
+    monkeypatch.setattr(posture, "_CODEX_SYSTEM", tmp_path / "etc-codex.toml")
+    from agentwatch.agents import gemini as gemini_agent
+
+    (tmp_path / "gemini").mkdir()
+    monkeypatch.setattr(gemini_agent, "_gemini_dir", lambda: tmp_path / "gemini")
+    (tmp_path / "proj").mkdir()
+    CWD[0] = tmp_path / "proj"
     posture.clear_cache()
     yield table
     posture.clear_cache()
 
 
+CWD: list[Path] = [Path("/w/app")]  # the procs fixture's project dir, set per test
+
+
 def agent(agent_type="claude-code", pid=PID):
-    return AgentProcess(pid=pid, agent_type=agent_type, working_directory=Path("/w/app"))
+    return AgentProcess(pid=pid, agent_type=agent_type, working_directory=CWD[0])
 
 
 def run(procs, cmdline, agent_type="claude-code", *ancestors) -> Posture:
@@ -103,14 +127,15 @@ def run(procs, cmdline, agent_type="claude-code", *ancestors) -> Posture:
 
 @linux_only
 @pytest.mark.parametrize("argv, approvals, reason", [
-    (["claude"], "on", "default mode"),
     (["claude", "--dangerously-skip-permissions"], "skipped", "--dangerously-skip-permissions"),
     (["claude", "--permission-mode", "bypassPermissions"], "skipped",
      "--permission-mode bypassPermissions"),
     (["claude", "--permission-mode=bypassPermissions"], "skipped",
      "--permission-mode bypassPermissions"),
-    (["claude", "--permission-mode", "acceptEdits"], "on", "--permission-mode"),
-    (["claude", "--", "--dangerously-skip-permissions"], "on", "default mode"),
+    (["claude", "--permission-mode", "acceptEdits"], "on", "--permission-mode acceptEdits"),
+    (["claude", "--permission-mode", "auto"], "auto", "--permission-mode auto"),
+    (["claude", "--permission-mode", "manual"], "on", "--permission-mode manual"),
+    (["claude", "--permission-mode", "dontAsk"], "on", "--permission-mode dontAsk"),
     (["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js",
       "--dangerously-skip-permissions"], "skipped", "--dangerously-skip-permissions"),
 ])
@@ -123,7 +148,8 @@ def test_claude_code_flags(procs, argv, approvals, reason):
 
 @linux_only
 def test_claude_code_allow_flag_is_low_confidence(procs):
-    p = run(procs, ["claude", "--allow-dangerously-skip-permissions"])
+    p = run(procs, ["claude", "--permission-mode", "default",
+                    "--allow-dangerously-skip-permissions"])
     assert (p.approvals, p.confidence) == ("on", "low")
     assert "bypass allowed" in p.reasons
 
@@ -151,7 +177,7 @@ def test_claude_code_sandbox_setting(procs, tmp_path):
 @linux_only
 def test_claude_code_bad_settings_file_is_ignored(procs, tmp_path):
     (tmp_path / "claude" / "settings.json").write_text("{not json")
-    assert run(procs, ["claude"]).approvals == "on"
+    assert run(procs, ["claude", "--permission-mode", "plan"]).approvals == "on"
 
 
 @linux_only
@@ -164,7 +190,7 @@ def test_claude_code_bad_settings_file_is_ignored(procs, tmp_path):
     (["codex", "--ask-for-approval", "never"], "skipped", "sandboxed"),
     (["codex", "-s", "workspace-write", "-a", "on-request"], "on", "sandboxed"),
     (["codex", "--full-auto"], "on", "sandboxed"),
-    (["codex", "--approve-for-me"], "on", "sandboxed"),
+    (["codex", "--approve-for-me"], "auto", "sandboxed"),
 ])
 def test_codex_flags(procs, argv, approvals, sandbox):
     p = run(procs, argv, "codex")
@@ -371,7 +397,8 @@ def test_cached_per_pid_and_create_time(procs):
     procs[PID]._cmdline = ["claude"]  # same process: cached verdict
     assert posture.posture(agent()) is first
     # pid reused by a new process (new start time): read again
-    procs[PID] = FakeProc(PID, ["claude"], create_time=2000.0, parent=FakeProc(1, ["init"]))
+    procs[PID] = FakeProc(PID, ["claude", "--permission-mode", "plan"], create_time=2000.0,
+                          parent=FakeProc(1, ["init"]))
     assert posture.posture(agent()).approvals == "on"
 
 
@@ -576,3 +603,321 @@ def test_check_json_never_runs_discovery(monkeypatch, tmp_path, fixed):
                                           str(tmp_path / "s.jsonl")])
     assert "discovery ran" not in result.output
     json.loads(result.output)
+
+
+# -- QA #241 ------------------------------------------------------------
+
+
+def _one(procs, cmdline, agent_type="claude-code", **kw) -> Posture:
+    procs[PID] = FakeProc(PID, cmdline, parent=FakeProc(1, ["/sbin/init"]), **kw)
+    posture.clear_cache()
+    return posture.posture(agent(agent_type))
+
+
+def test_parse_forms():
+    cli = posture._CODEX
+    for argv in (["-sV"], ["-s", "V"], ["-s=V"], ["--sandbox", "V"], ["--sandbox=V"]):
+        assert posture._last(posture._parse(argv, cli), "sandbox") == "V", argv
+    # prompts and anything after -- are not flags
+    assert posture._parse(["exec", "explain --yolo", "--", "--yolo"], cli) == []
+    # a value option swallows its value, even one that looks like a flag
+    assert posture._last(posture._parse(["-m", "--yolo"], cli), "yolo") is None
+
+
+@linux_only
+@pytest.mark.parametrize("argv, approvals, sandbox", [  # B1
+    (["codex", "-sdanger-full-access", "-anever"], "skipped", "none"),
+    (["codex", "-s=danger-full-access", "-a=never"], "skipped", "none"),
+    (["codex", "-sread-only", "-anever"], "skipped", "sandboxed"),
+    (["codex", "exec", "--yolo", "do it"], "skipped", "none"),
+    (["codex", "exec", "explain --yolo"], "on", "sandboxed"),
+    (["codex", "--not-so-yolo"], "auto", "sandboxed"),
+])
+def test_codex_short_flag_forms(procs, argv, approvals, sandbox):
+    p = _one(procs, argv, "codex")
+    assert (p.approvals, p.sandbox) == (approvals, sandbox)
+    assert posture.tone(p) != "good"
+
+
+@linux_only
+@pytest.mark.parametrize("argv", [  # B2
+    ["codex", "-c", "approval_policy=never", "-c", 'sandbox_mode="danger-full-access"'],
+    ["codex", "-c", 'approval_policy="never"', "-c", "sandbox_mode=danger-full-access"],
+    ["codex", "--config", "approval_policy=never", "--config=sandbox_mode=danger-full-access"],
+    ["codex", "-capproval_policy=never", "-csandbox_mode=danger-full-access"],
+])
+def test_codex_config_overrides(procs, tmp_path, argv):
+    (tmp_path / "codex" / "config.toml").write_text(
+        'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n')
+    p = _one(procs, argv, "codex")
+    assert (p.approvals, p.sandbox, p.confidence) == ("skipped", "none", "high")
+
+
+@linux_only
+def test_codex_flag_beats_override(procs):
+    p = _one(procs, ["codex", "-c", "approval_policy=never", "-a", "on-request"], "codex")
+    assert p.approvals == "on"
+
+
+@linux_only
+def test_codex_profile_v2_file(procs, tmp_path):  # B3
+    (tmp_path / "codex" / "config.toml").write_text('approval_policy = "on-request"\n')
+    (tmp_path / "codex" / "y.config.toml").write_text(
+        'approval_policy = "never"\nsandbox_mode = "danger-full-access"\n')
+    p = _one(procs, ["codex", "-p", "y"], "codex")
+    assert (p.approvals, p.sandbox) == ("skipped", "none")
+    assert _one(procs, ["codex", "--profile=y"], "codex").approvals == "skipped"
+    # only overrides in the profile: the rest comes from config.toml
+    (tmp_path / "codex" / "y.config.toml").write_text('sandbox_mode = "read-only"\n')
+    p = _one(procs, ["codex", "-py"], "codex")
+    assert (p.approvals, p.sandbox) == ("on", "sandboxed")
+
+
+@linux_only
+def test_codex_legacy_profiles(procs, tmp_path):
+    (tmp_path / "codex" / "config.toml").write_text(
+        'profile = "y"\n[profiles.y]\napproval_policy = "never"\n'
+        'sandbox_mode = "danger-full-access"\n')
+    assert _one(procs, ["codex"], "codex").approvals == "skipped"  # top-level selector
+    (tmp_path / "codex" / "config.toml").write_text(
+        '[profiles.y]\napproval_policy = "never"\n')
+    assert _one(procs, ["codex", "-p", "y"], "codex").approvals == "skipped"
+    assert _one(procs, ["codex", "-c", "profile=y"], "codex").approvals == "skipped"
+
+
+@linux_only
+def test_codex_unreadable_profile_is_unknown(procs, tmp_path):
+    p = _one(procs, ["codex", "-p", "missing"], "codex")
+    assert (p.approvals, p.sandbox) == ("unknown", "unknown")
+    (tmp_path / "codex" / "config.toml").write_text('profile = "gone"\n')
+    assert _one(procs, ["codex"], "codex").approvals == "unknown"
+
+
+@linux_only
+def test_codex_home_from_process_environment(procs, tmp_path):
+    own = tmp_path / "own-codex"
+    own.mkdir()
+    (own / "config.toml").write_text('approval_policy = "never"\n')
+    assert _one(procs, ["codex"], "codex", env={"CODEX_HOME": str(own)}).approvals == "skipped"
+    assert _one(procs, ["codex"], "codex").approvals == "on"  # agentwatch's own CODEX_HOME
+
+
+@linux_only
+def test_codex_system_config_and_bad_config(procs, tmp_path):
+    (tmp_path / "etc-codex.toml").write_text('approval_policy = "never"\n')
+    assert _one(procs, ["codex"], "codex").approvals == "skipped"
+    (tmp_path / "codex" / "config.toml").write_text('approval_policy = "on-request"\n')
+    assert _one(procs, ["codex"], "codex").approvals == "on"  # user layer beats system
+    (tmp_path / "codex" / "config.toml").write_text("not = [toml")
+    p = _one(procs, ["codex"], "codex")
+    assert p.approvals == "unknown" and p.sandbox == "unknown"
+
+
+@linux_only
+def test_codex_granular_policy_and_reviewer(procs, tmp_path):
+    (tmp_path / "codex" / "config.toml").write_text(
+        '[approval_policy.granular]\nsandbox_approval = false\n')
+    assert _one(procs, ["codex"], "codex").approvals == "unknown"
+    (tmp_path / "codex" / "config.toml").write_text('approvals_reviewer = "auto_review"\n')
+    p = _one(procs, ["codex", "-s", "workspace-write"], "codex")
+    assert p.approvals == "auto" and posture.tone(p) == "neutral"
+
+
+@linux_only
+def test_codex_defaults_are_never_green(procs):
+    p = _one(procs, ["codex"], "codex")
+    assert (p.approvals, p.sandbox, p.confidence) == ("on", "sandboxed", "low")
+    assert posture.tone(p) == "neutral"
+
+
+@linux_only
+@pytest.mark.parametrize("settings, approvals", [  # B4
+    ('{"permissions":{"defaultMode":"bypassPermissions"}}', "skipped"),
+    ('{"permissions":{"defaultMode":"plan"}}', "on"),
+    ("{not json", "unknown"),
+])
+def test_claude_settings_flag_inline(procs, settings, approvals):
+    p = _one(procs, ["claude", "--settings", settings])
+    assert p.approvals == approvals
+    assert posture.tone(p) != "good"
+
+
+@linux_only
+def test_claude_settings_flag_file(procs, tmp_path):
+    f = tmp_path / "s.json"
+    f.write_text('{"permissions":{"defaultMode":"bypassPermissions"}}')
+    assert _one(procs, ["claude", f"--settings={f}"]).approvals == "skipped"
+    rel = tmp_path / "proj" / "rel.json"
+    rel.write_text('{"permissions":{"defaultMode":"bypassPermissions"}}')
+    assert _one(procs, ["claude", "--settings", "rel.json"]).approvals == "skipped"
+    assert _one(procs, ["claude", "--settings", str(tmp_path / "nope.json")]).approvals == \
+        "unknown"
+
+
+@linux_only
+def test_claude_managed_settings(procs, tmp_path):
+    (tmp_path / "managed" / "managed-settings.json").write_text(
+        '{"permissions":{"defaultMode":"bypassPermissions"}}')
+    (tmp_path / "claude" / "settings.json").write_text('{"permissions":{"defaultMode":"plan"}}')
+    p = _one(procs, ["claude"])
+    assert p.approvals == "skipped" and "settings: bypassPermissions" in p.reasons
+    # managed disableBypassPermissionsMode refuses the flag
+    (tmp_path / "managed" / "managed-settings.json").write_text(
+        '{"permissions":{"disableBypassPermissionsMode":"disable"}}')
+    p = _one(procs, ["claude", "--dangerously-skip-permissions"])
+    assert p.approvals == "on" and "bypass disabled" in p.reasons
+
+
+@linux_only
+def test_claude_managed_paths_per_os(monkeypatch):
+    for platform, base in (("linux", "/etc/claude-code"),
+                           ("darwin", "/Library/Application Support/ClaudeCode")):
+        monkeypatch.setattr(posture.sys, "platform", platform)
+        assert posture._managed_claude_paths()[0] == Path(base) / "managed-settings.json"
+
+
+@linux_only
+def test_claude_project_settings(procs, tmp_path):
+    claude_dir = tmp_path / "proj" / ".claude"
+    claude_dir.mkdir()
+    (tmp_path / "claude" / "settings.json").write_text(
+        '{"permissions":{"defaultMode":"bypassPermissions"}}')
+    (claude_dir / "settings.json").write_text('{"permissions":{"defaultMode":"acceptEdits"}}')
+    assert _one(procs, ["claude"]).approvals == "on"  # project beats user
+    # bypassPermissions from a project file is not honoured: Manual
+    (claude_dir / "settings.local.json").write_text(
+        '{"permissions":{"defaultMode":"bypassPermissions"}}')
+    assert _one(procs, ["claude"]).approvals == "on"
+
+
+@linux_only
+def test_claude_restricted(procs, tmp_path):
+    (tmp_path / "claude" / "settings.json").write_text(
+        '{"permissions":{"defaultMode":"bypassPermissions"}}')
+    p = _one(procs, ["claude", "--restricted"])
+    assert p.approvals != "skipped" and "--restricted" in p.reasons  # user settings ignored
+    p = _one(procs, ["claude", "--restricted", "--dangerously-skip-permissions"])
+    assert p.approvals == "on"
+
+
+VERSIONED = "/home/u/.local/share/claude/versions/{}"
+
+
+@linux_only
+@pytest.mark.parametrize("version, argv, approvals, confidence", [
+    ("2.1.323", ["claude"], "auto", "high"),
+    ("2.1.283", ["claude"], "auto", "high"),
+    ("2.1.250", ["claude"], "auto", "low"),  # plan-dependent
+    ("2.1.100", ["claude"], "on", "low"),  # Manual (sandbox none: high approvals only)
+    (None, ["claude"], "auto", "low"),  # npm install: version unknown
+    ("2.1.323", ["claude", "-p", "hi"], "on", "low"),
+])
+def test_claude_builtin_default(procs, version, argv, approvals, confidence):
+    exe = VERSIONED.format(version) if version else "/usr/bin/node"
+    p = _one(procs, argv, exe=exe)
+    assert p.approvals == approvals
+    assert posture.tone(p) != "good"
+
+
+@linux_only
+def test_claude_disable_auto_mode(procs, tmp_path):
+    (tmp_path / "claude" / "settings.json").write_text(
+        '{"permissions":{"disableAutoMode":"disable"}}')
+    assert _one(procs, ["claude"], exe=VERSIONED.format("2.1.323")).approvals == "on"
+    p = _one(procs, ["claude", "--permission-mode", "auto"])
+    assert p.approvals == "on" and "auto disabled" in p.reasons
+
+
+@linux_only
+def test_claude_partial_allows(procs):
+    p = _one(procs, ["claude", "--permission-mode", "default", "--allowedTools", "Bash"])
+    assert p.approvals == "on" and "some tools pre-approved" in p.reasons
+    p = _one(procs, ["copilot", "--allow-tool", "shell"], "copilot")
+    assert p.approvals == "on" and "some tools pre-approved" in p.reasons
+    p = _one(procs, ["copilot", "--allow-all-paths"], "copilot")
+    assert p.approvals == "on" and "some tools pre-approved" in p.reasons
+
+
+@linux_only
+@pytest.mark.parametrize("argv, approvals", [  # B5
+    (["gemini", "-dy"], "skipped"),
+    (["gemini", "-yd"], "skipped"),
+    (["gemini", "--yolo=true"], "skipped"),
+    (["gemini", "--yolo", "true"], "skipped"),
+    (["gemini", "--yolo=false"], "on"),
+    (["gemini", "--yolo", "--no-yolo"], "on"),
+    (["gemini", "--approvalMode", "yolo"], "skipped"),
+    (["gemini", "--approvalMode=auto_edit"], "on"),
+    (["gemini", "--approval-mode", "bogus"], "unknown"),
+    (["gemini", "-p", "explain --yolo"], "on"),
+    (["gemini", "-m", "-y"], "on"),  # -y is -m's value
+])
+def test_gemini_yargs_forms(procs, argv, approvals):
+    assert _one(procs, argv, "gemini").approvals == approvals
+
+
+@linux_only
+def test_gemini_settings(procs, tmp_path):
+    (tmp_path / "gemini" / "settings.json").write_text(
+        '{"general":{"defaultApprovalMode":"yolo"},"tools":{"sandbox":"docker"}}')
+    p = _one(procs, ["gemini"], "gemini")
+    assert p.approvals == "on"  # a yolo default in settings is ignored by Gemini
+    assert p.sandbox == "sandboxed" and "settings: tools.sandbox" in p.reasons
+    (tmp_path / "gemini" / "settings.json").write_text(
+        '{"general":{"defaultApprovalMode":"auto_edit"}}')
+    p = _one(procs, ["gemini", "-s"], "gemini")
+    assert p.sandbox == "sandboxed" and p.confidence == "low"
+    assert _one(procs, ["gemini", "--no-sandbox"], "gemini").sandbox == "none"
+
+
+@linux_only
+def test_container_names_are_exact(procs):  # crunch is not crun
+    p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code", ["crunch"])
+    assert p.sandbox == "none"
+    posture.clear_cache()
+    p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code",
+            ["/usr/bin/containerd-shim-runc-v2", "-id", "x"])
+    assert p.sandbox == "container"
+
+
+@linux_only
+def test_depth_cut_reason(procs):
+    proc = FakeProc(10, ["bash"])
+    proc._parent = proc
+    procs[PID] = FakeProc(PID, ["claude"], parent=proc)
+    assert "ancestry too deep" in posture.posture(agent()).reasons
+
+
+@linux_only
+def test_flatpak_bwrap_is_low_confidence(procs, monkeypatch, tmp_path):
+    p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code",
+            ["flatpak", "run", "x"], ["bwrap", "--args", "40"])
+    assert (p.sandbox, p.confidence) == ("sandboxed", "low") and "flatpak" in p.reasons
+    posture.clear_cache()
+    p = run(procs, ["/app/bin/claude", "--permission-mode", "plan"], "claude-code", ["bwrap"])
+    assert (p.sandbox, p.confidence) == ("sandboxed", "low") and "flatpak" in p.reasons
+    posture.clear_cache()
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / ".flatpak-info").write_text("")
+    monkeypatch.setattr(posture, "_proc_root", lambda pid: root)
+    p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code", ["bwrap"])
+    assert (p.sandbox, p.confidence) == ("sandboxed", "low")
+
+
+@linux_only
+def test_good_tone_needs_human_and_real_sandbox(procs):
+    p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code", ["bwrap"])
+    assert (p.approvals, p.sandbox, p.confidence) == ("on", "sandboxed", "high")
+    assert posture.tone(p) == "good"
+    posture.clear_cache()
+    p = run(procs, ["claude", "--permission-mode", "auto"], "claude-code", ["bwrap"])
+    assert posture.tone(p) == "neutral"  # auto review is not a human
+    posture.clear_cache()
+    p = run(procs, ["claude", "--permission-mode", "plan"], "claude-code", ["conmon"])
+    assert posture.tone(p) == "neutral"  # a container is not a sandbox
+
+
+def test_auto_labels():
+    p = Posture("auto", "none", "high")
+    assert posture.label(p) == "auto-review · no sandbox" and posture.tone(p) == "neutral"
