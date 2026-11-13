@@ -10,13 +10,14 @@ Bash commands are read twice under one clock, and either reading asking asks
 `sh <(X)` / `sh < <(X)` as `X | bash`, and keeps `#` as code mid-word (`a##b`)
 and inside `(( ))` / `$(( ))` whose `))` closes on the same line, an
 `a[...]=` assignment subscript and an extglob group (`@( )`) closed on the same
-line. Since #228 a third reading (the new one, run when the command has a `[`)
-also reads any `name[...]` at a command's start up to its `]` (quotes, `$` and
-`#` inside: `a[$i #x]=1`; without a `]` it is an ordinary word, a second one
-asks). A fourth reading (the new one, run when a redirection follows a `)` or
-is glued to an operator) splits `)<<<` and keeps a subshell with redirections
-on its pipeline (`(echo X) 2>/dev/null | bash`). The new readings ask when a comment
-with a quote or substitution sits inside a `((`, `$((` or extglob group still
+line. Since #228 a third reading (the new one, run when the command has a `[` or
+`+=`) also reads any `name[...]` at a command's start up to its `]` (quotes, `$`
+and `#` inside: `a[$i #x]=1`; without a `]` it and every later one are ordinary
+words) and skips `a[...]=x` / `x+=1` prefixes like `VAR=x`. A fourth reading
+(the new one, run when a redirection follows a `)` or is glued to an operator)
+splits `)<<<` and keeps a subshell with redirections on its pipeline
+(`(echo X) 2>/dev/null | bash`). The new readings ask when a comment with a quote
+or substitution sits inside a `((`, `$((` or extglob group still
 open from an earlier line (bash may read that `#` as code), checks a
 here-string, heredoc or `<(...)` on a group or loop end (`{ bash; } <<< X`,
 `( sh ) < <(X)`, `(bash)<<<X`, `done < <(X)`, `env -S 'bash -s' < <(X)`) or an
@@ -24,7 +25,7 @@ here-string, heredoc or `<(...)` on a group or loop end (`{ bash; } <<< X`,
 `exec < <(X); bash`) as a script when the command names a shell anywhere, and both readings decode
 `echo` escapes (unless the last of -e/-E is -E; zsh and dash decode them by
 default), unwrap `env -S` / `--split-string` (`\c` ends it; 3 levels, deeper
-asks), skip `a[...]=x` prefix assignments like `VAR=x`, take
+asks), take
 `gxargs` as xargs, skip the value of a shell's long option (`bash --rcfile F`)
 and match any shell name (bash5, bash-5.2, ksh93, mksh, yash, ...; fish -C
 runs its script too). Each reading uses bash's quoting rules (_Scan): comments
@@ -126,7 +127,8 @@ _legacy = False  # the reading in progress (see check_command)
 _subscripts = False  # the third reading: `name[...]` read up to its `]`
 _split_ops = False  # the fourth reading: `)<<<` split, redirections after `)` (see check_command)
 # A redirection glued to an operator (`)<<<`, `;<`) or after a subshell's `)`
-# (`) 2>/dev/null`): the fourth reading runs only then. Linear: \s* then one char.
+# (`) 2>/dev/null`), also across `\<newline>` continuations (_group_redir): the
+# fourth reading runs only then. Linear: \s* then one char.
 _GROUP_REDIR = re.compile(r"[;&|(]<|\)[ \t]*(?:\d+|\{\w+\})?[<>]")
 # What the new reading reads differently: comments, $'...', $"...", <(...).
 _NEW_SYNTAX = re.compile(r"#|\$['\"]|<\(")
@@ -437,9 +439,13 @@ def _bare_exec(argv: list[str]) -> bool:
     return seen
 
 
-def _strip_prefixes(argv: list[str]) -> list[str]:
+def _strip_prefixes(argv: list[str], develop: bool | None = None) -> list[str]:
     """argv from the program on; leading redirections (`2>/dev/null rm ...`) are
-    moved to the end, where _check_argv still sees them."""
+    moved to the end, where _check_argv still sees them. *develop*: skip only
+    `VAR=x` assignments, as develop did, not `x+=1` or `a[1]=x` (by default:
+    in every reading but the subscript one, so develop's readings are unchanged)."""
+    if develop is None:
+        develop = not _subscripts
     i, redirs = 0, []
     while i < len(argv):
         word = argv[i]
@@ -448,7 +454,9 @@ def _strip_prefixes(argv: list[str]) -> list[str]:
             j = i + (1 if _REDIR.fullmatch(word) else 2)
             redirs += argv[i:j + 1]
             i = j + 1
-        elif (j := _assign_end(argv, i)) is not None:  # VAR=x, a[1]=x, a[$i #x]=x
+        elif develop and re.fullmatch(r"[A-Za-z_]\w*=.*", word, re.DOTALL):
+            i += 1
+        elif not develop and (j := _assign_end(argv, i)) is not None:  # x=1, a[1]=x, a[$i #x]=x
             i = j
         elif word in _KEYWORDS:
             i += 1
@@ -864,10 +872,11 @@ class _Scan:
 
     def try_subscript(self, m: re.Match) -> int | None:
         """subscript() for the `name[` *m* matched; None (output rolled back) when
-        it has no `]`, so the caller reads `name[` as an ordinary word. A second
-        such `name[` asks: scanning each to the end would be quadratic."""
+        it has no `]`, so the caller reads `name[` as an ordinary word. After one
+        such `name[` the rest are ordinary words too (scanning each to the end
+        would be quadratic; bash stops at that syntax error anyway)."""
         if self.unclosed:
-            raise _UnsureError
+            return None
         saved = (len(self.out), self.n, len(self.spans), len(self.bodies),
                  len(self.heredocs), list(self.pending), self.level, self.nest)
         try:
@@ -1395,6 +1404,10 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
         _tick()
         mine = [next(docs, "") for tok in argv if tok == "<<"] if heredocs else []
         raw0, bare_exec = (argv[0] if argv else ""), _bare_exec(argv)
+        # Here-strings as written: _strip_prefixes may move a redirection away from
+        # its word (`a[]= > <<< X`), so they are paired before it runs.
+        herestrings = [b for a, b in zip(argv, argv[1:]) if a == "<<<"]
+        raw_argv = argv
         alt = _env_split(argv)  # env -S 'cmd args': checked as the command env runs too
         for _ in range(3):  # env -S "env -S '...'": unwrapped up to 3 times, then ask
             if alt is None or (nested := _env_split(alt)) is None:
@@ -1411,6 +1424,7 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
         prog = _prog(argv[0]) if argv else ""
         if argv:
             mine += _stdin_scripts(prog, argv)
+        mine += [h for h in herestrings if h not in mine]
         # `{ bash; } <<< X`, `( sh ) <<< X`, `done <<EOF`, `exec <<< X; bash`: the
         # shell inside the group (or run after exec) reads X as its script.
         if mine and (raw0 in _CLOSERS or sep == ")" or bare_exec):
@@ -1439,14 +1453,20 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
                         if reason := _script(script.replace("\0", ""), depth):
                             return reason
             pipeline.add(alt_prog)
-        if argv:
+        if raw_argv:  # also `a[...]=` alone: develop kept its here-strings flowing
             if _runs_stdin(prog, argv[1:]):  # it reads its stdin: what it prints is not a script
                 for script in stdin + mine:
                     if script not in checked:
                         checked.add(script)  # bash skips NULs in a script
                         if reason := _script(script.replace("\0", ""), depth):
                             return reason
-                stdin = []
+                # Only where develop saw the same shell does its stdin stop here: a
+                # shell name added in #228 (sh0) or after `a[1]=x` / `x+=1` lets it flow on.
+                if (prog in _SHELLS or prog in ("source", ".")) and prog == _prog(
+                        (_strip_prefixes(raw_argv, develop=True) or [""])[0]):
+                    stdin = []
+                else:
+                    stdin += mine
             else:
                 stdin += mine
             pipeline.add(prog)
@@ -1460,6 +1480,13 @@ class _TimeUpError(Exception):
 def _tick() -> None:
     if _deadline is not None and time.monotonic() > _deadline:
         raise _TimeUpError
+
+
+def _group_redir(command: str) -> bool:
+    """_GROUP_REDIR in *command*, also with `\\<newline>` continuations removed
+    (`(echo X) \\<newline>2>/dev/null | bash`)."""
+    return _GROUP_REDIR.search(command) is not None or (
+        "\\\n" in command and _GROUP_REDIR.search(command.replace("\\\n", "")) is not None)
 
 
 def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | None:
@@ -1480,19 +1507,20 @@ def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | Non
         _legacy = True
         if reason := _check_command(command, depth, _sub):
             return reason
-        if _GROUP_REDIR.search(command):  # a fourth reading: `(bash)<<<X`, `(...)2>x | sh`
+        if _group_redir(command):  # a fourth reading: `(bash)<<<X`, `(...)2>x | sh`
             _legacy, _split_ops = False, True
             if reason := _check_command(command, depth, _sub):
                 return reason
             _split_ops = False
-        if not _NEW_SYNTAX.search(command):
+        if _NEW_SYNTAX.search(command):
+            _legacy = False
+            if reason := _check_command(command, depth, _sub):
+                return reason
+        if "[" not in command and "+=" not in command:
             return None
-        _legacy = False
-        if reason := _check_command(command, depth, _sub):
-            return reason
-        if "[" not in command:
-            return None
-        _subscripts = True  # a third reading, so a subscript read wrong never hides more
+        # A third reading: `name[...]` read up to its `]`, and `a[1]=x` / `x+=1`
+        # prefixes skipped (`a[1]=1 rm -rf ~`), so neither can change develop's.
+        _legacy, _subscripts = False, True
         return _check_command(command, depth, _sub)
     except _TimeUpError:
         return REASONS["too_long"]
