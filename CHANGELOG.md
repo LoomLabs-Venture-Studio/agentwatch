@@ -23,6 +23,14 @@ numbers refer to the GitHub repository.
   all") instead of being cut mid-word. `/api/check` and `/api/security-scan` add
   `session_project`. Security model, endpoints and polling cadence are unchanged.
 
+### Fixed
+
+- `visual`: concurrent `/api/stats` requests failed with "input() already active";
+  `cc_stats` read session files through the module-global `fileinput.input()`, and now opens
+  each file itself.
+- `ps --json`, `/api/ps` and `/api/agents` showed the user name as the project of an agent
+  running in the home folder; it is now "~", the same rule as history.
+
 ## [0.2.2] - 2026-11-12
 
 ### Added

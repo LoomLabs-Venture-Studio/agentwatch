@@ -6,7 +6,6 @@ token usage breakdowns by tool type and bash command category.
 
 from __future__ import annotations
 
-import fileinput
 import json
 import os
 import re
@@ -668,6 +667,14 @@ def _resolve_user_prompt(
     return ""
 
 
+def _lines(files: list[Path]):
+    """Every line of *files* in order, utf-8 with undecodable bytes dropped.
+    Opened here, one file at a time: thread-safe, unlike fileinput.input()."""
+    for path in files:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            yield from f
+
+
 def parse_session_stats(jsonl_path: Path) -> StatsReport:
     """Parse a single JSONL session file and compute token stats.
 
@@ -687,102 +694,103 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
     # A session's subagents log to <session>/subagents/*.jsonl; their calls are
     # billed too. One pass over all files, so a message.id seen twice counts once.
     files = [jsonl_path, *sorted(jsonl_path.with_suffix("").glob("subagents/*.jsonl"))]
-    with fileinput.input(files, encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
+    # Each file opened here, not through fileinput.input(): that one is
+    # module-global state, so two threads (visual's server) collide on it.
+    for line in _lines(files):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
 
-            line_type = obj.get("type")
+        line_type = obj.get("type")
 
-            # Index user messages for prompt lookups
-            if line_type == "user":
-                uuid = obj.get("uuid", "")
-                msg = obj.get("message", {})
-                content = msg.get("content", "") if isinstance(msg, dict) else ""
-                if isinstance(content, str) and uuid:
-                    user_messages[uuid] = content[:200]
-                elif isinstance(content, list) and uuid:
-                    # Content can be a list of blocks
-                    texts = [
-                        b.get("text", "")
-                        for b in content
-                        if isinstance(b, dict) and b.get("type") == "text"
-                    ]
-                    user_messages[uuid] = " ".join(texts)[:200]
-                continue
+        # Index user messages for prompt lookups
+        if line_type == "user":
+            uuid = obj.get("uuid", "")
+            msg = obj.get("message", {})
+            content = msg.get("content", "") if isinstance(msg, dict) else ""
+            if isinstance(content, str) and uuid:
+                user_messages[uuid] = content[:200]
+            elif isinstance(content, list) and uuid:
+                # Content can be a list of blocks
+                texts = [
+                    b.get("text", "")
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                user_messages[uuid] = " ".join(texts)[:200]
+            continue
 
-            if line_type != "assistant":
-                continue
+        if line_type != "assistant":
+            continue
 
-            msg = obj.get("message")
-            if not isinstance(msg, dict):
-                continue
-            msg_id = msg.get("id")
-            if not msg_id:
-                continue
+        msg = obj.get("message")
+        if not isinstance(msg, dict):
+            continue
+        msg_id = msg.get("id")
+        if not msg_id:
+            continue
 
-            usage = msg.get("usage")
-            if not isinstance(usage, dict):
-                continue
+        usage = msg.get("usage")
+        if not isinstance(usage, dict):
+            continue
 
-            if msg_id not in messages:
-                messages[msg_id] = {
-                    "model": msg.get("model", ""),
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "cache_write": 0,
-                    "cache_write_1h": 0,
-                    "cache_read": 0,
-                    "tool_blocks": {},  # block_id -> (tool_name, tool_input)
-                    "has_thinking": False,
-                }
-                # Track parentUuid from the first chunk of this message
-                p_uuid = obj.get("parentUuid", "")
-                if p_uuid:
-                    parent_map[msg_id] = p_uuid
+        if msg_id not in messages:
+            messages[msg_id] = {
+                "model": msg.get("model", ""),
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_write": 0,
+                "cache_write_1h": 0,
+                "cache_read": 0,
+                "tool_blocks": {},  # block_id -> (tool_name, tool_input)
+                "has_thinking": False,
+            }
+            # Track parentUuid from the first chunk of this message
+            p_uuid = obj.get("parentUuid", "")
+            if p_uuid:
+                parent_map[msg_id] = p_uuid
 
-            md = messages[msg_id]
+        md = messages[msg_id]
 
-            # Take max across streaming chunks
-            md["input_tokens"] = max(
-                md["input_tokens"], usage.get("input_tokens", 0)
+        # Take max across streaming chunks
+        md["input_tokens"] = max(
+            md["input_tokens"], usage.get("input_tokens", 0)
+        )
+        md["output_tokens"] = max(
+            md["output_tokens"], usage.get("output_tokens", 0)
+        )
+        md["cache_write"] = max(
+            md["cache_write"], usage.get("cache_creation_input_tokens", 0)
+        )
+        md["cache_read"] = max(
+            md["cache_read"], usage.get("cache_read_input_tokens", 0)
+        )
+        split = usage.get("cache_creation")
+        if isinstance(split, dict):
+            md["cache_write_1h"] = max(
+                md["cache_write_1h"], split.get("ephemeral_1h_input_tokens") or 0
             )
-            md["output_tokens"] = max(
-                md["output_tokens"], usage.get("output_tokens", 0)
-            )
-            md["cache_write"] = max(
-                md["cache_write"], usage.get("cache_creation_input_tokens", 0)
-            )
-            md["cache_read"] = max(
-                md["cache_read"], usage.get("cache_read_input_tokens", 0)
-            )
-            split = usage.get("cache_creation")
-            if isinstance(split, dict):
-                md["cache_write_1h"] = max(
-                    md["cache_write_1h"], split.get("ephemeral_1h_input_tokens") or 0
-                )
-            if msg.get("model"):
-                md["model"] = msg["model"]
+        if msg.get("model"):
+            md["model"] = msg["model"]
 
-            # Collect content blocks
-            for block in msg.get("content", []):
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "tool_use":
-                    bid = block.get("id", "")
-                    if bid and bid not in md["tool_blocks"]:
-                        md["tool_blocks"][bid] = (
-                            block.get("name", ""),
-                            block.get("input", {}),
-                        )
-                elif btype == "thinking":
-                    md["has_thinking"] = True
+        # Collect content blocks
+        for block in msg.get("content", []):
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "tool_use":
+                bid = block.get("id", "")
+                if bid and bid not in md["tool_blocks"]:
+                    md["tool_blocks"][bid] = (
+                        block.get("name", ""),
+                        block.get("input", {}),
+                    )
+            elif btype == "thinking":
+                md["has_thinking"] = True
 
     # Pass 2: Attribute tokens
     from collections import Counter

@@ -636,3 +636,193 @@ process.stdout.write(JSON.stringify(out));
     report = texts["report"]
     assert "Cost $0.00" in report and "Wasted $0.00" in report  # no sessions: nothing spent
     assert "—" in texts["stats"] and "—" in texts["history"]
+
+
+# QA #238 fixes.
+
+def _views_js(tmp_path, body):
+    """Run *body* (JS, prints with process.stdout.write) after the page's
+    declarations, on the DOM shim; returns the parsed JSON output."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    import subprocess
+
+    m = re.search(r"\nconst DATA = .*?\n(?=// Every view reloads)", visual.PAGE, re.S)
+    assert m
+    script = tmp_path / "page.js"
+    script.write_text(_DOM_SHIM + m.group(0) + "\n" + body, encoding="utf-8")
+    run = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout)
+
+
+def test_home_folder_project_is_tilde_never_the_user_name(sandbox):
+    from agentwatch.cli import _ps_json
+
+    home = AgentProcess(pid=9, agent_type="claude-code", working_directory=Path.home(),
+                        log_file=None, command="claude")
+    proj = AgentProcess(pid=8, agent_type="claude-code",
+                        working_directory=Path.home() / "code" / "demo", log_file=None,
+                        command="claude")
+    assert [a["project"] for a in _ps_json([home, proj])] == ["~", "demo"]
+    assert [a["project"] for a in agent_status.build([home, proj])["agents"]] == ["~", "demo"]
+    nowhere = AgentProcess(pid=7, agent_type="codex", working_directory=None, log_file=None,
+                           command="codex")
+    assert _ps_json([nowhere])[0]["project"] == ""
+
+
+def test_script_json_cannot_close_the_script_element():
+    out = visual.script_json({"x": "</script><script>alert(1)</script><!--"})
+    assert "<" not in out and json.loads(out)["x"].startswith("</script>")
+    m = re.search(r"\nconst DATA = (.*?);\n", visual.PAGE)
+    assert "<" not in m.group(1)
+
+
+def test_hidden_beats_display_and_focus_ring_is_inside_the_tab_scroller():
+    assert "[hidden]{display:none!important}" in visual.PAGE
+    assert "[role=tab]:focus-visible{outline-offset:-3px}" in visual.PAGE
+    assert 'document.getElementById("pause").hidden = expiredLink;' in visual.PAGE
+
+
+def test_working_needs_a_recent_tool_call(tmp_path):
+    out = _views_js(tmp_path, """
+const row = (active, age) => ({active, health: {score: 100, label: "productive"},
+  cost_usd: 1, last_action: age === null ? null : {tool: "Edit", target: "a.py", age_s: age,
+  ok: true}});
+const cases = [row(true, 30), row(true, 119), row(true, 120), row(true, 9000), row(false, 30),
+  row(true, null), row(null, null)];
+process.stdout.write(JSON.stringify(cases.map(s => [working(s), stateOf(s).textContent,
+  statusParts(s, "")[0].textContent])));
+""")
+    assert [w for w, _, _ in out] == [True, True, False, False, False, False, False]
+    states = [st.strip() for _, st, _ in out]
+    assert states == ["Working", "Working", "Idle", "Idle", "Idle", "Idle", "No activity"]
+    assert out[0][2].startswith("Doing now") and out[3][2].startswith("Last action")
+
+
+def test_advice_line_only_with_a_real_recommendation(tmp_path):
+    check = {"overall_score": 90, "status": "productive", "warnings": [], "categories": {},
+             "session_fallback": None}
+    out = _views_js(tmp_path, f"""
+const text = rec => {{
+  const box = new Node("div");
+  box.append(...VIEWS.check({{...{json.dumps(check)}, efficiency: {{score: 80,
+    cost_total: 1, recommendation: rec}}}}).filter(Boolean));
+  return box.textContent;
+}};
+process.stdout.write(JSON.stringify([text(null), text("None"), text("Wrap up soon")]));
+""")
+    assert "Advice" not in out[0] and "Advice" not in out[1]
+    assert "Advice: Wrap up soon" in out[2]
+
+
+def test_history_shows_25_rows_then_more_on_click(tmp_path):
+    rows = [{"agent": "claude-code", "project": f"proj{i:03d}", "ended": 1.79e9 - i,
+             "actions": 1, "tokens": 1, "cost_usd": 0.1, "health_score": 100,
+             "status": "healthy"} for i in range(60)]
+    out = _views_js(tmp_path, f"""
+const d = {{synced: null, sessions: {json.dumps(rows)}}};
+const page = () => {{
+  const box = new Node("div");
+  box.append(...VIEWS.history(d).filter(Boolean));
+  return box;
+}};
+const shown = box => (box.textContent.match(/proj\\d{{3}}/g) || []).length;
+const first = page(), btn = first.kids[first.kids.length - 1];
+const firstText = first.textContent;
+historyShown += HISTORY_PAGE;  // what the button's click does
+const second = page();
+historyShown += HISTORY_PAGE;
+const third = page();
+process.stdout.write(JSON.stringify([shown(first), btn.tag, btn.textContent,
+  /Newest 25 of 60 sessions/.test(firstText), shown(second), shown(third),
+  third.kids.some(k => k.tag === "button")]));
+""")
+    assert out == [25, "button", "Show 25 more", True, 50, 60, False]
+    more = _fn("moreButton")
+    assert "historyShown += HISTORY_PAGE" in more and "swap(body" in more
+
+
+# Every tab fits 320 px without sideways scroll (headless Chrome, when installed).
+
+_WIDTH_CHECK = r"""
+import { spawn } from "node:child_process";
+const [chromePath, url, tabs, prof] = process.argv.slice(2);
+const port = 9400 + Math.floor(Math.random() * 400);
+const chrome = spawn(chromePath, ["--headless=new", "--no-sandbox", "--hide-scrollbars",
+  `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "about:blank"],
+  {stdio: "ignore"});
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+try {
+  let targets;
+  for (let i = 0; i < 100 && !targets; i++) {
+    try { targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); }
+    catch { await sleep(100); }
+  }
+  const ws = new WebSocket(targets.find(t => t.type === "page").webSocketDebuggerUrl);
+  await new Promise(r => ws.addEventListener("open", r));
+  let id = 0; const wait = new Map();
+  ws.addEventListener("message", e => {
+    const m = JSON.parse(e.data);
+    if (wait.has(m.id)) { wait.get(m.id)(m); wait.delete(m.id); }
+  });
+  const send = (method, params = {}) => new Promise(r => {
+    wait.set(++id, r); ws.send(JSON.stringify({id, method, params}));
+  });
+  await send("Emulation.setDeviceMetricsOverride",
+    {width: 320, height: 640, deviceScaleFactor: 1, mobile: true});
+  const out = [];
+  for (const scheme of ["dark", "light"]) {
+    await send("Emulation.setEmulatedMedia",
+      {features: [{name: "prefers-color-scheme", value: scheme}]});
+    for (const tab of tabs.split(",")) {
+      await send("Page.navigate", {url: `${url}#${tab}`});
+      let r;
+      for (let i = 0; i < 80; i++) {  // until every section has loaded
+        await sleep(250);
+        r = await send("Runtime.evaluate", {returnByValue: true, expression: `
+          JSON.stringify({loading: document.querySelectorAll("[aria-busy=true]").length,
+            sections: document.querySelectorAll("section[data-name]").length,
+            sw: document.documentElement.scrollWidth, iw: innerWidth,
+            tabs: document.getElementById("tabs").scrollWidth})`});
+        const v = JSON.parse(r.result.result.value);
+        if (v.sections && !v.loading) break;
+      }
+      out.push({scheme, tab, ...JSON.parse(r.result.result.value)});
+    }
+  }
+  process.stdout.write(JSON.stringify(out));
+  ws.close();
+} finally { chrome.kill(); }
+"""
+
+
+def _chrome():
+    import glob
+
+    for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"):
+        if shutil.which(name):
+            return shutil.which(name)
+    found = sorted(glob.glob(str(Path.home() / ".cache/ms-playwright/chromium-*/"
+                                 "chrome-linux64/chrome")))
+    return found[-1] if found else None
+
+
+def test_every_tab_fits_320px_without_sideways_scroll(server, sandbox, tmp_path):
+    node, chrome = shutil.which("node"), _chrome()
+    if node is None or chrome is None:
+        pytest.skip("needs node and a headless Chrome")
+    import subprocess
+
+    script = tmp_path / "width.mjs"
+    script.write_text(_WIDTH_CHECK, encoding="utf-8")
+    url = f"http://127.0.0.1:{server.server_address[1]}/?t={server.token}"
+    tabs = ",".join(t for t in ("overview", "security", "cost", "history"))
+    run = subprocess.run([node, str(script), chrome, url, tabs, str(tmp_path / "prof")],
+                         capture_output=True, text=True, timeout=240)
+    assert run.returncode == 0, run.stderr
+    results = json.loads(run.stdout)
+    assert len(results) == 8 and all(r["sections"] for r in results)
+    for r in results:
+        assert r["sw"] <= r["iw"] == 320, r

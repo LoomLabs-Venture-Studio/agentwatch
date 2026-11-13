@@ -775,6 +775,16 @@ def _session_proc(log: Path):
                  if p.log_file and resolved(p.log_file) == target), None)
 
 
+def json_project(agent: AgentProcess) -> str:
+    """An agent's project for JSON: its folder name, "~" for the home dir (never
+    the user name), "" when unknown. Same rule as history (folder_name)."""
+    from agentwatch.cc_stats import project_name
+
+    if agent.working_directory is None:
+        return ""
+    return project_name(str(agent.working_directory)) or ""
+
+
 def _ps_json(agents: list[AgentProcess]) -> list[dict]:
     """`ps --json` payload (also served by `agentwatch visual`).
 
@@ -792,7 +802,7 @@ def _ps_json(agents: list[AgentProcess]) -> list[dict]:
             "team_name": team_names.get(a.team_id),
             "depth": a.depth,
             "agent_type": a.agent_type,
-            "project": a.project_name,
+            "project": json_project(a),
             "working_directory": str(a.working_directory) if a.working_directory else None,
             "log_file": str(a.log_file) if a.log_file else None,
             "session_id": a.session_id,

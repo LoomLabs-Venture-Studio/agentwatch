@@ -268,7 +268,13 @@ def status_tones() -> dict[str, dict[str, str]]:
 
 
 # Static data for the page (no request data): agent names and status tones.
-_PAGE_DATA = json.dumps({"names": DISPLAY_NAMES, "tones": status_tones()}, sort_keys=True)
+def script_json(value: Any) -> str:
+    """JSON safe to put inside a <script> element: "<" is escaped, so no value
+    can close the element ("</script>") or open a comment ("<!--")."""
+    return json.dumps(value, sort_keys=True).replace("<", "\\u003c")
+
+
+_PAGE_DATA = script_json({"names": DISPLAY_NAMES, "tones": status_tones()})
 
 _PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -310,6 +316,7 @@ _PAGE = r"""<!doctype html>
 --good:#166534;--warn:#92400e;--bad:#b91c1c;--neutral:#475569;
 --shadow:0 1px 2px rgb(15 23 42/6%)}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%;scrollbar-color:var(--line-strong) var(--bg)}
 body{margin:0;background:var(--bg);color:var(--ink);font:400 1rem/1.5 var(--sans);
 font-variant-numeric:tabular-nums}
@@ -338,11 +345,16 @@ margin:0 -4px;padding:0 4px 8px;scrollbar-width:none}
 [role=tab]{background:none;border:0;border-radius:8px;padding:0 14px;min-height:44px;
 color:var(--mute);font-weight:600;font-size:.9375rem;white-space:nowrap}
 [role=tab]:hover{color:var(--ink);background:var(--muted)}
+[role=tab]:focus-visible{outline-offset:-3px}
+[role=tablist].more,[role=tablist].less{--fade:linear-gradient(90deg,transparent,#000 var(--l,0px),
+#000 calc(100% - var(--r,0px)),transparent);-webkit-mask-image:var(--fade);mask-image:var(--fade)}
+[role=tablist].more{--r:48px}[role=tablist].less{--l:48px}
 [role=tab][aria-selected=true]{color:var(--ink);background:var(--acc-soft);
 box-shadow:inset 0 -2px 0 var(--acc)}
 .tools{display:flex;align-items:center;gap:8px;margin-left:auto}
 .live{display:flex;align-items:center;gap:8px;font-size:.8125rem;color:var(--mute);
-min-height:44px}
+min-height:44px;min-width:0}
+.live .txt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .live .dot{width:8px;height:8px;border-radius:50%;background:var(--neutral);flex:none}
 .live.on .dot{background:var(--good)}
 .live.warn .dot{background:var(--warn)}.live.warn{color:var(--warn)}
@@ -358,7 +370,18 @@ line-height:1.2}
 .btn .ic{width:16px;height:16px}
 @media (min-width:56em){
   [role=tablist]{order:0;width:auto;margin:0;padding:0}
-  .bar{flex-wrap:nowrap;gap:0 24px}}
+  .bar{flex-wrap:nowrap;gap:0 24px}
+  .live{margin-left:auto}.tools{margin-left:0}}
+/* Narrow header: the live line gets its own row and the tabs scroll, with a
+   fade at the edge; on phones the buttons are icon-only (aria-label names them). */
+@media (max-width:55.99em){
+  .bar{gap:0 8px}
+  .live{order:4;width:100%;min-height:24px;margin-top:-6px}
+  [role=tab]{padding:0 12px}}
+@media (max-width:30em){
+  .tools .btn{padding:0;width:44px}
+  .tools .btn .lbl{position:absolute;width:1px;height:1px;overflow:hidden;
+    clip-path:inset(50%);white-space:nowrap}}
 /* Page */
 main{padding-top:24px;padding-bottom:48px}
 .pagehead{margin-bottom:20px}
@@ -518,7 +541,6 @@ padding:6px 0;border-bottom:1px solid var(--line)}
   .wrap{padding-inline:16px}
   main{padding-top:16px}
   h1{font-size:1.5rem}
-  .live .txt{max-width:9.5rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
   .kpi{padding:12px}.kpi .val{font-size:1.5rem}
   .kpi .lbl{font-size:.75rem}
@@ -547,9 +569,9 @@ padding:6px 0;border-bottom:1px solid var(--line)}
 <span class="brand"><span class="logo"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
 <path d="M2 12h4l3-8 6 16 3-8h4"/></svg></span>agentwatch</span>
 <div role="tablist" aria-label="Reports" id="tabs"></div>
-<div class="tools">
 <div class="live" id="live"><span class="dot" aria-hidden="true"></span>
 <span class="txt" id="livetext">Connecting...</span></div>
+<div class="tools">
 <button class="btn" id="pause" type="button" aria-pressed="false">Pause</button>
 <button class="btn" id="theme" type="button">Light</button>
 </div></div></header>
@@ -729,6 +751,9 @@ const ICONS = {
   coin: ["M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z",
     "M15 9a3 2.5 0 0 0-6 0c0 3 6 1.5 6 4.5a3 2.5 0 0 1-6 0", "M12 5v2m0 10v2"],
   pause: ["M9 5v14", "M15 5v14"],
+  sun: ["M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z", "M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4" +
+    "M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"],
+  moon: ["M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"],
   play: ["M7 4v16l13-8z"],
 };
 function icon(name) {
@@ -931,14 +956,22 @@ function fallback(d) {
 const VERBS = {Edit: "Edited", MultiEdit: "Edited", NotebookEdit: "Edited", Write: "Wrote",
   Read: "Read", Bash: "Ran", Grep: "Searched", Glob: "Searched", WebFetch: "Fetched",
   WebSearch: "Searched the web"};
+// Working = a tool call in the last WORKING_S seconds (agent_status.ACTIVE_S);
+// a log written recently with an old last call is idle.
+const WORKING_S = 120;
+function working(s) {
+  const la = s && s.last_action;
+  return !!(s && s.active === true && la && typeof la.age_s === "number" &&
+    la.age_s < WORKING_S);
+}
 function stateOf(s) {
   if (!s) return el("span", "Checking", "pill t-neutral");
-  if (s.active === true) {
+  if (working(s)) {
     const p = pill("Working", "good");
     p.querySelector(".ic").classList.add("beat");
     return p;
   }
-  return pill(s.active === false ? "Idle" : "No activity", "neutral");
+  return pill(s.active === null || s.active === undefined ? "No activity" : "Idle", "neutral");
 }
 function statusParts(s, up) {
   const box = el("div", null, "doing"), chips = el("div", null, "chips");
@@ -960,7 +993,7 @@ function statusParts(s, up) {
     const v = el("p", text, "v");
     v.append(aged(" \u00b7", Date.now() - (la.age_s || 0) * 1000, "age"));
     if (la.ok === false) v.append(" (failed)");
-    box.append(el("span", s.active ? "Doing now" : "Last action", "k"), v);
+    box.append(el("span", working(s) ? "Doing now" : "Last action", "k"), v);
   }
   if (s.health) chips.prepend(pill(`${label(s.health.label)} \u00b7 ${num(s.health.score)}`,
     healthTone(s.health.score, s.health.label)), meta("coin", money(s.cost_usd)));
@@ -1053,7 +1086,7 @@ function summary() {
   if (subs && subs.active) parts.push(`${plural(subs.active, "subagent")} working now.`);
   const tiles = el("div", null, "kpis");
   if (ps) {
-    const rows = (agents || {}).agents || [], busy = rows.filter(a => a.active).length;
+    const rows = (agents || {}).agents || [], busy = rows.filter(working).length;
     tiles.append(tile("Agents running", ps.length, "", el("p", agents ?
       `${busy} working \u00b7 ${ps.length - busy} idle` : "On this computer", "cap"),
       spark("n:ps", "Agents running")));
@@ -1099,7 +1132,7 @@ const VIEWS = {
     areas(d),
     d.efficiency ? facts([["Efficiency", num(d.efficiency.score) + " / 100"],
       ["Cost so far", money(d.efficiency.cost_total)]]) : null,
-    d.efficiency && d.efficiency.recommendation ?
+    d.efficiency && !missing(d.efficiency.recommendation) ?
       el("p", "Advice: " + d.efficiency.recommendation, "advice") : null,
     fallback(d), raw(d)],
   "security-scan": d => [verdict(d.security_score, d.status,
@@ -1167,14 +1200,34 @@ const VIEWS = {
     d.subagents.length ? raw(d) : null],
   history: d => [
     d.synced ? syncNote(d.synced, Date.now()) : lastSync ? syncNote(lastSync.d, lastSync.at) : null,
-    d.sessions.length ? table(d.sessions, [["agent", "Agent", r => agentName(r.agent)],
+    d.sessions.length ? table(d.sessions.slice(0, historyShown),
+      [["agent", "Agent", r => agentName(r.agent)],
       ["project", "Project"], ["ended", "Last active"], ["actions", "Actions", "num"],
       ["tokens", "Tokens", "num"], ["cost_usd", "Cost", "num"],
       ["health_score", "Health", "num"],
-      ["status", "Status", r => pill(label(r.status), healthTone(r.health_score, r.status))]])
+      ["status", "Status", r => pill(label(r.status), healthTone(r.health_score, r.status))]],
+      d.sessions.length > HISTORY_PAGE ?
+        `Newest ${num(Math.min(historyShown, d.sessions.length))} of ` +
+        `${num(d.sessions.length)} sessions` : null)
       : el("p", "No sessions recorded yet. Sync history reads your agent logs into a local " +
-        "database on this computer.", "mute")],
+        "database on this computer.", "mute"),
+    d.sessions.length > historyShown ? moreButton(d) : null],
 };
+// History shows HISTORY_PAGE rows, then more on each click; the count is kept
+// across the 30 s reloads, so a reload never collapses what was opened.
+const HISTORY_PAGE = 25;
+let historyShown = HISTORY_PAGE;
+function moreButton(d) {
+  const left = d.sessions.length - historyShown;
+  const b = el("button", `Show ${num(Math.min(left, HISTORY_PAGE))} more`, "btn");
+  b.type = "button";
+  b.onclick = () => {
+    historyShown += HISTORY_PAGE;
+    const body = b.closest(".body");
+    if (body) swap(body, VIEWS.history(d).filter(Boolean));
+  };
+  return b;
+}
 // The sync result is only in the answer to the click: keep it, with its age.
 let lastSync = null;
 function syncNote(s, at) {
@@ -1401,13 +1454,17 @@ const pauseBtn = document.getElementById("pause");
 pauseBtn.onclick = () => {
   paused = !paused;
   pauseBtn.setAttribute("aria-pressed", String(paused));
-  pauseBtn.replaceChildren(icon(paused ? "play" : "pause"),
-    el("span", paused ? "Resume" : "Pause"));
+  syncPause();
   liveStatus();
   refresh(LIVE, LIVE_MS);
   refresh(SLOW, SLOW_MS);
 };
-pauseBtn.replaceChildren(icon("pause"), el("span", "Pause"));
+function syncPause() {
+  const word = paused ? "Resume" : "Pause";
+  pauseBtn.replaceChildren(icon(paused ? "play" : "pause"), el("span", word, "lbl"));
+  pauseBtn.setAttribute("aria-label", paused ? "Resume live updates" : "Pause live updates");
+}
+syncPause();
 const tabs = document.getElementById("tabs");
 TABS.forEach(([id, name]) => {
   const b = el("button", name);
@@ -1428,7 +1485,23 @@ tabs.addEventListener("keydown", e => {
     document.getElementById("tab-" + ids[n]).focus();
   }
 });
-addEventListener("hashchange", () => show(location.hash.slice(1)));
+addEventListener("hashchange", () => { show(location.hash.slice(1)); tabIntoView(); });
+// The tab bar scrolls on narrow screens: fade an edge while tabs are hidden
+// past it, and keep the selected tab in view.
+function tabCue() {
+  tabs.classList.toggle("more", tabs.scrollLeft + tabs.clientWidth < tabs.scrollWidth - 1);
+  tabs.classList.toggle("less", tabs.scrollLeft > 1);
+}
+function tabIntoView() {
+  const sel = tabs.querySelector("[aria-selected=true]");
+  if (!sel) return;
+  const box = tabs.getBoundingClientRect(), r = sel.getBoundingClientRect();
+  if (r.right > box.right) tabs.scrollLeft += r.right - box.right + 4;
+  else if (r.left < box.left) tabs.scrollLeft -= box.left - r.left + 4;
+  tabCue();
+}
+tabs.addEventListener("scroll", tabCue, {passive: true});
+addEventListener("resize", tabIntoView);
 // Theme: dark unless the system asks for light, until the button is used;
 // the choice is kept.
 const themeBtn = document.getElementById("theme");
@@ -1437,7 +1510,8 @@ function dark() {
   return t ? t === "dark" : !matchMedia("(prefers-color-scheme: light)").matches;
 }
 function syncTheme() {
-  themeBtn.textContent = dark() ? "Light" : "Dark";
+  themeBtn.replaceChildren(icon(dark() ? "sun" : "moon"),
+    el("span", dark() ? "Light" : "Dark", "lbl"));
   themeBtn.setAttribute("aria-label", dark() ? "Switch to light theme" : "Switch to dark theme");
 }
 try {
@@ -1452,6 +1526,7 @@ themeBtn.onclick = () => {
 };
 syncTheme();
 show(location.hash.slice(1));
+tabIntoView();
 </script></body></html>
 """
 PAGE = _PAGE.replace("__PAGE_DATA__", _PAGE_DATA)
