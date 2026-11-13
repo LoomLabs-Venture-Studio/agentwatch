@@ -81,7 +81,8 @@ def test_no_previous_period_has_no_trend(conn):
     assert rep["totals"]["sessions"] == 0
     assert rep["trend"] == {"cost_usd": None, "waste_usd": None}
     text = "\n".join(report.render(rep))
-    assert "No sessions" in text and "--include-active" in text
+    assert "No sessions" in text  # the flag is history sync's, not report's (QA sweep)
+    assert "`agentwatch history sync --include-active`" in text
 
 
 def test_render(conn):

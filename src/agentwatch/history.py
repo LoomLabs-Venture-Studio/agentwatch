@@ -132,10 +132,27 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     path = path or db_path()
     if not _private_dir(path.parent):
         raise OSError(f"{path.parent} is not a directory owned by you")
+    _private_file(path)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys = ON")
     migrate(conn)
     return conn
+
+
+def _private_file(path: Path) -> None:
+    """POSIX: create the DB 0600 (sqlite3 would use the umask, usually 0644;
+    its -journal/-wal files copy the DB's mode). An existing DB we own is
+    tightened to 0600; one we don't own is left alone."""
+    if os.name != "posix":
+        return  # %LOCALAPPDATA%: per-user ACLs, not modes
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        st = os.stat(path)
+        if st.st_uid == os.getuid() and st.st_mode & 0o077:
+            os.chmod(path, 0o600)
+        return
+    os.close(fd)  # an empty file is an empty SQLite database
 
 
 def migrate(conn: sqlite3.Connection) -> None:

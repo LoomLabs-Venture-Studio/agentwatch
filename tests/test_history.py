@@ -124,6 +124,21 @@ def test_data_dir_created_0700(env):
     assert history.data_dir().stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX modes")
+def test_db_file_created_0600_and_existing_tightened(env):
+    old = os.umask(0o022)
+    try:
+        history.connect().close()
+        path = history.db_path()
+        assert path.stat().st_mode & 0o777 == 0o600
+        path.chmod(0o644)  # a DB made by an older agentwatch
+        conn = history.connect()
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == history.SCHEMA_VERSION
+    finally:
+        os.umask(old)
+
+
 # --- incremental sync --------------------------------------------------------
 
 def test_sync_is_incremental_and_idempotent(env):
@@ -399,6 +414,17 @@ def test_prune_and_path(env):
     conn = sqlite3.connect(path)
     assert conn.execute("SELECT count(*) FROM findings").fetchone() == (0,)
     assert runner.invoke(cli, ["history", "prune", "--older-than", "soon"]).exit_code == 2
+
+
+@pytest.mark.parametrize("value", ["0d", "0", "00d"])
+def test_prune_zero_days_is_refused(env, value):
+    write_log(env / "a.jsonl")
+    runner = CliRunner()
+    assert runner.invoke(cli, ["history", "sync"]).exit_code == 0
+    out = runner.invoke(cli, ["history", "prune", "--older-than", value])
+    assert out.exit_code == 2 and "at least 1 day" in out.output
+    conn = sqlite3.connect(history.db_path())
+    assert conn.execute("SELECT count(*) FROM sessions").fetchone() == (1,)
 
 
 # --- each adapter's history_logs ---------------------------------------------

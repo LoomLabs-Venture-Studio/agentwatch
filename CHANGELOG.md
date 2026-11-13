@@ -54,6 +54,7 @@ numbers refer to the GitHub repository.
   spend and is kept per Claude Code config dir (`block-<hash>.json`), so windows on
   `~/.claude` and on another `CLAUDE_CONFIG_DIR` no longer overwrite each other's block
   (#240). The budget hook reads the cache of its own `CLAUDE_CONFIG_DIR`.
+- `scrub --force`: replace an existing `.scrubbed` copy (see Fixed).
 
 ### Changed
 
@@ -74,6 +75,44 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- `watch`: `q` quits, as the footer says. `watch` opens on the session's detail
+  view, where `q` went back to the dashboard. Esc and Backspace still go back;
+  in `watch-all`'s detail view `q` still goes back to the table.
+- `agentguard` had drifted from `agentwatch` and lacked most options:
+  `-t/--theme`; `watch-all --headless`, `--notify`, `--notify-min`,
+  `--notify-existing`, `--notify-done`, `--webhook`, `--budget`, `--since`,
+  `--siem-log`, `--llm`; `audit --pii`; `check --analytics-log`, `--siem-log`,
+  `--llm`, `--llm-model`; `scan --audit-log`, `--analytics-log`, `--siem-log`,
+  `--llm`, `--llm-model`; `watch`'s security, SIEM, LLM and alert options. Each
+  `agentguard` command is now built from its `agentwatch` command's own options
+  (security always on), and a test checks that they match.
+- `stats --session ID` looked only in the current project of one config dir.
+  It now finds the session in every project under `$CLAUDE_CONFIG_DIR` and
+  `~/.claude`, accepts a unique id prefix (an ambiguous one is a usage error),
+  and says "No session matching ID found" instead of "No Claude Code session
+  logs found for this project".
+- `statusline` waited forever on a stdin that never closed. It now stops after
+  2 seconds, printing nothing and exiting 0 (stdlib only; about 2 ms more to
+  start).
+- `history prune --older-than 0d` deleted every session. It is now a usage
+  error (exit 2): the minimum is `1d`.
+- `report` with no sessions suggested `--include-active`, which is a flag of
+  `history sync`, not `report`. The hint now names
+  `agentwatch history sync --include-active`.
+- The history database (`history.db`) was created with the default umask
+  (usually 0644). On macOS and Linux it is now created 0600, and an existing
+  one you own is tightened to 0600 when opened.
+- `check --security` headlined the health status ("Overall: PRODUCTIVE (82%)")
+  while exiting 2 for a compromised session. Its report now opens with the
+  security verdict (`Security: COMPROMISED (0%)`) and shows the health status
+  below it (`Health:`). Exit codes are unchanged.
+- `agentwatch hook --help` printed nothing (it waited for a hook payload). It
+  now prints what the hook is for and exits 0, still without loading the full
+  CLI. Real hook payloads are handled as before.
+- `scrub` silently replaced an existing `.scrubbed` copy. It now stops with
+  exit 2 and says to use `--force`.
+- The Aider `--analytics-log` turn/event mismatch warning was one 200-character
+  line; it is now wrapped.
 - Command guard (#228): a shell fed from a group, subshell or `exec`
   (`{ bash; } < <(echo ...)`, `( sh ) <<< ...`, `exec 0<<<'...'; bash`), a decoder
   or download piped into a shell with options or names the guard did not know
