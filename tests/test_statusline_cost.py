@@ -218,7 +218,9 @@ def test_cache_written_private_and_replaced(home):
     cache = directory / statusline.BLOCK_CACHE
     end = datetime(2026, 10, 30, 15, 0, tzinfo=UTC).timestamp()
     assert json.loads(cache.read_text()) == {
-        "block": {"end": end, "cost_usd": 21.0, "projected_cost_usd": 52.5}}
+        "block": {"end": end, "cost_usd": 21.0, "projected_cost_usd": 52.5},
+        "day": {"start": statusline.day_start(NOW),  # local midnight: TZ-dependent
+                "cost_usd": 21.0 if statusline.day_start(NOW) <= NOW - 5400 else 0.0}}
     if os.name == "posix":
         assert directory.stat().st_mode & 0o777 == 0o700
     _log(home, _line("m1", "2026-10-30T10:30:00Z"), _line("m2", "2026-10-30T11:00:00Z"))
@@ -226,3 +228,14 @@ def test_cache_written_private_and_replaced(home):
     statusline.render(STDIN, cost=True)
     assert json.loads(cache.read_text())["block"]["cost_usd"] == 42.0
     assert [p.name for p in directory.iterdir()] == [statusline.BLOCK_CACHE]  # no *.tmp
+
+
+def test_day_total_cuts_at_local_midnight(home, monkeypatch):
+    start = statusline.day_start(NOW)
+    assert start <= NOW < start + 25 * 3600
+
+    def at(t):
+        return datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _log(home, _line("m1", at(start - 60)), _line("m2", at(start + 60)))
+    day = statusline.usage_summary(NOW)["day"]
+    assert day == {"start": start, "cost_usd": 21.0}  # m1 was yesterday

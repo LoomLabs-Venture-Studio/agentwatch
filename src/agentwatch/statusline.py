@@ -12,7 +12,8 @@ Prints the most severe current HIGH/CRITICAL coached warning as `⚠ loop
 state older than STALE_S, or any error: nothing, exit 0.
 
 `--cost` adds the current 5-hour usage block (`stats --blocks`) as `5h $4.12
-→ ~$9.80 · resets 2h13m`: spend so far, projected spend at reset, time left.
+→ ~$9.80 · resets 2h13m`: spend so far, projected spend at reset, time left
+(plus `cap $20.00` with `agentwatch budget set --block 20`).
 Computing it reads transcripts, so the summary is cached in the per-user
 state dir for BLOCK_TTL_S and cc_stats is imported only on a miss.
 """
@@ -107,15 +108,25 @@ def _cost(value: object) -> str:
     return "" if text is None else f" {text}" if text.startswith("<") else f" ~{text}"
 
 
-def _active_block(now: float) -> dict | None:
-    """The active block's summary {end, cost_usd, projected_cost_usd}, or None.
-    Cached in the per-user state dir; recomputed when older than BLOCK_TTL_S."""
+def day_start(now: float) -> int:
+    """Epoch seconds of the local midnight that starts *now*'s day."""
+    from datetime import datetime
+
+    midnight = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(midnight.timestamp())
+
+
+def usage_summary(now: float) -> dict:
+    """{"block": the active block's {end, cost_usd, projected_cost_usd} or None,
+    "day": {start, cost_usd} for today (local time)}. Cached in the per-user
+    state dir; recomputed when older than BLOCK_TTL_S. `agentwatch hook` reads
+    the same cache for budget caps (budget.py) and never recomputes it."""
     path = user_state_dir() / BLOCK_CACHE
     try:
         if 0 <= now - path.stat().st_mtime < BLOCK_TTL_S:
             cached = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(cached, dict) and "block" in cached:
-                return cached["block"]
+                return cached
     except (OSError, ValueError):
         pass  # missing or corrupt: recompute
     from datetime import UTC, datetime
@@ -130,12 +141,22 @@ def _active_block(now: float) -> dict | None:
         "cost_usd": blocks[-1].usage.cost_usd,
         "projected_cost_usd": burn["projected_cost_usd"],
     }
+    # Every transcript with a message today was written today, so the
+    # LOOKBACK_S scan holds all of today's messages.
+    start = day_start(now)
+    summary = {"block": block,
+               "day": {"start": start, "cost_usd": cc_stats.day_cost(blocks, start)}}
     try:
         if _private_dir(path.parent):
-            _atomic_write(path, json.dumps({"block": block}))
+            _atomic_write(path, json.dumps(summary))
     except OSError:
         pass  # uncached: the next refresh scans again
-    return block
+    return summary
+
+
+def _active_block(now: float) -> dict | None:
+    """The active block's summary {end, cost_usd, projected_cost_usd}, or None."""
+    return usage_summary(now)["block"]
 
 
 def _block_text() -> str:
@@ -159,6 +180,11 @@ def _block_text() -> str:
                     or block["projected_cost_usd"] < block["cost_usd"]):
                 projected = None
             text = f"{spent}{f' → ~{projected}' if projected else ''} · {text}"
+        from agentwatch.budget import load_budget
+
+        cap = (load_budget() or {}).get("block")  # `agentwatch budget set --block`
+        if cap is not None:
+            text = text.replace("resets", f"cap ${cap:,.2f} · resets", 1)
         text = f"5h {text}"
         return f"{_DIM}{text}{_RESET}" if not os.environ.get("NO_COLOR") else text
     except Exception:

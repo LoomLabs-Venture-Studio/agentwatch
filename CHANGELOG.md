@@ -6,6 +6,22 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Added
+
+- `agentwatch budget set [--session USD] [--block USD] [--day USD] [--action ask|deny]`,
+  `budget off` and `budget status`: spend caps for interactive Claude Code sessions,
+  enforced by the plugin's PreToolUse hook after the command guard and the loop breaker
+  (Claude Code's `--max-budget-usd` works only with `-p`). Over a cap the hook asks (or,
+  with `--action deny`, blocks the call) with a fixed reason; after an approved ask it
+  asks again only at each further 25% over the cap; at 80% the agent is told once. Session
+  spend is a running total the PostToolUse pass keeps in the coach state while a budget is
+  set; block and day spend come from the `statusline --cost` cache and are skipped when it
+  is missing or older than 2 minutes. Estimates at list price. Settings in the per-user
+  state dir (0600). No caps by default: without the settings file PreToolUse does one
+  failed open more.
+- `statusline --cost` shows `cap $Y` with a block cap set; its cache (block.json) now also
+  holds today's spend.
+
 ### Changed
 
 - `visual`: redesigned as a dark-first ops dashboard (design system from ui-ux-pro-max:

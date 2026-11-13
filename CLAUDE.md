@@ -70,7 +70,9 @@ src/agentwatch/
                        audit, scrub, report, tools, subagents, history sync|prune|path, notify on|off|status
                        [--webhook URL] [--events needs-input,done] (the
                        Claude Code hook's attention-alert settings; webhook
-                       masked).
+                       masked). `budget set [--session|--block|--day USD]
+                       [--action ask|deny]` (merges; 0 removes a cap),
+                       `budget off`, `budget status` (budget.py).
                        `report`/`stats`/`tools` take --format text|json|csv.
                        `scrub PATH` redacts secrets + PII in one
                        file (copy by default, `--in-place`/`--dry-run`/
@@ -250,6 +252,25 @@ src/agentwatch/
                        `agentwatch guard off` writes {"on": false} to
                        user_state_dir()/guard (coach.GUARD); only that
                        exact value turns it off (`on` deletes the file)
+                       Spend caps (Sprint 48, budget.py): PreToolUse after
+                       guard + breaker; coach._budget reads user_state_dir()/
+                       budget (no file = one failed open, budget.py never
+                       imported). PostToolUse, only while that file exists,
+                       adds new transcript bytes (16 MB per call, by offset,
+                       message id growth only) to state cost_usd/cost_scan
+  budget.py            `agentwatch budget set|off|status`: settings JSON
+                       {session|block|day: USD, action: ask|deny} (0600,
+                       mkstemp). Session spend = coach state cost_usd of the
+                       session + its <sid>.<agent> files; block/day from
+                       statusline's block.json only when < 120 s old (never
+                       computed in the hook; skipped otherwise). Over a cap:
+                       ask (fixed "about $X (cap $Y). Continue?") or deny;
+                       an ask is approved when that tool_use_id's PostToolUse
+                       arrives, then re-asked at each +25% step (per cap
+                       scope: value, block end, day start). 80%: one
+                       additionalContext per scope. State in
+                       <sid>..budget.json (never a coach state name). List
+                       price estimates; unpriced models add nothing
   statusline.py        `agentwatch statusline [--ok] [--cost]`: Claude Code statusLine
                        command. Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
@@ -267,7 +288,10 @@ src/agentwatch/
                        active 5-hour block (spend -> projection · resets)
                        from a 60 s cache (user_state_dir()/block.json); a
                        miss imports cc_stats and scans transcripts modified
-                       in the last 24 h
+                       in the last 24 h; the cache also holds today's spend
+                       ({"day": {start: local midnight, cost_usd}}, via
+                       UsageBlock.cost_by_slot / cc_stats.day_cost) for
+                       budget caps; `cap $Y` shown with a block cap
   alerts.py            Alerter for `watch`/`watch-all` `--notify`,
                        `--webhook URL` (env AGENTWATCH_WEBHOOK) and
                        `watch-all --headless`. observe(session, agent,
