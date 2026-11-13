@@ -27,12 +27,16 @@ numbers refer to the GitHub repository.
   `.codex/config.toml` layers (repo root down to the agent's cwd, closest wins; low
   confidence, since project trust is not read), `codex exec` (no approvals unless
   auto-review), permission profiles (`default_permissions`, `[permissions]`: sandbox
-  `unknown`, `:danger-full-access` = none) and the process's own `CODEX_HOME`, and Claude
-  Code `--settings`, managed settings, project settings and its built-in auto default.
+  `unknown`, `:danger-full-access` = none), `approvals_reviewer` (`guardian_subagent` is
+  auto-review; an unknown value is `unknown`), `-c profiles.NAME.KEY` and the process's own
+  `CODEX_HOME`, and Claude Code `--settings`, `--permission-prompt-tool` (auto-review, low),
+  managed settings, project settings and its built-in auto default.
   Gemini argv follows yargs-parser (a dash word is never an option's value). Anything not
-  certain is `unknown` or low confidence: a bwrap, firejail, nsjail or sandbox-exec parent (its
-  options are not read) and a Claude Code allow rule that pre-approves every command (`Bash`, `Bash(*)`,
-  `*`) are low confidence. Green needs a human approving inside a real sandbox.
+  certain is `unknown` or low confidence: a bwrap, firejail, nsjail or sandbox-exec parent
+  (its options are not read), a Claude Code allow rule that pre-approves every command
+  (`Bash`, `Bash(*)`, `*`), Gemini `run_shell_command` in `--allowed-tools` or
+  `tools.allowed`, and an unreadable Gemini settings file are low confidence. Green needs a
+  human approving inside a real sandbox.
 - `agentwatch budget set [--session USD] [--block USD] [--day USD] [--action ask|deny]`,
   `budget off` and `budget status`: spend caps for interactive Claude Code sessions,
   enforced by the plugin's PreToolUse hook after the command guard and the loop breaker

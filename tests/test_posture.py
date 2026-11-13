@@ -1183,3 +1183,114 @@ def test_claude_narrow_allow_rules_stay_green(procs, tmp_path):  # finding 6: na
     p = _srt(procs, ["claude", "--permission-mode", "plan", "--allowedTools", "Read", "--",
                      "Bash"], "claude-code")
     assert posture.tone(p) == "good"
+
+
+# -- QA round 3 (PR #241) ---------------------------------------------------
+
+
+@linux_only
+@pytest.mark.parametrize("where", ["flag", "user", "profile", "project"])  # finding 1
+def test_codex_guardian_subagent_is_auto_review(procs, tmp_path, where):
+    argv = list(GOOD_CODEX)
+    line = 'approvals_reviewer = "guardian_subagent"\n'
+    if where == "flag":
+        argv += ["-c", "approvals_reviewer=guardian_subagent"]
+    elif where == "user":
+        (tmp_path / "codex" / "config.toml").write_text(line)
+    elif where == "profile":
+        (tmp_path / "codex" / "g.config.toml").write_text(line)
+        argv += ["-p", "g"]
+    else:
+        _codex_project(CWD[0], line)
+    p = _srt(procs, argv)
+    assert p.approvals == "auto" and posture.tone(p) != "good"
+
+
+@linux_only
+def test_codex_unrecognised_reviewer_is_unknown(procs, tmp_path):  # finding 1
+    p = _srt(procs, [*GOOD_CODEX, "-c", "approvals_reviewer=robot"])
+    assert p.approvals == "unknown" and "approvals_reviewer unknown" in p.reasons
+    assert all("robot" not in r for r in p.reasons)
+    assert _one(procs, ["codex", "exec", "-c", "approvals_reviewer=robot", "x"],
+                "codex").approvals == "unknown"
+    assert _srt(procs, [*GOOD_CODEX, "-c", "approvals_reviewer=user"]).approvals == "on"
+
+
+@linux_only
+@pytest.mark.parametrize("argv", [  # finding 2
+    ["--allowed-tools", "run_shell_command"],
+    ["--allowed-tools", "read_file", "run_shell_command(git status)"],
+    ["--allowedTools=read_file,run_shell_command"],
+])
+def test_gemini_allowed_shell_flag(procs, argv):
+    p = _srt(procs, ["gemini", "--approval-mode", "default", *argv], "gemini")
+    assert p.confidence == "low" and "all commands pre-approved" in p.reasons
+    assert posture.tone(p) != "good"
+
+
+@linux_only
+@pytest.mark.parametrize("workspace", [False, True])  # finding 2
+def test_gemini_allowed_shell_settings(procs, tmp_path, workspace):
+    d = (CWD[0] / ".gemini") if workspace else (tmp_path / "gemini")
+    d.mkdir(exist_ok=True)
+    (d / "settings.json").write_text(json.dumps({"tools": {"allowed": ["run_shell_command"]}}))
+    p = _srt(procs, ["gemini", "--approval-mode", "default"], "gemini")
+    assert "all commands pre-approved" in p.reasons and posture.tone(p) != "good"
+
+
+@linux_only
+def test_gemini_settings_unreadable_is_not_green(procs, tmp_path):  # finding 2
+    assert posture.tone(_srt(procs, ["gemini", "--approval-mode", "default"], "gemini")) \
+        == "good"  # the baseline
+    (CWD[0] / ".gemini").mkdir()
+    (CWD[0] / ".gemini" / "settings.json").write_text("{not json")
+    p = _srt(procs, ["gemini", "--approval-mode", "default"], "gemini")
+    assert "settings unreadable" in p.reasons and posture.tone(p) != "good"
+    (CWD[0] / ".gemini" / "settings.json").unlink()
+    (tmp_path / "gemini" / "settings.json").write_text("[1, 2")
+    assert posture.tone(_srt(procs, ["gemini", "--approval-mode", "default"], "gemini")) \
+        != "good"
+    # a narrow allow-list stays green
+    (tmp_path / "gemini" / "settings.json").write_text(
+        json.dumps({"tools": {"allowed": ["read_file"]}}))
+    assert posture.tone(_srt(procs, ["gemini", "--approval-mode", "default"], "gemini")) \
+        == "good"
+
+
+@linux_only
+def test_claude_permission_prompt_tool(procs):  # finding 3
+    p = _srt(procs, ["claude", "-p", "--permission-prompt-tool", "mcp__x__ok",
+                     "--permission-mode", "default"], "claude-code")
+    assert (p.approvals, p.confidence) == ("auto", "low")
+    assert "prompts answered by a tool" in p.reasons and posture.tone(p) != "good"
+    assert all("mcp__" not in r for r in p.reasons)
+    p = _one(procs, ["claude", "--permission-prompt-tool=x", "--dangerously-skip-permissions"])
+    assert p.approvals == "skipped"
+
+
+@linux_only
+def test_codex_dotted_profile_override(procs, tmp_path):  # finding 4
+    (tmp_path / "codex" / "config.toml").write_text(
+        'profile = "x"\n[profiles.x]\nmodel = "m"\n')
+    p = _srt(procs, [*GOOD_CODEX, "-c", "profiles.x.approvals_reviewer=auto_review"])
+    assert p.approvals == "auto" and posture.tone(p) != "good"
+    p = _one(procs, ["codex", "-c", "profiles.x.approval_policy=never"], "codex")
+    assert p.approvals == "skipped"
+    p = _one(procs, ["codex", "-p", "x", "-c", 'profiles.x.sandbox_mode="danger-full-access"'],
+             "codex")
+    assert p.sandbox == "none"
+    # any -c profiles.* key, even for another profile: never high confidence
+    p = _srt(procs, [*GOOD_CODEX, "-c", "profiles.other.model=m"])
+    assert p.confidence == "low" and "-c profiles" in p.reasons
+
+
+@linux_only
+def test_codex_cwd_fallback_is_realpath(procs, tmp_path):  # finding 5
+    repo = _repo(tmp_path / "repo")
+    _codex_project(repo, 'approvals_reviewer = "auto_review"\n')
+    (repo / "sub").mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(repo / "sub")
+    CWD[0] = link  # FakeProc has no cwd(): the discovered directory is used
+    p = _srt(procs, GOOD_CODEX)
+    assert p.approvals == "auto" and posture.tone(p) != "good"

@@ -36,7 +36,8 @@ Sources (checked 2026-11-13):
 * Claude Code 2.1.323: ``--dangerously-skip-permissions``,
   ``--permission-mode <mode>`` (default/manual, acceptEdits, plan, auto,
   dontAsk, bypassPermissions), ``--allow-dangerously-skip-permissions``,
-  ``--settings <file-or-json>``, ``--restricted`` (ignores user/project/local
+  ``--settings <file-or-json>``, ``--permission-prompt-tool`` (a tool
+  answers prompts: "on" becomes auto, low), ``--restricted`` (ignores user/project/local
   settings, refuses bypassPermissions), ``--allowedTools``: ``claude --help``
   and code.claude.com/docs/en/cli-reference. Starting mode: flag, then
   ``permissions.defaultMode`` (bypassPermissions/auto from project or local
@@ -66,7 +67,10 @@ Sources (checked 2026-11-13):
   overrides (``-c``, then ``-s``/``-a``): config/src/loader/mod.rs L124-136,
   project denylist L90-103, discover_project_root L1709, discover_project_layers
   L1857; a legacy ``profile = "x"`` selector or ``[profiles.x]`` table:
-  L293-321; ``approvals_reviewer``: config/src/lib.rs (``auto_review``).
+  L293-321; ``-c profiles.NAME.KEY`` edits that table (always low
+  confidence); ``approvals_reviewer``: config/src/lib.rs (``auto_review``,
+  serde alias ``guardian_subagent``: protocol/src/config_types.rs L187; any
+  other value is unknown).
   ``codex exec``/``e``/``review`` force approval_policy Never unless the
   reviewer resolves to auto_review (exec/src/lib.rs L629-633, L844-875).
   Permission profiles ``default_permissions`` / ``[permissions]``
@@ -79,7 +83,10 @@ Sources (checked 2026-11-13):
 * Gemini CLI (google-gemini/gemini-cli b977656, 0.62.0): ``-y/--yolo``,
   ``--approval-mode default|auto_edit|yolo|plan``, ``-s/--sandbox``, short
   value options m p i w e r o, booleans d s y l: packages/cli/src/config/
-  config.ts L298-353; approval mode = flag, else ``--yolo``, else settings
+  config.ts L298-353; ``--allowed-tools`` / settings ``tools.allowed`` (user
+  and the cwd's ``.gemini/settings.json``) holding ``run_shell_command`` is
+  low confidence, as is a settings file that can't be read; approval
+  mode = flag, else ``--yolo``, else settings
   ``general.defaultApprovalMode`` unless "yolo" (L776-813); ``tools.sandbox``
   setting (sandboxConfig.ts).
 * Copilot CLI 1.0.90: ``--allow-all-tools``, ``--allow-all``, ``--yolo``
@@ -471,9 +478,9 @@ def _allows_everything(rules: Any) -> bool:
         isinstance(r, str) and r.strip().lower() in _ALLOW_EVERYTHING for r in rules)
 
 
-def _claude_flag_allows_everything(argv: list[str]) -> bool:
-    """``--allowedTools``/``--allowed-tools`` (variadic: every word up to the
-    next option, each comma or space separated) holding an allow-all rule."""
+def _allowed_tool_words(argv: list[str]) -> list[str]:
+    """Every entry given to ``--allowedTools``/``--allowed-tools`` (variadic:
+    every word up to the next option, each comma or space separated)."""
     names = ("--allowedTools", "--allowed-tools")
     words: list[str] = []
     collecting = False
@@ -490,7 +497,11 @@ def _claude_flag_allows_everything(argv: list[str]) -> bool:
             collecting = False
         elif collecting:
             words.append(arg)
-    return _allows_everything([w for word in words for w in re.split(r"[,\s]+", word) if w])
+    return [w for word in words for w in re.split(r"[,\s]+", word) if w]
+
+
+def _claude_flag_allows_everything(argv: list[str]) -> bool:
+    return _allows_everything(_allowed_tool_words(argv))
 
 
 def _claude_code(argv: list[str], ctx: _Ctx) -> _Verdict:
@@ -615,6 +626,12 @@ def _claude_code(argv: list[str], ctx: _Ctx) -> _Verdict:
     approvals = _CLAUDE_MODES.get(mode or "", "unknown")
     if approvals == "unknown":
         high = False
+    if _last(opts, "permission-prompt-tool") is not None:
+        # A tool (an MCP server), not a human, answers the permission prompts.
+        reasons.append("prompts answered by a tool")
+        if approvals == "on":
+            approvals = "auto"
+        high = False
     if unreadable:
         high = False
         reasons.append("managed settings unreadable")
@@ -672,7 +689,10 @@ def _codex_cwd(proc, ctx: _Ctx, cd: Any) -> Path | None:
     try:
         base: Path | None = Path(proc.cwd())
     except _ERRORS:
-        base = ctx.cwd
+        try:
+            base = Path(os.path.realpath(ctx.cwd)) if ctx.cwd is not None else None
+        except (OSError, ValueError):
+            base = None
     if isinstance(cd, str) and cd:
         path = Path(cd).expanduser()
         if not path.is_absolute():
@@ -742,6 +762,8 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
 
     # Runtime overrides: -c key=value (last wins), then the explicit flags.
     overrides: dict[str, Any] = {}
+    profile_edits: dict[str, dict] = {}
+    profile_edited = False
     for name, value in opts:
         if name == "config" and isinstance(value, str) and "=" in value:
             key, _, raw = value.partition("=")
@@ -753,6 +775,15 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
             elif top in ("permissions", "project_root_markers"):
                 overrides[top] = True  # only whether it is set matters
                 reasons.append(f"-c {top}")
+            elif top == "profiles":
+                # -c profiles.NAME.KEY=V edits a legacy profile table; applied
+                # to the active profile below, and never high confidence.
+                parts = [x.strip().strip('"') for x in key.split(".")]
+                if len(parts) == 3 and parts[2] in (*_CODEX_KEYS, "default_permissions"):
+                    profile_edits.setdefault(parts[1], {})[parts[2]] = _toml_value(raw)
+                profile_edited = True
+                if "-c profiles" not in reasons:
+                    reasons.append("-c profiles")
 
     # Config layers, lowest first: system, user, profile, project (repo root
     # down to the cwd), then the -c overrides.
@@ -768,11 +799,18 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
                 user = data
         elif data is None:
             unknown_config = True  # exists but can't be read or parsed
+
+    def legacy_profile(name: str) -> dict | None:
+        tables = user.get("profiles") if isinstance(user.get("profiles"), dict) else {}
+        table = tables.get(name)
+        if name in profile_edits:
+            return {**(table if isinstance(table, dict) else {}), **profile_edits[name]}
+        return table if isinstance(table, dict) else None
+
     profile = _last(opts, "profile")
     if isinstance(profile, str):
         data = _read_toml(home / f"{profile}.config.toml")
-        legacy = (user.get("profiles") or {}).get(profile) if isinstance(
-            user.get("profiles"), dict) else None
+        legacy = legacy_profile(profile)
         if isinstance(data, dict):
             layers.append(("config", data))
             reasons.append("--profile")
@@ -784,8 +822,7 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
     else:
         selector = overrides.get("profile", user.get("profile"))
         if isinstance(selector, str):
-            legacy = (user.get("profiles") or {}).get(selector) if isinstance(
-                user.get("profiles"), dict) else None
+            legacy = legacy_profile(selector)
             if isinstance(legacy, dict):
                 layers.append(("config", legacy))
                 reasons.append("config: profile")
@@ -857,7 +894,15 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
         approvals = _CODEX_APPROVALS[approval]
     else:
         approvals = "unknown"  # a granular table or a value this version doesn't know
+    # guardian_subagent is a serde alias of auto_review (protocol/src/
+    # config_types.rs L187); any other unknown value: not guessed.
+    if reviewer == "guardian_subagent":
+        reviewer = "auto_review"
     auto_review = reviewer == "auto_review"
+    reviewer_unknown = reviewer is not None and reviewer not in ("user", "auto_review")
+    if reviewer_unknown and approvals in ("on", "auto"):
+        approvals = "unknown"
+        reasons.append("approvals_reviewer unknown")
     if approvals == "on" and auto_review:
         approvals = "auto"
         if rv_src in ("config", "project"):
@@ -877,8 +922,9 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
         # Whether Never beats -c approval_policy is not proven either.
         if isinstance(_last(opts, "ask-for-approval"), str) or "approval_policy" in overrides:
             approvals, approvals_high = "unknown", False
-        elif auto_review:
-            approvals_high = approvals_high and reviewer_sure
+        elif auto_review or reviewer_unknown:
+            approvals = "unknown" if reviewer_unknown else approvals
+            approvals_high = approvals_high and reviewer_sure and not reviewer_unknown
         else:
             approvals = "skipped"
             approvals_high = not (unknown_config or project_unknown or rv_src == "project")
@@ -924,6 +970,8 @@ def _codex(argv: list[str], ctx: _Ctx) -> _Verdict:
             own = "unknown"
         own_high = sb_src == "flag" and own != "unknown" and not (
             project_unknown or selector_seen)
+    if profile_edited:
+        approvals_high = own_high = False
     return approvals, approvals_high, own, own_high, reasons
 
 
@@ -953,7 +1001,20 @@ def _gemini(argv: list[str], ctx: _Ctx) -> _Verdict:
     opts = _parse(argv, _GEMINI, _GEMINI_BOOLS)
     reasons: list[str] = []
     settings = _read_json(_gemini_dir() / "settings.json")
+    unreadable = settings is None
     settings = settings if isinstance(settings, dict) else {}
+    # Workspace settings (<cwd>/.gemini/settings.json): only their
+    # tools.allowed is read; any setting file that can't be read: not green.
+    workspace: Any = _MISSING
+    if ctx.cwd is not None:
+        workspace = _read_json(ctx.cwd / ".gemini" / "settings.json")
+        unreadable = unreadable or workspace is None
+    allowed: list[str] = list(_allowed_tool_words(argv))
+    for layer in (settings, workspace):
+        tools_ = layer.get("tools") if isinstance(layer, dict) else None
+        if isinstance(tools_, dict) and isinstance(tools_.get("allowed"), list):
+            allowed += [t for t in tools_["allowed"] if isinstance(t, str)]
+    shell_allowed = any(re.match(r"\s*run_shell_command\b", t) for t in allowed)
     general = settings.get("general") if isinstance(settings.get("general"), dict) else {}
     tools = settings.get("tools") if isinstance(settings.get("tools"), dict) else {}
 
@@ -980,8 +1041,14 @@ def _gemini(argv: list[str], ctx: _Ctx) -> _Verdict:
             mode = "default"
             reasons.append("default mode")
     approvals = _GEMINI_MODES.get(mode, "unknown")
-    if _last(opts, "allowed-tools") is not None:
+    if shell_allowed:
+        reasons.append("all commands pre-approved")
+        high = False
+    elif _last(opts, "allowed-tools") is not None:
         reasons.append("some tools pre-approved")
+    if unreadable:
+        reasons.append("settings unreadable")
+        high = False
 
     flag = _last(opts, "sandbox")
     own = None

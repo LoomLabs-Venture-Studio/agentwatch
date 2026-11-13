@@ -218,14 +218,18 @@ src/agentwatch/
                        [profiles.NAME]; top-level profile = selector;
                        named but unreadable -> unknown) < project
                        .codex/config.toml per dir from the repo root (first
-                       .git up from the process cwd, then -C; else the cwd
+                       .git up from the process cwd (else the realpath of
+                       the discovered dir), then -C; else the cwd
                        only; <= 64 dirs) down to the cwd, closest wins,
                        profile/profiles ignored; a value from there is low
                        (trust not read); unreadable/cut/custom
                        project_root_markers -> "project config unknown",
                        low) < -c/--config key=value (TOML) < -s/-a flags;
-                       approvals_reviewer auto_review / --approve-for-me ->
-                       auto; an unreadable config -> unknown unless set by
+                       approvals_reviewer auto_review (or its alias
+                       guardian_subagent) / --approve-for-me -> auto, any
+                       other reviewer -> unknown; -c profiles.NAME.KEY
+                       applied to the active profile, any -c profiles.*
+                       -> low; an unreadable config -> unknown unless set by
                        flag. `codex exec|e|review` -> skipped ("codex exec
                        (no approvals)") unless the reviewer is auto_review;
                        with -a or -c approval_policy -> unknown. default_permissions / a
@@ -236,7 +240,12 @@ src/agentwatch/
                        following true/false; `--yolo=1`-style values ->
                        unknown; `-ms` sandbox -> unknown): --approval-mode
                        > --yolo > settings general.defaultApprovalMode (not
-                       yolo); -s/--sandbox or tools.sandbox -> own sandbox.
+                       yolo); -s/--sandbox or tools.sandbox -> own sandbox;
+                       run_shell_command in --allowed-tools or tools.allowed
+                       (user or <cwd>/.gemini settings) -> "all commands
+                       pre-approved", low; unreadable settings -> low.
+                       Claude --permission-prompt-tool -> "prompts answered
+                       by a tool": on -> auto, low.
                        Claude allow rule or --allowedTools entry `Bash`,
                        `Bash(*)` or `*` -> "all commands pre-approved",
                        low. Copilot: allow-all
