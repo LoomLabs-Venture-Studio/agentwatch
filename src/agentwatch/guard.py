@@ -10,15 +10,19 @@ Bash commands are read twice under one clock, and either reading asking asks
 `sh <(X)` / `sh < <(X)` as `X | bash`, and keeps `#` as code mid-word (`a##b`)
 and inside `(( ))` / `$(( ))` whose `))` closes on the same line, an
 `a[...]=` assignment subscript and an extglob group (`@( )`) closed on the same
-line. Since #228 the new reading also reads any `name[...]` at a command's start
-up to its `]` (quotes, `$` and `#` inside: `a[$i #x]=1`), asks when a comment
+line. Since #228 a third reading (the new one, run when the command has a `[`)
+also reads any `name[...]` at a command's start up to its `]` (quotes, `$` and
+`#` inside: `a[$i #x]=1`; without a `]` it is an ordinary word, a second one
+asks). The new readings ask when a comment
 with a quote or substitution sits inside a `((`, `$((` or extglob group still
 open from an earlier line (bash may read that `#` as code), checks a
 here-string, heredoc or `<(...)` on a group or loop end (`{ bash; } <<< X`,
-`( sh ) < <(X)`, `done < <(X)`) or a bare `exec` (`exec < <(X); bash`) as a
-script when the command names a shell anywhere, and both readings decode
+`( sh ) < <(X)`, `(bash)<<<X`, `done < <(X)`, `env -S 'bash -s' < <(X)`) or an
+`exec` with only redirections (also after `VAR=`, `command`, `-a NAME`, `{fd}<<<`:
+`exec < <(X); bash`) as a script when the command names a shell anywhere, and both readings decode
 `echo` escapes (unless the last of -e/-E is -E; zsh and dash decode them by
-default), unwrap `env -S` / `--split-string` (3 levels, deeper asks), take
+default), unwrap `env -S` / `--split-string` (`\c` ends it; 3 levels, deeper
+asks), skip `a[...]=x` prefix assignments like `VAR=x`, take
 `gxargs` as xargs, skip the value of a shell's long option (`bash --rcfile F`)
 and match any shell name (bash5, bash-5.2, ksh93, mksh, yash, ...; fish -C
 runs its script too). Each reading uses bash's quoting rules (_Scan): comments
@@ -117,8 +121,9 @@ _RELEVANT = re.compile(r"rm|git|mkfs|dd|chmod|curl|wget|/dev/|\.env|\.ssh|\.aws|
 _BUDGET_S = 1.0
 _deadline: float | None = None  # set by the outermost check_command
 _legacy = False  # the reading in progress (see check_command)
+_subscripts = False  # the third reading: `name[...]` read up to its `]`
 # What the new reading reads differently: comments, $'...', $"...", <(...).
-_NEW_SYNTAX = re.compile(r"#|\$['\"]|<\(")
+_NEW_SYNTAX = re.compile(r"#|\$['\"]|<\(|[;&|()]<")  # [;&|()]<: a glued `)<<<`
 _HOME_RE = re.compile(r"(?:~|\$HOME|\$\{HOME\})(?=/|$)")
 _DISK = re.compile(r"/dev/(?:sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|disk\d)")
 _HARMLESS_DEV = ("/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/")
@@ -153,6 +158,7 @@ _DECODERS = {"base64", "base32", "basenc", "xxd", "uudecode", "openssl", "gzip",
              "lzcat", "zstd", "unzstd", "zstdcat", "rev", "tr"}
 _STDIN = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
 _SEPARATORS = set(";&|()`\n")
+_OPS = set(";&|()")
 _REDIR = re.compile(r"[<>]{1,3}[&|]?|&>{1,2}")  # shlex tokens of a redirection operator
 _PIPES = ("|", "|&")
 _READERS = {"cat", "less", "more", "head", "tail", "cp", "scp", "bat"}
@@ -170,6 +176,8 @@ _PS_VALUE = ("windowstyle", "version", "workingdirectory", "outputformat", "inpu
              "configurationname", "configurationfile", "psconsolefile", "settingsfile",
              "custompipename")
 _PS_ALIASES = {"wd", "of", "if"}
+_ASSIGN_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
+_SUB_OPEN = re.compile(r"[A-Za-z_]\w*\[")
 _FILE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path",
                "NotebookEdit": "notebook_path"}
 
@@ -272,8 +280,13 @@ def _env_split_at(argv: list[str], j: int) -> list[str] | None:
             j += 2 if a in ("-u", "-C") or (
                 a.startswith("--") and not eq and name in _ENV_LONG_VALUE) else 1
             continue
-        # env's own escapes: \_ \t \n are separators (or spaces); the rest as shlex reads them.
-        val = re.sub(r"\\[_tnvfr]", " ", val)
+        # env's own escapes: \_ \t \n are separators (or spaces), \c ends the
+        # string; the rest as shlex reads them.
+        for esc in re.finditer(r"\\(.)", val, re.DOTALL):
+            if esc.group(1) == "c":
+                val = val[:esc.start()]
+                break
+        val = re.sub(r"\\(?:[_tnvfr]|(\\))", lambda e: e.group(0) if e.group(1) else " ", val)
         try:
             words = shlex.split(val)
         except ValueError:
@@ -344,6 +357,13 @@ def _simple_commands(tokens: list[str]) -> list[tuple[list[str], str]]:
     """(argv, separator before it) per simple command."""
     out, argv, sep = [], [], ""
     for tok in tokens:
+        if not _legacy and (k := tok.find("<")) > 0 and set(tok[:k]) <= _OPS \
+                and set(tok[k:]) <= _OPS | {"<", ">"}:
+            # `( bash )<<<'x'`: shlex glues `)<<<`; the new reading splits it.
+            if argv:
+                out.append((argv, sep))
+            argv, sep = [tok[k:]], tok[:k]
+            continue
         if tok and set(tok) <= _SEPARATORS | {"$"}:
             if argv:
                 out.append((argv, sep))
@@ -353,6 +373,46 @@ def _simple_commands(tokens: list[str]) -> list[tuple[list[str], str]]:
     if argv:
         out.append((argv, sep))
     return out
+
+
+def _assign_end(argv: list[str], i: int) -> int | None:
+    """The index after the assignment that starts at argv[i] (`x=1`, `x+=1`,
+    `a[1]=x`, or `a[$i` `#x]=1`: shlex splits a subscript on blanks), else None."""
+    word = argv[i]
+    if _ASSIGN_WORD.match(word):
+        return i + 1
+    if not _SUB_OPEN.match(word):
+        return None
+    for k in range(i, len(argv)):  # the word holding `]=` ends it; a bare `]`: not one
+        if "]=" in argv[k] or "]+=" in argv[k]:
+            return k + 1
+        if "]" in argv[k]:
+            return None
+    return None
+
+
+def _bare_exec(argv: list[str]) -> bool:
+    """`exec` with only redirections, also after VAR=x, `command`, `builtin` and
+    with -a NAME / -c / -l: it changes the shell's own stdin (`exec <<< X; bash`)."""
+    i, seen, n = 0, False, len(argv)
+    while i < n:
+        word = argv[i]
+        if not seen and (j := _assign_end(argv, i)) is not None:
+            i = j
+        elif not seen and word in ("command", "builtin", "-p"):
+            i += 1
+        elif not seen and word == "exec":
+            seen, i = True, i + 1
+            while i < n and re.fullmatch(r"-[acl]+", argv[i]):
+                i += 2 if "a" in argv[i] else 1
+        elif _REDIR.fullmatch(word):
+            i += 2
+        elif i + 1 < n and _REDIR.fullmatch(argv[i + 1]) and (
+                word.isdigit() or re.fullmatch(r"\{\w+\}", word)):
+            i += 3  # 0<<< X, {fd}<<< X
+        else:
+            return False
+    return seen
 
 
 def _strip_prefixes(argv: list[str]) -> list[str]:
@@ -366,8 +426,8 @@ def _strip_prefixes(argv: list[str]) -> list[str]:
             j = i + (1 if _REDIR.fullmatch(word) else 2)
             redirs += argv[i:j + 1]
             i = j + 1
-        elif re.fullmatch(r"[A-Za-z_]\w*=.*", word, re.DOTALL):
-            i += 1
+        elif (j := _assign_end(argv, i)) is not None:  # VAR=x, a[1]=x, a[$i #x]=x
+            i = j
         elif word in _KEYWORDS:
             i += 1
         elif word in ("function", "coproc"):  # function NAME { ...; }, coproc [NAME] cmd
@@ -685,9 +745,7 @@ _WORD_END = " \t\n;&|()<>"
 # word, so a `#` in it is not a comment. Bounded so a scan stays linear.
 _ASSIGN_SUB = re.compile(r"[A-Za-z_]\w*\[[^]\n;&|()'\"`$\\]{0,500}\]\+?=")
 # Any other `name[` at a command's start (bash reads it the same way): _Scan.subscript.
-_SUB_OPEN = re.compile(r"[A-Za-z_]\w*\[")
 _SUB_RUN = re.compile(r"[^\\'\"`$\[\]\n]+")
-_ASSIGN_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
 # A comment holding one of these could change how bash reads the lines after it.
 _PAIR_CHARS = re.compile(r"[\\'\"`$()]")
 _MAX_NEST = 50
@@ -746,8 +804,10 @@ class _Scan:
     def __init__(self, s: str):
         self.s, self.out, self.n = s, [], 0
         self.new = not _legacy  # False: the #222 reading (see check_command)
+        self.subs = self.new and _subscripts  # read `name[...]` like bash (#228)
         self._pairs: dict[int, int] | None = None
         self._has_shell: bool | None = None
+        self.unclosed = False  # a `name[` without its `]` was seen (try_subscript)
         self.level = 0  # enclosing substitutions
         self.nest = 0
         self.spans: list[tuple[int, int, str]] = []  # skeleton cuts (start, end, filler)
@@ -779,6 +839,23 @@ class _Scan:
         if self._has_shell is None:
             self._has_shell = _mentions_shell(self.s)
         return self._has_shell
+
+    def try_subscript(self, m: re.Match) -> int | None:
+        """subscript() for the `name[` *m* matched; None (output rolled back) when
+        it has no `]`, so the caller reads `name[` as an ordinary word. A second
+        such `name[` asks: scanning each to the end would be quadratic."""
+        if self.unclosed:
+            raise _UnsureError
+        saved = (len(self.out), self.n, len(self.spans), len(self.bodies),
+                 len(self.heredocs), list(self.pending), self.level, self.nest)
+        try:
+            self.emit(m.group())
+            return self.subscript(m.end())
+        except _UnparsedError:
+            out, self.n, spans, bodies, docs, self.pending, self.level, self.nest = saved
+            del self.out[out:], self.spans[spans:], self.bodies[bodies:], self.heredocs[docs:]
+            self.unclosed = True
+            return None
 
     def subscript(self, i: int) -> int:
         """`name[` at a command's start: bash reads the word up to the matching `]`,
@@ -857,12 +934,13 @@ class _Scan:
         where `#` is not a comment."""
         s, end = self.s, len(self.s)
         word_start = cmd_pos = True
-        new = self.new
+        new, subs = self.new, self.subs
         arith = arith and new
         shell = False  # the current command names a shell: `bash < <(...)` feeds it
         # The current command is a group/loop end (`}`, `done`, a subshell's `)`) or
         # `exec`: `{ bash; } < <(...)` and `exec < <(...); bash` feed a shell too.
         group = False
+        pre = False  # after `command` / `builtin` at a command's start: `command exec`
         assign = False  # the current word is an assignment: the next word is a command too
         parens = cases = 0
         quiet: list[int] = []  # paren depths where `((` or an extglob `@(` opened
@@ -873,13 +951,14 @@ class _Scan:
             if new and word_start and cmd_pos:
                 if m := _ASSIGN_SUB.match(s, i):
                     self.emit(m.group())  # a[... # ...]= : one word, `#` is not a comment
-                    i, word_start, assign = m.end(), False, True
+                    i, word_start, assign, cmd_pos = m.end(), False, True, cmd_pos and subs
                     continue
-                if m := _SUB_OPEN.match(s, i):  # a[$i #x]=1: bash reads up to the `]`
-                    self.emit(m.group())
-                    i, word_start = self.subscript(m.end()), False
-                    assign = cmd_pos = s.startswith(("=", "+="), i)
-                    continue
+                if subs and (m := _SUB_OPEN.match(s, i)):  # a[$i #x]=1: bash reads up to the `]`
+                    if (close := self.try_subscript(m)) is not None:
+                        i, word_start = close, False
+                        assign = cmd_pos = s.startswith(("=", "+="), i)
+                        continue
+                    # No `]`: an ordinary word (bash stops at a syntax error there).
                 assign = _ASSIGN_WORD.match(s, i) is not None
             if m := _CODE_RUN.match(s, i):
                 word = m.group()
@@ -889,9 +968,12 @@ class _Scan:
                     cases += 1
                 elif cmd_pos and word == "esac" and cases:
                     cases -= 1
-                if cmd_pos and (word in _CLOSERS or word == "exec"):
+                # `env -S 'bash -s' < <(...)`: env may run a shell named in a quoted word.
+                if (cmd_pos and word in _CLOSERS) or ((cmd_pos or pre) and word == "exec") or (
+                        word_start and _prog(word) == "env"):
                     group = True
-                cmd_pos = cmd_pos and (word in _KEYWORDS or (new and assign))
+                pre = (cmd_pos or pre) and word in ("command", "builtin", "-p")
+                cmd_pos = cmd_pos and (word in _KEYWORDS or (subs and assign))
                 self.emit(word)
                 i, word_start = m.end(), False
                 continue
@@ -916,13 +998,13 @@ class _Scan:
                 continue
             if c == "\n":
                 self.emit(c)
-                i, word_start, cmd_pos, shell, group = i + 1, True, True, False, False
+                i, word_start, cmd_pos, shell, group, pre = i + 1, True, True, False, False, False
                 quiet.clear()
                 if self.pending:
                     i = self.heredoc_bodies(i)
                 continue
-            word_start = False
-            cmd_pos = cmd_pos and new and assign and c in "'\"$`\\"
+            word_start = pre = False
+            cmd_pos = cmd_pos and subs and assign and c in "'\"$`\\"
             if c == "\\":
                 if s.startswith("\n", i + 1):  # line continuation
                     i += 2
@@ -1287,7 +1369,7 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
     for argv, sep in _simple_commands(_tokens(command)):
         _tick()
         mine = [next(docs, "") for tok in argv if tok == "<<"] if heredocs else []
-        raw0 = argv[0] if argv else ""
+        raw0, bare_exec = (argv[0] if argv else ""), _bare_exec(argv)
         alt = _env_split(argv)  # env -S 'cmd args': checked as the command env runs too
         for _ in range(3):  # env -S "env -S '...'": unwrapped up to 3 times, then ask
             if alt is None or (nested := _env_split(alt)) is None:
@@ -1303,14 +1385,15 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
             mine += _stdin_scripts(prog, argv)
         # `{ bash; } <<< X`, `( sh ) <<< X`, `done <<EOF`, `exec <<< X; bash`: the
         # shell inside the group (or run after exec) reads X as its script.
-        if mine and (raw0 in _CLOSERS or sep == ")" or (_prog(raw0) == "exec" and (
-                not argv or argv[0].isdigit() or _REDIR.fullmatch(argv[0])))):
+        if mine and (raw0 in _CLOSERS or sep == ")" or bare_exec):
             if has_shell is None:
                 has_shell = _mentions_shell(command)
             if has_shell:
                 for script in mine:
-                    if reason := _script(script.replace("\0", ""), depth):
-                        return reason
+                    if script not in checked:
+                        checked.add(script)
+                        if reason := _script(script.replace("\0", ""), depth):
+                            return reason
         reason = _check_argv(argv, pipeline, depth, stdin + mine)
         if reason:
             return reason
@@ -1321,8 +1404,13 @@ def _check_tokens(command: str, depth: int, heredocs: list[str] | None = None) -
                 mine += _stdin_scripts(alt_prog, alt)
             if reason := _check_argv(alt, pipeline, depth, stdin + mine):
                 return reason
-            if alt and _runs_stdin(alt_prog, alt[1:]):
-                argv, prog = alt, alt_prog
+            if alt and _runs_stdin(alt_prog, alt[1:]):  # env -S 'sh': checked, flow unchanged
+                for script in stdin + mine:
+                    if script not in checked:
+                        checked.add(script)
+                        if reason := _script(script.replace("\0", ""), depth):
+                            return reason
+            pipeline.add(alt_prog)
         if argv:
             if _runs_stdin(prog, argv[1:]):  # it reads its stdin: what it prints is not a script
                 for script in stdin + mine:
@@ -1350,11 +1438,12 @@ def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | Non
     """The ask reason for a Bash command, or None. *_sub*: a substitution's body.
     Past _BUDGET_S the answer is "too_long" (ask), never None.
 
-    Two readings share the clock: the #222 one (comments as before, `$'...'`
-    and `$"..."` left as they are) and the new one; either asking asks, so the
-    new reading can only add asks. The new one is skipped when the command has
-    nothing it reads differently."""
-    global _deadline, _legacy
+    Up to three readings share the clock: the #222 one (comments as before,
+    `$'...'` and `$"..."` left as they are), the new one, and (when the command
+    has a `[`) the new one reading `name[...]` up to its `]` (#228); any asking
+    asks, so each later reading can only add asks. The new ones are skipped
+    when the command has nothing they read differently."""
+    global _deadline, _legacy, _subscripts
     if _deadline is not None:  # a nested check: the outermost one owns the clock
         return _check_command(command, depth, _sub)
     _deadline = time.monotonic() + _BUDGET_S
@@ -1365,13 +1454,18 @@ def check_command(command: str, depth: int = 0, _sub: bool = False) -> str | Non
         if not _NEW_SYNTAX.search(command):
             return None
         _legacy = False
+        if reason := _check_command(command, depth, _sub):
+            return reason
+        if "[" not in command:
+            return None
+        _subscripts = True  # a third reading, so a subscript read wrong never hides more
         return _check_command(command, depth, _sub)
     except _TimeUpError:
         return REASONS["too_long"]
     except Exception:  # a bug in the guard asks, never allows
         return REASONS["unchecked"]
     finally:
-        _deadline, _legacy = None, False
+        _deadline, _legacy, _subscripts = None, False, False
 
 
 def _check_command(command: str, depth: int, _sub: bool) -> str | None:
