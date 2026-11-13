@@ -17,6 +17,7 @@ from functools import lru_cache
 from itertools import islice
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
+from agentwatch import claude_config
 from agentwatch.path_encoding import encode_path_for_claude
 
 
@@ -544,38 +545,64 @@ def classify_bash_command(cmd: str) -> BashCategory:
 def __getattr__(name: str):
     # CLAUDE_PROJECTS_DIR is lazy: Path.home() raises without a home dir, and
     # that must not break `import agentwatch.cc_stats` (the coach hook needs it).
+    # The primary one: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects.
     if name == "CLAUDE_PROJECTS_DIR":
-        return Path.home() / ".claude" / "projects"
+        return claude_config.default_config_dir() / "projects"
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _projects_dir() -> Path:
-    """CLAUDE_PROJECTS_DIR, honouring a monkeypatched/assigned value."""
-    return globals().get("CLAUDE_PROJECTS_DIR") or __getattr__("CLAUDE_PROJECTS_DIR")
+def projects_dirs() -> list[Path]:
+    """Every Claude Code projects dir: ``projects/`` under $CLAUDE_CONFIG_DIR
+    and ~/.claude (claude_config.config_dirs()). An assigned or monkeypatched
+    CLAUDE_PROJECTS_DIR replaces them all."""
+    assigned = globals().get("CLAUDE_PROJECTS_DIR")
+    if assigned:
+        return [assigned]
+    return [d / "projects" for d in claude_config.config_dirs()]
 
 
 def cwd_to_project_dir(cwd: Path | None = None) -> Path | None:
     """Map a working directory to its Claude Code project directory.
 
-    Claude Code stores projects under ~/.claude/projects/ keyed by the
+    Claude Code stores projects under <config dir>/projects/ keyed by the
     absolute path run through `encode_path_for_claude` (see path_encoding.py).
+    With several config dirs (projects_dirs()), the first that has it; see
+    cwd_to_project_dirs() for all of them.
     """
+    dirs = cwd_to_project_dirs(cwd)
+    return dirs[0] if dirs else None
+
+
+def cwd_to_project_dirs(cwd: Path | None = None) -> list[Path]:
+    """Every config dir's project dir for *cwd* (one per projects_dirs() root
+    that has it): a project used under both $CLAUDE_CONFIG_DIR and ~/.claude
+    has sessions in each."""
     if cwd is None:
         cwd = Path.cwd()
-    cwd = cwd.resolve()
-    dir_name = encode_path_for_claude(cwd)
-    project_dir = _projects_dir() / dir_name
-    if project_dir.is_dir():
-        return project_dir
-    return None
+    dir_name = encode_path_for_claude(cwd.resolve())
+    return [p / dir_name for p in projects_dirs() if (p / dir_name).is_dir()]
 
 
 def find_all_project_dirs() -> list[Path]:
-    """Find all Claude Code project directories."""
-    projects = _projects_dir()
-    if not projects.is_dir():
-        return []
-    return [p for p in projects.iterdir() if p.is_dir()]
+    """Find all Claude Code project directories, in every config dir."""
+    return [
+        p
+        for projects in projects_dirs()
+        if projects.is_dir()
+        for p in projects.iterdir()
+        if p.is_dir()
+    ]
+
+
+def projects_root_of(path: Path) -> Path | None:
+    """The projects dir (of projects_dirs()) that *path* is under, or None."""
+    for projects in projects_dirs():
+        try:
+            path.relative_to(projects)
+        except ValueError:
+            continue
+        return projects
+    return None
 
 
 _WORKTREE = re.compile(r"[\\/]\.claude[\\/]worktrees(?:[\\/]|$)")
@@ -936,8 +963,10 @@ def compute_stats(
     """Compute token usage stats.
 
     Args:
-        project_dir: Specific project directory. If None, uses CWD mapping.
-        all_projects: If True, scan all projects under ~/.claude/projects/.
+        project_dir: Specific project directory. If None, uses CWD mapping
+            (the project's dir in every config dir).
+        all_projects: If True, scan all projects under ~/.claude/projects/
+            (and $CLAUDE_CONFIG_DIR/projects/).
         session_id: If set, parse only this specific session.
 
     Returns:
@@ -948,14 +977,14 @@ def compute_stats(
     if all_projects:
         dirs = find_all_project_dirs()
     else:
-        if project_dir is None:
-            project_dir = cwd_to_project_dir()
-        if project_dir is None:
+        dirs = [project_dir] if project_dir is not None else cwd_to_project_dirs()
+        if not dirs:
             return merged
-        dirs = [project_dir]
 
+    names: set[str] = set()  # a project in two config dirs counts once
     for pdir in dirs:
         proj_name = project_dir_to_name(pdir)
+        names.add(proj_name)
 
         if session_id:
             jsonl = pdir / f"{session_id}.jsonl"
@@ -974,7 +1003,7 @@ def compute_stats(
             merged.project_name = proj_name
 
     if all_projects:
-        merged.project_name = f"all ({len(dirs)} projects)"
+        merged.project_name = f"all ({len(names)} projects)"
 
     return merged
 

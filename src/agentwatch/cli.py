@@ -232,20 +232,25 @@ def _default_log() -> tuple[Path | None, str | None]:
     there is none, falls back to the newest session anywhere and returns a
     note naming that project, so reports can say so.
     """
-    from agentwatch.cc_stats import CLAUDE_PROJECTS_DIR, cwd_to_project_dir
+    from agentwatch.cc_stats import cwd_to_project_dirs, projects_root_of
 
-    project_dir = cwd_to_project_dir()
-    log = find_latest_session(project_dir) if project_dir else None
-    if log is not None:
-        return log, None
+    # The newest across this project's dir in every config dir.
+    logs = [log for d in cwd_to_project_dirs() if (log := find_latest_session(d))]
+    if logs:
+        return max(logs, key=_mtime), None
     log = find_latest_session()
     if log is None:
         return None, None
-    try:
-        project = log.relative_to(CLAUDE_PROJECTS_DIR).parts[0]
-    except ValueError:
-        project = str(log.parent)
+    projects = projects_root_of(log)
+    project = log.relative_to(projects).parts[0] if projects else str(log.parent)
     return log, f"No session for {Path.cwd()}; using newest session from {project}"
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _security_exit_code(security_score: int) -> int:
@@ -1694,8 +1699,8 @@ def stats(
 ):
     """Show Claude Code token usage statistics.
 
-    Parses conversation logs from ~/.claude/projects/ and displays a
-    breakdown of token usage by tool type and bash command category.
+    Parses conversation logs from ~/.claude/projects/ (or $CLAUDE_CONFIG_DIR)
+    and displays a breakdown of token usage by tool type and bash command category.
 
     \b
     Use --burn to see how many tokens went to trivial commands
@@ -2107,7 +2112,8 @@ def _print_trivial_list(report, *, show_prompts: bool = False) -> None:
 @click.option(
     "--all", "all_projects",
     is_flag=True,
-    help="Scan all projects under ~/.claude/projects/ (default: current project only)",
+    help="Scan all projects under ~/.claude/projects/ (or $CLAUDE_CONFIG_DIR) "
+    "(default: current project only)",
 )
 @click.option(
     "--session", "session_id",
@@ -2165,7 +2171,7 @@ def audit(
     2 = at least one critical. Medium, low and --pii findings never fail.
     """
     from agentwatch.cc_stats import (
-        cwd_to_project_dir,
+        cwd_to_project_dirs,
         find_all_project_dirs,
     )
     from agentwatch.detectors.security.pii import _PII_PATTERNS
@@ -2182,15 +2188,14 @@ def audit(
     if all_projects:
         dirs = find_all_project_dirs()
     else:
-        project_dir = cwd_to_project_dir()
-        if project_dir is None:
+        dirs = cwd_to_project_dirs()  # this project in every config dir
+        if not dirs:
             click.echo(
                 "No Claude Code session logs found for this project.\n"
                 "Run from a project directory or use --all for all projects.",
                 err=True,
             )
             sys.exit(1)
-        dirs = [project_dir]
 
     all_findings, sessions_scanned, project_names = _audit_scan(dirs, session_id, pat)
 
@@ -2333,7 +2338,8 @@ def _audit_scan(dirs: list[Path], session_id: str | None, pat: dict) -> tuple[li
 
     for pdir in dirs:
         proj_name = project_dir_to_name(pdir)
-        project_names.append(proj_name)
+        if proj_name not in project_names:  # one project in two config dirs
+            project_names.append(proj_name)
 
         if session_id:
             jsonl = pdir / f"{session_id}.jsonl"
