@@ -454,6 +454,7 @@ text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
 .doing .v .age{font-weight:400;color:var(--mute)}
 .doing .why{font-size:.875rem;color:var(--mute)}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
+.card .who .posture{margin-top:6px}
 .status{display:flex;flex-direction:column;gap:12px}
 .card details{border-top:1px solid var(--line);margin-top:auto}
 .card summary{min-height:44px;font-size:.8125rem}
@@ -1029,6 +1030,22 @@ async function pullAgents() {
 function initials(name) {
   return name.split(" ").map(w => w.charAt(0)).join("").slice(0, 2).toUpperCase();
 }
+// Sandbox/permission posture (agentwatch.posture): one pill, red when
+// approvals are skipped with no sandbox.
+const APPROVALS = {skipped: "Approvals skipped", on: "Approvals on"};
+const SANDBOX = {sandboxed: "sandboxed", container: "in a container", none: "no sandbox"};
+function postureChip(p) {
+  if (!p || typeof p !== "object") return null;
+  const ap = APPROVALS[p.approvals], sb = SANDBOX[p.sandbox];
+  if (!ap && !sb) return null;
+  const tone = p.approvals === "skipped" ? (p.sandbox === "none" ? "bad" : "warn") :
+    p.approvals === "on" && (p.sandbox === "sandboxed" || p.sandbox === "container") ?
+      "good" : "neutral";
+  const c = pill((ap || "Approvals unknown") + " \u00b7 " + (sb || "sandbox unknown"), tone);
+  c.classList.add("posture");
+  c.title = "Sandbox and permission posture" + (p.confidence === "low" ? " (low confidence)" : "");
+  return c;
+}
 function cards(list) {
   const g = el("div", null, "cards");
   for (const a of list) {
@@ -1041,6 +1058,8 @@ function cards(list) {
     av.setAttribute("aria-hidden", "true");
     proj.append(icon("folder"), el("span", folder(a.project, a.working_directory)));
     who.append(el("h3", a.depth > 0 ? `${name} subagent` : name), proj);
+    const pc = postureChip(a.posture);
+    if (pc) who.append(pc);
     const st = el("div", null, "state"), s = ((state.agents || {}).agents || [])
       .find(x => x.pid === a.pid);
     st.append(stateOf(state.agents ? s : null));
@@ -1078,6 +1097,10 @@ function summary() {
   const {ps, check, sec, subs, agents} = state, parts = [];
   if (ps) parts.push(ps.length ? plural(ps.length, "AI agent") + " running on this computer."
     : "No AI agents are running right now.");
+  const open = (ps || []).filter(a => a.depth === 0 && a.posture &&
+    a.posture.approvals === "skipped" && a.posture.sandbox === "none").length;
+  if (open) parts.push(`${plural(open, "agent")} ${open === 1 ? "runs" : "run"} with ` +
+    "approvals skipped and no sandbox.");
   if (check) parts.push(`The newest session is ${label(check.status).toLowerCase()} ` +
     `(health ${num(check.overall_score)}/100)` + (sec ? ` and ` +
     `${label(sec.status).toLowerCase()} (security ${num(sec.security_score)}/100)` : "") + ".");

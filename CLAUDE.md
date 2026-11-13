@@ -64,7 +64,8 @@ want a "fitness tracker + security guard" for those agents.
 ## Architecture
 ```
 src/agentwatch/
-  cli.py              Click command group: check, watch, watch-all, ps,
+  cli.py              Click command group: check, watch, watch-all, ps
+                       (POSTURE column: posture.py),
                        detect, net, list-detectors, security-scan, config-scan, themes, stats,
                        visual,
                        audit, scrub, report, tools, subagents, history sync|prune|path, notify on|off|status
@@ -190,6 +191,33 @@ src/agentwatch/
                        attributable(): process-kind adapters only, minus
                        Codex app-server threads, `kilo serve`/`opencode
                        serve` and Aider (synthetic timestamps)
+  posture.py           Sandbox/permission posture (Sprint 48), stdlib +
+                       psutil: posture(AgentProcess) -> Posture(approvals
+                       skipped|on|unknown, sandbox sandboxed|container|
+                       none|unknown, confidence high|low, reasons = fixed
+                       strings, never argv). Approvals from the process's
+                       own argv (claude-code, codex, gemini, copilot; flag
+                       sources cited in the module docstring) + Claude Code
+                       user settings.json (defaultMode, sandbox.enabled;
+                       project files ignored, as Claude Code 2.1.257+) and
+                       Codex config.toml (sandbox_mode/approval_policy,
+                       --profile). Sandbox: nearest ancestor (<= 16) srt/
+                       bwrap/firejail/nsjail/sandbox-exec/codex-linux-
+                       sandbox -> sandboxed (high); containerd-shim/conmon/
+                       runc/crun/docker-init -> container (low); else
+                       /proc/<pid>/root/.dockerenv|run/.containerenv ->
+                       container; else the agent's own sandbox (Codex
+                       modes, CC sandbox.enabled); else none. Windows:
+                       sandbox unknown unless explicitly off. Editor kinds,
+                       zombies, unreadable or non-matching pids (Codex
+                       app-server threads, reuse) -> UNKNOWN. Cached per
+                       (pid, create_time). Surfaces: ps POSTURE column
+                       (theme color_3/1/0, ascii sep " / "), ps --json and
+                       /api/ps `posture`, visual card chip + summary count,
+                       watch-all `! ` before PROJECT (red risky / yellow
+                       skipped) + label in the Selected title (postures
+                       computed on the discovery thread), check text-mode
+                       advisory when skipped + none (score/exit unchanged)
   coach.py             `agentwatch hook` (hidden): Claude Code PostToolUse/
                        PostToolUseFailure hook. Tail (4 MB) of
                        transcript_path -> parse_claude_code_entry ->

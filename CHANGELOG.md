@@ -6,6 +6,22 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Added
+
+- Sandbox and permission posture for each running agent (`posture.py`): approvals
+  (`skipped` / `on` / `unknown`) from the process's own flags (Claude Code
+  `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`, user settings
+  `permissions.defaultMode`; Codex `--yolo`, `--dangerously-bypass-approvals-and-sandbox`,
+  `-s/--sandbox`, `-a/--ask-for-approval never`, `--full-auto`, config.toml; Gemini CLI
+  `--yolo` and `--approval-mode yolo`; Copilot CLI `--allow-all-tools`, `--allow-all`,
+  `--yolo`), and sandbox (`sandboxed` / `container` / `none` / `unknown`) from parent
+  processes (srt, bwrap, firejail, nsjail, sandbox-exec, codex-linux-sandbox; docker, podman,
+  containerd) and container marker files. Fixed reason strings only, never argv. Shown in
+  `ps` (POSTURE column, red for `yolo · no sandbox`), `ps --json` and `/api/ps` (`posture`
+  object), `visual` (a chip on each agent card, a count in the summary), `watch-all` (a `!`
+  before the project, red or yellow, and the full posture in the Selected strip), and as a
+  one-line advisory in `check` (no score or exit-code change). Windows: sandbox is `unknown`.
+
 ### Changed
 
 - `visual`: redesigned as a dark-first ops dashboard (design system from ui-ux-pro-max:

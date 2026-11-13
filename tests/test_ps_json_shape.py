@@ -17,7 +17,7 @@ from agentwatch.discovery import AgentProcess
 EXPECTED_KEYS = {
     "pid", "parent_pid", "parent_agent_pid", "team_id", "team_name", "depth",
     "agent_type", "project", "working_directory", "log_file", "session_id",
-    "cpu_percent", "memory_mb", "uptime",
+    "cpu_percent", "memory_mb", "uptime", "posture",
 }
 
 
