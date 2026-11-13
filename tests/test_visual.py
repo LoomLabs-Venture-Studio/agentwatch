@@ -229,12 +229,25 @@ def test_ps_json_matches_builder(sandbox):
     assert _cli_json(["ps"]) == _dumps(visual.API["ps"](False))
 
 
+def _page_only(payload):
+    # visual adds one field the command doesn't have: the fallback's project.
+    payload.pop("session_project")
+    return payload
+
+
 def test_check_json_matches_builder(sandbox):
-    assert _cli_json(["check"]) == _dumps(visual.API["check"](False))
+    assert _cli_json(["check"]) == _dumps(_page_only(visual.API["check"](False)))
 
 
 def test_security_json_matches_builder(sandbox):
-    assert _cli_json(["security-scan"]) == _dumps(visual.API["security-scan"](False))
+    assert _cli_json(["security-scan"]) == _dumps(_page_only(visual.API["security-scan"](False)))
+
+
+def test_fallback_project_is_a_folder_name_not_the_encoded_dir(sandbox):
+    for name in ("check", "security-scan"):
+        data = visual.API[name](False)
+        assert data["session_fallback"]  # tmp cwd has no session: fallback used
+        assert data["session_project"] == "demo", data["session_project"]
 
 
 def test_audit_json_matches_builder(sandbox):
@@ -416,3 +429,210 @@ def test_page_has_agent_status_refresh_path():
     assert "agents" in _js_set("LIVE")
     assert "/api/agents?t=" in visual.PAGE and "pullAgents" in visual.PAGE
     assert "dataset.pid" in visual.PAGE
+
+
+# Sprint 47: status tones, human labels, sparklines (ui-ux-pro-max redesign).
+
+def test_status_tones_security_tiers_are_not_health_bands():
+    tones = visual.status_tones()
+    assert tones["security"] == {"secure": "good", "at_risk": "warn", "compromised": "bad"}
+    assert tones["security"]["at_risk"] != "good"  # Sprint 46 showed a green dot
+
+
+def test_status_tones_cover_every_theme_level():
+    from agentwatch.themes import THEMES
+    health = visual.status_tones()["health"]
+    for theme in THEMES.values():
+        assert health[theme.level_0] == "good", theme.name
+        assert health[theme.level_1] != "good", theme.name
+        assert health[theme.level_3] == "bad", theme.name
+    assert health["productive"] == "good" and health["stuck"] == "bad"
+    assert health["warning"] == "bad"  # classic level_2 beats ascii level_1: worse wins
+
+
+def test_page_embeds_names_and_tones_from_the_server_code():
+    from agentwatch.agents import DISPLAY_NAMES
+    m = re.search(r"\nconst DATA = (\{.*\});\n", visual.PAGE)
+    assert m and "__PAGE_DATA__" not in visual.PAGE
+    data = json.loads(m.group(1))
+    assert data == {"names": DISPLAY_NAMES, "tones": visual.status_tones()}
+
+
+def test_security_views_use_security_tone():
+    page = visual.PAGE
+    assert page.count("securityTone(d.security_score, d.status)") == 1
+    assert "securityTone(sec.security_score, sec.status)" in page
+    assert "tone(sec.security_score" not in page and "tone(d.security_score)" not in page
+
+
+def test_pause_stops_timer_reloads_only():
+    assert "if (paused) return;" in _fn("refresh")
+    assert "paused) return;" in _fn("pullAgents")
+    handler = re.search(r"pauseBtn.onclick = \(\) => \{(.*?)\n\};", visual.PAGE, re.S).group(1)
+    assert "load(" not in handler and "run" not in handler.replace("aria", "")
+
+
+def test_cards_show_no_team_or_raw_ids_up_front():
+    cards = _fn("cards")
+    assert "team_name" not in cards  # "claude-code:zaid" stays out of the card
+    assert "agentName(a.agent_type)" in cards and "folder(a.project" in cards
+    assert '"Process details"' in cards  # pid, cpu, memory, path behind a disclosure
+
+
+def _js(name):
+    m = re.search(rf"\n(?:async )?function {name}\(.*?\n\}}\n", visual.PAGE, re.S)
+    if m is None or "\nfunction " in m.group(0)[1:]:
+        m = re.search(rf"\nfunction {name}\([^\n]*\}}\n", visual.PAGE)
+    assert m, name
+    return m.group(0)
+
+
+@pytest.fixture
+def run_js(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    import subprocess
+
+    data = re.search(r"\nconst DATA = .*?;\n", visual.PAGE).group(0)
+    funcs = "".join(_js(n) for n in (
+        "label", "agentName", "folder", "uptime", "healthTone", "securityTone",
+        "severityTone", "sparkGeom"))
+    prelude = data + "const NAMES = DATA.names, TONES = DATA.tones;\n" + funcs
+
+    def run(expr):
+        script = tmp_path / "t.js"
+        script.write_text(prelude + f"\nprocess.stdout.write(JSON.stringify({expr}));\n",
+                          encoding="utf-8")
+        out = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+    return run
+
+
+def test_js_tone_mapping(run_js):
+    assert run_js('securityTone(85, "at_risk")') == "warn"
+    assert run_js('securityTone(100, "secure")') == "good"
+    assert run_js('securityTone(10, "compromised")') == "bad"
+    assert run_js("securityTone(85, null)") == "warn"  # by tier threshold, not health bands
+    assert run_js('healthTone(100, "productive")') == "good"
+    assert run_js('healthTone(70, "productive")') == "warn"  # the score wins
+    assert run_js('healthTone(null, "stuck")') == "bad"
+    assert run_js('healthTone(null, "???")') == "neutral"
+    assert run_js('[severityTone("critical"), severityTone("medium"), severityTone("low")]') == [
+        "bad", "warn", "neutral"]
+
+
+def test_js_human_labels(run_js):
+    assert run_js('[label("at_risk"), label("productive"), label("smooth_sailing"), label(null)]'
+                  ) == ["At risk", "Productive", "Smooth sailing", "Unknown"]
+    assert run_js('[agentName("claude-code"), agentName("copilot-vscode"), agentName("new-bot")]'
+                  ) == ["Claude Code", "Copilot VS Code", "New Bot"]
+    assert run_js('[folder("zaid", "/home/zaid"), folder("app", "/home/zaid/app"), '
+                  'folder("x", "C:\\\\Users\\\\x"), folder("", null)]'
+                  ) == ["~", "app", "~", "No project"]
+    assert run_js('[uptime("01:53:59"), uptime("2-03:04:05"), uptime("04:10"), uptime("00:09")]'
+                  ) == ["1 h 53 min", "2 d 3 h", "4 min", "under a minute"]
+
+
+def test_js_sparkline_needs_two_distinct_points(run_js):
+    assert run_js("[sparkGeom([], 120, 32), sparkGeom([5], 120, 32), "
+                  "sparkGeom([7, 7, 7, 7], 120, 32)]") == [None, None, None]
+    g = run_js("sparkGeom([10, 20, 15], 120, 32)")
+    assert g["lo"] == 10 and g["hi"] == 20 and len(g["pts"]) == 3
+    ys = [y for _, y in g["pts"]]
+    assert all(0 < y < 32 for y in ys)  # padded range: no point on the edge
+    assert ys[1] < ys[2] < ys[0]  # higher value draws higher
+
+
+def test_spark_draws_nothing_without_geometry():
+    body = _fn("spark")
+    assert "if (!g) return null;" in body and "sparkGeom(a, w, h)" in body
+    assert 'class: "area"' in body and '"range"' in body  # area fill + low-high label
+
+
+# Every view, fed nulls, NaN and Python "None" strings, prints none of them.
+
+_DOM_SHIM = r"""
+class Node {
+  constructor(tag) { this.tag = tag; this.kids = []; this.attrs = {}; this.dataset = {};
+    this.className = ""; this._text = null; this.style = {};
+    this.classList = {add: c => { this.className += " " + c; }, toggle: () => true}; }
+  set textContent(t) { this._text = String(t); this.kids = []; }
+  get textContent() {
+    return this._text !== null ? this._text :
+      this.kids.map(k => typeof k === "string" ? k : k.textContent).join(" ");
+  }
+  append(...xs) { this.kids.push(...xs.filter(x => x !== null && x !== undefined)); }
+  prepend(...xs) { this.kids.unshift(...xs); }
+  replaceChildren(...xs) { this.kids = []; this._text = null; this.append(...xs); }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  querySelector() { return new Node("x"); }
+  get childElementCount() { return this.kids.length; }
+}
+globalThis.Node = Node;
+globalThis.document = {createElement: t => new Node(t), createElementNS: (n, t) => new Node(t),
+  getElementById: () => null, querySelectorAll: () => []};
+"""
+
+_NULLS = {
+    "ps": [{"pid": 1, "agent_type": None, "project": None, "working_directory": None,
+            "cpu_percent": None, "memory_mb": None, "uptime": None, "depth": 0}],
+    "check": {"overall_score": None, "status": None, "warnings": [],
+              "categories": {"context": {"score": None, "status": None, "warning_count": 1}},
+              "efficiency": {"score": None, "cost_total": None, "recommendation": None},
+              "session_fallback": None},
+    "security-scan": {"security_score": float("nan"), "status": "None", "action_count": None,
+                      "warnings": [{"severity": None, "signal": None, "message": None,
+                                    "details": None, "suggestion": None}],
+                      "session_fallback": "x", "session_project": None},
+    "audit": {"total_findings": 0, "sessions_scanned": None, "findings": []},
+    "stats": {"sessions": None, "messages": None, "tool_calls": None,
+              "totals": {"total_tokens": None, "estimated_cost_usd": None,
+                         "cache_hit_ratio": None},
+              "by_tool": {"Bash": {"call_count": None, "total_tokens": 5,
+                                   "estimated_cost_usd": None}}},
+    "report": {"period": {"start": None, "end": None},
+               "totals": {"sessions": 0, "cost_usd": None, "tokens": 0, "waste_usd": None,
+                          "waste_pct": None},
+               "security": {"total": 0}, "previous": {"sessions": 2, "cost_usd": None}},
+    "subagents": {"total": 1, "active": None, "subagents": [
+        {"type": "qa", "description": None, "health_score": None, "status": None,
+         "cost_usd": None, "actions": None, "last_activity": None, "active": False,
+         "warnings": None, "depth": 1}]},
+    "history": {"synced": {"new": None, "updated": 1, "unchanged": None, "active": None},
+                "sessions": [{"agent": "claude-code", "project": None, "ended": None,
+                              "actions": None, "tokens": None, "cost_usd": None,
+                              "health_score": None, "status": None}]},
+}
+
+
+def test_no_view_prints_none_null_undefined_or_nan(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    import subprocess
+
+    m = re.search(r"\nconst DATA = .*?\n(?=// Every view reloads)", visual.PAGE, re.S)
+    assert m
+    payloads = json.dumps(_NULLS)  # NaN is written as a JS NaN literal
+    script = tmp_path / "views.js"
+    script.write_text(_DOM_SHIM + m.group(0) + f"""
+const P = {payloads}, out = {{}};
+for (const [name, d] of Object.entries(P)) {{
+  const box = new Node("div");
+  box.append(...VIEWS[name](d).filter(Boolean));
+  out[name] = box.textContent;
+}}
+process.stdout.write(JSON.stringify(out));
+""", encoding="utf-8")
+    run = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    texts = json.loads(run.stdout)
+    assert set(texts) == set(_NULLS)
+    for name, text in texts.items():
+        bad = re.findall(r"\b(None|null|undefined|NaN|Unpriced)\b", text)
+        assert not bad, (name, bad, text)
+    report = texts["report"]
+    assert "Cost $0.00" in report and "Wasted $0.00" in report  # no sessions: nothing spent
+    assert "—" in texts["stats"] and "—" in texts["history"]

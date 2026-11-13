@@ -6,6 +6,23 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Changed
+
+- `visual`: redesigned as a dark-first ops dashboard (design system from ui-ux-pro-max:
+  data-dense dashboard, "dark tech" palette, system fonts, light theme kept). KPI tiles
+  (agents, health, security, cost) on top, a responsive grid of agent cards, health and
+  security side by side on wide screens, page width up to 1344 px with a 16 px gutter on
+  phones. Status colours are now consistent and never colour alone (icon and word): security
+  "at risk" was shown with a green dot and is now amber. People see "Claude Code", "At risk",
+  "Productive" and a project folder name ("~" for home) instead of raw ids, and the
+  "using newest session" note no longer shows the working directory or the encoded project
+  dir. Sparklines draw only with 2 or more distinct samples, with an area fill and a low-high
+  label. One live indicator with Pause/Resume replaces the per-section Refresh buttons; raw
+  data sits behind one quiet "Raw data" disclosure per section; the command list is a
+  collapsed reference. Long finding evidence wraps whole in a code block (3 lines, "Show
+  all") instead of being cut mid-word. `/api/check` and `/api/security-scan` add
+  `session_project`. Security model, endpoints and polling cadence are unchanged.
+
 ## [0.2.2] - 2026-11-12
 
 ### Added

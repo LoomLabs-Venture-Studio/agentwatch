@@ -223,5 +223,6 @@ def test_log_expected_depends_on_agent_type(agent_type, expected):
 def test_page_words_differ_for_no_log_cases():
     from agentwatch import visual
     assert "log_expected === false" in visual.PAGE
-    assert "Activity not available for this agent type." in visual.PAGE
-    assert "No session log found yet." in visual.PAGE
+    assert "Activity isn't tracked for this agent type" in visual.PAGE
+    assert "Waiting for its session log. It appears after the agent's first message." \
+        in visual.PAGE
