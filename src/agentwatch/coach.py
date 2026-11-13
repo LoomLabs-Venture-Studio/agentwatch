@@ -35,6 +35,12 @@ secrets file (.env, SSH keys, cloud credentials) returns `"permissionDecision":
 user_state_dir() and turns it off (board 2026-11-02: under `claude -p` an
 ask is a deny). Any other content, or no file, leaves it on.
 
+Spend caps (`agentwatch budget set`, budget.py): after the guard and the loop
+breaker, PreToolUse asks (or denies) once the session's, the 5-hour block's or
+today's estimated spend reaches a cap, and tells the agent once at 80%. With
+no settings file BUDGET in user_state_dir() this costs one failed open; with
+one, PostToolUse keeps a running session cost in the state file.
+
 Attention alerts (`agentwatch notify on`): on Notification (permission_prompt,
 idle_prompt, elicitation_*, agent_needs_input) and Stop the hook sends a
 desktop notification and/or webhook post ("waiting for permission",
@@ -70,6 +76,8 @@ STATE_MAX_AGE_S = 7 * 24 * 3600
 # so never pruned).
 POINTER = "state-dir"
 GUARD = "guard"
+# Spend caps (`agentwatch budget`, budget.py) in user_state_dir(); no suffix.
+BUDGET = "budget"
 _MAX_LINE = 200
 # Attention-alert settings in user_state_dir(); no .json suffix, so never pruned.
 NOTIFY = "notify"
@@ -235,7 +243,8 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
-def _save(path: Path, reported: set[str], warnings: list, armed: dict | None = None) -> None:
+def _save(path: Path, reported: set[str], warnings: list, armed: dict | None = None,
+          extra: dict | None = None) -> None:
     from datetime import datetime, timezone
 
     data = {
@@ -246,6 +255,7 @@ def _save(path: Path, reported: set[str], warnings: list, armed: dict | None = N
     }
     if armed:
         data["armed"] = armed  # read by the PreToolUse loop breaker
+    data.update(extra or {})  # cost_usd / cost_scan, with a budget set
     _atomic_write(path, json.dumps(data))
 
 
@@ -463,6 +473,38 @@ def _guard(payload: dict) -> str | None:
     }})
 
 
+def _budget(payload: dict, session_id: str) -> str | None:
+    """PreToolUse: spend caps. No settings file: one failed open, nothing more."""
+    try:
+        text = (user_state_dir() / BUDGET).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        from agentwatch.budget import pre_tool_use
+
+        return pre_tool_use(text, payload, session_id)
+    except Exception:
+        return None
+
+
+def _budget_cost(payload: dict, transcript: Path, path: Path, session_id: str) -> dict | None:
+    """PostToolUse: the session's running cost for the state file, only while a
+    budget file exists (one failed stat otherwise)."""
+    if not (user_state_dir() / BUDGET).exists():
+        return None
+    try:
+        from agentwatch.budget import post_tool_use
+
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            old = {}
+        return post_tool_use(payload, transcript, old if isinstance(old, dict) else {},
+                             session_id, path.parent)
+    except Exception:
+        return None
+
+
 def notify_path() -> Path:
     return user_state_dir() / NOTIFY
 
@@ -637,7 +679,7 @@ def run(stdin_text: str) -> str | None:
         if agent_id is not None and (not isinstance(agent_id, str) or not _ID.fullmatch(agent_id)):
             return None
         if event == "PreToolUse":
-            return _guard(payload) or _breaker(payload, key)
+            return _guard(payload) or _breaker(payload, key) or _budget(payload, session_id)
         if event in ("Notification", "Stop"):
             return _attention(payload, session_id)
         transcript = Path(payload["transcript_path"])
@@ -677,7 +719,8 @@ def run(stdin_text: str) -> str | None:
         new = [k for k in severe if k not in reported]
         if new:
             reported.add(new[0])  # one note per call; the rest come next call
-        _save(state, reported, warnings, _armed(warnings, _load_armed(state)))
+        _save(state, reported, warnings, _armed(warnings, _load_armed(state)),
+              _budget_cost(payload, transcript, state, session_id))
         if directory != user_state_dir():
             _write_pointer(directory)
         if not new:

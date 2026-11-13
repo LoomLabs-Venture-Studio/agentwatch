@@ -1024,6 +1024,7 @@ def compute_stats(
 # block starts at its first message floored to the hour and lasts 5 hours; a
 # message at or after the end starts a new block.
 BLOCK_LENGTH = timedelta(hours=5)
+SLOT_S = 15 * 60  # every UTC offset in use is a multiple of 15 minutes
 
 
 def _utcnow() -> datetime:
@@ -1052,6 +1053,9 @@ class UsageBlock:
     start: datetime
     usage: TokenBucket = field(default_factory=TokenBucket)  # call_count = messages
     models: set[str] = field(default_factory=set)
+    # USD per 15-minute slot (epoch seconds of its start; None: an unpriced
+    # call), so day_cost() can cut at any real time zone's midnight.
+    cost_by_slot: dict[int, float | None] = field(default_factory=dict)
 
     @property
     def end(self) -> datetime:
@@ -1168,11 +1172,26 @@ def compute_blocks(since: float | None = None) -> list[UsageBlock]:
         b.usage.cache_write_tokens += md["cw"]
         b.usage.cache_read_tokens += md["cr"]
         b.usage.call_count += 1
-        b.usage.add_cost(usage_cost_usd(md["model"], md["in"], md["out"],
-                                        md["cw"], md["cr"], md["cw1h"]))
+        cost = usage_cost_usd(md["model"], md["in"], md["out"], md["cw"], md["cr"], md["cw1h"])
+        b.usage.add_cost(cost)
+        slot = int(md["ts"].timestamp()) // SLOT_S * SLOT_S
+        old = b.cost_by_slot.get(slot, 0.0)
+        b.cost_by_slot[slot] = None if old is None or cost is None else old + cost
         if md["model"]:
             b.models.add(md["model"])
     return blocks
+
+
+def day_cost(blocks: list[UsageBlock], start: float) -> float | None:
+    """USD of the blocks' messages at or after *start* (epoch seconds of a
+    local midnight, a multiple of SLOT_S in every real time zone); None if
+    any of them was unpriced."""
+    total: float | None = 0.0
+    for b in blocks:
+        for slot, cost in b.cost_by_slot.items():
+            if slot >= start:
+                total = None if total is None or cost is None else total + cost
+    return total
 
 
 def blocks_to_dict(blocks: list[UsageBlock], now: datetime) -> dict:

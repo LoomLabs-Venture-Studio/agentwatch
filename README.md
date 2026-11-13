@@ -64,6 +64,36 @@ before a catastrophic command or a read of your secrets files
 /plugin install agentwatch@agentwatch
 ```
 
+### Spend caps
+
+Claude Code's `--max-budget-usd` works only with `claude -p`. With the
+plugin installed, `agentwatch budget` caps interactive sessions too:
+
+```text
+agentwatch budget set --session 5 --block 20 --day 50   # USD; 0 removes one
+agentwatch budget set --action deny                     # block instead of asking
+agentwatch budget status
+agentwatch budget off
+```
+
+Before each tool call the hook checks the caps. Over one, Claude Code asks
+you ("this session has spent about $5.10 (cap $5.00). Continue?"); after you
+approve, it asks again only at each further 25% over the cap. At 80% the
+agent is told once. With `--action deny` every call over a cap is blocked
+until you raise or remove it. Under `claude -p` an ask is a deny.
+
+- `--session`: this session and its subagents.
+- `--block`: the current 5-hour usage block, all sessions.
+- `--day`: today (local time), all sessions.
+
+Costs are estimates at API list price. On a Pro or Max subscription you
+pay no list price, so `--block` (which tracks your 5-hour usage window) is
+the most useful. `--block` and `--day` use the numbers that `agentwatch
+statusline --cost` refreshes (at most every 60 s); without that status line
+they are not checked. A cap set partway through a long session catches up
+over a few tool calls: the first scan of its transcript reads 16 MB per
+call. No caps by default.
+
 ## What the scores mean
 
 Every session gets a **health score** from 0 to 100:

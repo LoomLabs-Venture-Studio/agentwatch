@@ -65,7 +65,7 @@ def test_active_block_spend_projection_and_reset(home):
 def test_cache_hit_skips_scan_stale_cache_rescans(home, monkeypatch):
     _log(home, _line("m1", "2026-10-30T10:30:00Z"))
     assert "$21.00" in statusline.render(STDIN, cost=True)
-    cache = coach.user_state_dir() / statusline.BLOCK_CACHE
+    cache = statusline.block_cache_path()
     assert json.loads(cache.read_text())["block"]["cost_usd"] == 21.0
 
     def boom(**_):
@@ -81,7 +81,7 @@ def test_cache_hit_skips_scan_stale_cache_rescans(home, monkeypatch):
 
 def test_corrupt_cache_recomputes_or_shows_nothing(home):
     _log(home, _line("m1", "2026-10-30T10:30:00Z"))
-    cache = coach.user_state_dir() / statusline.BLOCK_CACHE
+    cache = statusline.block_cache_path()
     cache.parent.mkdir(parents=True)
     for junk, expect in (("{not json", "$21.00"), ("[1, 2]", "$21.00"),
                          ('{"block": {"end": "x"}}', ""), ('{"block": 7}', "")):
@@ -132,7 +132,7 @@ def test_cost_off_never_scans(home, monkeypatch):
     _log(home, _line("m1", "2026-10-30T10:30:00Z"))
     assert statusline.render(STDIN) == ""
     assert statusline.render(STDIN, ok=False, cost=False) == statusline._health(STDIN, False)
-    assert not (coach.user_state_dir() / statusline.BLOCK_CACHE).exists()
+    assert not (statusline.block_cache_path()).exists()
 
 
 def test_projection_hidden_early_in_block_or_below_spend(home, monkeypatch):
@@ -140,11 +140,11 @@ def test_projection_hidden_early_in_block_or_below_spend(home, monkeypatch):
     _log(home, _line("m1", "2026-10-30T12:01:00Z"))  # block 12:00-17:00
     monkeypatch.setattr(statusline, "_now", lambda: NOW + 14 * 60)
     assert statusline.render(STDIN, cost=True) == "5h $21.00 · resets 4h46m"
-    (coach.user_state_dir() / statusline.BLOCK_CACHE).unlink()
+    (statusline.block_cache_path()).unlink()
     monkeypatch.setattr(statusline, "_now", lambda: NOW + 15 * 60)
     assert "→ ~$" in statusline.render(STDIN, cost=True)
 
-    cache = coach.user_state_dir() / statusline.BLOCK_CACHE
+    cache = statusline.block_cache_path()
     cache.write_text(json.dumps({"block": {
         "end": NOW + 3 * 3600, "cost_usd": 21.0, "projected_cost_usd": 20.0}}))
     os.utime(cache, (NOW + 15 * 60, NOW + 15 * 60))
@@ -152,7 +152,7 @@ def test_projection_hidden_early_in_block_or_below_spend(home, monkeypatch):
 
 
 def _seed_cache(block):
-    cache = coach.user_state_dir() / statusline.BLOCK_CACHE
+    cache = statusline.block_cache_path()
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps({"block": block}))
     os.utime(cache, (NOW, NOW))
@@ -215,14 +215,64 @@ def test_cache_written_private_and_replaced(home):
     _log(home, _line("m1", "2026-10-30T10:30:00Z"))
     statusline.render(STDIN, cost=True)
     directory = coach.user_state_dir()
-    cache = directory / statusline.BLOCK_CACHE
+    cache = statusline.block_cache_path()
     end = datetime(2026, 10, 30, 15, 0, tzinfo=UTC).timestamp()
     assert json.loads(cache.read_text()) == {
-        "block": {"end": end, "cost_usd": 21.0, "projected_cost_usd": 52.5}}
+        "block": {"end": end, "cost_usd": 21.0, "projected_cost_usd": 52.5},
+        "day": {"start": statusline.day_start(NOW),  # local midnight: TZ-dependent
+                "cost_usd": 21.0 if statusline.day_start(NOW) <= NOW - 5400 else 0.0}}
     if os.name == "posix":
         assert directory.stat().st_mode & 0o777 == 0o700
     _log(home, _line("m1", "2026-10-30T10:30:00Z"), _line("m2", "2026-10-30T11:00:00Z"))
     os.utime(cache, (NOW - 100, NOW - 100))  # stale: the next render rescans
     statusline.render(STDIN, cost=True)
     assert json.loads(cache.read_text())["block"]["cost_usd"] == 42.0
-    assert [p.name for p in directory.iterdir()] == [statusline.BLOCK_CACHE]  # no *.tmp
+    assert [p.name for p in directory.iterdir()] == [cache.name]  # no *.tmp
+
+
+def test_day_total_cuts_at_local_midnight(home, monkeypatch):
+    start = statusline.day_start(NOW)
+    assert start <= NOW < start + 25 * 3600
+
+    def at(t):
+        return datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _log(home, _line("m1", at(start - 60)), _line("m2", at(start + 60)))
+    day = statusline.usage_summary(NOW)["day"]
+    assert day == {"start": start, "cost_usd": 21.0}  # m1 was yesterday
+
+
+def test_cache_per_config_dir_no_cross_talk(home, tmp_path, monkeypatch):
+    """QA #240: ~/.claude-orca and ~/.claude windows must not share block.json."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.delitem(vars(cc_stats), "CLAUDE_PROJECTS_DIR")  # scan the config dirs
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "empty-home"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    orca, plain = tmp_path / "orca", tmp_path / "empty-home" / ".claude"
+    for config, n in ((orca, 1), (plain, 2)):
+        pdir = config / "projects" / "-p"
+        pdir.mkdir(parents=True)
+        _log(pdir, *(_line(f"{config.name}{i}", "2026-10-30T10:30:00Z") for i in range(n)))
+    # orca alone is $21, ~/.claude alone $42
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(orca))
+    orca_cache = statusline.block_cache_path()
+    # A set CLAUDE_CONFIG_DIR scans it and ~/.claude (claude_config.config_dirs).
+    assert _plain(statusline.render(STDIN, cost=True)).startswith("5h $63.00 ")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")  # within the TTL: ~/.claude's own scan
+    assert statusline.block_cache_path() != orca_cache
+    assert _plain(statusline.render(STDIN, cost=True)).startswith("5h $42.00 ")
+
+    def boom(**_):
+        raise AssertionError("rescanned")
+    monkeypatch.setattr(cc_stats, "compute_blocks", boom)  # both caches warm now
+    for cache in statusline.block_cache_path().parent.glob("block-*.json"):
+        os.utime(cache, (NOW, NOW))  # written at the real time, read at NOW
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(orca))
+    assert _plain(statusline.render(STDIN, cost=True)).startswith("5h $63.00 ")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(orca) + "/../orca")  # same dir, resolved
+    assert statusline.block_cache_path() == orca_cache
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    assert _plain(statusline.render(STDIN, cost=True)).startswith("5h $42.00 ")
+    names = sorted(x.name for x in statusline.block_cache_path().parent.glob("block*"))
+    assert len(names) == 2 and all(re.fullmatch(r"block-[0-9a-f]{16}\.json", n) for n in names)
