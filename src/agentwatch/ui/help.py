@@ -39,7 +39,7 @@ Detail view
               flags, and its listeners (EXPOSED: reachable from other
               machines); n/a with --all-logs (no process)
   {a('↑ ↓', '^ v')} PgUp PgDn  scroll
-  Esc, q      back to the table (`watch`: q quits)
+  Esc, q      back to the table (watch: q quits)
 
 Columns
   {a('● ○', '* o')}         active / idle 5+ min (grey: stopped)

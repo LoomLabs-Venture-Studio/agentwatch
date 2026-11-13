@@ -549,3 +549,36 @@ class TestStatsSession:
         r = CliRunner().invoke(cli, ["stats", "--session", "bbbbbbbb"])
         assert r.exit_code == 2
         assert "matches 2 sessions" in r.output
+
+    def test_same_session_in_two_config_dirs_counts_once(self, two_roots, home):
+        """QA #243: a session copied into ~/.claude and $CLAUDE_CONFIG_DIR is
+        one session, read from its largest log (then the newest)."""
+        from click.testing import CliRunner
+
+        from agentwatch.cli import cli
+
+        alt, _ = two_roots
+        bigger = _billed(home / ".claude", home / "proj-b", SID, 999)
+        bigger.write_text(bigger.read_text() + "\n" * 64)  # larger than the alt copy
+        assert cc_stats.find_session_logs(SID) == [bigger]
+        assert cc_stats.find_session_logs("aaaa") == [bigger]
+        report = cc_stats.compute_stats(session_id=SID)
+        assert report.session_count == 1 and report.totals.input_tokens == 999
+        r = CliRunner().invoke(cli, ["stats", "--session", SID, "--json"])
+        assert r.exit_code == 0, r.output
+        data = json.loads(r.output)
+        assert data["sessions"] == 1 and data["totals"]["input_tokens"] == 999
+
+    def test_same_size_copies_prefer_the_newest(self, two_roots, home):
+        import os
+
+        alt, _ = two_roots
+        copy = home / ".claude" / "projects" / alt.parent.name / alt.name
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_bytes(alt.read_bytes())
+        st = alt.stat()
+        os.utime(copy, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+        assert cc_stats.find_session_logs(SID) == [copy]
+        os.utime(alt, ns=(st.st_atime_ns, st.st_mtime_ns + 2 * 10**9))
+        assert cc_stats.find_session_logs(SID) == [alt]
+        assert cc_stats.compute_stats(session_id=SID).session_count == 1

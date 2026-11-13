@@ -965,18 +965,27 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
 def find_session_logs(session_id: str) -> list[Path]:
     """Every top-level session log whose id is *session_id* or starts with it
     (a short prefix), in every project of every config dir (projects_dirs()).
-    An exact id wins over prefix matches; a session copied into two config
-    dirs has one log in each."""
+    An exact id wins over prefix matches. One log per session id: a session
+    copied into two config dirs (or projects) counts once, from its largest
+    log, then the newest."""
     session_id = session_id.strip()
     if not session_id or any(c in session_id for c in "/\\*?[]"):
         return []
-    exact: list[Path] = []
-    prefix: list[Path] = []
+    exact: dict[str, tuple[tuple[int, int], Path]] = {}
+    prefix: dict[str, tuple[tuple[int, int], Path]] = {}
     for pdir in find_all_project_dirs():
         for jsonl in pdir.glob(f"{session_id}*.jsonl"):
-            if jsonl.is_file():
-                (exact if jsonl.stem == session_id else prefix).append(jsonl)
-    return sorted(exact or prefix)
+            try:
+                st = jsonl.stat()
+            except OSError:
+                continue
+            if not jsonl.is_file():
+                continue
+            found = exact if jsonl.stem == session_id else prefix
+            key = (st.st_size, st.st_mtime_ns)
+            if jsonl.stem not in found or key > found[jsonl.stem][0]:
+                found[jsonl.stem] = (key, jsonl)
+    return sorted(path for _, path in (exact or prefix).values())
 
 
 def compute_stats(
