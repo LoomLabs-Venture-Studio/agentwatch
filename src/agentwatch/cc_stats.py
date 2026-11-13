@@ -17,6 +17,7 @@ from functools import lru_cache
 from itertools import islice
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
+from agentwatch import claude_config
 from agentwatch.path_encoding import encode_path_for_claude
 
 
@@ -544,38 +545,60 @@ def classify_bash_command(cmd: str) -> BashCategory:
 def __getattr__(name: str):
     # CLAUDE_PROJECTS_DIR is lazy: Path.home() raises without a home dir, and
     # that must not break `import agentwatch.cc_stats` (the coach hook needs it).
+    # The primary one: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects.
     if name == "CLAUDE_PROJECTS_DIR":
-        return Path.home() / ".claude" / "projects"
+        return claude_config.default_config_dir() / "projects"
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _projects_dir() -> Path:
-    """CLAUDE_PROJECTS_DIR, honouring a monkeypatched/assigned value."""
-    return globals().get("CLAUDE_PROJECTS_DIR") or __getattr__("CLAUDE_PROJECTS_DIR")
+def projects_dirs() -> list[Path]:
+    """Every Claude Code projects dir: ``projects/`` under $CLAUDE_CONFIG_DIR
+    and ~/.claude (claude_config.config_dirs()). An assigned or monkeypatched
+    CLAUDE_PROJECTS_DIR replaces them all."""
+    assigned = globals().get("CLAUDE_PROJECTS_DIR")
+    if assigned:
+        return [assigned]
+    return [d / "projects" for d in claude_config.config_dirs()]
 
 
 def cwd_to_project_dir(cwd: Path | None = None) -> Path | None:
     """Map a working directory to its Claude Code project directory.
 
-    Claude Code stores projects under ~/.claude/projects/ keyed by the
+    Claude Code stores projects under <config dir>/projects/ keyed by the
     absolute path run through `encode_path_for_claude` (see path_encoding.py).
+    With several config dirs (projects_dirs()), the first that has it.
     """
     if cwd is None:
         cwd = Path.cwd()
     cwd = cwd.resolve()
     dir_name = encode_path_for_claude(cwd)
-    project_dir = _projects_dir() / dir_name
-    if project_dir.is_dir():
-        return project_dir
+    for projects in projects_dirs():
+        project_dir = projects / dir_name
+        if project_dir.is_dir():
+            return project_dir
     return None
 
 
 def find_all_project_dirs() -> list[Path]:
-    """Find all Claude Code project directories."""
-    projects = _projects_dir()
-    if not projects.is_dir():
-        return []
-    return [p for p in projects.iterdir() if p.is_dir()]
+    """Find all Claude Code project directories, in every config dir."""
+    return [
+        p
+        for projects in projects_dirs()
+        if projects.is_dir()
+        for p in projects.iterdir()
+        if p.is_dir()
+    ]
+
+
+def projects_root_of(path: Path) -> Path | None:
+    """The projects dir (of projects_dirs()) that *path* is under, or None."""
+    for projects in projects_dirs():
+        try:
+            path.relative_to(projects)
+        except ValueError:
+            continue
+        return projects
+    return None
 
 
 _WORKTREE = re.compile(r"[\\/]\.claude[\\/]worktrees(?:[\\/]|$)")

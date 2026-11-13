@@ -6,6 +6,15 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude Code sessions run with `CLAUDE_CONFIG_DIR` set are found again. `ps`, `watch-all` and
+  `visual` read each Claude Code process's own `CLAUDE_CONFIG_DIR` (`~/.claude` when it has none; agentwatch's own
+  value only when the process environment cannot be read) and look for its session log there, instead of showing "No session log found
+  yet". `stats --all`, `history sync`, `audit`, `check`'s default log and `watch-all
+  --all-logs` scan both `$CLAUDE_CONFIG_DIR` and `~/.claude`. Only that one variable is read
+  from a process's environment, once per process; nothing else is stored or logged.
+
 ## [0.2.2] - 2026-11-12
 
 ### Added

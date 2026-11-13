@@ -108,7 +108,17 @@ src/agentwatch/
                        PID-based match (`_find_open_codex_rollout`, mirrors
                        Claude Code's `_find_open_jsonl` via `psutil.Process.
                        open_files()`) before falling back to cwd/mtime
-                       heuristics
+                       heuristics. Claude Code's config dir per process:
+                       its own CLAUDE_CONFIG_DIR (psutil environ(), only
+                       that key, cached per (pid, create_time); readable
+                       but unset -> ~/.claude), else (unreadable)
+                       agentwatch's, else ~/.claude (`_claude_home`)
+  claude_config.py     Claude Code config dirs (stdlib only):
+                       default_config_dir() ($CLAUDE_CONFIG_DIR, ~
+                       expanded, empty ignored, else ~/.claude);
+                       config_dirs() for whole-history scans
+                       ($CLAUDE_CONFIG_DIR + ~/.claude, existing, deduped
+                       by resolved path; no ~/.claude-* guessing)
   ai_detect.py         Machine-wide AI-use detection for `agentwatch detect`:
                        resolves AI_PROVIDERS domains to IPs, attributes
                        psutil socket-table connections to PIDs, checks
@@ -428,7 +438,9 @@ src/agentwatch/
                        cliSessionId glob; synthetic pid. Adapter in
                        agents/claude_desktop.py (editor kind, claims
                        nothing, delegates watch/parse to claude-code)
-  cc_stats.py          Parses ~/.claude/projects/*.jsonl for token-usage /
+  cc_stats.py          Parses <config dir>/projects/*.jsonl for every
+                       claude_config.config_dirs() root (projects_dirs();
+                       an assigned CLAUDE_PROJECTS_DIR replaces them) for token-usage /
                        burn-rate stats; opens files with explicit
                        encoding="utf-8", errors="ignore" (matches
                        parser/logs.py's precedent) so a stray non-UTF-8

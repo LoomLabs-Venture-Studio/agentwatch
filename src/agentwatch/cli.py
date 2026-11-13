@@ -232,7 +232,7 @@ def _default_log() -> tuple[Path | None, str | None]:
     there is none, falls back to the newest session anywhere and returns a
     note naming that project, so reports can say so.
     """
-    from agentwatch.cc_stats import CLAUDE_PROJECTS_DIR, cwd_to_project_dir
+    from agentwatch.cc_stats import cwd_to_project_dir, projects_root_of
 
     project_dir = cwd_to_project_dir()
     log = find_latest_session(project_dir) if project_dir else None
@@ -241,10 +241,8 @@ def _default_log() -> tuple[Path | None, str | None]:
     log = find_latest_session()
     if log is None:
         return None, None
-    try:
-        project = log.relative_to(CLAUDE_PROJECTS_DIR).parts[0]
-    except ValueError:
-        project = str(log.parent)
+    projects = projects_root_of(log)
+    project = log.relative_to(projects).parts[0] if projects else str(log.parent)
     return log, f"No session for {Path.cwd()}; using newest session from {project}"
 
 
