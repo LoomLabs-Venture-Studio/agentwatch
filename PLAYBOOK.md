@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 42, follow-ups and 0.2.2 release prep (2026-11-06), at the end of this file; before it Sprint 41 (visual, tools, README) and Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
+> **Latest: Sprint 48, market gaps (2026-11-13), and Sprint 47, guard #228 + CLAUDE_CONFIG_DIR + visual redesign (2026-11-12), at the end of this file; before them Sprints 43-46 (security precision, guard, visual) and Sprint 42, follow-ups and 0.2.2 release prep (2026-11-06); before it Sprint 41 (visual, tools, README) and Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -5671,11 +5671,42 @@ Board (2026-11-12): redesign `agentwatch visual`. ui-ux-pro-max decides the look
 Board (2026-11-12): start Sprint 47 on #228. Branch `fix/guard-not-caught-2` from develop, draft PR into `develop`.
 
 **Criteria**
-- [ ] Each #228 shape asks: shell stdin from `<(...)`/here-string on a group, subshell or via `exec` (`{ bash; } < <(echo 'rm -rf ~')`, `( bash ) < <(...)`, `exec < <(...); bash`, `exec 0<<<'rm -rf ~'; bash`).
-- [ ] Decoder into a shell with unknown options or names asks (`base64 -d <<< X | bash --rcfile /dev/null`, `--init-file`, `ksh93`, `bash5`).
-- [ ] `#` inside a subscript with `$` or quotes (`a[$i #x]=1; rm -rf ~`) and multi-line arithmetic/extglob with `#` does not hide later commands.
-- [ ] `echo -e`/`echo -en` escapes decoded like printf (`echo -e '\x72m -rf ~' | bash`, `echo -e 'rm\t-rf ~' | sh`).
-- [ ] `env -S '...'` / `env --split-string=...` unwrapped; `gxargs` treated as xargs.
-- [ ] Only stricter: on the real-command corpus no command asked on develop is allowed; new asks listed and justified.
-- [ ] All new regexes linear; 1 MB worst case within the 1 s budget (asks), timed through the real hook process.
-- [ ] ruff + full pytest green.
+- [x] Each #228 shape asks: shell stdin from `<(...)`/here-string on a group, subshell or via `exec` (`{ bash; } < <(echo 'rm -rf ~')`, `( bash ) < <(...)`, `exec < <(...); bash`, `exec 0<<<'rm -rf ~'; bash`).
+- [x] Decoder into a shell with unknown options or names asks (`base64 -d <<< X | bash --rcfile /dev/null`, `--init-file`, `ksh93`, `bash5`).
+- [x] `#` inside a subscript with `$` or quotes (`a[$i #x]=1; rm -rf ~`) and multi-line arithmetic/extglob with `#` does not hide later commands.
+- [x] `echo -e`/`echo -en` escapes decoded like printf (`echo -e '\x72m -rf ~' | bash`, `echo -e 'rm\t-rf ~' | sh`).
+- [x] `env -S '...'` / `env --split-string=...` unwrapped; `gxargs` treated as xargs.
+- [x] Only stricter: on the real-command corpus no command asked on develop is allowed; new asks listed and justified.
+- [x] All new regexes linear; 1 MB worst case within the 1 s budget (asks), timed through the real hook process.
+- [x] ruff + full pytest green.
+
+**PRs** (all squash-merged to develop 2026-11-13; board 2026-11-13: "keep developing and dont ask me to merge. never merge to main")
+- #235 `fix/guard-not-caught-2`: the #228 shapes plus QA finds: unclosed `name[` no longer drops the new reading, `)<` split and `a[...]=` prefixes run as extra readings, exec after assignments/`command`/`--`, `env -S` `\c`, line continuations before a subshell redirect. Develop's readings run unchanged; extra readings only add asks. 4 QA rounds. Real corpus 5,676 cmds: 17 asks on develop and branch, 0 lost; about 2.4M differential fuzz: 0 runnable losses (remaining losses are bash syntax errors). Timing tests moved to CPU time (2.0 s, ratio 8x) after CI-load flakes.
+- #237 `fix/claude-config-dir`: Claude Code run with `CLAUDE_CONFIG_DIR` (this machine: `~/.claude-orca`) showed no session log. Per-process value from the process environment (one key, cached per pid + start time); whole-history and per-project scans read `$CLAUDE_CONFIG_DIR` and `~/.claude`, resolved and deduped; config-scan and statusline follow. QA FAIL (audit dropped `~/.claude` findings, symlink duplicated history) -> fixed -> PASS.
+- #238 `feature/visual-uipm`: `visual` redesign from ui-ux-pro-max (board 2026-11-13: "looks so bad"): dark ops dashboard, KPI tiles, agent card grid, one live indicator with Pause, fits 320 px. Fixed at_risk shown green, raw labels, flat sparklines, None/NaN text, concurrent `/api/stats` (`fileinput` global), user name as project in JSON. Security model unchanged. QA PASS WITH NOTES -> fixed -> PASS.
+- #234 docs: CHANGELOG `[Unreleased]` folded into `[0.2.2]` (unreleased, dated 2026-11-12); #214 (release/0.2.2 -> main) rebuilt from develop, left for the board.
+
+**Follow-ups**
+- #236: guard shapes outside #228 (pipe into `( bash )` / `{ ...; } | bash`, function stdin, printf in `$(...)`, unnamed shells, >20 KB splitter).
+- The 320 px layout test skips on GitHub runners (headless Chrome not drivable there); add a Chrome setup step to CI if it should run.
+- `agentwatch ps` text table still prints the raw folder name (user name for the home dir); JSON shows `~`.
+
+**Lessons:** an extra reading must never change an existing reading's input (the `)<` split reset develop's pipeline); add readings, don't edit them. Wall-clock timing tests flake on shared runners: measure CPU time and keep production budgets wall-clock.
+
+### Sprint 48 -- market gaps: posture, spend caps, full test sweep (2026-11-13)
+
+Board (2026-11-13): "keep developing ... test everything inside of agentwatch and do a research on the market to see what features needs to be added." Research: `docs/research/market-2026-11.md` (14 tools, 13 ranked features). Top 5: (1) hard spend caps via the PreToolUse hook, (2) guard/coach for other agents' hooks, (3) sandbox and permission posture per running agent, (4) skill/plugin/MCP drift pinning in config-scan, (5) session audit ledger / blast radius. CTO merges QA-passed, CI-green PRs into develop; never main.
+
+**Wave 1**
+- `feature/sandbox-status` (research 3): POSTURE (approvals skipped/on, sandboxed/container/none, confidence) in `ps`, `ps --json`, `watch-all`, `visual`; `check` advisory only. Flags cited to public sources; never raw argv.
+- `feature/spend-caps` (research 1): `agentwatch budget set|off|status`, caps per session/5 h block/day, ask by default, 80% advisory, re-ask every +25%; no file = one failed stat; fail open.
+- Full live test sweep of every command (QA), bugs fixed as follow-up PRs.
+
+**Criteria**
+- [ ] Posture shown for Claude Code, Codex, Gemini CLI, Copilot CLI flags; sandbox from the parent chain; `ps` not measurably slower.
+- [ ] Spend caps: default off (no behaviour change), ask over a cap with an "about $X" message, fail open, hook cost without a budget file unchanged.
+- [ ] Every command in `agentwatch --help` exercised live; bugs filed or fixed.
+- [ ] ruff + full pytest green; QA pass on each PR.
+
+**Next waves (planned):** research 5 (ledger), 4 (drift pinning), 2 (other agents' hooks, needs live hook checks per agent), then 9 (context % and branch in watch-all), 11 (scheduled digest).
+
