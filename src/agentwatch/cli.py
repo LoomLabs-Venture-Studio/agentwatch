@@ -2713,6 +2713,151 @@ def notify(state: str, webhook: str | None, events: list[str]):
                "(/plugin install agentwatch@agentwatch).")
 
 
+def _check_cap(ctx, param, value: float | None) -> float | None:
+    if value is not None and not (math.isfinite(value) and 0 <= value < 1_000_000):
+        raise click.BadParameter("a dollar amount from 0 to 999,999 (0 removes the cap)")
+    if value is not None and 0 < value < 0.01:
+        raise click.BadParameter("the smallest cap is $0.01 (0 removes the cap)")
+    return value
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def budget(ctx):
+    """Spend caps for Claude Code sessions (ask or block over a cap).
+
+    \b
+    The agentwatch plugin's hook checks the caps before each tool call and
+    asks you (or, with --action deny, blocks the call) once the estimated
+    spend reaches one; the agent is told once at 80%. After you approve,
+    it asks again at each further 25% over the cap. Costs are estimates
+    at list price; on a subscription, prefer --block. --block and --day
+    need `agentwatch statusline --cost` in your status line, which keeps
+    their numbers fresh. No caps by default.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(budget_status)
+
+
+@budget.command("set")
+@click.option("--session", type=float, callback=_check_cap, metavar="USD",
+              help="Cap per Claude Code session (with its subagents)")
+@click.option("--block", type=float, callback=_check_cap, metavar="USD",
+              help="Cap per 5-hour usage block, all sessions")
+@click.option("--day", type=float, callback=_check_cap, metavar="USD",
+              help="Cap per day (local time), all sessions")
+@click.option("--action", type=click.Choice(["ask", "deny"]), default=None,
+              help="Over a cap: ask you (default) or block the call")
+def budget_set(session: float | None, block: float | None, day: float | None,
+               action: str | None):
+    """Set or change caps; other caps are kept, 0 removes one."""
+    from agentwatch.budget import CAPS, budget_path, load_budget, save_budget
+
+    if session is None and block is None and day is None and action is None:
+        raise click.UsageError("give at least one of --session, --block, --day, --action")
+    settings = load_budget() or {}
+    for name, value in zip(CAPS, (session, block, day)):
+        if value == 0:
+            settings.pop(name, None)
+        elif value is not None:
+            settings[name] = value
+    if action is not None:
+        settings["action"] = action
+    if not any(name in settings for name in CAPS):
+        raise click.UsageError("no cap set: give --session, --block or --day")
+    try:
+        save_budget(settings)
+    except OSError as e:
+        click.echo(f"agentwatch: cannot write {budget_path()}: {e.strerror or e}", err=True)
+        sys.exit(1)
+    budget_status.callback()
+
+
+@budget.command("off")
+def budget_off():
+    """Remove every cap."""
+    from agentwatch.budget import budget_path, save_budget
+
+    try:
+        save_budget(None)
+    except OSError as e:
+        click.echo(f"agentwatch: cannot write {budget_path()}: {e.strerror or e}", err=True)
+        sys.exit(1)
+    click.echo("agentwatch budget: off")
+
+
+def _latest_session_spend() -> tuple[str, float, float] | None:
+    """(session id, spend, seconds since its last update) of the newest
+    session with a running cost in the coach's state."""
+    import time
+
+    from agentwatch.budget import STATE_SUFFIX, session_spend
+    from agentwatch.statusline import state_dirs
+
+    newest = None
+    for directory in state_dirs():
+        try:
+            paths = list(directory.glob("*.json"))
+        except OSError:
+            continue
+        for path in paths:
+            if path.name.endswith(STATE_SUFFIX):
+                continue
+            try:
+                mtime = path.stat().st_mtime
+                has_cost = "cost_usd" in json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            if has_cost and (newest is None or mtime > newest[2]):
+                newest = (directory, path.name.split(".")[0], mtime)
+    if newest is None:
+        return None
+    spent = session_spend(newest[0], newest[1])
+    return None if spent is None else (newest[1], spent, time.time() - newest[2])
+
+
+@budget.command("status")
+def budget_status():
+    """Show the caps and the spend so far, when known."""
+    import time
+
+    from agentwatch.budget import budget_path, load_budget, money
+
+    settings = load_budget()
+    if settings is None:
+        click.echo("agentwatch budget: off (no caps)")
+        return
+    caps = ", ".join(f"{name} {money(settings[name])}" for name in ("session", "block", "day")
+                     if name in settings)
+    click.echo(f"agentwatch budget: {caps}; over a cap: {settings['action']}")
+    if "session" in settings:
+        latest = _latest_session_spend()
+        if latest is None:
+            click.echo("Session: no spend recorded yet (the hook records it after "
+                       "each tool call while a budget is set)")
+        else:
+            sid, spent, age = latest
+            click.echo(f"Latest session {sid[:8]} (updated {int(age // 60)}m ago): "
+                       f"about {money(spent)} of {money(settings['session'])}")
+    if "block" in settings or "day" in settings:
+        try:
+            from agentwatch.statusline import usage_summary
+
+            summary = usage_summary(time.time())
+        except Exception:
+            summary = {}
+        for name, label in (("block", "5-hour block"), ("day", "Today")):
+            if name not in settings:
+                continue
+            spent = (summary.get(name) or {}).get("cost_usd")
+            shown = f"about {money(spent)}" if isinstance(spent, (int, float)) else "unknown"
+            click.echo(f"{label}: {shown} of {money(settings[name])}")
+        click.echo("Block and day caps are enforced only while `agentwatch statusline "
+                   "--cost` keeps their numbers fresh.")
+    click.echo("Costs are estimates at list price.")
+    click.echo(f"Settings: {budget_path()}")
+
+
 @cli.command()
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--secrets-only", is_flag=True, help="Hide secrets only, not personal info")
