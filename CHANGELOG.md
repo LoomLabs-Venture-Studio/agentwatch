@@ -8,6 +8,20 @@ numbers refer to the GitHub repository.
 
 ### Fixed
 
+- Command guard (#228): a shell fed from a group, subshell or `exec`
+  (`{ bash; } < <(echo ...)`, `( sh ) <<< ...`, `exec 0<<<'...'; bash`), a decoder
+  or download piped into a shell with options or names the guard did not know
+  (`bash --rcfile /dev/null`, `bash5`, `bash-5.2`, `ksh93`, `mksh`, `yash`, `fish -C`),
+  a `#` inside an array subscript (`a[$i #x]=1; rm -rf ~`), `echo -e` escapes
+  piped into a shell (`echo -e '\x72m -rf ~' | bash`), `env -S` /
+  `env --split-string` and `gxargs` no longer hide a dangerous command. Where the
+  guard cannot tell whether bash reads a `#` as a comment (a `((`, `$((` or
+  extglob group open across lines, with a quote or substitution in the comment)
+  it now asks. Also caught: `(bash)<<<'...'`, a subshell's script piped on past a
+  redirection (`(echo ...) 2>/dev/null | bash`), `exec` after `VAR=`, `command` or
+  `--`, with `-a NAME` or a `{fd}` redirection, `env -S 'bash -s' < <(...)`, `env -S`
+  strings cut by `\c`, and a prefix assignment to an array element
+  (`a[1]=1 rm -rf ~`). Only adds asks.
 - Claude Code sessions run with `CLAUDE_CONFIG_DIR` set are found again. `ps`, `watch-all` and
   `visual` read each Claude Code process's own `CLAUDE_CONFIG_DIR` (`~/.claude` when it has none; agentwatch's own
   value only when the process environment cannot be read) and look for its session log there, instead of showing "No session log found

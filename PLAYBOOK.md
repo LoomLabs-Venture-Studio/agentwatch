@@ -5665,3 +5665,17 @@ Board (2026-11-12): redesign `agentwatch visual`. ui-ux-pro-max decides the look
 **Lessons (2026-11-12):** shell-command severity allowlists need every option and argument position pinned, or close them (#221, #223). Any guard regex over input up to 20k chars must be linear, and timing must be tested through the real hook process: the watchdog exits with no answer, which allows.
 
 **Follow-up:** the hook watchdog fails open; consider answering ask on timeout for PreToolUse (board decision).
+
+### Sprint 47 -- guard: remaining not-caught shapes (#228) (2026-11-12)
+
+Board (2026-11-12): start Sprint 47 on #228. Branch `fix/guard-not-caught-2` from develop, draft PR into `develop`.
+
+**Criteria**
+- [ ] Each #228 shape asks: shell stdin from `<(...)`/here-string on a group, subshell or via `exec` (`{ bash; } < <(echo 'rm -rf ~')`, `( bash ) < <(...)`, `exec < <(...); bash`, `exec 0<<<'rm -rf ~'; bash`).
+- [ ] Decoder into a shell with unknown options or names asks (`base64 -d <<< X | bash --rcfile /dev/null`, `--init-file`, `ksh93`, `bash5`).
+- [ ] `#` inside a subscript with `$` or quotes (`a[$i #x]=1; rm -rf ~`) and multi-line arithmetic/extglob with `#` does not hide later commands.
+- [ ] `echo -e`/`echo -en` escapes decoded like printf (`echo -e '\x72m -rf ~' | bash`, `echo -e 'rm\t-rf ~' | sh`).
+- [ ] `env -S '...'` / `env --split-string=...` unwrapped; `gxargs` treated as xargs.
+- [ ] Only stricter: on the real-command corpus no command asked on develop is allowed; new asks listed and justified.
+- [ ] All new regexes linear; 1 MB worst case within the 1 s budget (asks), timed through the real hook process.
+- [ ] ruff + full pytest green.
