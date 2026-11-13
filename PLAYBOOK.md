@@ -5703,10 +5703,29 @@ Board (2026-11-13): "keep developing ... test everything inside of agentwatch an
 - Full live test sweep of every command (QA), bugs fixed as follow-up PRs.
 
 **Criteria**
-- [ ] Posture shown for Claude Code, Codex, Gemini CLI, Copilot CLI flags; sandbox from the parent chain; `ps` not measurably slower.
-- [ ] Spend caps: default off (no behaviour change), ask over a cap with an "about $X" message, fail open, hook cost without a budget file unchanged.
-- [ ] Every command in `agentwatch --help` exercised live; bugs filed or fixed.
-- [ ] ruff + full pytest green; QA pass on each PR.
+- [x] Posture shown for Claude Code, Codex, Gemini CLI, Copilot CLI flags; sandbox from the parent chain; `ps` not measurably slower.
+- [x] Spend caps: default off (no behaviour change), ask over a cap with an "about $X" message, fail open, hook cost without a budget file unchanged.
+- [x] Every command in `agentwatch --help` exercised live; bugs filed or fixed.
+- [x] ruff + full pytest green; QA pass on each PR.
+
+**Wave 1 results (2026-11-13, merged into develop, CI green, QA passed)**
+- #240 spend caps (704666f): `agentwatch budget set|off|status`, enforced in the PreToolUse hook after guard and loop breaker. Default off: without a budget file the hook does one failed open and never imports budget.py.
+- #243 command sweep fixes (d663593): `watch` q quits; agentguard options built from the agentwatch commands; `stats --session` searches every config dir and takes a prefix; statusline 2 s stdin timeout; `history prune 0d` refused; history DB 0600; `scrub --force`; `hook --help`; `check --security` headline. Exit-code ambiguity deferred to #242.
+- #241 posture (045030a): approvals and sandbox per running agent in `ps`, `ps --json`, /api/ps, `watch-all`, `visual`, plus a `check` advisory. Three QA rounds and a final CTO check against every QA probe. Rule: green only with high confidence; uncertain inputs (unread project/profile layers, policy files, launcher options) lower confidence or give unknown. Known limits are in the PR body. Full suite after merge: 4397 passed.
+
+**Wave 2: session audit ledger (research 5, `feature/session-ledger`)**
+`agentwatch ledger [--log PATH] [--project DIR] [--format text|jsonl|csv] [--kind command,write,delete,network]`: what one session ran, changed, deleted and contacted. Computed from the parsed log on demand, nothing new stored (no history.db change). Guard decisions are not in v1: the hook does not record them.
+
+Criteria
+- [ ] Log picked like `check` (`cli._default_log`), any adapter `parse_file` supports; one parse pass.
+- [ ] Rows (JSON schema 1, fields only added later): ts, agent, tool, kind (command / write / edit / delete / network), target, success, outside_project (true/false/null), destructive (bool), reason (fixed string).
+- [ ] Commands and targets through `one_line` (secrets redacted, bounded, no control chars); paths shown with home as `~`; tool results, file contents and error text never output.
+- [ ] Deletes and destructive commands: `rm`, `git rm`, `git clean`, `git reset --hard`, `git push -f`, `del`/`Remove-Item`, plus anything `guard.py` would ask about (reuse it, no second parser). Deleted paths become delete rows.
+- [ ] outside_project: target not under the session cwd (from the log, else `--project`); unknown cwd gives null, never a guess.
+- [ ] Network rows from `network_host`/`network_port` (hosts only, no URLs with query strings).
+- [ ] Text summary: counts per kind, destructive and out-of-project rows listed first. CSV quotes formula-leading cells like `report.write_csv`.
+- [ ] `check`: one "Blast radius:" line in text mode only when there are destructive or out-of-project rows; `check --json` gains `ledger_summary`; score and exit code unchanged.
+- [ ] Tests with existing fixtures for Claude Code, Codex, Copilot CLI, Gemini and OpenCode; redaction test with a planted secret in a command; ruff + full pytest green; QA pass.
 
 **Next waves (planned):** research 5 (ledger), 4 (drift pinning), 2 (other agents' hooks, needs live hook checks per agent), then 9 (context % and branch in watch-all), 11 (scheduled digest).
 
