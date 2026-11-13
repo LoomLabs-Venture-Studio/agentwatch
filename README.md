@@ -82,7 +82,9 @@ Costs are estimates at API list price. On a Pro or Max subscription you
 pay no list price, so `--block` (which tracks your 5-hour usage window) is
 the most useful. `--block` and `--day` use the numbers that `agentwatch
 statusline --cost` refreshes (at most every 60 s); without that status line
-they are not checked. No caps by default.
+they are not checked. A cap set partway through a long session catches up
+over a few tool calls: the first scan of its transcript reads 16 MB per
+call. No caps by default.
 
 ## What the scores mean
 

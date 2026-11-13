@@ -2716,6 +2716,8 @@ def notify(state: str, webhook: str | None, events: list[str]):
 def _check_cap(ctx, param, value: float | None) -> float | None:
     if value is not None and not (math.isfinite(value) and 0 <= value < 1_000_000):
         raise click.BadParameter("a dollar amount from 0 to 999,999 (0 removes the cap)")
+    if value is not None and 0 < value < 0.01:
+        raise click.BadParameter("the smallest cap is $0.01 (0 removes the cap)")
     return value
 
 

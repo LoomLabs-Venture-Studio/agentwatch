@@ -46,9 +46,10 @@ def _transcript(path: Path, *entries: dict, append: bool = False) -> Path:
     return path
 
 
-def _post(transcript: Path, tool_use_id: str = "t0", agent_id: str | None = None):
+def _post(transcript: Path, tool_use_id: str = "t0", agent_id: str | None = None,
+          event: str = "PostToolUse"):
     payload = {"session_id": SID, "transcript_path": str(transcript),
-               "hook_event_name": "PostToolUse", "tool_name": "Read",
+               "hook_event_name": event, "tool_name": "Read", "error": "x",
                "tool_input": {"file_path": "/x.py"}, "tool_use_id": tool_use_id}
     if agent_id:
         payload["agent_id"] = agent_id
@@ -181,6 +182,18 @@ def test_approve_then_reask_at_next_25_percent_step(tmp_path):
     assert "about $5.20 (cap $4.00)" in out["permissionDecisionReason"]
 
 
+def test_failed_call_never_approves_the_ask(tmp_path):
+    _set(session=4.0)
+    path = _spend(tmp_path, 4.4)
+    assert _out(_pre("c1"))["permissionDecision"] == "ask"
+    _post(path, tool_use_id="c1", event="PostToolUseFailure")  # declined, or failed
+    state = json.loads(budget.budget_state_path(coach.state_dir(), SID).read_text())
+    assert [p["id"] for p in state["pending"]] == ["c1"] and "acked" not in state
+    assert _out(_pre("c2"))["permissionDecision"] == "ask"
+    _post(path, tool_use_id="c2")  # this one ran: approved
+    assert _pre("c3") is None
+
+
 def test_denied_ask_asks_again(tmp_path):
     _set(session=4.0)
     _spend(tmp_path, 4.4)
@@ -308,6 +321,11 @@ def test_cli_rejects_bad_input():
     assert runner.invoke(cli, ["budget", "set", "--session", "-1"]).exit_code == 2
     assert runner.invoke(cli, ["budget", "set", "--session", "nan"]).exit_code == 2
     assert runner.invoke(cli, ["budget", "set", "--session", "0"]).exit_code == 2  # no cap left
+    result = runner.invoke(cli, ["budget", "set", "--block", "0.004"])
+    assert result.exit_code == 2 and "the smallest cap is $0.01" in result.output
+    assert runner.invoke(cli, ["budget", "set", "--day", "0.01"]).exit_code == 0
+    assert "day $0.01" in runner.invoke(cli, ["budget", "status"]).output
+    budget.save_budget(None)
     assert not budget.budget_path().exists()
 
 

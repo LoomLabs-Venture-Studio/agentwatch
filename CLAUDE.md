@@ -266,9 +266,10 @@ src/agentwatch/
                        CLAUDE_CONFIG_DIR, only when < 120 s old (never
                        computed in the hook; skipped otherwise). Over a cap:
                        ask (fixed "about $X (cap $Y). Continue?") or deny;
-                       an ask is approved when that tool_use_id's PostToolUse
-                       arrives, then re-asked at each +25% step (per cap
-                       scope: value, block end, day start). 80%: one
+                       an ask is approved when that tool_use_id's
+                       PostToolUse (never PostToolUseFailure) arrives, then
+                       re-asked at each +25% step (per cap scope: value,
+                       block end, day start). 80%: one
                        additionalContext per scope. State in
                        <sid>..budget.json (never a coach state name). List
                        price estimates; unpriced models add nothing

@@ -22,8 +22,9 @@ price, so the block cap (which tracks the 5-hour usage window) suits them
 best.
 
 At ADVISE_AT of a cap the agent is told once (additionalContext). Over a
-cap the hook asks with a fixed reason; when that call then runs (its
-PostToolUse arrives) the ask counts as approved and the hook stays quiet
+cap the hook asks with a fixed reason; when that call then succeeds (its
+PostToolUse arrives; PostToolUseFailure does not count) the ask counts as
+approved and the hook stays quiet
 until the spend crosses the next STEP over the cap. A block or day cap's
 approval ends with its block or day; a changed cap starts over.
 
@@ -200,13 +201,17 @@ def budget_state_path(directory: Path, session_id: str) -> Path:
 
 def post_tool_use(payload: dict, transcript: Path, old_state: dict, session_id: str,
                   directory: Path) -> dict:
-    """PostToolUse with a budget set: the session state's new cost fields, and
-    an ask for this very call (if any) marked approved: the call ran."""
+    """PostToolUse(Failure) with a budget set: the session state's new cost
+    fields, and on PostToolUse an ask for this very call (if any) marked
+    approved: the call ran. PostToolUseFailure never approves: it is not
+    known whether Claude Code fires it for a declined prompt, so a failed
+    call asks again (the safe side)."""
     tool_id = payload.get("tool_use_id")
     path = budget_state_path(directory, session_id)
     state = _read_json(path)
     pending = state.get("pending")
-    if isinstance(tool_id, str) and isinstance(pending, list):
+    if (payload.get("hook_event_name") == "PostToolUse" and isinstance(tool_id, str)
+            and isinstance(pending, list)):
         hit = [p for p in pending if isinstance(p, dict) and p.get("id") == tool_id]
         if hit:
             acked = state.get("acked") if isinstance(state.get("acked"), dict) else {}
