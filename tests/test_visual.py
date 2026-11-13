@@ -229,12 +229,25 @@ def test_ps_json_matches_builder(sandbox):
     assert _cli_json(["ps"]) == _dumps(visual.API["ps"](False))
 
 
+def _page_only(payload):
+    # visual adds one field the command doesn't have: the fallback's project.
+    payload.pop("session_project")
+    return payload
+
+
 def test_check_json_matches_builder(sandbox):
-    assert _cli_json(["check"]) == _dumps(visual.API["check"](False))
+    assert _cli_json(["check"]) == _dumps(_page_only(visual.API["check"](False)))
 
 
 def test_security_json_matches_builder(sandbox):
-    assert _cli_json(["security-scan"]) == _dumps(visual.API["security-scan"](False))
+    assert _cli_json(["security-scan"]) == _dumps(_page_only(visual.API["security-scan"](False)))
+
+
+def test_fallback_project_is_a_folder_name_not_the_encoded_dir(sandbox):
+    for name in ("check", "security-scan"):
+        data = visual.API[name](False)
+        assert data["session_fallback"]  # tmp cwd has no session: fallback used
+        assert data["session_project"] == "demo", data["session_project"]
 
 
 def test_audit_json_matches_builder(sandbox):
@@ -416,3 +429,443 @@ def test_page_has_agent_status_refresh_path():
     assert "agents" in _js_set("LIVE")
     assert "/api/agents?t=" in visual.PAGE and "pullAgents" in visual.PAGE
     assert "dataset.pid" in visual.PAGE
+
+
+# Sprint 47: status tones, human labels, sparklines (ui-ux-pro-max redesign).
+
+def test_status_tones_security_tiers_are_not_health_bands():
+    tones = visual.status_tones()
+    assert tones["security"] == {"secure": "good", "at_risk": "warn", "compromised": "bad"}
+    assert tones["security"]["at_risk"] != "good"  # Sprint 46 showed a green dot
+
+
+def test_status_tones_cover_every_theme_level():
+    from agentwatch.themes import THEMES
+    health = visual.status_tones()["health"]
+    for theme in THEMES.values():
+        assert health[theme.level_0] == "good", theme.name
+        assert health[theme.level_1] != "good", theme.name
+        assert health[theme.level_3] == "bad", theme.name
+    assert health["productive"] == "good" and health["stuck"] == "bad"
+    assert health["warning"] == "bad"  # classic level_2 beats ascii level_1: worse wins
+
+
+def test_page_embeds_names_and_tones_from_the_server_code():
+    from agentwatch.agents import DISPLAY_NAMES
+    m = re.search(r"\nconst DATA = (\{.*\});\n", visual.PAGE)
+    assert m and "__PAGE_DATA__" not in visual.PAGE
+    data = json.loads(m.group(1))
+    assert data == {"names": DISPLAY_NAMES, "tones": visual.status_tones()}
+
+
+def test_security_views_use_security_tone():
+    page = visual.PAGE
+    assert page.count("securityTone(d.security_score, d.status)") == 1
+    assert "securityTone(sec.security_score, sec.status)" in page
+    assert "tone(sec.security_score" not in page and "tone(d.security_score)" not in page
+
+
+def test_pause_stops_timer_reloads_only():
+    assert "if (paused) return;" in _fn("refresh")
+    assert "paused) return;" in _fn("pullAgents")
+    handler = re.search(r"pauseBtn.onclick = \(\) => \{(.*?)\n\};", visual.PAGE, re.S).group(1)
+    assert "load(" not in handler and "run" not in handler.replace("aria", "")
+
+
+def test_cards_show_no_team_or_raw_ids_up_front():
+    cards = _fn("cards")
+    assert "team_name" not in cards  # "claude-code:zaid" stays out of the card
+    assert "agentName(a.agent_type)" in cards and "folder(a.project" in cards
+    assert '"Process details"' in cards  # pid, cpu, memory, path behind a disclosure
+
+
+def _js(name):
+    m = re.search(rf"\n(?:async )?function {name}\(.*?\n\}}\n", visual.PAGE, re.S)
+    if m is None or "\nfunction " in m.group(0)[1:]:
+        m = re.search(rf"\nfunction {name}\([^\n]*\}}\n", visual.PAGE)
+    assert m, name
+    return m.group(0)
+
+
+@pytest.fixture
+def run_js(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    import subprocess
+
+    data = re.search(r"\nconst DATA = .*?;\n", visual.PAGE).group(0)
+    funcs = "".join(_js(n) for n in (
+        "label", "agentName", "folder", "uptime", "healthTone", "securityTone",
+        "severityTone", "sparkGeom"))
+    prelude = data + "const NAMES = DATA.names, TONES = DATA.tones;\n" + funcs
+
+    def run(expr):
+        script = tmp_path / "t.js"
+        script.write_text(prelude + f"\nprocess.stdout.write(JSON.stringify({expr}));\n",
+                          encoding="utf-8")
+        out = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+    return run
+
+
+def test_js_tone_mapping(run_js):
+    assert run_js('securityTone(85, "at_risk")') == "warn"
+    assert run_js('securityTone(100, "secure")') == "good"
+    assert run_js('securityTone(10, "compromised")') == "bad"
+    assert run_js("securityTone(85, null)") == "warn"  # by tier threshold, not health bands
+    assert run_js('healthTone(100, "productive")') == "good"
+    assert run_js('healthTone(70, "productive")') == "warn"  # the score wins
+    assert run_js('healthTone(null, "stuck")') == "bad"
+    assert run_js('healthTone(null, "???")') == "neutral"
+    assert run_js('[severityTone("critical"), severityTone("medium"), severityTone("low")]') == [
+        "bad", "warn", "neutral"]
+
+
+def test_js_human_labels(run_js):
+    assert run_js('[label("at_risk"), label("productive"), label("smooth_sailing"), label(null)]'
+                  ) == ["At risk", "Productive", "Smooth sailing", "Unknown"]
+    assert run_js('[agentName("claude-code"), agentName("copilot-vscode"), agentName("new-bot")]'
+                  ) == ["Claude Code", "Copilot VS Code", "New Bot"]
+    assert run_js('[folder("zaid", "/home/zaid"), folder("app", "/home/zaid/app"), '
+                  'folder("x", "C:\\\\Users\\\\x"), folder("", null)]'
+                  ) == ["~", "app", "~", "No project"]
+    assert run_js('[uptime("01:53:59"), uptime("2-03:04:05"), uptime("04:10"), uptime("00:09")]'
+                  ) == ["1 h 53 min", "2 d 3 h", "4 min", "under a minute"]
+
+
+def test_js_sparkline_needs_two_distinct_points(run_js):
+    assert run_js("[sparkGeom([], 120, 32), sparkGeom([5], 120, 32), "
+                  "sparkGeom([7, 7, 7, 7], 120, 32)]") == [None, None, None]
+    g = run_js("sparkGeom([10, 20, 15], 120, 32)")
+    assert g["lo"] == 10 and g["hi"] == 20 and len(g["pts"]) == 3
+    ys = [y for _, y in g["pts"]]
+    assert all(0 < y < 32 for y in ys)  # padded range: no point on the edge
+    assert ys[1] < ys[2] < ys[0]  # higher value draws higher
+
+
+def test_spark_draws_nothing_without_geometry():
+    body = _fn("spark")
+    assert "if (!g) return null;" in body and "sparkGeom(a, w, h)" in body
+    assert 'class: "area"' in body and '"range"' in body  # area fill + low-high label
+
+
+# Every view, fed nulls, NaN and Python "None" strings, prints none of them.
+
+_DOM_SHIM = r"""
+class Node {
+  constructor(tag) { this.tag = tag; this.kids = []; this.attrs = {}; this.dataset = {};
+    this.className = ""; this._text = null; this.style = {};
+    this.classList = {add: c => { this.className += " " + c; }, toggle: () => true}; }
+  set textContent(t) { this._text = String(t); this.kids = []; }
+  get textContent() {
+    return this._text !== null ? this._text :
+      this.kids.map(k => typeof k === "string" ? k : k.textContent).join(" ");
+  }
+  append(...xs) { this.kids.push(...xs.filter(x => x !== null && x !== undefined)); }
+  prepend(...xs) { this.kids.unshift(...xs); }
+  replaceChildren(...xs) { this.kids = []; this._text = null; this.append(...xs); }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  querySelector() { return new Node("x"); }
+  get childElementCount() { return this.kids.length; }
+}
+globalThis.Node = Node;
+globalThis.document = {createElement: t => new Node(t), createElementNS: (n, t) => new Node(t),
+  getElementById: () => null, querySelectorAll: () => []};
+"""
+
+_NULLS = {
+    "ps": [{"pid": 1, "agent_type": None, "project": None, "working_directory": None,
+            "cpu_percent": None, "memory_mb": None, "uptime": None, "depth": 0}],
+    "check": {"overall_score": None, "status": None, "warnings": [],
+              "categories": {"context": {"score": None, "status": None, "warning_count": 1}},
+              "efficiency": {"score": None, "cost_total": None, "recommendation": None},
+              "session_fallback": None},
+    "security-scan": {"security_score": float("nan"), "status": "None", "action_count": None,
+                      "warnings": [{"severity": None, "signal": None, "message": None,
+                                    "details": None, "suggestion": None}],
+                      "session_fallback": "x", "session_project": None},
+    "audit": {"total_findings": 0, "sessions_scanned": None, "findings": []},
+    "stats": {"sessions": None, "messages": None, "tool_calls": None,
+              "totals": {"total_tokens": None, "estimated_cost_usd": None,
+                         "cache_hit_ratio": None},
+              "by_tool": {"Bash": {"call_count": None, "total_tokens": 5,
+                                   "estimated_cost_usd": None}}},
+    "report": {"period": {"start": None, "end": None},
+               "totals": {"sessions": 0, "cost_usd": None, "tokens": 0, "waste_usd": None,
+                          "waste_pct": None},
+               "security": {"total": 0}, "previous": {"sessions": 2, "cost_usd": None}},
+    "subagents": {"total": 1, "active": None, "subagents": [
+        {"type": "qa", "description": None, "health_score": None, "status": None,
+         "cost_usd": None, "actions": None, "last_activity": None, "active": False,
+         "warnings": None, "depth": 1}]},
+    "history": {"synced": {"new": None, "updated": 1, "unchanged": None, "active": None},
+                "sessions": [{"agent": "claude-code", "project": None, "ended": None,
+                              "actions": None, "tokens": None, "cost_usd": None,
+                              "health_score": None, "status": None}]},
+}
+
+
+def test_no_view_prints_none_null_undefined_or_nan(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    import subprocess
+
+    m = re.search(r"\nconst DATA = .*?\n(?=// Every view reloads)", visual.PAGE, re.S)
+    assert m
+    payloads = json.dumps(_NULLS)  # NaN is written as a JS NaN literal
+    script = tmp_path / "views.js"
+    script.write_text(_DOM_SHIM + m.group(0) + f"""
+const P = {payloads}, out = {{}};
+for (const [name, d] of Object.entries(P)) {{
+  const box = new Node("div");
+  box.append(...VIEWS[name](d).filter(Boolean));
+  out[name] = box.textContent;
+}}
+process.stdout.write(JSON.stringify(out));
+""", encoding="utf-8")
+    run = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    texts = json.loads(run.stdout)
+    assert set(texts) == set(_NULLS)
+    for name, text in texts.items():
+        bad = re.findall(r"\b(None|null|undefined|NaN|Unpriced)\b", text)
+        assert not bad, (name, bad, text)
+    report = texts["report"]
+    assert "Cost $0.00" in report and "Wasted $0.00" in report  # no sessions: nothing spent
+    assert "—" in texts["stats"] and "—" in texts["history"]
+
+
+# QA #238 fixes.
+
+def _views_js(tmp_path, body):
+    """Run *body* (JS, prints with process.stdout.write) after the page's
+    declarations, on the DOM shim; returns the parsed JSON output."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    import subprocess
+
+    m = re.search(r"\nconst DATA = .*?\n(?=// Every view reloads)", visual.PAGE, re.S)
+    assert m
+    script = tmp_path / "page.js"
+    script.write_text(_DOM_SHIM + m.group(0) + "\n" + body, encoding="utf-8")
+    run = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout)
+
+
+def test_home_folder_project_is_tilde_never_the_user_name(sandbox):
+    from agentwatch.cli import _ps_json
+
+    home = AgentProcess(pid=9, agent_type="claude-code", working_directory=Path.home(),
+                        log_file=None, command="claude")
+    proj = AgentProcess(pid=8, agent_type="claude-code",
+                        working_directory=Path.home() / "code" / "demo", log_file=None,
+                        command="claude")
+    assert [a["project"] for a in _ps_json([home, proj])] == ["~", "demo"]
+    assert [a["project"] for a in agent_status.build([home, proj])["agents"]] == ["~", "demo"]
+    nowhere = AgentProcess(pid=7, agent_type="codex", working_directory=None, log_file=None,
+                           command="codex")
+    assert _ps_json([nowhere])[0]["project"] == ""
+
+
+def test_script_json_cannot_close_the_script_element():
+    out = visual.script_json({"x": "</script><script>alert(1)</script><!--"})
+    assert "<" not in out and json.loads(out)["x"].startswith("</script>")
+    m = re.search(r"\nconst DATA = (.*?);\n", visual.PAGE)
+    assert "<" not in m.group(1)
+
+
+def test_hidden_beats_display_and_focus_ring_is_inside_the_tab_scroller():
+    assert "[hidden]{display:none!important}" in visual.PAGE
+    assert "[role=tab]:focus-visible{outline-offset:-3px}" in visual.PAGE
+    assert 'document.getElementById("pause").hidden = expiredLink;' in visual.PAGE
+
+
+def test_working_needs_a_recent_tool_call(tmp_path):
+    out = _views_js(tmp_path, """
+const row = (active, age) => ({active, health: {score: 100, label: "productive"},
+  cost_usd: 1, last_action: age === null ? null : {tool: "Edit", target: "a.py", age_s: age,
+  ok: true}});
+const cases = [row(true, 30), row(true, 119), row(true, 120), row(true, 9000), row(false, 30),
+  row(true, null), row(null, null)];
+process.stdout.write(JSON.stringify(cases.map(s => [working(s), stateOf(s).textContent,
+  statusParts(s, "")[0].textContent])));
+""")
+    assert [w for w, _, _ in out] == [True, True, False, False, False, False, False]
+    states = [st.strip() for _, st, _ in out]
+    assert states == ["Working", "Working", "Idle", "Idle", "Idle", "Idle", "No activity"]
+    assert out[0][2].startswith("Doing now") and out[3][2].startswith("Last action")
+
+
+def test_advice_line_only_with_a_real_recommendation(tmp_path):
+    check = {"overall_score": 90, "status": "productive", "warnings": [], "categories": {},
+             "session_fallback": None}
+    out = _views_js(tmp_path, f"""
+const text = rec => {{
+  const box = new Node("div");
+  box.append(...VIEWS.check({{...{json.dumps(check)}, efficiency: {{score: 80,
+    cost_total: 1, recommendation: rec}}}}).filter(Boolean));
+  return box.textContent;
+}};
+process.stdout.write(JSON.stringify([text(null), text("None"), text("Wrap up soon")]));
+""")
+    assert "Advice" not in out[0] and "Advice" not in out[1]
+    assert "Advice: Wrap up soon" in out[2]
+
+
+def test_history_shows_25_rows_then_more_on_click(tmp_path):
+    rows = [{"agent": "claude-code", "project": f"proj{i:03d}", "ended": 1.79e9 - i,
+             "actions": 1, "tokens": 1, "cost_usd": 0.1, "health_score": 100,
+             "status": "healthy"} for i in range(60)]
+    out = _views_js(tmp_path, f"""
+const d = {{synced: null, sessions: {json.dumps(rows)}}};
+const page = () => {{
+  const box = new Node("div");
+  box.append(...VIEWS.history(d).filter(Boolean));
+  return box;
+}};
+const shown = box => (box.textContent.match(/proj\\d{{3}}/g) || []).length;
+const first = page(), btn = first.kids[first.kids.length - 1];
+const firstText = first.textContent;
+historyShown += HISTORY_PAGE;  // what the button's click does
+const second = page();
+historyShown += HISTORY_PAGE;
+const third = page();
+process.stdout.write(JSON.stringify([shown(first), btn.tag, btn.textContent,
+  /Newest 25 of 60 sessions/.test(firstText), shown(second), shown(third),
+  third.kids.some(k => k.tag === "button")]));
+""")
+    assert out == [25, "button", "Show 25 more", True, 50, 60, False]
+    more = _fn("moreButton")
+    assert "historyShown += HISTORY_PAGE" in more and "swap(body" in more
+
+
+# Every tab fits 320 px without sideways scroll (headless Chrome, when installed).
+# The script prints the measurements, or {"skip": why} when Chrome can't be
+# driven (CI images vary); a measured overflow is never a skip.
+
+_WIDTH_CHECK = r"""
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+const [chromePath, url, tabs, prof] = process.argv.slice(2);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const skip = why => { process.stdout.write(JSON.stringify({skip: why})); };
+let exited = null, ws = null;
+const chrome = spawn(chromePath, ["--headless=new", "--no-sandbox", "--disable-gpu",
+  "--disable-dev-shm-usage", "--hide-scrollbars", "--no-first-run",
+  "--remote-debugging-port=0", `--user-data-dir=${prof}`, "about:blank"],
+  {stdio: "ignore"});
+chrome.on("exit", code => { exited = code ?? "signal"; });
+chrome.on("error", e => { exited = String(e.message || e); });
+function stop() {
+  try { if (ws) ws.close(); } catch {}
+  try { chrome.kill("SIGKILL"); } catch {}
+}
+async function devtools() {  // Chrome writes its port here once DevTools listens
+  for (let i = 0; i < 150; i++) {
+    if (exited !== null) throw new Error(`chrome exited (${exited}) before DevTools`);
+    try {
+      const port = readFileSync(join(prof, "DevToolsActivePort"), "utf8").split("\n")[0];
+      if (+port > 0) {
+        const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+        const page = list.find(t => t.type === "page");
+        if (page) return page.webSocketDebuggerUrl;
+      }
+    } catch {}
+    await sleep(100);
+  }
+  throw new Error("DevTools not reachable after 15 s");
+}
+let stage = "start";
+try {
+  const target = await devtools();
+  stage = "connect";
+  ws = new WebSocket(target);
+  await new Promise((ok, bad) => {
+    ws.addEventListener("open", ok);
+    ws.addEventListener("error", () => bad(new Error("websocket error")));
+    setTimeout(() => bad(new Error("websocket open timed out")), 10000);
+  });
+  let id = 0; const wait = new Map();
+  ws.addEventListener("message", e => {
+    const m = JSON.parse(e.data);
+    if (wait.has(m.id)) { wait.get(m.id)(m); wait.delete(m.id); }
+  });
+  const send = (method, params = {}) => new Promise((ok, bad) => {
+    const n = ++id;
+    wait.set(n, ok);
+    ws.send(JSON.stringify({id: n, method, params}));
+    setTimeout(() => bad(new Error(`${method} timed out`)), 15000);
+  });
+  stage = "measure";
+  await send("Emulation.setDeviceMetricsOverride",
+    {width: 320, height: 640, deviceScaleFactor: 1, mobile: true});
+  const out = [];
+  for (const scheme of ["dark", "light"]) {
+    await send("Emulation.setEmulatedMedia",
+      {features: [{name: "prefers-color-scheme", value: scheme}]});
+    for (const tab of tabs.split(",")) {
+      await send("Page.navigate", {url: `${url}#${tab}`});
+      let v;
+      for (let i = 0; i < 80; i++) {  // until every section has loaded
+        await sleep(250);
+        const r = await send("Runtime.evaluate", {returnByValue: true, expression: `
+          JSON.stringify({loading: document.querySelectorAll("[aria-busy=true]").length,
+            sections: document.querySelectorAll("section[data-name]").length,
+            sw: document.documentElement.scrollWidth, iw: innerWidth})`});
+        v = JSON.parse(r.result.result.value);
+        if (v.sections && !v.loading) break;
+      }
+      out.push({scheme, tab, ...v});
+    }
+  }
+  process.stdout.write(JSON.stringify(out));
+} catch (e) {
+  skip(`headless Chrome could not be driven (${stage}): ${e.message || e}`);
+} finally {
+  stop();
+  process.exit(0);
+}
+"""
+
+
+def _chrome():
+    import glob
+
+    for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"):
+        if shutil.which(name):
+            return shutil.which(name)
+    found = sorted(glob.glob(str(Path.home() / ".cache/ms-playwright/chromium-*/"
+                                 "chrome-linux64/chrome")))
+    return found[-1] if found else None
+
+
+def test_every_tab_fits_320px_without_sideways_scroll(server, sandbox, tmp_path):
+    node, chrome = shutil.which("node"), _chrome()
+    if node is None or chrome is None:
+        pytest.skip("needs node and a headless Chrome")
+    import subprocess
+
+    script = tmp_path / "width.mjs"
+    script.write_text(_WIDTH_CHECK, encoding="utf-8")
+    prof = tmp_path / "prof"
+    prof.mkdir()
+    url = f"http://127.0.0.1:{server.server_address[1]}/?t={server.token}"
+    try:
+        run = subprocess.run([node, str(script), chrome, url,
+                              "overview,security,cost,history", str(prof)],
+                             capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        pytest.skip("headless Chrome run timed out")
+    assert run.returncode == 0, run.stderr
+    results = json.loads(run.stdout)
+    if isinstance(results, dict) and "skip" in results:
+        pytest.skip(results["skip"])
+    assert len(results) == 8 and all(r["sections"] for r in results), results
+    for r in results:
+        assert r["sw"] <= r["iw"] == 320, r

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agentwatch.cli import json_project
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.security.secret_scanner import one_line
 from agentwatch.discovery import AgentProcess
@@ -104,7 +105,7 @@ def build(agents: list[AgentProcess]) -> dict[str, Any]:
     rows, live = [], set()
     for a in agents:
         row: dict[str, Any] = {
-            "pid": a.pid, "agent_type": a.agent_type, "project": a.project_name,
+            "pid": a.pid, "agent_type": a.agent_type, "project": json_project(a),
             "last_action": None, "health": None, "cost_usd": None, "active": None,
             "log_expected": a.agent_type not in NO_SESSION_LOG,
         }
