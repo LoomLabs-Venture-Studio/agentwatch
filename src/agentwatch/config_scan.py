@@ -81,6 +81,10 @@ class Report:
     skipped: list[dict] = field(default_factory=list)
     # Set only when a config baseline was read or written (config_baseline.py).
     baseline: dict | None = None
+    # Skill scripts checked, and those left unchecked by the scan's time
+    # budget (also listed in skipped). Not in the JSON output.
+    scripts_checked: int = 0
+    scripts_over_budget: int = 0
 
     def summary(self) -> dict:
         counts = {s: sum(f.severity == s for f in self.findings) for s in SEVERITIES}
@@ -376,15 +380,39 @@ _SAVED = (
         r"(?:\bbase(?:64|32)\b[^\n|]{0,200}?\s(?:-d|-D|--decode)\b|\bxxd\b[^\n|]{0,200}?\s-r\b)"
         r"[^\n|]{0,200}?" + _TO_FILE)),
 )
-# Then that file run: an interpreter given it (sh F, python F, ["bash", "F"]),
-# chmod +x F, or F at command position (line start, after ; & | ( ` { then do
-# else), optionally after `.`, source, exec or & (PowerShell's call operator).
-# `.` is a command only there: `jq . F` and `find . F` are not runs.
+# Then that file run. Each form is followed by the file name (with an
+# optional path before it). Which forms apply depends on the file's language
+# (_run_style):
+# - shell (sh family, bat/cmd, extensionless, `#!` shell): an interpreter given
+#   it (sh F, python F), chmod +x F, or F at command position (line start,
+#   after ; & | ( ` { then do else), optionally after `.`, source or exec.
+#   `.` is a command only there: `jq . F` and `find . F` are not runs.
 _CMD_POS = r"(?:^|[;&|(`{]|\b(?:then|do|else)\b)[ \t]*"
-_RUN_FILE = (r"(?:\b(?:(?:ba|z|da|k|fi)?sh|python3?|node|perl|ruby|start-process)"
-             r"(?:[\"'][ \t]*,[ \t]*|[ \t]+)(?:-\S+[ \t]+){0,4}|\bchmod[ \t]+\S*x\S*[ \t]+|"
-             + _CMD_POS + r"(?:(?:\.|source|exec|&)[ \t]+)?)"
-             r"[\"']?[^\s\"']{0,200}?")
+_RUN_SHELL = (r"(?:\b(?:(?:ba|z|da|k|fi)?sh|python3?|node|perl|ruby)[ \t]+(?:-\S+[ \t]+){0,4}"
+              r"|\bchmod[ \t]+\S*x\S*[ \t]+|"
+              + _CMD_POS + r"(?:(?:\.|source|exec)[ \t]+)?)"
+              r"[\"']?[^\s\"']{0,200}?")
+# - PowerShell: & F, . F, Start-Process F, powershell/pwsh -File F, .\F or ./F
+#   at the start of a statement (line start, after ; | {; not after `(`,
+#   where a file is an argument: `Expand-Archive("a.zip")`).
+_RUN_PS = (r"(?:(?:^|[;|{])[ \t]*(?:(?:&|\.)[ \t]+)?"
+           r"|\bstart-process[ \t]+(?:-filepath[ \t]+)?"
+           r"|\b(?:powershell|pwsh)(?:\.exe)?[ \t]+(?:-\S+[ \t]+){0,4}?-file[ \t]+"
+           r"|(?<![\w.])&[ \t]+)"
+           r"[\"']?[^\s\"']{0,200}?")
+# - code (py, js, ts, rb, pl, php): only a call that runs a program or code,
+#   on the same line, before the name: subprocess.*, os.system/exec*/spawn*/
+#   popen, exec(open(F)), runpy, child_process exec/execFile/spawn (and
+#   *Sync), system(), Popen, PHP shell_exec/passthru/proc_open/popen; for
+#   rb/pl/php also backticks. A file only opened or parsed (open, read_csv,
+#   ZipFile) is not a run.
+_EXEC_CALL = (r"\b(?:subprocess\.\w+|os\.(?:system|exec\w*|spawn\w*|popen)|Popen"
+              r"|execfile|runpy\.run_path|exec(?:File)?(?:Sync)?|spawn(?:Sync)?"
+              r"|system|shell_exec|passthru|proc_open|popen)\s*\(")
+_RUN_CODE = _EXEC_CALL + r"[^\n]{0,200}?(?<![\w.-])"
+_RUN_CODE_TICK = r"(?:" + _EXEC_CALL + r"[^\n]{0,200}?|`[^`\n]{0,200}?)(?<![\w.-])"
+_CODE_EXT = {".py", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".php"}
+_SHEBANG_CODE = re.compile(r"#![^\n]{0,100}?\b(?:python[\d.]*|node|ruby|perl|php)\b")
 # Files the script checks read: by extension, else a `#!` first line, else
 # (no extension) an exec bit.
 _SCRIPT_EXT = {".sh", ".bash", ".zsh", ".fish", ".ksh", ".ps1", ".psm1", ".bat", ".cmd",
@@ -491,6 +519,7 @@ class Scanner:
         self.items: dict[tuple[str, str, str, str], tuple[str, str]] = {}
         self._in_plugin = False
         self._script_cpu = 0.0  # CPU seconds spent in script checks this scan
+        self._skill_bases: set[Path] = set()
         self.config_dirs: list[str] = []  # Claude Code config dirs read (show() form)
 
     # -- plumbing -----------------------------------------------------------
@@ -908,6 +937,10 @@ class Scanner:
         symlinked dir is never entered (it is pinned by its link text)."""
         if base.is_symlink() or not base.is_dir():
             return
+        real = base.resolve()
+        if real in self._skill_bases:  # --path is home: ~/.claude/skills twice
+            return
+        self._skill_bases.add(real)
         scope = show(base)
         for dirpath, dirnames, filenames in os.walk(base):
             here = Path(dirpath)
@@ -1015,7 +1048,9 @@ class Scanner:
         if self._script_cpu >= _SCAN_SCRIPT_BUDGET_S:
             self.report.skipped.append({"file": show(path),
                                         "reason": "not script-checked (scan time limit)"})
+            self.report.scripts_over_budget += 1
             return
+        self.report.scripts_checked += 1
         start = time.process_time()
         try:
             self.script_checks(text, path)
@@ -1052,14 +1087,15 @@ class Scanner:
                     if label := guard.secret_label(m.group()):
                         found["credential_read"] = (pos + m.start(), label)
                         break
+        run_form = _run_form(suffix, text)
         for kind, start, end, name in saved[:_MAX_DOWNLOADS]:
-            base = re.split(r"[/\\]", name.rstrip("/\\").split("?")[0])[-1]
+            base =re.split(r"[/\\]", name.rstrip("/\\").split("?")[0])[-1]
             if (kind in found or base in ("", ".", "..", "-") or name.startswith("/dev/")
                     or time.process_time() > deadline):
                 continue
             # The run must follow within _RUN_AFTER chars of the save. Searched
             # in place (pos/endpos), so `^` is a real line start only.
-            run = re.compile(_RUN_FILE + re.escape(base) + r"(?![\w.-])", re.I | re.M)
+            run = re.compile(run_form + re.escape(base) + r"(?![\w.-])", re.I | re.M)
             if run.search(text, end, end + _RUN_AFTER):
                 found[kind] = (start, "")
         if suffix in _SHELL_EXT or _SHEBANG_SH.match(text):
@@ -1203,6 +1239,15 @@ def _writable_by_others(st: os.stat_result) -> str | None:
     if st.st_mode & stat.S_IWGRP and _group_has_others(st.st_gid, st.st_uid):
         return "group-writable by a group with other members"
     return None
+
+
+def _run_form(suffix: str, text: str) -> str:
+    """The run-detection prefix for a script: by language (see _RUN_SHELL)."""
+    if suffix in (".ps1", ".psm1"):
+        return _RUN_PS
+    if suffix in _CODE_EXT or (not suffix and _SHEBANG_CODE.match(text)):
+        return _RUN_CODE_TICK if suffix in (".rb", ".pl", ".php") else _RUN_CODE
+    return _RUN_SHELL  # sh family, bat/cmd, extensionless, `#!` shell
 
 
 def _windows(text: str, comments: tuple[str, ...] = ()):

@@ -3167,6 +3167,10 @@ def config_scan(json_output: bool, project: Path | None, pin: bool):
         click.echo(json.dumps(report.to_json(), indent=2))
     else:
         _print_config_report(report)
+        if report.scripts_over_budget:
+            click.echo(f"agentwatch: script checks stopped after {report.scripts_checked} "
+                       f"files (time limit); {report.scripts_over_budget} not checked",
+                       err=True)
     sys.exit(report.exit_code())
 
 
