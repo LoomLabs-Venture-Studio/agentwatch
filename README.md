@@ -34,6 +34,7 @@ agentwatch tools           # every tool a session used, and what failed
 agentwatch subagents       # health of each subagent (cto, engineer, qa...)
 agentwatch ps              # running agents, with approvals and sandbox posture
 agentwatch ledger          # what a session ran, changed, deleted and contacted
+agentwatch config-scan     # risky agent configs, MCP servers, hooks and skill scripts
 ```
 
 `agentwatch ps` has a POSTURE column: `yolo · no sandbox` (red) means an agent
@@ -42,6 +43,13 @@ runs with approvals skipped and outside any sandbox; `approvals · sandboxed`
 actions. It reads the agent's own flags and config (Claude Code, Codex, Gemini
 CLI, Copilot CLI) and its parent processes (srt, bwrap, firejail, sandbox-exec,
 containers). `ps --json` has it as a `posture` object.
+
+`agentwatch config-scan --baseline` records the skills, plugins and MCP
+servers installed now (as keyed hashes only, never contents or secrets).
+Later `config-scan` runs report anything changed (medium), added or removed
+since, so a skill or MCP server that changes after an update stands out.
+Scripts inside skill folders are checked on every run for piping a download
+into a shell, decoding and running a payload, and reading credential files.
 
 `agentwatch ledger` lists one session's commands, file writes and edits,
 deleted paths and network hosts, and marks the destructive ones (`rm`,
