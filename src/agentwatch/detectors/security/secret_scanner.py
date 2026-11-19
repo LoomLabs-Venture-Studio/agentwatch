@@ -714,6 +714,19 @@ def _load_fingerprint_key() -> bytes | None:
     return None
 
 
+def fingerprint_key(create: bool = True) -> bytes | None:
+    """This user's stored fingerprint key (``_load_fingerprint_key``), for
+    digests that must match across runs (config-scan's baseline). Never a
+    per-run fallback key: None when it cannot be read or created, or, with
+    *create* False, when the key file does not exist yet."""
+    if not create:
+        from agentwatch.history import data_dir
+
+        if not os.path.lexists(data_dir() / _FINGERPRINT_KEY_FILE):
+            return None
+    return _load_fingerprint_key()
+
+
 def _read_key_file(path: Path) -> bytes | None:
     """The key file's bytes; None if it is a symlink, not a regular file or
     (POSIX) not owned by us."""

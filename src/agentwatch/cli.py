@@ -3129,7 +3129,12 @@ def scrub(path: Path, secrets_only: bool, in_place: bool, dry_run: bool, json_ou
     default=None,
     help="Project folder whose configs to check (default: current folder)",
 )
-def config_scan(json_output: bool, project: Path | None):
+@click.option(
+    "--baseline", "pin", is_flag=True,
+    help="Pin the skills, plugins and MCP servers installed now; later scans report "
+         "what changed since. Run it again to accept changes.",
+)
+def config_scan(json_output: bool, project: Path | None, pin: bool):
     """Check AI agents' configs for risky settings. Offline and read-only.
 
     \b
@@ -3140,12 +3145,24 @@ def config_scan(json_output: bool, project: Path | None):
     changes nothing, and never prints secret values.
 
     \b
+    Scripts inside skills are checked for pipe-to-shell, decode-then-run,
+    download-then-run and credential reads. With --baseline it pins what
+    is installed now (keys and keyed digests only, in the agentwatch data
+    folder); while a baseline exists, each scan reports skills, plugins
+    and MCP servers changed (medium), added or removed (low) since.
+
+    \b
     Exit codes: 0 = nothing above low, 1 = at least one medium,
     2 = at least one high.
     """
-    from agentwatch import config_scan as cs
+    from agentwatch import config_baseline as cb
 
-    report = cs.scan(project or Path.cwd())
+    try:
+        report, note = cb.run(project or Path.cwd(), pin)
+    except cb.BaselineError as exc:
+        raise click.ClickException(f"could not write the config baseline: {exc}") from None
+    if note:
+        click.echo(note, err=True)
     if json_output:
         click.echo(json.dumps(report.to_json(), indent=2))
     else:
@@ -3168,7 +3185,11 @@ def _print_config_report(report) -> None:
     click.echo(f"\n  Scanned {len(report.scanned)} file(s) for {len(agents)} agent(s)\n")
     order = {s: i for i, s in enumerate(("high", "medium", "low"))}
     by_agent: dict[str, dict[str, list]] = {}
+    drift = []
     for f in sorted(report.findings, key=lambda f: order[f.severity]):
+        if f.kind.startswith("drift_"):
+            drift.append(f)
+            continue
         by_agent.setdefault(f.agent, {}).setdefault(f.file, []).append(f)
     for agent, files in by_agent.items():
         click.echo("  " + click.style(display_name(agent), bold=True))
@@ -3182,6 +3203,8 @@ def _print_config_report(report) -> None:
                 click.echo(click.style(f"             Why: {f.why}", dim=True))
                 click.echo(click.style(f"             Fix: {f.fix}", dim=True))
         click.echo()
+    if report.baseline is not None:
+        _print_drift(report.baseline, drift)
     for skip in report.skipped:
         click.echo(click.style(f"  Skipped {skip['file']}: {skip['reason']}", dim=True))
     if report.skipped:
@@ -3192,6 +3215,28 @@ def _print_config_report(report) -> None:
     else:
         click.echo(f"  {s['total']} finding(s): {s['high']} high, {s['medium']} medium, "
                    f"{s['low']} low")
+    click.echo()
+
+
+def _print_drift(baseline: dict, drift: list) -> None:
+    """config-scan's baseline section: what was pinned, or what changed."""
+    from agentwatch import config_baseline as cb
+
+    when = cb.when(baseline["created"])
+    if baseline.get("pinned"):
+        click.echo(click.style(
+            f"  Baseline saved ({when}): {baseline['items']} skill(s), plugin(s) and MCP "
+            f"server(s) pinned in {cb.show(cb.path())}", fg="green"))
+        click.echo()
+        return
+    click.echo("  " + click.style(f"Changed since baseline ({when})", bold=True))
+    if not drift:
+        click.echo(click.style("    Nothing changed.", fg="green"))
+    for f in drift:
+        sev = click.style(f"{f.severity.upper():<6}", fg=_SEVERITY_STYLE[f.severity], bold=True)
+        click.echo(f"    {sev} {f.kind}  {f.file}")
+        click.echo(f"           {f.message}")
+        click.echo(click.style(f"           Fix: {f.fix}", dim=True))
     click.echo()
 
 

@@ -24,6 +24,8 @@ Formats (checked against each tool's docs, 2026-10-31):
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -31,6 +33,7 @@ import re
 import shlex
 import socket
 import stat
+import time
 import tomllib
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
@@ -76,6 +79,8 @@ class Report:
     findings: list[Finding] = field(default_factory=list)
     scanned: list[dict] = field(default_factory=list)
     skipped: list[dict] = field(default_factory=list)
+    # Set only when a config baseline was read or written (config_baseline.py).
+    baseline: dict | None = None
 
     def summary(self) -> dict:
         counts = {s: sum(f.severity == s for f in self.findings) for s in SEVERITIES}
@@ -88,9 +93,12 @@ class Report:
         return 2 if "high" in sev else 1 if "medium" in sev else 0
 
     def to_json(self) -> dict:
-        return {"schema": SCHEMA, "findings": [asdict(f) for f in self.findings],
-                "summary": self.summary(), "files_scanned": self.scanned,
-                "files_skipped": self.skipped}
+        out = {"schema": SCHEMA, "findings": [asdict(f) for f in self.findings],
+               "summary": self.summary(), "files_scanned": self.scanned,
+               "files_skipped": self.skipped}
+        if self.baseline is not None:
+            out["baseline"] = self.baseline
+        return out
 
 
 def show(path: PurePath | str) -> str:
@@ -324,6 +332,55 @@ _INJECTION_TEXT = re.compile(
 
 _QUOTES = set("\"'`\u201c\u2018")
 
+# Skill scripts (drift pinning). Bounded repeats keep every pattern linear.
+# Decode-then-run: `base64 -d | sh`, exec(b64decode(...)), eval(atob(...)),
+# PowerShell FromBase64String / -EncodedCommand.
+_DECODE_EXEC = re.compile(
+    r"\bbase(?:64|32)\b[^\n|]{0,200}?\s(?:-d|-D|--decode)\b[^\n|]{0,200}\|\s*"
+    r"(?:sudo\s+)?(?:/\S*/)?" + _SHELLS + r"\b"
+    r"|\b(?:exec|eval)\s*\([^\n]{0,200}?\b(?:b64decode|b32decode|b85decode|a85decode|atob"
+    r"|fromhex)\b"
+    r"|\beval\s*\([^\n]{0,200}?\bBuffer\.from\([^\n]{0,200}?[\"']base64[\"']"
+    r"|\b(?:iex|invoke-expression)\b[^\n]{0,200}?\bfrombase64string\b"
+    r"|\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,200}?\s-(?:e|ec|enc|encodedcommand)\s+"
+    r"[A-Za-z0-9+/=]{16,}",
+    re.I,
+)
+# A download saved to a file: curl -o F / wget -O F / curl -O URL, iwr -OutFile F,
+# urlretrieve(URL, F). The first non-empty group is the file.
+_DOWNLOAD_TO = re.compile(
+    r"\b(?:curl|wget)\b[^\n]{0,300}?\s(?:-o|-O|--output|--output-document)(?:\s+|=)"
+    r"[\"']?([^\s\"';&|)]+)"
+    r"|\b(?:iwr|invoke-webrequest)\b[^\n]{0,300}?\s-outfile\s+[\"']?([^\s\"';&|)]+)"
+    r"|\burlretrieve\s*\([^\n,]{0,300},\s*[\"']([^\"'\n]+)",
+    re.I,
+)
+# Then that file run: sh F, python F, ./F, chmod +x F, . F, & F (PowerShell).
+_RUN_FILE = (r"(?:\b(?:(?:ba|z|da|k)?sh|python3?|node|perl|ruby|source|exec|start-process)"
+             r"(?:[\"']\s*,\s*|\s+)(?:-\S+\s+){0,4}|\bchmod\s+\S*x\S*\s+|(?<![\w.])\.\s+|&\s*|\./)"
+             r"[\"']?[^\s\"']{0,200}?")
+# Credential files a script names (guard.secret_label has the last word).
+_CRED_REF = re.compile(
+    r"\.ssh/id_[\w.-]+|\.aws/credentials\b|(?<![\w.-])\.(?:netrc|npmrc|pypirc)\b"
+    r"|\.docker/config\.json\b|\.kube/config\b|(?<![\w.-])\.env(?:\.[\w-]+)?\b"
+)
+# Data and docs: a credential path named there is not a read.
+_DATA_EXT = {".json", ".yaml", ".yml", ".toml", ".txt", ".csv", ".lock", ".ini", ".cfg",
+             ".rst", ".html", ".xml", ".svg"}
+_SHELL_EXT = {".sh", ".bash", ".zsh", ".ksh", ".dash"}
+_SHEBANG_SH = re.compile(r"#![^\n]{0,100}?\b(?:ba|z|da|k)?sh\b")
+_MAX_DOWNLOADS = 20
+_RUN_AFTER = 20_000  # chars after a download searched for its run
+# Script checks: regexes run on windows of at most _WINDOW chars (a line, or
+# overlapping slices of a longer one), within _SCRIPT_BUDGET_S CPU per file.
+_WINDOW = 2_000
+_OVERLAP = 400
+_SCRIPT_BUDGET_S = 1.0
+_SCRIPT_WHAT = {"remote_script": "downloads and runs a script",
+                "encoded_exec": "decodes and runs hidden code",
+                "download_exec": "downloads a file and runs it",
+                "credential_read": "reads a credential file"}
+
 
 def _line_of(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
@@ -347,6 +404,12 @@ _WHY = {
     "injection_text": "Agents read this file as instructions; text like this tries to override "
                       "the user's.",
     "file_permissions": "Anyone who can write this file can make your agent run commands.",
+    "encoded_exec": "It decodes hidden code and runs it, so what runs cannot be read in the "
+                    "file.",
+    "download_exec": "It downloads a file and runs it; whoever controls that URL controls "
+                     "your machine.",
+    "credential_read": "A skill that reads keys or tokens can leak them into the transcript "
+                       "or a tool call.",
 }
 _FIX = {
     "secret": "Move the value to an environment variable (${VAR}) and rotate the credential.",
@@ -357,15 +420,29 @@ _FIX = {
     "hidden_text": "Open the file in an editor that shows invisible characters and delete them.",
     "injection_text": "Read the lines around it; remove the text if you didn't write it.",
     "file_permissions": "chmod go-w the file (and make sure you own it).",
+    "encoded_exec": "Decode it, read what it does, and remove the skill if you didn't write it.",
+    "download_exec": "Download the file once, review it, and ship the reviewed copy.",
+    "credential_read": "Check why the skill needs this file; remove the skill if it shouldn't.",
 }
+_SKILL_SCRIPT_WHY = ("A skill script runs with your agent's access; whoever controls that URL "
+                     "controls your machine.")
 
 
 class Scanner:
-    def __init__(self, project: Path, home: Path | None = None):
+    def __init__(self, project: Path, home: Path | None = None, *,
+                 key: bytes | None = None, scripts: bool = False):
         self.home = (home or Path.home()).resolve()
         self.project = project.resolve()
         self.report = Report()
         self._seen: set[Path] = set()
+        # Drift pinning (config_baseline.py): with *key*, each skill dir,
+        # plugin and MCP server entry gets an HMAC digest in self.items,
+        # (agent, kind, scope, name) -> (section, digest), section "user" or
+        # "project". With *scripts*, files in skill dirs are checked too.
+        self.key = key
+        self.scripts = scripts
+        self.items: dict[tuple[str, str, str, str], tuple[str, str]] = {}
+        self._in_plugin = False
 
     # -- plumbing -----------------------------------------------------------
 
@@ -504,7 +581,12 @@ class Scanner:
             return
         for name, srv in servers.items():
             if isinstance(srv, dict):
-                self.server(str(name), srv, agent, path, f"{prefix}.{name}" if prefix else name)
+                loc = f"{prefix}.{name}" if prefix else str(name)
+                self.server(str(name), srv, agent, path, loc)
+                if self.key is not None and not self._in_plugin:  # a plugin is pinned whole
+                    canon = json.dumps(srv, sort_keys=True, default=str, ensure_ascii=False)
+                    self._item(agent, "mcp_server", path, show(path), loc,
+                               self._digest(b"mcp\0" + canon.encode("utf-8", "surrogatepass")))
 
     def server(self, name: str, srv: dict, agent: str, path: Path, loc: str) -> None:
         label = f'MCP server "{one_line(name, 60)}"'
@@ -690,6 +772,13 @@ class Scanner:
             self.mcp_servers(data.get(key), agent, path, key)
 
     def plugin(self, root: Path) -> None:
+        self._in_plugin = True
+        try:
+            self._plugin(root)
+        finally:
+            self._in_plugin = False
+
+    def _plugin(self, root: Path) -> None:
         agent = "claude-code"
         if root.is_symlink() or not root.is_dir():
             return
@@ -743,6 +832,171 @@ class Scanner:
         if isinstance(hooks, dict):
             self.hooks(hooks.get("hooks"), "claude-code", path)
 
+    # -- drift pinning ------------------------------------------------------
+
+    def _digest(self, data: bytes) -> str | None:
+        if self.key is None:
+            return None
+        return hmac.new(self.key, data, hashlib.sha256).hexdigest()
+
+    def _is_project(self, path: Path) -> bool:
+        """True for a config in the --path project (not one in home, unless
+        the project sits inside home)."""
+        p, proj, home = Path(os.path.abspath(path)), self.project, self.home
+        if not p.is_relative_to(proj) or proj == home:
+            return False
+        return not p.is_relative_to(home) or proj.is_relative_to(home)
+
+    def _item(self, agent: str, kind: str, src: Path, scope: str, name: str,
+              digest: str | None) -> None:
+        if digest is not None:
+            section = "project" if self._is_project(src) else "user"
+            self.items[(agent, kind, scope, name)] = (section, digest)
+
+    def skills(self, base: Path) -> None:
+        """Pin each skill dir (a dir holding SKILL.md) under *base*, every
+        file in it, and check its scripts. Same walk rules as walk_md: a
+        symlinked dir is never entered (it is pinned by its link text)."""
+        if base.is_symlink() or not base.is_dir():
+            return
+        scope = show(base)
+        for dirpath, dirnames, filenames in os.walk(base):
+            here = Path(dirpath)
+            dirnames[:] = sorted(d for d in dirnames
+                                 if not d.startswith(".") and d != "node_modules")
+            for d in list(dirnames):
+                if (here / d).is_symlink():
+                    dirnames.remove(d)
+                    rel = (here / d).relative_to(base).as_posix()
+                    self._item("claude-code", "skill", here / d, scope, rel,
+                               self._digest(b"dirlink\0" + _link(here / d)))
+            if "SKILL.md" in filenames:
+                dirnames[:] = []  # this dir is the skill; its subdirs are its files
+                rel = here.relative_to(base).as_posix()
+                self._item("claude-code", "skill", here, scope, rel,
+                           self._tree(here, lambda r: True))
+
+    def plugin_item(self, installed: Path, name: str, root: Path) -> None:
+        """Pin a plugin's whole installPath; check the scripts in its skills."""
+        if root.is_symlink() or not root.is_dir():
+            return
+        digest = self._tree(root, lambda r: r.startswith("skills/"))
+        self._item("claude-code", "plugin", installed, show(installed), name, digest)
+
+    def _tree(self, top: Path, scripts) -> str | None:
+        """HMAC over every file under *top* (path + sha256 of its bytes); with
+        self.scripts, files *scripts(rel)* accepts are checked as scripts.
+        Symlinks leaving their root and files over MAX_BYTES are pinned by
+        link text / size, never read; .git is left out; at most
+        MAX_WALK_FILES files."""
+        h = hmac.new(self.key, digestmod=hashlib.sha256) if self.key is not None else None
+        root = self._root(top).resolve()
+
+        def pin(*parts: str | bytes) -> None:
+            if h is not None:
+                for part in parts:
+                    h.update(part if isinstance(part, bytes)
+                             else part.encode("utf-8", "surrogatepass"))
+                    h.update(b"\0")
+
+        n = 0
+        for dirpath, dirnames, filenames in os.walk(top):
+            here = Path(dirpath)
+            dirnames.sort()
+            for d in list(dirnames):
+                if d == ".git" or (here / d).is_symlink():
+                    dirnames.remove(d)
+                    if d != ".git":
+                        pin((here / d).relative_to(top).as_posix(), "dirlink", _link(here / d))
+            for f in sorted(filenames):
+                n += 1
+                if n > MAX_WALK_FILES:
+                    pin("truncated")
+                    self.report.skipped.append({
+                        "file": show(top),
+                        "reason": f"more than {MAX_WALK_FILES} files; the rest not "
+                                  + ("pinned" if h is not None else "script-checked")})
+                    return h.hexdigest() if h is not None else None
+                path = here / f
+                rel = path.relative_to(top).as_posix()
+                try:
+                    st = path.lstat()
+                    if stat.S_ISLNK(st.st_mode):
+                        real = path.resolve(strict=True)
+                        if not real.is_relative_to(root):
+                            pin(rel, "link-out", _link(path))
+                            continue
+                        st = real.stat()
+                    if not stat.S_ISREG(st.st_mode):
+                        continue
+                    if st.st_size > MAX_BYTES:
+                        pin(rel, "large", str(st.st_size))
+                        continue
+                    with open(path, "rb") as fh:
+                        data = fh.read(MAX_BYTES + 1)
+                except OSError:
+                    pin(rel, "unreadable")
+                    continue
+                pin(rel, "file", hashlib.sha256(data).digest())
+                if (self.scripts and scripts(rel) and not f.lower().endswith(".md")
+                        and len(data) <= MAX_BYTES and b"\0" not in data[:8192]):
+                    self.script_checks(data.decode("utf-8", errors="replace"), path)
+        return h.hexdigest() if h is not None else None
+
+    def script_checks(self, text: str, path: Path) -> None:
+        """Pipe-to-shell, decode-then-run, download-then-run and credential
+        reads in a skill's script: config_scan's and guard.py's patterns,
+        regexes only (no shell parsing of our own). One finding per kind."""
+        from agentwatch import guard
+
+        found: dict[str, tuple[int, str]] = {}  # kind -> (pos, label)
+        downloads: list[tuple[int, int, str]] = []  # (start, end, file name)
+        deadline = time.process_time() + _SCRIPT_BUDGET_S
+        # _PIPE_TO_SHELL backtracks badly on long lines: every pattern but
+        # _CRED_REF runs on line windows of at most _WINDOW chars.
+        for pos, chunk in _windows(text):
+            if time.process_time() > deadline:
+                self.report.skipped.append({"file": show(path),
+                                            "reason": "script checks stopped (time limit)"})
+                break
+            for kind, rx in (("remote_script", _PIPE_TO_SHELL), ("encoded_exec", _DECODE_EXEC)):
+                if kind not in found and (m := rx.search(chunk)):
+                    found[kind] = (pos + m.start(), "")
+            if len(downloads) < _MAX_DOWNLOADS:
+                downloads.extend((pos + m.start(), pos + m.end(), next(g for g in m.groups() if g))
+                                 for m in _DOWNLOAD_TO.finditer(chunk))
+        for start, end, name in downloads[:_MAX_DOWNLOADS]:
+            base = re.split(r"[/\\]", name.rstrip("/\\"))[-1]
+            if base in ("", ".", "..", "-") or time.process_time() > deadline:
+                continue
+            # The run must follow within _RUN_AFTER chars of the download.
+            run = re.compile(_RUN_FILE + re.escape(base) + r"(?![\w.-])", re.I)
+            if run.search(text[end: end + _RUN_AFTER]):
+                found["download_exec"] = (start, "")
+                break
+        suffix = path.suffix.lower()
+        if suffix not in _DATA_EXT and not path.name.lower().endswith("ignore"):
+            for m in _CRED_REF.finditer(text):
+                label = guard.secret_label(m.group())
+                if label:
+                    found["credential_read"] = (m.start(), label)
+                    break
+        if suffix in _SHELL_EXT or _SHEBANG_SH.match(text):
+            reason = guard.check_command(text)
+            if reason == guard.REASONS["pipe_shell"]:
+                found.setdefault("remote_script", (0, ""))
+            elif reason and reason.startswith(guard.REASONS["secret"].split("(")[0]):
+                found.setdefault("credential_read",
+                                 (0, reason.split("(", 1)[-1].split(")", 1)[0]))
+        for kind, (pos, label) in found.items():
+            start = text.rfind("\n", 0, pos) + 1
+            end = text.find("\n", pos)
+            evidence = one_line(text[start: end if end >= 0 else len(text)], 100)
+            what = _SCRIPT_WHAT[kind] + (f" ({label})" if label else "")
+            self.add("medium" if kind == "credential_read" else "high", kind, "claude-code",
+                     path, f"line {_line_of(text, pos)}", f"Skill script {what}: {evidence}",
+                     _SKILL_SCRIPT_WHY if kind == "remote_script" else None)
+
     # -- entry --------------------------------------------------------------
 
     def run(self) -> Report:
@@ -786,14 +1040,20 @@ class Scanner:
             self.walk_md(base / "skills", "claude-code", "SKILL.md")
             self.walk_md(base / "commands", "claude-code")
             self.walk_md(base / "agents", "claude-code")
+            if self.key is not None or self.scripts:
+                self.skills(base / "skills")
         for claude in claudes:
-            installed = self.load(claude / "plugins" / "installed_plugins.json", "claude-code")
+            ip_file = claude / "plugins" / "installed_plugins.json"
+            installed = self.load(ip_file, "claude-code")
             plugins = installed.get("plugins") if isinstance(installed, dict) else None
-            for entries in (plugins.values() if isinstance(plugins, dict) else ()):
-                for e in entries if isinstance(entries, list) else ():
+            for pid, entries in (plugins.items() if isinstance(plugins, dict) else ()):
+                for i, e in enumerate(entries if isinstance(entries, list) else ()):
                     ip = e.get("installPath") if isinstance(e, dict) else None
                     if isinstance(ip, str) and Path(ip).resolve().is_relative_to(home):
                         self.plugin(Path(ip))
+                        if self.key is not None or self.scripts:
+                            self.plugin_item(ip_file, f"{pid}#{i}" if i else str(pid),
+                                             Path(ip))
 
         # Cursor, VS Code (Copilot)
         self.json_mcp(home / ".cursor" / "mcp.json", "cursor")
@@ -863,5 +1123,32 @@ def _writable_by_others(st: os.stat_result) -> str | None:
     return None
 
 
+def _windows(text: str):
+    """(offset, piece) for each line of *text*; a line longer than _WINDOW
+    comes as overlapping slices, so a pattern up to _OVERLAP chars long is
+    never cut in two."""
+    pos = 0
+    while pos < len(text):
+        nl = text.find("\n", pos)
+        end = len(text) if nl < 0 else nl
+        if end - pos <= _WINDOW:
+            yield pos, text[pos:end]
+        else:
+            for s in range(pos, end, _WINDOW - _OVERLAP):
+                yield s, text[s: min(s + _WINDOW, end)]
+                if s + _WINDOW >= end:
+                    break
+        pos = end + 1
+
+
+def _link(path: Path) -> bytes:
+    """A symlink's own target text (never followed), for pinning."""
+    try:
+        return os.fsencode(os.readlink(path))
+    except OSError:
+        return b"?"
+
+
 def scan(project: Path) -> Report:
-    return Scanner(project).run()
+    """The config scan with skill-script checks; no drift (config_baseline.run)."""
+    return Scanner(project, scripts=True).run()
