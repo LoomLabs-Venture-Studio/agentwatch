@@ -5734,13 +5734,16 @@ Criteria
 `agentwatch config-scan --baseline` pins what is installed now; a later `config-scan` reports skills, plugins and MCP servers added, changed or removed since, and scans scripts inside skills. Offline, read-only apart from the baseline file; never starts an MCP server.
 
 Criteria
-- [ ] Items: each skill dir (every file, recursively, same symlink/size rules as today), each plugin installPath, each MCP server entry (Claude Code, Cursor, VS Code, Codex, Gemini, Cline sources config-scan already reads), keyed by (agent, kind, scope, name).
-- [ ] Digest per item: HMAC-SHA256 under the existing per-user key (secret_scanner fingerprint key), so an env secret in an MCP entry is never stored as a plain hash. Baseline stores keys and digests only (no contents, no commands, no env values).
-- [ ] Baseline: data_dir()/config-baseline.json, JSON schema 1, 0600 via mkstemp + replace, dir via coach._private_dir; `--baseline` writes or re-pins (this is the accept action). Unreadable or malformed baseline: one stderr note, no drift findings, never a crash.
-- [ ] No baseline file: output and exit code exactly as today (test). With one: findings `drift_changed` (medium), `drift_added` (low), `drift_removed` (low); text section "Changed since baseline (date)"; JSON adds `baseline: {created, items}` and the findings (fields only added).
-- [ ] Skill scripts: non-markdown files in skill dirs (<= 2 MB, text only) checked for pipe-to-shell, base64-decode-then-exec, reads of credential paths (.env, ~/.ssh, ~/.aws, ...) and download-then-exec; reuse config_scan / guard patterns, no new shell parser; evidence via one_line.
-- [ ] `agentguard config-scan --baseline` works (options copied as today).
-- [ ] Tests: baseline round trip, each drift kind per source, an env secret never in the baseline file, permissions 0600, malformed baseline, script checks with true and false positives; ruff + full pytest green; QA pass.
+- [x] Items: each skill dir (every file, recursively, same symlink/size rules as today), each plugin installPath, each MCP server entry (Claude Code, Cursor, VS Code, Codex, Gemini, Cline sources config-scan already reads), keyed by (agent, kind, scope, name).
+- [x] Digest per item: HMAC-SHA256 under the existing per-user key (secret_scanner fingerprint key), so an env secret in an MCP entry is never stored as a plain hash. Baseline stores keys and digests only (no contents, no commands, no env values).
+- [x] Baseline: data_dir()/config-baseline.json, JSON schema 1, 0600 via mkstemp + replace, dir via coach._private_dir; `--baseline` writes or re-pins (this is the accept action). Unreadable or malformed baseline: one stderr note, no drift findings, never a crash.
+- [x] No baseline file: output and exit code exactly as today (test). With one: findings `drift_changed` (medium), `drift_added` (low), `drift_removed` (low); text section "Changed since baseline (date)"; JSON adds `baseline: {created, items}` and the findings (fields only added).
+- [x] Skill scripts: non-markdown files in skill dirs (<= 2 MB, text only) checked for pipe-to-shell, base64-decode-then-exec, reads of credential paths (.env, ~/.ssh, ~/.aws, ...) and download-then-exec; reuse config_scan / guard patterns, no new shell parser; evidence via one_line.
+- [x] `agentguard config-scan --baseline` works (options copied as today).
+- [x] Tests: baseline round trip, each drift kind per source, an env secret never in the baseline file, permissions 0600, malformed baseline, script checks with true and false positives; ruff + full pytest green; QA pass.
+
+
+**Wave 3 results (2026-11-19, #248, eb70739):** `config-scan --baseline` drift pinning and skill-script checks merged into develop. Board decision 2026-11-19: script checks run on every config-scan (new findings and exit codes without opting in). QA passed with limits after four rounds: false HIGHs on a lone `.`, Python file reads and tar/unzip/pip/jq on downloads fixed (language-aware run detection); live scan 5.6 s -> 0.44 s (script files only, trigger-word filter, 1 s per file, 3 s per scan with a note); nested-JSON crash, key mismatch, writes on read fixed. Full suite 4646 passed. Known limits in the PR body: non-script files (Makefile, Dockerfile, package.json, yaml) not checked; `eval "$X"` from curl and tar|curl exfil missed; credential paths flagged when only mentioned; only Claude Code skills pinned. Pre-existing slow regex on long config values: #247.
 
 **Next waves (planned):** research 5 (ledger), 4 (drift pinning), 2 (other agents' hooks, needs live hook checks per agent), then 9 (context % and branch in watch-all), 11 (scheduled digest).
 
