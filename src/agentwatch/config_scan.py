@@ -388,9 +388,10 @@ _SAVED = (
 #   after ; & | ( ` { then do else), optionally after `.`, source or exec.
 #   `.` is a command only there: `jq . F` and `find . F` are not runs.
 _CMD_POS = r"(?:^|[;&|(`{]|\b(?:then|do|else)\b)[ \t]*"
+#   bat/cmd: also `call F`; any: cmd /c F.
 _RUN_SHELL = (r"(?:\b(?:(?:ba|z|da|k|fi)?sh|python3?|node|perl|ruby)[ \t]+(?:-\S+[ \t]+){0,4}"
-              r"|\bchmod[ \t]+\S*x\S*[ \t]+|"
-              + _CMD_POS + r"(?:(?:\.|source|exec)[ \t]+)?)"
+              r"|\bcmd(?:\.exe)?[ \t]+/[ck][ \t]+|\bchmod[ \t]+\S*x\S*[ \t]+|"
+              + _CMD_POS + r"(?:(?:\.|source|exec|call)[ \t]+)?)"
               r"[\"']?[^\s\"']{0,200}?")
 # - PowerShell: & F, . F, Start-Process F, powershell/pwsh -File F, .\F or ./F
 #   at the start of a statement (line start, after ; | {; not after `(`,
@@ -400,17 +401,26 @@ _RUN_PS = (r"(?:(?:^|[;|{])[ \t]*(?:(?:&|\.)[ \t]+)?"
            r"|\b(?:powershell|pwsh)(?:\.exe)?[ \t]+(?:-\S+[ \t]+){0,4}?-file[ \t]+"
            r"|(?<![\w.])&[ \t]+)"
            r"[\"']?[^\s\"']{0,200}?")
-# - code (py, js, ts, rb, pl, php): only a call that runs a program or code,
-#   on the same line, before the name: subprocess.*, os.system/exec*/spawn*/
-#   popen, exec(open(F)), runpy, child_process exec/execFile/spawn (and
-#   *Sync), system(), Popen, PHP shell_exec/passthru/proc_open/popen; for
-#   rb/pl/php also backticks. A file only opened or parsed (open, read_csv,
-#   ZipFile) is not a run.
-_EXEC_CALL = (r"\b(?:subprocess\.\w+|os\.(?:system|exec\w*|spawn\w*|popen)|Popen"
-              r"|execfile|runpy\.run_path|exec(?:File)?(?:Sync)?|spawn(?:Sync)?"
-              r"|system|shell_exec|passthru|proc_open|popen)\s*\(")
-_RUN_CODE = _EXEC_CALL + r"[^\n]{0,200}?(?<![\w.-])"
-_RUN_CODE_TICK = r"(?:" + _EXEC_CALL + r"[^\n]{0,200}?|`[^`\n]{0,200}?)(?<![\w.-])"
+# - code (py, js, ts, rb, pl, php): a call that runs a program or code
+#   (subprocess.*, os.system/exec*/spawn*/popen, Popen, child_process
+#   exec/execFile/spawn (and *Sync), system(), PHP shell_exec/passthru/
+#   proc_open/popen; for rb/pl/php also backticks), where the program it
+#   starts runs the file (_call_runs): the file is the program itself, comes
+#   right after an interpreter, or the shell rule matches the command string.
+#   `unzip a.zip`, `pip install -r r.txt`, `jq . d.json` are not runs, nor a
+#   file only opened or parsed (open, read_csv, ZipFile). exec(open(F)),
+#   execfile(F) and runpy.run_path(F) run F as code.
+_EXEC_CALL = re.compile(
+    r"\b(?:subprocess\.\w+|os\.(?:system|exec\w*|spawn\w*|popen)|Popen"
+    r"|exec(?:File)?(?:Sync)?|spawn(?:Sync)?|system|shell_exec|passthru|proc_open|popen)"
+    r"\s*\(")
+_RUN_AS_CODE = (r"\b(?:exec\s*\(\s*open|execfile|runpy\.run_path)\s*\(\s*[\"']"
+                r"[^\"'\n]{0,200}?(?<![\w.-])")
+_CALL_STRING = re.compile(r"\"((?:[^\"\\\n]|\\.){0,400})\"|'((?:[^'\\\n]|\\.){0,400})'"
+                          r"|`([^`\n]{0,400})`")
+_INTERPRETERS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "node",
+                 "ruby", "perl", "pwsh", "powershell", "cmd"}
+_INLINE_FLAGS = {"-c", "/c", "/k", "-command"}  # their value is a command string
 _CODE_EXT = {".py", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".php"}
 _SHEBANG_CODE = re.compile(r"#![^\n]{0,100}?\b(?:python[\d.]*|node|ruby|perl|php)\b")
 # Files the script checks read: by extension, else a `#!` first line, else
@@ -1087,16 +1097,14 @@ class Scanner:
                     if label := guard.secret_label(m.group()):
                         found["credential_read"] = (pos + m.start(), label)
                         break
-        run_form = _run_form(suffix, text)
+        style = _run_style(suffix, text)
         for kind, start, end, name in saved[:_MAX_DOWNLOADS]:
-            base =re.split(r"[/\\]", name.rstrip("/\\").split("?")[0])[-1]
+            base = re.split(r"[/\\]", name.rstrip("/\\").split("?")[0])[-1]
             if (kind in found or base in ("", ".", "..", "-") or name.startswith("/dev/")
                     or time.process_time() > deadline):
                 continue
-            # The run must follow within _RUN_AFTER chars of the save. Searched
-            # in place (pos/endpos), so `^` is a real line start only.
-            run = re.compile(run_form + re.escape(base) + r"(?![\w.-])", re.I | re.M)
-            if run.search(text, end, end + _RUN_AFTER):
+            # The run must follow within _RUN_AFTER chars of the save.
+            if _runs_file(style, text, end, end + _RUN_AFTER, base):
                 found[kind] = (start, "")
         if suffix in _SHELL_EXT or _SHEBANG_SH.match(text):
             reason = guard.check_command(text)
@@ -1241,13 +1249,71 @@ def _writable_by_others(st: os.stat_result) -> str | None:
     return None
 
 
-def _run_form(suffix: str, text: str) -> str:
-    """The run-detection prefix for a script: by language (see _RUN_SHELL)."""
+def _run_style(suffix: str, text: str) -> str:
+    """How a script runs a file: "shell", "ps", "code" or "code-ticks" (rb, pl,
+    php: backticks run a command too). See _RUN_SHELL."""
     if suffix in (".ps1", ".psm1"):
-        return _RUN_PS
+        return "ps"
+    if suffix in (".rb", ".pl", ".php"):
+        return "code-ticks"
     if suffix in _CODE_EXT or (not suffix and _SHEBANG_CODE.match(text)):
-        return _RUN_CODE_TICK if suffix in (".rb", ".pl", ".php") else _RUN_CODE
-    return _RUN_SHELL  # sh family, bat/cmd, extensionless, `#!` shell
+        return "code"
+    return "shell"  # sh family, bat/cmd, extensionless, `#!` shell
+
+
+def _named(base: str) -> str:
+    return re.escape(base) + r"(?![\w.-])"
+
+
+def _shell_runs(command: str, base: str) -> bool:
+    """True when the shell command line *command* runs the file *base*."""
+    return re.search(_RUN_SHELL + _named(base), command, re.I | re.M) is not None
+
+
+def _is_file(arg: str, base: str) -> bool:
+    return re.split(r"[/\\]", arg)[-1] == base
+
+
+def _call_runs(args: str, base: str) -> bool:
+    """True when an exec-type call with argument text *args* runs *base*: the
+    first string is a command line that runs it (or is the file itself), a
+    -c / /c string does, or the program is an interpreter whose first
+    non-option argument is the file."""
+    strings = [next(g for g in m.groups() if g is not None)
+               for m in _CALL_STRING.finditer(args)][:16]
+    if not strings:
+        return False
+    if _shell_runs(strings[0], base):
+        return True
+    for flag, value in zip(strings, strings[1:], strict=False):
+        if flag.lower() in _INLINE_FLAGS and _shell_runs(value, base):
+            return True
+    program = re.split(r"[/\\]", strings[0])[-1].lower().removesuffix(".exe")
+    if program in _INTERPRETERS:
+        for arg in strings[1:]:
+            if arg.startswith("-") or arg.lower() in _INLINE_FLAGS:
+                continue
+            return _is_file(arg, base)
+    return False
+
+
+def _runs_file(style: str, text: str, pos: int, endpos: int, base: str) -> bool:
+    """True when text[pos:endpos] runs the file *base*, by the script's *style*.
+    Searched in place (pos/endpos), so `^` is a real line start only."""
+    if style in ("shell", "ps"):
+        prefix = _RUN_SHELL if style == "shell" else _RUN_PS
+        return re.compile(prefix + _named(base), re.I | re.M).search(text, pos, endpos) is not None
+    if re.compile(_RUN_AS_CODE + _named(base)).search(text, pos, endpos):
+        return True
+    for m in _EXEC_CALL.finditer(text, pos, endpos):
+        nl = text.find("\n", m.end())
+        if _call_runs(text[m.end(): min(nl if nl >= 0 else len(text), m.end() + 1000)], base):
+            return True
+    if style == "code-ticks":
+        for m in re.compile(r"`([^`\n]{0,400})`").finditer(text, pos, endpos):
+            if _shell_runs(m.group(1), base):
+                return True
+    return False
 
 
 def _windows(text: str, comments: tuple[str, ...] = ()):
