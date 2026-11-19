@@ -261,6 +261,16 @@ def read_session(
     return out
 
 
+def session_directory(db_path: Path, session_id: str) -> str | None:
+    """The session row's ``directory`` (its cwd), or None."""
+    conn = open_readonly(db_path)
+    try:
+        row = conn.execute("SELECT directory FROM session WHERE id = ?", (session_id,)).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row and isinstance(row[0], str) else None
+
+
 def parse_opencode_session(db_path: Path, session_id: str | None = None) -> list[Action]:
     """One-shot parse of one session (default: the most recently updated)."""
     conn = open_readonly(db_path)

@@ -517,8 +517,10 @@ def check(
     mode = "all" if security else "health"
     registry = create_registry(mode=mode)
     buffer = ActionBuffer()
+    actions: list = []  # the same parse pass, kept for the ledger summary
     try:
-        warnings = registry.scan(parse_file(log, analytics_log=analytics_log), buffer)
+        warnings = registry.scan(
+            _kept(parse_file(log, analytics_log=analytics_log), actions), buffer)
     except (UnsupportedLogFormatError, LogUnreadableError) as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -526,6 +528,7 @@ def check(
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
         sys.exit(1)
+    ledger_summary = _ledger_summary(log, actions)  # informational: never scored
 
     # Calculate scores (Tier-1 only -- LLM assessment below is advisory
     # enrichment applied to warning.details after scoring, never before)
@@ -546,6 +549,7 @@ def check(
 
     if json_output:
         output = _check_json(report, efficiency, warnings, buffer, note, goal_alignment)
+        output["ledger_summary"] = ledger_summary
         click.echo(json.dumps(output, indent=2))
     else:
         print_health_report(
@@ -565,6 +569,7 @@ def check(
             _print_llm_assessments(warnings)
             _print_goal_alignment(goal_alignment)
 
+        _print_blast_radius(ledger_summary)
         _print_posture_advisory(log)
 
     # Exit code based on score thresholds (theme-independent)
@@ -577,6 +582,43 @@ def check(
         # security tier also decides the exit code (the worse one wins).
         exit_code = max(exit_code, _security_exit_code(calculate_security_score(warnings)))
     sys.exit(exit_code)
+
+
+def _kept(actions, into: list):
+    """Yield *actions*, appending each to *into*: one parse pass feeds both the
+    scan and the ledger, and the scan sees the stream exactly as before."""
+    for action in actions:
+        into.append(action)
+        yield action
+
+
+def _ledger_summary(log: Path, actions: list) -> dict | None:
+    """`check`'s ledger counts (no targets); None if the ledger fails."""
+    from agentwatch import ledger
+
+    try:
+        agent = _agent_name(log)
+        project = ledger.session_cwd(log, actions, agent)
+        return ledger.summary(ledger.build(actions, agent, project), project is not None)
+    except Exception:
+        return None
+
+
+def _print_blast_radius(summary: dict | None) -> None:
+    """One line, only when the session has destructive or out-of-project rows."""
+    from agentwatch.ledger import blast_radius_line
+
+    line = blast_radius_line(summary) if summary else None
+    if line:
+        click.echo(click.style(line, fg=get_theme().color_1))
+        click.echo()
+
+
+def _agent_name(log: Path) -> str:
+    from agentwatch.agents import adapter_for
+
+    adapter = adapter_for(log)
+    return adapter.name if adapter is not None else "unknown"
 
 
 POSTURE_ADVISORY_RECENT_S = 600  # check's advisory: only logs written in the last 10 min
@@ -2675,6 +2717,77 @@ def tools(log: Path | None, with_calls: bool, json_output: bool, fmt: str):
         click.echo("\n".join(render(data)))
 
 
+def _ledger_kinds(ctx, param, value: str | None) -> tuple[str, ...] | None:
+    from agentwatch.ledger import KINDS
+
+    if not value:
+        return None
+    kinds = tuple(k.strip().lower() for k in value.split(",") if k.strip())
+    if not kinds or any(k not in KINDS for k in kinds):
+        raise click.BadParameter(f"pick from {', '.join(KINDS)} (comma-separated)")
+    return kinds
+
+
+@cli.command()
+@click.option("--log", "-l", type=_LOG_FILE,
+              help="Agent log file; default: the newest session, as `check` picks it")
+@click.option("--project", type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Project dir for outside-project rows when the log records no "
+                   "working directory")
+@click.option("--format", "fmt", type=click.Choice(["text", "jsonl", "csv"]), default="text",
+              show_default=True, help="jsonl: one JSON row per line (schema 1)")
+@click.option("--kind", "kinds", callback=_ledger_kinds, default=None, metavar="KINDS",
+              help="Only these kinds, comma-separated: command,write,edit,delete,network")
+def ledger(log: Path | None, project: Path | None, fmt: str, kinds: tuple[str, ...] | None):
+    """What one session ran, changed, deleted and contacted.
+
+    One row per command, file write or edit, deleted path and network host,
+    marked destructive (rm, git rm/clean/reset --hard/push --force, del,
+    Remove-Item, or anything the command guard would ask about) and outside
+    the project. Commands are one line with secrets redacted; tool results,
+    file contents and error text are never shown. Nothing is stored.
+    """
+    import csv
+
+    from agentwatch import ledger as ledger_mod
+
+    if log is None:
+        log, note = _default_log()
+        if log is None:
+            click.echo("No log files found. Specify a path with --log", err=True)
+            sys.exit(1)
+        click.echo(f"Using log: {log}", err=True)
+        if note:
+            click.echo(note, err=True)
+    try:
+        actions = list(parse_file(log))  # whole log: results merge into earlier calls
+    except (UnsupportedLogFormatError, LogUnreadableError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if not actions:
+        click.echo("No actions found in log file", err=True)
+        sys.exit(1)
+    agent = _agent_name(log)
+    where = ledger_mod.session_cwd(log, actions, agent)
+    source = "the log" if where else None
+    if where is None and project is not None:
+        where, source = str(project.expanduser().resolve()), "--project"
+    all_rows = ledger_mod.build(actions, agent, where)
+    rows = [r for r in all_rows if r["kind"] in kinds] if kinds else all_rows
+    if fmt == "jsonl":
+        for r in rows:
+            click.echo(json.dumps({"schema": ledger_mod.SCHEMA, **r}))
+    elif fmt == "csv":
+        buf = io.StringIO()
+        csv.writer(buf, lineterminator="\n").writerows(ledger_mod.csv_rows(rows))
+        click.echo(buf.getvalue(), nl=False)
+    else:
+        sid = next((a.session_id for a in actions if a.session_id), None)
+        # The header counts the whole session; --kind only filters the list.
+        click.echo("\n".join(ledger_mod.render(all_rows, log.name, sid, agent, where, source,
+                                               kinds)))
+
+
 @cli.command()
 @click.option("--log", "-l", type=_LOG_FILE,
               help="A Claude Code session log (or one of its subagent logs); "
@@ -3215,6 +3328,7 @@ _GUARD_ALIASES = {
     "audit": ("audit", "Audit log history for leaked secrets."),
     "config-scan": ("config_scan", "Check agent configs (MCP, hooks, permissions, skills) "
                                    "offline."),
+    "ledger": ("ledger", "What one session ran, changed, deleted and contacted."),
 }
 
 

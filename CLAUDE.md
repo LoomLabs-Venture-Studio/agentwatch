@@ -68,7 +68,7 @@ src/agentwatch/
                        (POSTURE column: posture.py),
                        detect, net, list-detectors, security-scan, config-scan, themes, stats,
                        visual,
-                       audit, scrub, report, tools, subagents, history sync|prune|path, notify on|off|status
+                       audit, scrub, report, tools, ledger, subagents, history sync|prune|path, notify on|off|status
                        [--webhook URL] [--events needs-input,done] (the
                        Claude Code hook's attention-alert settings; webhook
                        masked). `budget set [--session|--block|--day USD]
@@ -513,6 +513,22 @@ src/agentwatch/
                        via one_line(80); never args/results/error text.
                        Log picked by cli._default_log like `check`;
                        csv via report.write_csv
+  ledger.py            `agentwatch ledger [--log] [--project DIR] [--format
+                       text|jsonl|csv] [--kind ...]` (also agentguard):
+                       rows (schema 1: ts, agent, tool, kind command|write|
+                       edit|delete|network, target, success,
+                       outside_project, destructive, reason) from one parsed
+                       log; nothing stored. Destructive = guard.check_command
+                       asks ("guard: <key>") or rm/git rm/git clean/git reset
+                       --hard/git push --force/del/Remove-Item; deleted paths
+                       from guard's own _Scan + shlex split. Targets via
+                       one_line, home as ~; hosts only. outside_project vs
+                       the log's cwd (session_cwd per agent), else
+                       --project, else null. `check` adds one "Blast
+                       radius:" line (text, only when non-zero) and
+                       `ledger_summary` (--json, counts only); actions kept
+                       from check's own parse pass (cli._kept); score/exit
+                       unchanged. CSV cells via report.csv_cell
   subagents.py         `agentwatch subagents [--log] [--all] [--active]
                        [--json]`: every <session>/subagents/agent-<id>.jsonl
                        (any depth; type, description, spawnDepth from
