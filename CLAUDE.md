@@ -570,7 +570,17 @@ src/agentwatch/
                        the top-level one), pipe-to-shell in hooks and in
                        MCP server command + args (remote_script), hidden
                        chars / hidden comments / override phrases in md,
-                       POSIX files writable by others. show(): paths in /
+                       POSIX files writable by others. Skill scripts
+                       (non-md text files in skill dirs, every run):
+                       pipe-to-shell, decode-then-run, credential paths,
+                       download-then-run, 2,000-char windows, 1 s CPU per
+                       file. `--baseline` (config_baseline.py) pins each
+                       skill dir, plugin installPath and MCP entry as an
+                       HMAC (fingerprint key) in data_dir()/
+                       config-baseline.json (0600, keys + digests only);
+                       later runs add drift_changed (medium) /
+                       drift_added / drift_removed (low); no baseline file
+                       -> no drift check, nothing written. show(): paths in /
                        form with home as ~ on every OS (Windows home
                        match case-insensitive). Symlinks must resolve
                        inside the root (project, else home); symlinked
