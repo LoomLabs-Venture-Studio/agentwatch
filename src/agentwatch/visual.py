@@ -44,12 +44,16 @@ class _NoDataError(Exception):
     """Nothing to report (no logs, no actions); shown to the user as is."""
 
 
-def _scan(mode: str):
+def _scan(mode: str, actions: list | None = None):
+    """*actions*: also collect the parsed actions there (one parse pass)."""
     log, note = cli._default_log()
     if log is None:
         raise _NoDataError("No log files found")
     buffer = cli.ActionBuffer()
-    warnings = cli.create_registry(mode=mode).scan(cli.parse_file(log), buffer)
+    stream = cli.parse_file(log)
+    if actions is not None:
+        stream = cli._kept(stream, actions)
+    warnings = cli.create_registry(mode=mode).scan(stream, buffer)
     if len(buffer) == 0:
         raise _NoDataError("No actions found in log file")
     return warnings, buffer, note, log
@@ -67,10 +71,13 @@ def _ps(run: bool):
 
 
 def _check(run: bool):
-    warnings, buffer, note, log = _scan("health")
+    actions: list = []
+    warnings, buffer, note, log = _scan("health", actions)
     report = cli.calculate_health(warnings, include_security=False)
     efficiency = cli.calculate_efficiency(warnings, buffer)
-    return _with_project(cli._check_json(report, efficiency, warnings, buffer, note), note, log)
+    data = cli._check_json(report, efficiency, warnings, buffer, note)
+    data["ledger_summary"] = cli._ledger_summary(log, actions)  # as `check --json`
+    return _with_project(data, note, log)
 
 
 def _agents(run: bool):

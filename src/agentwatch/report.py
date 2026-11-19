@@ -360,10 +360,10 @@ def write_csv(data: dict[str, Any], out: Any, root: str = "report") -> None:
     w.writerow(CSV_HEADER)
     for key, v in data.items():
         rows = _flat(key, v) if isinstance(v, (dict, list)) else [(root, "", "", key, v)]
-        w.writerows(map(_csv_cell, row) for row in rows)
+        w.writerows(map(csv_cell, row) for row in rows)
 
 
-def _csv_cell(x: Any) -> Any:
+def csv_cell(x: Any) -> Any:
     """None as empty; text a spreadsheet would run as a formula gets a leading '."""
     if x is None:
         return ""

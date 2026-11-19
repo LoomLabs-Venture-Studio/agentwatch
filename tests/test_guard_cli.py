@@ -33,7 +33,7 @@ def test_every_agentwatch_option_exists_on_the_alias(name):
 
 def test_aliases_cover_their_named_commands():
     assert set(_build_guard_cli().commands) == {"scan", "watch", "check", "watch-all",
-                                                "audit", "config-scan"}
+                                                "audit", "config-scan", "ledger"}
 
 
 @pytest.mark.parametrize("name", ["check", "watch", "watch-all"])
