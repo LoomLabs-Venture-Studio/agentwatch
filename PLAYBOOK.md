@@ -5730,5 +5730,17 @@ Criteria
 
 **Wave 2 results (2026-11-19, #245, 5c5d43e):** `agentwatch ledger` and the `check` Blast radius line / `ledger_summary` merged into develop. QA passed with limits after one fix round (URL query/userinfo/webhook scrubbing, guard timeouts not destructive, `--kind` header, find -delete / find -exec rm / xargs rm). Full suite 4489 passed. Known limits in the PR body: `check` about +0.4 s on a 28 MB log and keeps every parsed action in memory; outside_project is lexical; scheme-less URLs not scrubbed; git restore/checkout --, branch -D, rsync --delete, shred, truncate, `> file` not detected; guard patterns in test data count as destructive.
 
+**Wave 3: config drift pinning (research 4, `feature/config-drift`)**
+`agentwatch config-scan --baseline` pins what is installed now; a later `config-scan` reports skills, plugins and MCP servers added, changed or removed since, and scans scripts inside skills. Offline, read-only apart from the baseline file; never starts an MCP server.
+
+Criteria
+- [ ] Items: each skill dir (every file, recursively, same symlink/size rules as today), each plugin installPath, each MCP server entry (Claude Code, Cursor, VS Code, Codex, Gemini, Cline sources config-scan already reads), keyed by (agent, kind, scope, name).
+- [ ] Digest per item: HMAC-SHA256 under the existing per-user key (secret_scanner fingerprint key), so an env secret in an MCP entry is never stored as a plain hash. Baseline stores keys and digests only (no contents, no commands, no env values).
+- [ ] Baseline: data_dir()/config-baseline.json, JSON schema 1, 0600 via mkstemp + replace, dir via coach._private_dir; `--baseline` writes or re-pins (this is the accept action). Unreadable or malformed baseline: one stderr note, no drift findings, never a crash.
+- [ ] No baseline file: output and exit code exactly as today (test). With one: findings `drift_changed` (medium), `drift_added` (low), `drift_removed` (low); text section "Changed since baseline (date)"; JSON adds `baseline: {created, items}` and the findings (fields only added).
+- [ ] Skill scripts: non-markdown files in skill dirs (<= 2 MB, text only) checked for pipe-to-shell, base64-decode-then-exec, reads of credential paths (.env, ~/.ssh, ~/.aws, ...) and download-then-exec; reuse config_scan / guard patterns, no new shell parser; evidence via one_line.
+- [ ] `agentguard config-scan --baseline` works (options copied as today).
+- [ ] Tests: baseline round trip, each drift kind per source, an env secret never in the baseline file, permissions 0600, malformed baseline, script checks with true and false positives; ruff + full pytest green; QA pass.
+
 **Next waves (planned):** research 5 (ledger), 4 (drift pinning), 2 (other agents' hooks, needs live hook checks per agent), then 9 (context % and branch in watch-all), 11 (scheduled digest).
 
