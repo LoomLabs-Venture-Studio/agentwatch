@@ -5717,15 +5717,18 @@ Board (2026-11-13): "keep developing ... test everything inside of agentwatch an
 `agentwatch ledger [--log PATH] [--project DIR] [--format text|jsonl|csv] [--kind command,write,delete,network]`: what one session ran, changed, deleted and contacted. Computed from the parsed log on demand, nothing new stored (no history.db change). Guard decisions are not in v1: the hook does not record them.
 
 Criteria
-- [ ] Log picked like `check` (`cli._default_log`), any adapter `parse_file` supports; one parse pass.
-- [ ] Rows (JSON schema 1, fields only added later): ts, agent, tool, kind (command / write / edit / delete / network), target, success, outside_project (true/false/null), destructive (bool), reason (fixed string).
-- [ ] Commands and targets through `one_line` (secrets redacted, bounded, no control chars); paths shown with home as `~`; tool results, file contents and error text never output.
-- [ ] Deletes and destructive commands: `rm`, `git rm`, `git clean`, `git reset --hard`, `git push -f`, `del`/`Remove-Item`, plus anything `guard.py` would ask about (reuse it, no second parser). Deleted paths become delete rows.
-- [ ] outside_project: target not under the session cwd (from the log, else `--project`); unknown cwd gives null, never a guess.
-- [ ] Network rows from `network_host`/`network_port` (hosts only, no URLs with query strings).
-- [ ] Text summary: counts per kind, destructive and out-of-project rows listed first. CSV quotes formula-leading cells like `report.write_csv`.
-- [ ] `check`: one "Blast radius:" line in text mode only when there are destructive or out-of-project rows; `check --json` gains `ledger_summary`; score and exit code unchanged.
-- [ ] Tests with existing fixtures for Claude Code, Codex, Copilot CLI, Gemini and OpenCode; redaction test with a planted secret in a command; ruff + full pytest green; QA pass.
+- [x] Log picked like `check` (`cli._default_log`), any adapter `parse_file` supports; one parse pass.
+- [x] Rows (JSON schema 1, fields only added later): ts, agent, tool, kind (command / write / edit / delete / network), target, success, outside_project (true/false/null), destructive (bool), reason (fixed string).
+- [x] Commands and targets through `one_line` (secrets redacted, bounded, no control chars); paths shown with home as `~`; tool results, file contents and error text never output.
+- [x] Deletes and destructive commands: `rm`, `git rm`, `git clean`, `git reset --hard`, `git push -f`, `del`/`Remove-Item`, plus anything `guard.py` would ask about (reuse it, no second parser). Deleted paths become delete rows.
+- [x] outside_project: target not under the session cwd (from the log, else `--project`); unknown cwd gives null, never a guess.
+- [x] Network rows from `network_host`/`network_port` (hosts only, no URLs with query strings).
+- [x] Text summary: counts per kind, destructive and out-of-project rows listed first. CSV quotes formula-leading cells like `report.write_csv`.
+- [x] `check`: one "Blast radius:" line in text mode only when there are destructive or out-of-project rows; `check --json` gains `ledger_summary`; score and exit code unchanged.
+- [x] Tests with existing fixtures for Claude Code, Codex, Copilot CLI, Gemini and OpenCode; redaction test with a planted secret in a command; ruff + full pytest green; QA pass.
+
+
+**Wave 2 results (2026-11-19, #245, 5c5d43e):** `agentwatch ledger` and the `check` Blast radius line / `ledger_summary` merged into develop. QA passed with limits after one fix round (URL query/userinfo/webhook scrubbing, guard timeouts not destructive, `--kind` header, find -delete / find -exec rm / xargs rm). Full suite 4489 passed. Known limits in the PR body: `check` about +0.4 s on a 28 MB log and keeps every parsed action in memory; outside_project is lexical; scheme-less URLs not scrubbed; git restore/checkout --, branch -D, rsync --delete, shred, truncate, `> file` not detected; guard patterns in test data count as destructive.
 
 **Next waves (planned):** research 5 (ledger), 4 (drift pinning), 2 (other agents' hooks, needs live hook checks per agent), then 9 (context % and branch in watch-all), 11 (scheduled digest).
 

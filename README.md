@@ -33,6 +33,7 @@ agentwatch visual          # all the reports in your browser
 agentwatch tools           # every tool a session used, and what failed
 agentwatch subagents       # health of each subagent (cto, engineer, qa...)
 agentwatch ps              # running agents, with approvals and sandbox posture
+agentwatch ledger          # what a session ran, changed, deleted and contacted
 ```
 
 `agentwatch ps` has a POSTURE column: `yolo · no sandbox` (red) means an agent
@@ -41,6 +42,14 @@ runs with approvals skipped and outside any sandbox; `approvals · sandboxed`
 actions. It reads the agent's own flags and config (Claude Code, Codex, Gemini
 CLI, Copilot CLI) and its parent processes (srt, bwrap, firejail, sandbox-exec,
 containers). `ps --json` has it as a `posture` object.
+
+`agentwatch ledger` lists one session's commands, file writes and edits,
+deleted paths and network hosts, and marks the destructive ones (`rm`,
+`git reset --hard`, `git push --force`, `find -delete`, ...) and those outside
+the project. Output is text, `--format jsonl` or `--format csv`, filtered with
+`--kind`. Commands are redacted (secrets, URL queries, webhook paths); tool
+results and file contents are never shown, and nothing is stored. `check`
+prints a one-line "Blast radius" summary when there is something to report.
 
 Run `agentwatch --help` for all commands, or see
 [agentwatch.info/commands](https://agentwatch.info/commands/).
