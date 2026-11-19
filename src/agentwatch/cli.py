@@ -2772,9 +2772,8 @@ def ledger(log: Path | None, project: Path | None, fmt: str, kinds: tuple[str, .
     source = "the log" if where else None
     if where is None and project is not None:
         where, source = str(project.expanduser().resolve()), "--project"
-    rows = ledger_mod.build(actions, agent, where)
-    if kinds:
-        rows = [r for r in rows if r["kind"] in kinds]
+    all_rows = ledger_mod.build(actions, agent, where)
+    rows = [r for r in all_rows if r["kind"] in kinds] if kinds else all_rows
     if fmt == "jsonl":
         for r in rows:
             click.echo(json.dumps({"schema": ledger_mod.SCHEMA, **r}))
@@ -2784,7 +2783,9 @@ def ledger(log: Path | None, project: Path | None, fmt: str, kinds: tuple[str, .
         click.echo(buf.getvalue(), nl=False)
     else:
         sid = next((a.session_id for a in actions if a.session_id), None)
-        click.echo("\n".join(ledger_mod.render(rows, log.name, sid, agent, where, source)))
+        # The header counts the whole session; --kind only filters the list.
+        click.echo("\n".join(ledger_mod.render(all_rows, log.name, sid, agent, where, source,
+                                               kinds)))
 
 
 @cli.command()

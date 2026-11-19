@@ -8,15 +8,21 @@ only added later):
 
 - target: the command (one line, secrets redacted, bounded), the path, or the
   host (``host`` or ``host:port``, never a URL). The home dir is shown as ``~``.
+  A URL inside a command or path loses its userinfo, query and fragment
+  (``?…``), and a Slack / Discord webhook its path (``/…``): signed URLs keep
+  their secret there, which the secret scanner does not know.
   Tool results, file contents and error text are never read into a row.
 - destructive / reason: the command guard (guard.check_command) would ask
   (reason ``guard: <key>``), or it runs rm / git rm / git clean / git reset
-  --hard / git push --force / del / Remove-Item (reason: that name). A write or
-  edit of the guard's own settings file is ``guard: guard_off``. A guard
-  secrets-read ask (``cat .env``) keeps reason ``guard: secret`` but is not
+  --hard / git push --force / --force-with-lease / find -delete / find -exec rm
+  / xargs rm / del / Remove-Item (reason: that name). A write or edit of the
+  guard's own settings file is ``guard: guard_off``. Guard asks that are not
+  findings (``guard: secret`` for a secrets read, ``guard: too_long`` /
+  ``guard: unchecked`` when it could not check) keep their reason but are not
   destructive unless the same command also deletes.
 - Deleted paths are the operands of rm-like commands, taken from guard's own
-  shlex split (guard._Scan + guard._tokens), one delete row each.
+  shlex split (guard._Scan + guard._tokens), one delete row each. find and
+  xargs deletes have no delete rows (their paths are not in the command).
 - outside_project: the path is not under the session's project dir (the cwd
   the log records, else ``--project``). Unknown project, a variable in the path
   (other than $HOME), a `cd` earlier in the same command, or a POSIX path under
@@ -36,6 +42,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from agentwatch import guard
 from agentwatch.detectors.security.secret_scanner import one_line
@@ -47,7 +54,14 @@ FIELDS = ("ts", "agent", "tool", "kind", "target", "success", "outside_project",
           "destructive", "reason")
 TARGET_LIMIT = 200
 TOOL_LIMIT = 80
-SECRET_READ = "guard: secret"  # reported, not destructive
+SECRET_READ = "guard: secret"
+# Guard asks that are reported (reason kept) but delete or rewrite nothing.
+NOT_DESTRUCTIVE = frozenset({SECRET_READ, "guard: too_long", "guard: unchecked"})
+# scheme://... up to whitespace, a quote or <>; linear (one character class).
+_URL = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s'\"<>`]+")
+_WEBHOOK_HOST = re.compile(r"hooks\.slack\.com", re.IGNORECASE)
+_DISCORD_HOST = re.compile(r"(?:(?:ptb|canary)\.)?discord(?:app)?\.com", re.IGNORECASE)
+_DISCORD_PATH = re.compile(r"/api/(?:v\d+/)?webhooks", re.IGNORECASE)
 
 # guard reason text -> its key (the "secret" reason is a format string).
 _GUARD_KEYS = [(text.split("{}", 1)[0], key) for key, text in guard.REASONS.items()]
@@ -86,15 +100,45 @@ def _home_re() -> re.Pattern[str] | None:
     return re.compile(r"(?:" + "|".join(sorted(alts)) + r")(?![\w.-])", flags)
 
 
+def _scrub_url(m: re.Match[str]) -> str:
+    """A URL without userinfo, query or fragment (each cut to ``…``); a Slack
+    or Discord webhook also loses its path (the path is the secret)."""
+    url = m.group()
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        port = f":{parts.port}" if parts.port is not None else ""
+    except ValueError:
+        return url.split("://", 1)[0] + "://…"
+    if ":" in host:  # IPv6
+        host = f"[{host}]"
+    path = parts.path
+    if _WEBHOOK_HOST.fullmatch(host) or (
+            _DISCORD_HOST.fullmatch(host) and _DISCORD_PATH.match(path)):
+        path = "/…" if path else ""
+    tail = "?…" if parts.query or parts.fragment or url.rstrip("?#") != url else ""
+    return f"{parts.scheme}://{host}{port}{path}{tail}"
+
+
+def scrub_urls(text: str) -> str:
+    """Every scheme://... URL in *text* without userinfo, query, fragment or a
+    webhook's secret path. Signed URLs (S3 X-Amz-Signature, Azure SAS sig=)
+    carry their secret in the query, which the secret scanner does not know."""
+    return _URL.sub(_scrub_url, text)
+
+
 def show(text: str, home_re: re.Pattern[str] | None, limit: int = TARGET_LIMIT) -> str:
-    """*text* with the home dir as ``~`` (like config_scan.show: / form for a
-    path), one line, secrets redacted, at most *limit* chars."""
+    """*text* with URLs scrubbed (scrub_urls), the home dir as ``~`` (like
+    config_scan.show: / form for a path), one line, secrets redacted, at most
+    *limit* chars."""
+    text = scrub_urls(text)
     if home_re is not None:
         text = home_re.sub("~", text)
     return one_line(text, limit)
 
 
 def _show_path(path: str, home_re: re.Pattern[str] | None) -> str:
+    path = scrub_urls(path)
     if home_re is not None and home_re.match(path):
         path = home_re.sub("~", path, count=1).replace("\\", "/")
     elif _WIN_ABS.match(path):
@@ -249,10 +293,40 @@ def _git(args: list[str]) -> tuple[str | None, list[str]]:
         return "git clean", []
     if sub == "reset" and "--hard" in flags:
         return "git reset --hard", []
-    if sub == "push" and ("f" in flags or any(f.startswith("--force") for f in flags)
-                          or any(op.startswith("+") for op in ops)):
-        return "git push --force", []
+    if sub == "push":
+        if "f" in flags or "--force" in flags or any(op.startswith("+") for op in ops):
+            return "git push --force", []
+        if any(f.split("=", 1)[0] == "--force-with-lease" for f in flags):
+            return "git push --force-with-lease", []
     return None, []
+
+
+def _find(args: list[str]) -> str | None:
+    """`find ... -delete` or `find ... -exec rm ...` (paths unknown)."""
+    for i, a in enumerate(args):
+        if a == "-delete":
+            return "find -delete"
+        if a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args) \
+                and guard._prog(args[i + 1]) in _RM | _CMD_DEL:
+            return "find -exec rm"
+    return None
+
+
+def _xargs(args: list[str]) -> str | None:
+    """`xargs [options] rm ...` (paths unknown: they come from stdin)."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if not a.startswith("-") or a == "-":
+            break
+        # -I {} / -d x / -n 1 ...: a short option with a separate value
+        i += 2 if len(a) == 2 and a[1] in guard._XARGS_VALUE else 1
+    if i < len(args) and guard._prog(args[i]) in _RM | _CMD_DEL:
+        return "xargs rm"
+    return None
 
 
 def _wrapped(prog: str, args: list[str]) -> str | None:
@@ -309,6 +383,10 @@ def command_effects(command: str, depth: int = 0
             r, paths = "Remove-Item", _operands(prog, args)
         elif prog == "git":
             r, paths = _git(args)
+        elif prog == "find":
+            r = _find(args)
+        elif prog in guard._XARGS:
+            r = _xargs(args)
         reason = reason or r
         deleted += [(p, cd) for p in paths]
     return reason, deleted, cd
@@ -368,7 +446,9 @@ def build(actions: list[Action], agent: str, project: str | None) -> list[dict[s
             reason = _guard_reason(cmd) or own
             # A secrets read is reported (reason kept) but deletes nothing:
             # destructive only if the command also deletes or rewrites.
-            destructive = own is not None or (reason is not None and reason != SECRET_READ)
+            # too_long / unchecked: the guard could not read it, not a finding.
+            destructive = own is not None or (
+                reason is not None and reason not in NOT_DESTRUCTIVE)
             row(a, "command", show(cmd, home_re), None, reason, destructive)
             for path, after_cd in deleted:
                 # After a cd only an absolute path is known.
@@ -418,7 +498,10 @@ def _flagged(r: dict[str, Any]) -> bool:
 
 
 def render(rows: list[dict[str, Any]], log_name: str, session_id: str | None, agent: str,
-           project: str | None, project_from: str | None) -> list[str]:
+           project: str | None, project_from: str | None,
+           kinds: Iterable[str] | None = None) -> list[str]:
+    """*rows*: every row of the session (the header counts all of them);
+    *kinds*: list only rows of these kinds."""
     head = f"Ledger for {one_line(log_name, 200)}"
     if session_id:
         head += f" (session {one_line(session_id, 80)})"
@@ -430,8 +513,13 @@ def render(rows: list[dict[str, Any]], log_name: str, session_id: str | None, ag
     lines = [head, "", f"  Agent: {agent}   Project: {where}",
              f"  Rows: {counts}; {s['destructive']} destructive, "
              f"{s['outside_project']} outside the project, {s['failed']} failed"]
-    flagged = [r for r in rows if _flagged(r)]
-    rest = [r for r in rows if not _flagged(r)]
+    shown = rows
+    if kinds:
+        kinds = tuple(kinds)
+        lines.append(f"  (showing: {','.join(kinds)})")
+        shown = [r for r in rows if r["kind"] in kinds]
+    flagged = [r for r in shown if _flagged(r)]
+    rest = [r for r in shown if not _flagged(r)]
     for title, group in (("Destructive or outside the project", flagged), ("Other", rest)):
         if not group:
             continue
@@ -450,6 +538,8 @@ def render(rows: list[dict[str, Any]], log_name: str, session_id: str | None, ag
                          f"{r['target']}{marks}")
     if not rows:
         lines += ["", "  Nothing ran, changed, was deleted or contacted."]
+    elif not shown:
+        lines += ["", "  No rows of these kinds."]
     return lines
 
 

@@ -110,6 +110,34 @@ def test_network_rows_are_hosts_only(mixed_log):
     assert "?" not in out and "token=" not in out and "/page" not in out
 
 
+URL_SECRET = "Zq7Lm2Xc9Vb4Nk8Rt1Yw6Pd3"  # unknown to the secret scanner
+
+
+@pytest.mark.parametrize("command, shown", [
+    (f'curl "https://bkt.s3.amazonaws.com/k.zip?X-Amz-Algorithm=AWS4&X-Amz-Signature={URL_SECRET}"',
+     'curl "https://bkt.s3.amazonaws.com/k.zip?…"'),
+    (f"azcopy cp 'https://acct.blob.core.windows.net/c/f.txt?sv=2022-11-02&sig={URL_SECRET}' .",
+     "azcopy cp 'https://acct.blob.core.windows.net/c/f.txt?…' ."),
+    (f"curl -X POST -d '{{}}' https://hooks.slack.com/services/T01/B02/{URL_SECRET}",
+     "curl -X POST -d '{}' https://hooks.slack.com/…"),
+    (f"curl -H 'Content-Type: application/json' https://discord.com/api/webhooks/123/{URL_SECRET}",
+     "curl -H 'Content-Type: application/json' https://discord.com/…"),
+    (f"curl https://discordapp.com/api/v10/webhooks/9/{URL_SECRET}", "curl https://discordapp.com/…"),
+    (f"git clone https://bot:{URL_SECRET}@git.example.com/o/r.git",
+     "git clone https://git.example.com/o/r.git"),
+    (f"wget 'http://10.0.0.5:8080/dl?token={URL_SECRET}#x'", "wget 'http://10.0.0.5:8080/dl?…'"),
+    (f"curl https://ex.com/page#{URL_SECRET}", "curl https://ex.com/page?…"),
+    (f"psql postgres://admin:{URL_SECRET}@db.internal:5432/app", "psql postgres://db.internal:5432/app"),
+    ("curl https://ex.com/a/b.json", "curl https://ex.com/a/b.json"),  # nothing to cut
+    ("curl https://discord.com/channels/1/2", "curl https://discord.com/channels/1/2"),
+])
+def test_command_urls_lose_query_userinfo_and_webhook_paths(tmp_path, command, shown):
+    log = _cc_log(tmp_path / "u.jsonl", [("Bash", {"command": command}, False)])
+    assert _rows(log)[0]["target"] == shown
+    for fmt in ("text", "jsonl", "csv"):
+        assert URL_SECRET not in _run("--log", str(log), "--format", fmt).output
+
+
 def test_network_port(tmp_path):
     from agentwatch.parser.models import Action, ToolType
 
@@ -178,7 +206,14 @@ def test_home_shown_as_tilde(tmp_path, monkeypatch):
     ("git clean -fd", "guard: clean", []),
     ("git reset --hard HEAD~1", "guard: reset_hard", []),
     ("git push -f origin main", "guard: push_force", []),
-    ("git push --force-with-lease", "git push --force", []),
+    ("git push --force-with-lease", "git push --force-with-lease", []),
+    ("git push --force-with-lease=main:abc1 origin main", "git push --force-with-lease", []),
+    ('find . -name "*.pyc" -delete', "find -delete", []),
+    ("find build -type f -exec rm -f {} +", "find -exec rm", []),
+    ("find . -execdir rm {} ;", "find -exec rm", []),
+    ("ls *.tmp | xargs rm -f", "xargs rm", []),
+    ("git ls-files -d | xargs -I {} -n 1 rm {}", "xargs rm", []),
+    ("xargs -0 -- rm < list", "xargs rm", []),
     ("del /q notes.txt", "del", ["notes.txt"]),
     ("Remove-Item -Recurse -Force -Path a,b", "Remove-Item", ["a", "b"]),
     ("rm -rf ~", "guard: rm_home", ["~"]),
@@ -227,6 +262,32 @@ def test_secret_read_that_deletes_stays_destructive(tmp_path, command):
     assert rows[0]["destructive"] is True
     assert [r["kind"] for r in rows[1:]] == ["delete"]
     assert rows[1]["destructive"] and rows[1]["reason"] == "rm"
+
+
+@pytest.mark.parametrize("reason", ["too_long", "unchecked"])
+def test_guard_could_not_check_is_reported_not_destructive(tmp_path, monkeypatch, reason):
+    from agentwatch import guard
+
+    if reason == "too_long":
+        monkeypatch.setattr(guard, "_BUDGET_S", 0)  # every check runs past its budget
+    else:
+        def broken(*a, **k):
+            raise RuntimeError("guard bug")
+
+        monkeypatch.setattr(guard, "_check_command", broken)  # a guard error asks
+    log = _cc_log(tmp_path / "t.jsonl", [("Bash", {"command": "ls -la"}, False)])
+    row = _rows(log)[0]
+    assert row["reason"] == f"guard: {reason}" and row["destructive"] is False
+    assert "Blast radius" not in CliRunner().invoke(cli, ["check", "--log", str(log)]).output
+
+
+def test_guard_too_long_with_a_delete_stays_destructive(tmp_path, monkeypatch):
+    from agentwatch import guard
+
+    monkeypatch.setattr(guard, "_BUDGET_S", 0)
+    rows = _rows(_cc_log(tmp_path / "t.jsonl", [("Bash", {"command": "rm a"}, False)]))
+    assert rows[0]["reason"] == "guard: too_long" and rows[0]["destructive"] is True
+    assert rows[1] == {**rows[1], "kind": "delete", "reason": "rm", "destructive": True}
 
 
 def test_write_to_guard_file_is_destructive(tmp_path):
@@ -373,6 +434,22 @@ def test_kind_filter(mixed_log):
         "delete", "network"}
     r = _run("--log", str(mixed_log), "--kind", "delete,bogus")
     assert r.exit_code == 2 and "pick from" in r.output
+
+
+def test_kind_filter_text_header_counts_every_row(mixed_log):
+    out = _run("--log", str(mixed_log), "--kind", "network,write").output
+    # Same counts as the unfiltered view: the header describes the session.
+    assert "Rows: 3 command, 1 write, 1 edit, 2 delete, 1 network; 3 destructive, " \
+           "2 outside the project, 1 failed" in out
+    assert "(showing: network,write)" in out
+    listed = out.split("(showing: network,write)")[1]
+    assert "docs.example.com" in listed and "src/new.py" in listed
+    assert "rm -rf build" not in listed and "/etc/hosts" not in listed
+    none = _run("--log", str(mixed_log), "--kind", "edit").output
+    assert "/etc/hosts" in none
+    assert "No rows of these kinds" in _run(
+        "--log", str(_cc_log(mixed_log.parent / "o.jsonl", [("Bash", {"command": "ls"}, False)])),
+        "--kind", "network").output
 
 
 def test_empty_log(tmp_path):
