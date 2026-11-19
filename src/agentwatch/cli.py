@@ -3158,10 +3158,10 @@ def config_scan(json_output: bool, project: Path | None, pin: bool):
     from agentwatch import config_baseline as cb
 
     try:
-        report, note = cb.run(project or Path.cwd(), pin)
+        report, notes = cb.run(project or Path.cwd(), pin)
     except cb.BaselineError as exc:
         raise click.ClickException(f"could not write the config baseline: {exc}") from None
-    if note:
+    for note in notes:
         click.echo(note, err=True)
     if json_output:
         click.echo(json.dumps(report.to_json(), indent=2))

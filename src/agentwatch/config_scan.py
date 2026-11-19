@@ -346,19 +346,66 @@ _DECODE_EXEC = re.compile(
     r"[A-Za-z0-9+/=]{16,}",
     re.I,
 )
-# A download saved to a file: curl -o F / wget -O F / curl -O URL, iwr -OutFile F,
-# urlretrieve(URL, F). The first non-empty group is the file.
-_DOWNLOAD_TO = re.compile(
-    r"\b(?:curl|wget)\b[^\n]{0,300}?\s(?:-o|-O|--output|--output-document)(?:\s+|=)"
-    r"[\"']?([^\s\"';&|)]+)"
-    r"|\b(?:iwr|invoke-webrequest)\b[^\n]{0,300}?\s-outfile\s+[\"']?([^\s\"';&|)]+)"
-    r"|\burlretrieve\s*\([^\n,]{0,300},\s*[\"']([^\"'\n]+)",
-    re.I,
+_URL = r"(https?://[^\s\"'<>;&|)]+)"
+_FILE = r"[\"']?([^\s\"'<>;&|)]+)"
+_TO_FILE = r"(?<![\d&>])>>?[ \t]*" + _FILE  # `> F`, `>> F`; not 2> or &>
+# A download, or a decode, saved to a file: (kind, pattern). The first
+# non-empty group is the file, or a URL whose last part is its name.
+_SAVED = (
+    # curl -o F, -sSLo F, --output F
+    ("download_exec", re.compile(
+        r"\bcurl\b[^\n]{0,300}?\s(?:-[A-Za-z]*o|--output)(?:\s+|=)" + _FILE)),
+    # curl -O URL / -sSLO URL / URL -O (the file is named after the URL)
+    ("download_exec", re.compile(
+        r"\bcurl\b[^\n]{0,300}?\s(?:-[A-Za-z]*O[A-Za-z]*|--remote-name(?:-all)?)\s"
+        r"[^\n]{0,300}?" + _URL
+        + r"|\bcurl\b[^\n]{0,300}?" + _URL
+        + r"[^\n]{0,300}?\s(?:-[A-Za-z]*O[A-Za-z]*|--remote-name(?:-all)?)(?![\w-])")),
+    # wget -O F, -qO F (not -O- : stdout); wget URL (named after the URL)
+    ("download_exec", re.compile(
+        r"\bwget\b[^\n]{0,300}?\s(?:-[A-Za-z]*O|--output-document)(?:[ \t]*|=)"
+        r"[\"']?([^\s\"'<>;&|)-][^\s\"'<>;&|)]*)")),
+    ("download_exec", re.compile(r"\bwget\b[^\n]{0,300}?" + _URL)),
+    # curl URL > F, wget -qO- URL >> F
+    ("download_exec", re.compile(r"\b(?:curl|wget)\b[^\n|]{0,300}?" + _TO_FILE)),
+    ("download_exec", re.compile(r"\burlretrieve\s*\([^\n,]{0,300},\s*[\"']([^\"'\n]+)")),
+    ("download_exec", re.compile(
+        r"\b(?:iwr|invoke-webrequest)\b[^\n]{0,300}?\s-outfile\s+" + _FILE, re.I)),
+    # base64 -d > F, xxd -r > F
+    ("encoded_exec", re.compile(
+        r"(?:\bbase(?:64|32)\b[^\n|]{0,200}?\s(?:-d|-D|--decode)\b|\bxxd\b[^\n|]{0,200}?\s-r\b)"
+        r"[^\n|]{0,200}?" + _TO_FILE)),
 )
-# Then that file run: sh F, python F, ./F, chmod +x F, . F, & F (PowerShell).
-_RUN_FILE = (r"(?:\b(?:(?:ba|z|da|k)?sh|python3?|node|perl|ruby|source|exec|start-process)"
-             r"(?:[\"']\s*,\s*|\s+)(?:-\S+\s+){0,4}|\bchmod\s+\S*x\S*\s+|(?<![\w.])\.\s+|&\s*|\./)"
+# Then that file run: an interpreter given it (sh F, python F, ["bash", "F"]),
+# chmod +x F, or F at command position (line start, after ; & | ( ` { then do
+# else), optionally after `.`, source, exec or & (PowerShell's call operator).
+# `.` is a command only there: `jq . F` and `find . F` are not runs.
+_CMD_POS = r"(?:^|[;&|(`{]|\b(?:then|do|else)\b)[ \t]*"
+_RUN_FILE = (r"(?:\b(?:(?:ba|z|da|k|fi)?sh|python3?|node|perl|ruby|start-process)"
+             r"(?:[\"'][ \t]*,[ \t]*|[ \t]+)(?:-\S+[ \t]+){0,4}|\bchmod[ \t]+\S*x\S*[ \t]+|"
+             + _CMD_POS + r"(?:(?:\.|source|exec|&)[ \t]+)?)"
              r"[\"']?[^\s\"']{0,200}?")
+# Files the script checks read: by extension, else a `#!` first line, else
+# (no extension) an exec bit.
+_SCRIPT_EXT = {".sh", ".bash", ".zsh", ".fish", ".ksh", ".ps1", ".psm1", ".bat", ".cmd",
+               ".py", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".php"}
+# Docs, data and binaries: never peeked at for a `#!` line.
+_NOT_SCRIPT = {".md", ".markdown", ".json", ".yaml", ".yml", ".toml", ".txt", ".csv", ".lock",
+               ".ini", ".cfg", ".rst", ".html", ".htm", ".xml", ".xsd", ".xsl", ".xslt",
+               ".svg", ".css", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".pdf",
+               ".woff", ".woff2", ".ttf", ".otf", ".zip", ".gz", ".tgz", ".bz2", ".xz",
+               ".docx", ".pptx", ".xlsx", ".dotx", ".potx", ".xltx", ".pyc", ".map",
+               ".license", ".rels", ".typed"}
+# Comment-line prefixes per extension (lowercase); others (`#!` or no
+# extension) use "#". Comment lines are not checked.
+_COMMENTS = {
+    **dict.fromkeys((".sh", ".bash", ".zsh", ".fish", ".ksh", ".py", ".rb", ".pl", ".ps1",
+                     ".psm1"), ("#",)),
+    **dict.fromkeys((".js", ".mjs", ".cjs", ".ts"), ("//",)),
+    ".php": ("#", "//"),
+    **dict.fromkeys((".bat", ".cmd"), ("rem ", "rem\t", "@rem ", "::")),
+}
+_SCAN_SCRIPT_BUDGET_S = 3.0  # CPU for all script checks of one scan
 # Credential files a script names (guard.secret_label has the last word).
 _CRED_REF = re.compile(
     r"\.ssh/id_[\w.-]+|\.aws/credentials\b|(?<![\w.-])\.(?:netrc|npmrc|pypirc)\b"
@@ -367,7 +414,7 @@ _CRED_REF = re.compile(
 # Data and docs: a credential path named there is not a read.
 _DATA_EXT = {".json", ".yaml", ".yml", ".toml", ".txt", ".csv", ".lock", ".ini", ".cfg",
              ".rst", ".html", ".xml", ".svg"}
-_SHELL_EXT = {".sh", ".bash", ".zsh", ".ksh", ".dash"}
+_SHELL_EXT = {".sh", ".bash", ".zsh", ".ksh"}
 _SHEBANG_SH = re.compile(r"#![^\n]{0,100}?\b(?:ba|z|da|k)?sh\b")
 _MAX_DOWNLOADS = 20
 _RUN_AFTER = 20_000  # chars after a download searched for its run
@@ -443,6 +490,8 @@ class Scanner:
         self.scripts = scripts
         self.items: dict[tuple[str, str, str, str], tuple[str, str]] = {}
         self._in_plugin = False
+        self._script_cpu = 0.0  # CPU seconds spent in script checks this scan
+        self.config_dirs: list[str] = []  # Claude Code config dirs read (show() form)
 
     # -- plumbing -----------------------------------------------------------
 
@@ -929,19 +978,49 @@ class Scanner:
                         st = real.stat()
                     if not stat.S_ISREG(st.st_mode):
                         continue
+                    suffix = path.suffix.lower()
+                    # A script by name or mode; `#!` files are found once read.
+                    named = suffix in _SCRIPT_EXT or (
+                        not suffix and bool(st.st_mode & 0o111))
+                    may_shebang = not named and suffix not in _NOT_SCRIPT
+                    check = self.scripts and scripts(rel) and (named or may_shebang)
                     if st.st_size > MAX_BYTES:
                         pin(rel, "large", str(st.st_size))
+                        if check and named:
+                            self.report.skipped.append({
+                                "file": show(path),
+                                "reason": f"larger than {MAX_BYTES // (1024 * 1024)} MB; "
+                                          "not script-checked"})
                         continue
+                    if h is None and not check:
+                        continue  # nothing to pin or check: not read
                     with open(path, "rb") as fh:
+                        if h is None and not named:
+                            # Nothing to pin: read it only for a `#!` first line.
+                            if fh.read(2) != b"#!":
+                                continue
+                            fh.seek(0)
                         data = fh.read(MAX_BYTES + 1)
                 except OSError:
                     pin(rel, "unreadable")
                     continue
                 pin(rel, "file", hashlib.sha256(data).digest())
-                if (self.scripts and scripts(rel) and not f.lower().endswith(".md")
+                if (check and (named or data.startswith(b"#!"))
                         and len(data) <= MAX_BYTES and b"\0" not in data[:8192]):
-                    self.script_checks(data.decode("utf-8", errors="replace"), path)
+                    self._script_file(data.decode("utf-8", errors="replace"), path)
         return h.hexdigest() if h is not None else None
+
+    def _script_file(self, text: str, path: Path) -> None:
+        """script_checks within the whole scan's script budget."""
+        if self._script_cpu >= _SCAN_SCRIPT_BUDGET_S:
+            self.report.skipped.append({"file": show(path),
+                                        "reason": "not script-checked (scan time limit)"})
+            return
+        start = time.process_time()
+        try:
+            self.script_checks(text, path)
+        finally:
+            self._script_cpu += time.process_time() - start
 
     def script_checks(self, text: str, path: Path) -> None:
         """Pipe-to-shell, decode-then-run, download-then-run and credential
@@ -950,11 +1029,13 @@ class Scanner:
         from agentwatch import guard
 
         found: dict[str, tuple[int, str]] = {}  # kind -> (pos, label)
-        downloads: list[tuple[int, int, str]] = []  # (start, end, file name)
+        saved: list[tuple[str, int, int, str]] = []  # (kind, start, end, file)
         deadline = time.process_time() + _SCRIPT_BUDGET_S
-        # _PIPE_TO_SHELL backtracks badly on long lines: every pattern but
-        # _CRED_REF runs on line windows of at most _WINDOW chars.
-        for pos, chunk in _windows(text):
+        suffix = path.suffix.lower()
+        creds = suffix not in _DATA_EXT and not path.name.lower().endswith("ignore")
+        # _PIPE_TO_SHELL backtracks badly on long lines: the patterns run on
+        # line windows of at most _WINDOW chars; comment lines are skipped.
+        for pos, chunk in _trigger_windows(text, _COMMENTS.get(suffix, ("#",))):
             if time.process_time() > deadline:
                 self.report.skipped.append({"file": show(path),
                                             "reason": "script checks stopped (time limit)"})
@@ -962,25 +1043,25 @@ class Scanner:
             for kind, rx in (("remote_script", _PIPE_TO_SHELL), ("encoded_exec", _DECODE_EXEC)):
                 if kind not in found and (m := rx.search(chunk)):
                     found[kind] = (pos + m.start(), "")
-            if len(downloads) < _MAX_DOWNLOADS:
-                downloads.extend((pos + m.start(), pos + m.end(), next(g for g in m.groups() if g))
-                                 for m in _DOWNLOAD_TO.finditer(chunk))
-        for start, end, name in downloads[:_MAX_DOWNLOADS]:
-            base = re.split(r"[/\\]", name.rstrip("/\\"))[-1]
-            if base in ("", ".", "..", "-") or time.process_time() > deadline:
+            for kind, rx in _SAVED:
+                if len(saved) < _MAX_DOWNLOADS:
+                    saved.extend((kind, pos + m.start(), pos + m.end(),
+                                  next(g for g in m.groups() if g)) for m in rx.finditer(chunk))
+            if creds and "credential_read" not in found:
+                for m in _CRED_REF.finditer(chunk):
+                    if label := guard.secret_label(m.group()):
+                        found["credential_read"] = (pos + m.start(), label)
+                        break
+        for kind, start, end, name in saved[:_MAX_DOWNLOADS]:
+            base = re.split(r"[/\\]", name.rstrip("/\\").split("?")[0])[-1]
+            if (kind in found or base in ("", ".", "..", "-") or name.startswith("/dev/")
+                    or time.process_time() > deadline):
                 continue
-            # The run must follow within _RUN_AFTER chars of the download.
-            run = re.compile(_RUN_FILE + re.escape(base) + r"(?![\w.-])", re.I)
-            if run.search(text[end: end + _RUN_AFTER]):
-                found["download_exec"] = (start, "")
-                break
-        suffix = path.suffix.lower()
-        if suffix not in _DATA_EXT and not path.name.lower().endswith("ignore"):
-            for m in _CRED_REF.finditer(text):
-                label = guard.secret_label(m.group())
-                if label:
-                    found["credential_read"] = (m.start(), label)
-                    break
+            # The run must follow within _RUN_AFTER chars of the save. Searched
+            # in place (pos/endpos), so `^` is a real line start only.
+            run = re.compile(_RUN_FILE + re.escape(base) + r"(?![\w.-])", re.I | re.M)
+            if run.search(text, end, end + _RUN_AFTER):
+                found[kind] = (start, "")
         if suffix in _SHELL_EXT or _SHEBANG_SH.match(text):
             reason = guard.check_command(text)
             if reason == guard.REASONS["pipe_shell"]:
@@ -1010,6 +1091,7 @@ class Scanner:
         # existing one once). ~/.claude.json sits in home for ~/.claude, and in
         # the config dir itself for $CLAUDE_CONFIG_DIR.
         claudes = claude_config.config_dirs(home)
+        self.config_dirs = [show(c) for c in claudes]
         env_claude = claude_config.env_config_dir()
         cj_paths = [home / ".claude.json"]
         if env_claude is not None:
@@ -1123,15 +1205,20 @@ def _writable_by_others(st: os.stat_result) -> str | None:
     return None
 
 
-def _windows(text: str):
-    """(offset, piece) for each line of *text*; a line longer than _WINDOW
-    comes as overlapping slices, so a pattern up to _OVERLAP chars long is
-    never cut in two."""
+def _windows(text: str, comments: tuple[str, ...] = ()):
+    """(offset, piece) for each line of *text*, except lines whose first
+    non-blank text starts with one of *comments* (lowercase); a line longer
+    than _WINDOW comes as overlapping slices, so a pattern up to _OVERLAP
+    chars long is never cut in two."""
     pos = 0
     while pos < len(text):
         nl = text.find("\n", pos)
         end = len(text) if nl < 0 else nl
-        if end - pos <= _WINDOW:
+        head = text[pos: min(end, pos + 64)].lstrip().lower()
+        if comments and (head.startswith(comments) or head.rstrip() == "rem" and "rem " in
+                         comments):
+            pass
+        elif end - pos <= _WINDOW:
             yield pos, text[pos:end]
         else:
             for s in range(pos, end, _WINDOW - _OVERLAP):
@@ -1139,6 +1226,40 @@ def _windows(text: str):
                 if s + _WINDOW >= end:
                     break
         pos = end + 1
+
+
+# Every script pattern (_PIPE_TO_SHELL, _DECODE_EXEC, _SAVED, _CRED_REF)
+# needs one of these words: only lines holding one are windowed and checked.
+_TRIGGER_WORDS = ("curl", "wget", "iwr", "irm", "invoke-", "iex", "downloadstring",
+                  "frombase64", "base64", "base32", "xxd", "eval", "exec", "powershell", "pwsh",
+                  "urlretrieve", ".ssh/", ".aws/", ".env", "netrc", "npmrc", "pypirc",
+                  ".docker/", ".kube/")
+
+
+def _trigger_lines(text: str) -> list[tuple[int, int]]:
+    """Sorted (start, end) of each line of *text* holding a trigger word,
+    case-insensitively. str.find per word; each line is found once per word."""
+    low = text.lower()
+    if len(low) != len(text):  # lowercasing moved offsets (rare Unicode)
+        low = "".join(c.lower() if len(c.lower()) == 1 else c for c in text)
+    lines: set[tuple[int, int]] = set()
+    for word in _TRIGGER_WORDS:
+        i = low.find(word)
+        while i >= 0:
+            start = low.rfind("\n", 0, i) + 1
+            nl = low.find("\n", i)
+            end = len(low) if nl < 0 else nl
+            lines.add((start, end))
+            i = low.find(word, end)
+    return sorted(lines)
+
+
+def _trigger_windows(text: str, comments: tuple[str, ...]):
+    """_windows of each line of *text* that holds a trigger word (offsets
+    into *text*): every script pattern needs one."""
+    for start, end in _trigger_lines(text):
+        for pos, chunk in _windows(text[start:end], comments):
+            yield start + pos, chunk
 
 
 def _link(path: Path) -> bytes:

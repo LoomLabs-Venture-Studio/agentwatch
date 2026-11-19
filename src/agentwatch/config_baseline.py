@@ -61,10 +61,22 @@ def exists() -> bool:
     return os.path.lexists(path())
 
 
+_KEY_CHECK = b"agentwatch config-baseline key check v1"
+_HEX64 = frozenset("0123456789abcdef")
+
+
+def _hex64(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX64
+
+
 def _section(raw: object) -> dict[Key, str]:
     if not isinstance(raw, dict) or not isinstance(raw.get("created"), str) \
             or not isinstance(raw.get("items"), list):
         raise BaselineError("unexpected format")
+    try:
+        datetime.fromisoformat(raw["created"].replace("Z", "+00:00"))
+    except ValueError:
+        raise BaselineError("unexpected format") from None
     items: dict[Key, str] = {}
     for it in raw["items"]:
         if not isinstance(it, dict) or not all(isinstance(it.get(f), str) for f in _FIELDS):
@@ -84,16 +96,21 @@ def load() -> dict:
             raise BaselineError("not owned by you")
         if st.st_size > MAX_BYTES:
             raise BaselineError("too large")
+        if os.name == "posix" and st.st_mode & 0o077:
+            os.chmod(p, 0o600)  # ours (checked above): tighten, like history.db
         with open(p, "rb") as fh:
             data = json.loads(fh.read(MAX_BYTES + 1).decode("utf-8"))
     except OSError as exc:
         raise BaselineError(exc.strerror or "unreadable") from None
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         raise BaselineError("not valid JSON") from None
-    if not isinstance(data, dict) or data.get("schema") != SCHEMA:
+    if not isinstance(data, dict) or type(data.get("schema")) is not int \
+            or data["schema"] != SCHEMA:
         raise BaselineError("unknown schema")
     projects = data.get("projects", {})
-    if not isinstance(projects, dict):
+    dirs = data.get("config_dirs")
+    if not isinstance(projects, dict) or not _hex64(data.get("key_check")) \
+            or not isinstance(dirs, list) or not all(isinstance(d, str) for d in dirs):
         raise BaselineError("unexpected format")
     _section(data.get("user"))
     for sec in projects.values():
@@ -127,12 +144,15 @@ def save(scanner: Scanner) -> dict:
 
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     user, proj = _split(scanner)
+    key_check = _key_check(scanner)
     try:
-        projects = load().get("projects", {}) if exists() else {}
-    except BaselineError:
-        projects = {}  # replaced by this pin
-    data = {"schema": SCHEMA, "user": {"created": now, "items": _items_json(user)},
-            "projects": dict(projects)}
+        old = load() if exists() else {}
+    except Exception:  # anything broken (BaselineError, a bug): this pin replaces it
+        old = {}
+    # Other projects' sections only stay when they were pinned with this key.
+    projects = old.get("projects", {}) if old.get("key_check") == key_check else {}
+    data = {"schema": SCHEMA, "key_check": key_check, "config_dirs": scanner.config_dirs,
+            "user": {"created": now, "items": _items_json(user)}, "projects": dict(projects)}
     pk = _project_key(scanner)
     if pk is not None:
         data["projects"][pk] = {"created": now, "items": _items_json(proj)}
@@ -146,6 +166,14 @@ def save(scanner: Scanner) -> dict:
         raise BaselineError(exc.strerror or str(exc)) from None
     return {"created": now, "items": len(user) + (len(proj) if pk is not None else 0),
             "pinned": True}
+
+
+def _key_check(scanner: Scanner) -> str:
+    """HMAC of a fixed label under the scan's key: tells whether a baseline
+    was pinned with the same key, without storing anything about the key."""
+    digest = scanner._digest(_KEY_CHECK)
+    assert digest is not None
+    return digest
 
 
 def when(created: str) -> str:
@@ -181,12 +209,22 @@ def compare(scanner: Scanner, data: dict) -> tuple[list[Finding], dict]:
     return findings, {"created": created, "items": sum(len(o) for o, _, _ in pairs)}
 
 
-def run(project: Path, pin: bool) -> tuple[Report, str | None]:
-    """config-scan with drift pinning: (report, note for stderr or None).
+def _key_problem() -> str:
+    from agentwatch.detectors.security.secret_scanner import _FINGERPRINT_KEY_FILE
+    from agentwatch.history import data_dir
+
+    if not os.path.lexists(data_dir() / _FINGERPRINT_KEY_FILE):
+        return "the fingerprint key it was made with is missing"
+    return "the fingerprint key could not be read (a symlink, not yours, or damaged)"
+
+
+def run(project: Path, pin: bool) -> tuple[Report, list[str]]:
+    """config-scan with drift pinning: (report, notes for stderr).
 
     pin: write a new baseline (the accept action). Otherwise, with no
     baseline file, the plain scan (skill-script checks included, nothing
-    written); with one, the scan plus drift findings."""
+    written); with one, the scan plus drift findings. A baseline that cannot
+    be used gives one note and no drift findings."""
     from agentwatch.config_scan import scan
     from agentwatch.detectors.security.secret_scanner import fingerprint_key
 
@@ -197,22 +235,32 @@ def run(project: Path, pin: bool) -> tuple[Report, str | None]:
         scanner = Scanner(project, key=key, scripts=True)
         report = scanner.run()
         report.baseline = save(scanner)
-        return report, None
+        return report, []
     if not exists():
-        return scan(project), None
-    note = None
+        return scan(project), []
+    notes: list[str] = []
+    data: dict | None = None
     try:
         data = load()
         key = fingerprint_key(create=False)
         if key is None:
-            raise BaselineError("the fingerprint key it was made with is missing")
+            raise BaselineError(_key_problem())
     except BaselineError as exc:
         data, key = None, None
-        note = (f"agentwatch: config baseline {show(path())} not used ({exc}); no drift "
-                "check. Run `agentwatch config-scan --baseline` to pin again.")
+        notes.append(f"agentwatch: config baseline {show(path())} not used ({exc}); no drift "
+                     "check. Run `agentwatch config-scan --baseline` to pin again.")
     scanner = Scanner(project, key=key, scripts=True)
     report = scanner.run()
+    if data is not None and data["key_check"] != _key_check(scanner):
+        notes.append(f"agentwatch: config baseline {show(path())} was pinned with a different "
+                     "key; no drift check. Re-pin with `agentwatch config-scan --baseline`.")
+        data = None
     if data is not None:
+        if data["config_dirs"] != scanner.config_dirs:
+            notes.append("agentwatch: the Claude Code config dirs differ from the baseline's ("
+                         + (", ".join(data["config_dirs"]) or "none") + " then, "
+                         + (", ".join(scanner.config_dirs) or "none")
+                         + " now); their items show as added or removed.")
         findings, report.baseline = compare(scanner, data)
         report.findings.extend(findings)
-    return report, note
+    return report, notes
