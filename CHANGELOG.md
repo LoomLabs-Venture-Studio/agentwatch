@@ -6,6 +6,11 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-20
+
+First release since 0.2.1: 0.2.2 was tagged in this file but never published, so its
+changes (listed under 0.2.2 below) also ship in 0.2.3.
+
 ### Added
 
 - Sandbox and permission posture for each running agent (`posture.py`): approvals
@@ -141,8 +146,7 @@ numbers refer to the GitHub repository.
 - `ps --json`, `/api/ps` and `/api/agents` showed the user name as the project of an agent
   running in the home folder; it is now "~", the same rule as history.
 
-
-## [0.2.2] - 2026-11-12
+## [0.2.2] - 2026-11-12 (not published; shipped in 0.2.3)
 
 ### Added
 
