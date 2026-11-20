@@ -36,6 +36,9 @@ class _FakeProcess:
             "create_time": 1_700_000_000.0,
         }
 
+    def as_dict(self, attrs=None):
+        return dict(self.info)
+
 
 def _fake_process_iter(pid: int):
     def _iter(attrs=None):

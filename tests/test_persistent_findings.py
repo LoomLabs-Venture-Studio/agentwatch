@@ -71,6 +71,16 @@ async def _replayed(app) -> None:
         await app._replay.wait()
 
 
+def _assert_loop_kept_turning(gaps: list[float]) -> None:
+    """No block of the event loop over 2 s.
+
+    A 0.25-0.45 s limit flaked on slow CI runners (0.26-0.51 s). The bug #185
+    fixed blocked for 3.9-6.75 s in one go, so 2 s still catches it.
+    """
+    assert gaps, "event loop never turned during the run"
+    assert max(gaps) < 2.0, f"event loop blocked for {max(gaps):.2f}s"
+
+
 async def test_dashboard_keeps_finding_after_window_passes():
     app = MultiAgentWatchApp(watch_paths=[], security_mode=True)
     async with app.run_test():
@@ -215,7 +225,7 @@ async def test_watch_loop_does_not_block_the_event_loop_during_a_burst():
         done = True
         await tick
         assert app.agents[path]["buffer"].stats.action_count == 1000
-        assert max(gaps) < 0.25, f"event loop blocked for {max(gaps):.2f}s"
+        _assert_loop_kept_turning(gaps)
 
 
 def test_secret_scanner_scans_each_action_once():
@@ -336,7 +346,7 @@ async def test_toggle_on_replay_does_not_block_the_event_loop():
         await _replayed(app)
         done = True
         await tick
-        assert max(gaps) < 0.25, f"event loop blocked for {max(gaps):.2f}s"
+        _assert_loop_kept_turning(gaps)
         app.refresh_ui()
         assert app.agents[path]["_last_report"].security_warnings
 
@@ -450,4 +460,4 @@ async def test_toggle_replay_of_many_sessions_does_not_stall_the_loop():
         await _replayed(app)
         done = True
         await tick
-        assert max(gaps) < 0.45, f"event loop blocked for {max(gaps):.2f}s"
+        _assert_loop_kept_turning(gaps)

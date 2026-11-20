@@ -6,6 +6,363 @@ numbers refer to the GitHub repository.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-20
+
+First release since 0.2.1: 0.2.2 was tagged in this file but never published, so its
+changes (listed under 0.2.2 below) also ship in 0.2.3.
+
+### Added
+
+- Sandbox and permission posture for each running agent (`posture.py`): approvals
+  (`skipped` / `auto` (a classifier reviews, shown as `auto-review`) / `on` / `unknown`) from the process's own flags (Claude Code
+  `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`, user settings
+  `permissions.defaultMode`; Codex `--yolo`, `--dangerously-bypass-approvals-and-sandbox`,
+  `-s/--sandbox`, `-a/--ask-for-approval never`, `--full-auto`, config.toml; Gemini CLI
+  `--yolo` and `--approval-mode yolo`; Copilot CLI `--allow-all-tools`, `--allow-all`,
+  `--yolo`), and sandbox (`sandboxed` / `container` / `none` / `unknown`) from parent
+  processes (srt, bwrap, firejail, nsjail, sandbox-exec, codex-linux-sandbox; docker, podman,
+  containerd) and container marker files. Fixed reason strings only, never argv. Shown in
+  `ps` (POSTURE column, red for `yolo · no sandbox`), `ps --json` and `/api/ps` (`posture`
+  object), `visual` (a chip on each agent card, a count in the summary), `watch-all` (a `!`
+  before the project, red or yellow, and the full posture in the Selected strip), and as a
+  one-line advisory in `check` (no score or exit-code change). Windows: sandbox is `unknown`.
+  Flags are read the way each CLI parses them (`-sV`, `-s=V`, grouped `-dy`, yargs
+  `--yolo=true` / `--no-yolo` / `--approvalMode`), plus Codex `-c key=value`, profiles
+  (`-p NAME` -> `NAME.config.toml`, legacy `[profiles.NAME]` and `profile =`), project
+  `.codex/config.toml` layers (repo root down to the agent's cwd, closest wins; low
+  confidence, since project trust is not read), `codex exec` (no approvals unless
+  auto-review), permission profiles (`default_permissions`, `[permissions]`: sandbox
+  `unknown`, `:danger-full-access` = none), `approvals_reviewer` (`guardian_subagent` is
+  auto-review; an unknown value is `unknown`), `-c profiles.NAME.KEY` and the process's own
+  `CODEX_HOME`, and Claude Code `--settings`, `--permission-prompt-tool` (auto-review, low),
+  managed settings, project settings and its built-in auto default.
+  Gemini argv follows yargs-parser (a dash word is never an option's value). Anything not
+  certain is `unknown` or low confidence: a bwrap, firejail, nsjail or sandbox-exec parent
+  (its options are not read), a Claude Code allow rule that pre-approves every command
+  (`Bash`, `Bash(*)`, `*`, or a shell prefix such as `Bash(sh -c:*)`), Gemini
+  `run_shell_command`, `ShellTool` or `*` in `--allowed-tools` or `tools.allowed`, Gemini
+  policy files (`--policy`, `--admin-policy`, or any `*.toml` in a policies dir; never read)
+  and an unreadable Gemini settings file are low confidence. Green needs a
+  human approving inside a real sandbox.
+- `agentwatch budget set [--session USD] [--block USD] [--day USD] [--action ask|deny]`,
+  `budget off` and `budget status`: spend caps for interactive Claude Code sessions,
+  enforced by the plugin's PreToolUse hook after the command guard and the loop breaker
+  (Claude Code's `--max-budget-usd` works only with `-p`). Over a cap the hook asks (or,
+  with `--action deny`, blocks the call) with a fixed reason; after an approved ask it
+  asks again only at each further 25% over the cap; at 80% the agent is told once. Session
+  spend is a running total the PostToolUse pass keeps in the coach state while a budget is
+  set; block and day spend come from the `statusline --cost` cache and are skipped when it
+  is missing or older than 2 minutes. Estimates at list price. Settings in the per-user
+  state dir (0600). No caps by default: without the settings file PreToolUse does one
+  failed open more.
+- `statusline --cost` shows `cap $Y` with a block cap set; its cache now also holds today's
+  spend and is kept per Claude Code config dir (`block-<hash>.json`), so windows on
+  `~/.claude` and on another `CLAUDE_CONFIG_DIR` no longer overwrite each other's block
+  (#240). The budget hook reads the cache of its own `CLAUDE_CONFIG_DIR`.
+- `scrub --force`: replace an existing `.scrubbed` copy (see Fixed).
+
+### Changed
+
+- `visual`: redesigned as a dark-first ops dashboard (design system from ui-ux-pro-max:
+  data-dense dashboard, "dark tech" palette, system fonts, light theme kept). KPI tiles
+  (agents, health, security, cost) on top, a responsive grid of agent cards, health and
+  security side by side on wide screens, page width up to 1344 px with a 16 px gutter on
+  phones. Status colours are now consistent and never colour alone (icon and word): security
+  "at risk" was shown with a green dot and is now amber. People see "Claude Code", "At risk",
+  "Productive" and a project folder name ("~" for home) instead of raw ids, and the
+  "using newest session" note no longer shows the working directory or the encoded project
+  dir. Sparklines draw only with 2 or more distinct samples, with an area fill and a low-high
+  label. One live indicator with Pause/Resume replaces the per-section Refresh buttons; raw
+  data sits behind one quiet "Raw data" disclosure per section; the command list is a
+  collapsed reference. Long finding evidence wraps whole in a code block (3 lines, "Show
+  all") instead of being cut mid-word. `/api/check` and `/api/security-scan` add
+  `session_project`. Security model, endpoints and polling cadence are unchanged.
+
+### Fixed
+
+- `watch`: `q` quits, as the footer says. `watch` opens on the session's detail
+  view, where `q` went back to the dashboard. Esc and Backspace still go back;
+  in `watch-all`'s detail view `q` still goes back to the table.
+- `agentguard` had drifted from `agentwatch` and lacked most options:
+  `-t/--theme`; `watch-all --headless`, `--notify`, `--notify-min`,
+  `--notify-existing`, `--notify-done`, `--webhook`, `--budget`, `--since`,
+  `--siem-log`, `--llm`; `audit --pii`; `check --analytics-log`, `--siem-log`,
+  `--llm`, `--llm-model`; `scan --audit-log`, `--analytics-log`, `--siem-log`,
+  `--llm`, `--llm-model`; `watch`'s security, SIEM, LLM and alert options. Each
+  `agentguard` command is now built from its `agentwatch` command's own options
+  (security always on), and a test checks that they match.
+- `stats --session ID` looked only in the current project of one config dir.
+  It now finds the session in every project under `$CLAUDE_CONFIG_DIR` and
+  `~/.claude`, accepts a unique id prefix (an ambiguous one is a usage error),
+  and says "No session matching ID found" instead of "No Claude Code session
+  logs found for this project".
+- `statusline` waited forever on a stdin that never closed. It now stops after
+  2 seconds, printing nothing and exiting 0 (stdlib only; about 2 ms more to
+  start).
+- `history prune --older-than 0d` deleted every session. It is now a usage
+  error (exit 2): the minimum is `1d`.
+- `report` with no sessions suggested `--include-active`, which is a flag of
+  `history sync`, not `report`. The hint now names
+  `agentwatch history sync --include-active`.
+- The history database (`history.db`) was created with the default umask
+  (usually 0644). On macOS and Linux it is now created 0600, and an existing
+  one you own is tightened to 0600 when opened.
+- `check --security` headlined the health status ("Overall: PRODUCTIVE (82%)")
+  while exiting 2 for a compromised session. Its report now opens with the
+  security verdict (`Security: COMPROMISED (0%)`) and shows the health status
+  below it (`Health:`). Exit codes are unchanged.
+- `agentwatch hook --help` printed nothing (it waited for a hook payload). It
+  now prints what the hook is for and exits 0, still without loading the full
+  CLI. Real hook payloads are handled as before.
+- `scrub` silently replaced an existing `.scrubbed` copy. It now stops with
+  exit 2 and says to use `--force`.
+- The Aider `--analytics-log` turn/event mismatch warning was one 200-character
+  line; it is now wrapped.
+- Command guard (#228): a shell fed from a group, subshell or `exec`
+  (`{ bash; } < <(echo ...)`, `( sh ) <<< ...`, `exec 0<<<'...'; bash`), a decoder
+  or download piped into a shell with options or names the guard did not know
+  (`bash --rcfile /dev/null`, `bash5`, `bash-5.2`, `ksh93`, `mksh`, `yash`, `fish -C`),
+  a `#` inside an array subscript (`a[$i #x]=1; rm -rf ~`), `echo -e` escapes
+  piped into a shell (`echo -e '\x72m -rf ~' | bash`), `env -S` /
+  `env --split-string` and `gxargs` no longer hide a dangerous command. Where the
+  guard cannot tell whether bash reads a `#` as a comment (a `((`, `$((` or
+  extglob group open across lines, with a quote or substitution in the comment)
+  it now asks. Also caught: `(bash)<<<'...'`, a subshell's script piped on past a
+  redirection (`(echo ...) 2>/dev/null | bash`), `exec` after `VAR=`, `command` or
+  `--`, with `-a NAME` or a `{fd}` redirection, `env -S 'bash -s' < <(...)`, `env -S`
+  strings cut by `\c`, and a prefix assignment to an array element
+  (`a[1]=1 rm -rf ~`). Only adds asks.
+- Claude Code sessions run with `CLAUDE_CONFIG_DIR` set are found again. `ps`, `watch-all` and
+  `visual` read each Claude Code process's own `CLAUDE_CONFIG_DIR` (`~/.claude` when it has none; agentwatch's own
+  value only when the process environment cannot be read) and look for its session log there, instead of showing "No session log found
+  yet". `stats`, `audit` (per project and `--all`), `history sync`, `check`'s default log,
+  `config-scan` and `watch-all --all-logs` cover both `$CLAUDE_CONFIG_DIR` and `~/.claude`;
+  a project with sessions in both counts once. Config dirs are compared by resolved path, so a
+  symlinked or relative `CLAUDE_CONFIG_DIR` does not record the same sessions twice in history. Only that one variable is read
+  from a process's environment, once per process; nothing else is stored or logged.
+- `visual`: concurrent `/api/stats` requests failed with "input() already active";
+  `cc_stats` read session files through the module-global `fileinput.input()`, and now opens
+  each file itself.
+- `ps --json`, `/api/ps` and `/api/agents` showed the user name as the project of an agent
+  running in the home folder; it is now "~", the same rule as history.
+
+## [0.2.2] - 2026-11-12 (not published; shipped in 0.2.3)
+
+### Added
+
+- `visual`: each agent card on the Overview now says what that agent is doing: its last
+  action (tool and file or program, never arguments), its own health score and label, its own
+  cost, and whether it is working now. Served by a new read-only `/api/agents` on the 5 s
+  timer; each log is scored once per change.
+
+- `agentwatch visual [--port N] [--no-open]`: the reports in a local browser
+  page. Overview (`ps`, `check`), Security (`security-scan`, `audit` on a
+  button), Cost (`stats --all`, `report`), History (recorded sessions,
+  `history sync` on a button). stdlib server on 127.0.0.1 only, one inline
+  page, no CDN, no new dependency. Every request needs the token from the
+  printed URL and a `127.0.0.1`/`localhost` Host header; GET only; every
+  string sent is redacted. Running agents, health and security reload
+  every 5 seconds while the page is visible (kept as is when unchanged);
+  audit, cost and history stay on their buttons.
+- `agentwatch subagents [--log PATH] [--all] [--active] [--json]`: the health
+  of each subagent (cto, engineer, qa, ...) of a Claude Code session, at any
+  depth: type, task, health score, status, cost, actions, last activity and
+  HIGH/CRITICAL warnings. Also live on `agentwatch visual`'s Overview tab.
+- `agentwatch watch-all` shows each active subagent of a Claude Code session
+  (written to in the last 10 minutes) as its own row under the session or
+  subagent that started it, named by its type (`└ sub cto`), with its own
+  health, cost and alerts.
+- `agentwatch tools [--log PATH] [--calls] [--json] [--format text|json|csv]`:
+  the tools one session called. Per tool: calls, failed, failure %, top error
+  kind, total and median time (`-` when the agent logs none; Claude Code's is
+  call to result). `--calls` lists each call: time, tool, target (file name or
+  command, one line, secrets redacted, cut to 80), ok/FAIL and error kind.
+  Never tool arguments, results or error text. CSV is `report`'s long table.
+- `agentwatch report` breakdowns: where the money and time went. **Cost by
+  model** (per model and agent: calls, tokens, USD; unpriced models show
+  tokens and `n/a`, never a guess), **cache use** (cache read vs written, 5m
+  and 1h, vs uncached input; hit % = read / (read + written + uncached input);
+  USD saved = what the cache reads would have cost at the input rate, priced
+  models only) and **errors by type** (failed calls classified as
+  `permission_denied`, `blocked`, `test_failure`, `timeout`, `edit_failed`,
+  `command_not_found`, `file_not_found`, `network`, `nonzero_exit` or `other`,
+  with the share of sessions affected, the change vs the previous period and
+  a count per tool). Cost and cache cover Claude Code fully; Codex and Gemini
+  CLI get tokens and cache hit % (no price); Cline gets its own logged cost.
+  `--json` adds `models`, `cache` and `errors` (schema stays 1: fields are
+  only added). History schema 2 stores per-session model and error-kind
+  counts (never error text); the first sync after upgrading re-reads every
+  log once to fill them in.
+- `report --format csv` and `stats --format csv`: the JSON output as one long
+  table with a fixed header, `table,rank,name,metric,value`. Text a
+  spreadsheet would run as a formula gets a leading `'`.
+- `agentwatch stats --blocks`: Claude Code usage per 5-hour window, the
+  period Claude subscription limits reset on (same rule as ccusage: a window
+  starts at its first message, floored to the UTC hour). Shows the last 10
+  windows (messages, tokens, cost, models) and, for the current one, when it
+  resets, the burn rate in tokens/min and $/hour, and the projected tokens
+  and cost at reset. The burn rate is measured from the window start
+  (ccusage measures from the first to the last message). Always covers every project, since limits are
+  account-wide; each message is counted once. An unpriced model shows its
+  cost as `-`. `--json` lists every window. No plan-limit estimate and no
+  live refresh yet.
+- `agentwatch statusline --cost`: adds the current 5-hour window to the
+  status line as `5h $4.12 → ~$9.80 · resets 2h13m` (spent, projected at reset,
+  time left), after any warning. Nothing when no window is active; only `5h resets …`
+  for an unpriced model. The summary is cached for 60 s and a refresh
+  reads only transcripts written in the last 24 hours, so a warm run costs
+  no more than plain `statusline`.
+- `test_tampering` health detector ("fake green"): flags an agent making
+  failing tests pass by skipping, weakening or deleting them instead of
+  fixing the code. It catches new unconditional skip/xfail markers, `.only`,
+  removed, commented-out or trivialised assertions, deleted test functions
+  and test files, test-config exclusions, and test commands that hide
+  failures (`|| true`, `--deselect`, `-k "not ..."`, `--passWithNoTests`,
+  `-skip`/`--skip`). An edit is HIGH when the last test run before it failed,
+  otherwise MEDIUM (skip, `.only`, config) or LOW. Command flags are MEDIUM
+  after a failed run (`|| true` right after the test runner: HIGH) and LOW
+  otherwise. Platform/env skips, moved or renamed tests, fixtures,
+  snapshots, non-source files in test dirs, and test files the agent created
+  itself in the window (shell, or a Write to a path no earlier action
+  read or changed: at most LOW) are ignored. Not seen:
+  in-place edits by shell (`sed -i '/assert/d'`). Edits are read for Claude Code, Codex,
+  Copilot CLI, Gemini CLI, OpenCode/Kilo and Cline; test commands for every
+  agent with a shell tool. The coach hook coaches on it, and the status line
+  shows `⚠ tests weakened`.
+- `agentwatch config-scan` (also `agentguard config-scan`): an offline,
+  read-only audit of AI agents' configs. It checks the MCP servers, hooks,
+  status line, permissions, skills, commands, agents, installed plugins and
+  CLAUDE.md files of Claude Code, Cursor, VS Code (Copilot), Codex, Gemini CLI
+  and Cline, in your user configs and in the project given by `--path`
+  (default: the current folder). It reports hard-coded secrets (masked),
+  MCP servers run through npx/uvx/bunx/pipx without an exact version or from
+  a git ref (also under `cmd /c`), plain-http remote servers,
+  `bypassPermissions`, allow-all rules and Codex `danger-full-access` (top
+  level and profiles), hooks and MCP server commands that pipe a download
+  into a shell, hidden characters and
+  override phrases in tool-facing markdown, and config files other users can
+  write. `--json` gives schema 1. Exit codes: 0 nothing above low, 1 a medium
+  finding, 2 a high finding. No network calls, no account, nothing written.
+- Needs-input and done alerts. `agentwatch notify on [--webhook URL]
+  [--events needs-input,done]` turns on alerts from the Claude Code plugin's
+  hook: "waiting for permission" / "waiting for your input" (Notification)
+  and "finished" with the turn's tool calls and cost (Stop), as a desktop
+  notification and optional webhook post, once per state change. Off by
+  default; the settings file is 0600 and the webhook URL is never printed.
+  `watch`/`watch-all --notify-done` alerts when a Claude Code, Codex, Copilot
+  CLI, Copilot VS Code, OpenCode or Kilo Code session finishes its turn, from
+  the log's own turn-end marker (sessions already finished at startup are a
+  silent baseline).
+- Command guard in the Claude Code plugin: before a catastrophic command
+  (`rm -rf ~`, `git push --force`, `git reset --hard`, `mkfs`, `curl | sh`,
+  ...) or a read of a secrets file (`.env`, SSH keys, cloud credentials) the
+  PreToolUse hook makes Claude Code ask you first, also when the command is
+  wrapped in `bash -c`, `sudo` or `env` or chained.
+- `agentwatch guard off|on`: a per-user off switch for the command guard
+  (on by default). Under `claude -p` an ask is a deny, so headless runs can
+  turn it off. `agentwatch guard` prints the status.
+
+### Fixed
+
+- `find_running_agents()` (and the Cursor, Claude Desktop, Copilot VS Code and Cline
+  process checks) are now thread-safe: they no longer read psutil's shared
+  `proc.info`, which concurrent scans overwrote (`KeyError: 'pid'` / `'ppid'`, a
+  500 from the `visual` server's `/api/ps` when two requests overlapped).
+- `detect`: browsers are now excluded on macOS and Linux too (helper processes such
+  as `Brave Browser Helper (Renderer)`, executables inside a browser `.app`,
+  `google-chrome`, `firefox-bin`, truncated names). Electron AI apps (`Claude
+  Helper`, `Code Helper`, `Cursor Helper`) still report. Safari's shared
+  `com.apple.WebKit.Networking` is not excluded.
+- Command guard: a `#` in the middle of a word (`a#b`) no longer hides the rest
+  of the line, and a comment no longer hides the command on the next line.
+  Commands that run inside `$(...)` or backticks are now checked also inside
+  double quotes and `${...}`, as are `<(...)`, `>(...)`, line continuations
+  and scripts a shell reads from a heredoc, a here-string or `echo | sh`.
+  A redirection before the program (`2>/dev/null rm -rf ~`) and
+  `bash -c -- '...'` no longer hide the command. `sh -c "$(curl ...)"`,
+  `eval $(curl ...)`, `bash <(curl ...)` and `curl ... |& bash` now count as
+  piping a download into a shell. A check that takes longer than a second
+  asks instead of running on.
+- Command guard: `$'...'` and `$"..."` quoting (`$'rm' -rf ~`, `eval $'...'`),
+  `coproc` and function bodies, `xargs` running a guarded command
+  (`echo ~ | xargs rm -rf`), scripts printed by `printf` or read through
+  `. /dev/stdin` or `bash < <(...)`, a decoder piped into a shell
+  (`base64 -d | sh`) or run from `$(...)`, and a `#` inside `(( ))`, `a[...]=`,
+  an extglob group or after another mid-word `#` (`a##b`) no longer hide a
+  dangerous command. The new reading runs next to the previous one, so a
+  command the guard asked about before is still asked. An error while
+  checking a Bash command now asks instead of letting the command through (a `printf` width or
+  precision such as `²` or a 5,000-digit number used to), `function > /dev/sda`
+  is checked as a redirection, and `bash -n` counts as a syntax check only
+  without `-i` (bash ignores `-n` when interactive). The decoder check is
+  linear, so a long `|/|/...` run no longer stalls the hook past its watchdog.
+- `report`/`tools` error kinds: a Node.js crash that failed to open a file is
+  counted as file not found, not as a plain nonzero exit. A failed
+  command's line that starts with `Error:` (or `TypeError:` and the like) is
+  now read along with its first and last output lines (#206).
+- Secret findings: two different secrets of the same type in the same
+  channel and file are now two findings, and the same secret seen twice is
+  still one. Each finding carries a `fingerprint`: the first 12 hex chars of
+  an HMAC-SHA256 of the value under a random per-user key
+  (`secret-fingerprint.key` in the history data dir, created on first use,
+  0600), never the value. The fingerprint is in the warning details, the
+  dedup key, `security-scan --json`, SIEM export and `audit --json`.
+- Secrets in a tool's result text are reported in channel `tool_result`
+  (same severity as before), not `user_message`, which now means a prompt.
+  `audit` uses `tool_result` for Claude Code `tool_result` blocks too
+  (was `tool_output`).
+- History: secret findings now have new keys. A log that changed is
+  re-scanned and its findings replaced, so its secret findings get a new
+  first-seen time once; logs that did not change keep their old rows until
+  they change.
+- `security-scan` reports how many actions it scanned ("Analyzed N actions",
+  JSON `action_count`, also in `agentwatch visual`), and `subagents` how
+  many each subagent made. Both reported at most 500, the size of the live
+  buffer, on longer sessions. Token-usage and turn-end records (Codex
+  `token_count`, for example) are not counted as actions, as in `history`
+  and `report`.
+- `error_spiral` reports the whole run of failed calls since the last
+  success (up to the actions kept in the buffer: 500 in scans, 2,000 in
+  `watch-all`), and its token cost covers
+  each of them. It reported at most 5 with the default settings. It fires
+  at the same point and with the same severity as before.
+
+- `agentwatch report --days` above 10000 is now a usage error instead of a
+  traceback, and an empty report mentions `--include-active` for sessions
+  still being written.
+- `report`/`tools` error kinds: a failed command is classified by its first and
+  last output lines, not by "timed out" or "No such file" anywhere in its
+  output, and Claude Code API errors count as tool `api`, not `system` (#206).
+  Rows already in `history.db` change when their log next changes.
+- Codex sessions (Codex CLI and the ChatGPT desktop app) no longer get a
+  false "Repeated action: token_count" loop warning. The `token_count` usage
+  record Codex writes after every turn no longer counts as an agent action in
+  the health detectors: loop, re-read, edit/test/fail thrash (`ThrashDetector`), stall, error spiral, high error rate,
+  error blindness, syntax loop, same outcome, file churn, error class
+  persistence, exploration stall, context rot, rediscovery and the thrash
+  metric no longer tally it, fill windows with it or have a failure streak
+  broken by it. Tokens, cost and the action count still include it.
+- History stores a model or tool name only when it holds no path, email or
+  secret; anything else is stored as `other`.
+
+### Changed
+
+- `visual`: redesigned around what is running now. The Overview opens with a plain-words
+  summary, tiles with live sparklines and one card per running agent; every view now
+  refreshes on its own while the page is visible (5 s for ps/check/security/subagents,
+  30 s for stats/report/history reads), updates in place, and shows a ticking "last
+  updated" time. The audit and history sync still run only on a click and show their age.
+
+- README: a short, plain-language front page with a banner.
+- agentwatch.info: plain-language redesign, with a dashboard screenshot
+  rendered from made-up sessions.
+
+### Security
+
+- A private key cut before its `-----END` line is now redacted whole. Before,
+  only its `BEGIN` header was masked and the key body could show in redacted
+  output (#205).
+
 ## [0.2.1] - 2026-10-27
 
 Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.
@@ -102,6 +459,11 @@ Everything from `develop-overdrive` (Sprint 35), brought into `develop` in #181.
   finding counts and the change against the previous period. Sessions with
   no price show as n/a and are left out of spend and %. `--agent`,
   `--project`, `--json` (schema 1, documented in the README), `--no-sync`.
+- `agentwatch statusline`: one short word in Claude Code's status line
+  (`⚠ loop ~$1.40`) for the most severe current HIGH/CRITICAL coach
+  finding, nothing when healthy (`--ok` shows a dim check mark). Reads only
+  the coach's state file and always exits 0; a one-line setup in
+  `~/.claude/settings.json` (PR #146).
 - `agentwatch history sync|prune|path`: a local SQLite history of sessions
   and findings behind the report (`%LOCALAPPDATA%\agentwatch\history.db`, or
   `~/.local/share/agentwatch/`). Only new or changed logs are read; logs

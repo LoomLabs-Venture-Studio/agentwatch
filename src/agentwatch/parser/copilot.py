@@ -21,7 +21,7 @@ arrives. Token usage is only written as session totals in
 from __future__ import annotations
 
 from .logs import _parse_timestamp, classify_tool, error_text, url_hostname
-from .models import Action, ToolType
+from .models import TURN_END, Action, ToolType
 
 
 class CopilotParser:
@@ -30,6 +30,7 @@ class CopilotParser:
     def __init__(self, session_id: str | None = None):
         self.session_id = session_id
         self._pending: dict[str, Action] = {}
+        self._replied = False  # this model turn's assistant.message asked for no tools
 
     def parse_line(self, entry: dict) -> list[Action]:
         event_type = entry.get("type")
@@ -54,6 +55,23 @@ class CopilotParser:
                 session_id=self.session_id,
                 raw=entry,
             )]
+
+        # Each model call is an assistant.turn_start .. assistant.turn_end pair;
+        # the reply ends with one whose assistant.message has empty
+        # toolRequests (live 1.0.90 capture). Permission prompts are not logged.
+        if event_type == "assistant.message":
+            self._replied = data.get("toolRequests") == []
+            return []
+        if event_type == "assistant.turn_end":
+            replied, self._replied = self._replied, False
+            return [Action(
+                timestamp=_parse_timestamp(entry),
+                tool_name=TURN_END,
+                tool_type=ToolType.UNKNOWN,
+                success=True,
+                session_id=self.session_id,
+                turn_end=True,
+            )] if replied else []
 
         call_id = data.get("toolCallId")
         if event_type == "tool.execution_start" and call_id:

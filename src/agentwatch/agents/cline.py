@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 import psutil
 
+from agentwatch.proc_snapshot import snapshot
+
 from .base import BaseAdapter, Watcher, folder_name, source_path
 from .copilot_vscode import _CODE_PROCESS_RE, COPILOT_VSCODE_ACTIVE_WINDOW_S
 
@@ -65,7 +67,7 @@ def _legacy_editors() -> tuple[tuple[str, str, re.Pattern[str]], ...]:
 def _running_editors() -> set[str]:
     """Labels of ``_legacy_editors()`` with a live process; empty on error."""
     try:
-        names = {p.info.get("name") or "" for p in psutil.process_iter(attrs=["name"])}
+        names = {p.get("name") or "" for p in snapshot(["name"])}
     except Exception:
         return set()
     return {label for label, _, rx in _legacy_editors() if any(rx.match(n) for n in names)}

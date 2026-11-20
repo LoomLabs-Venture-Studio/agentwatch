@@ -161,6 +161,67 @@ BROWSER_NAMES = frozenset({
     "vivaldi", "arc", "safari", "iexplore",
 })
 
+# macOS/Linux names (hyphens read as spaces, "-bin"/"-stable"/... dropped) and the
+# macOS ".app" bundle a browser's executable lives in. Helpers ("Brave Browser Helper
+# (Renderer)") are matched by bundle or by name + " helper" (psutil may truncate it).
+_BROWSER_FULL_NAMES = frozenset({
+    "google chrome", "chrome", "chromium", "chromium browser", "brave browser", "brave",
+    "microsoft edge", "msedge", "firefox", "firefox esr", "opera", "opera gx","vivaldi", "arc",
+    "safari",
+})
+_BROWSER_APPS = frozenset({
+    "google chrome.app", "google chrome canary.app", "chromium.app", "brave browser.app",
+    "microsoft edge.app", "firefox.app", "firefox nightly.app", "arc.app", "safari.app",
+    "opera.app", "vivaldi.app",
+})
+_BROWSER_NAME_NOISE = frozenset({"bin", "stable", "beta", "dev", "nightly", "unstable"})
+_HELPER = " helper"
+
+
+# Where an installed macOS app lives: /Applications, a user's ~/Applications, or the
+# AppTranslocation copy Gatekeeper runs a freshly downloaded app from.
+_APP_INSTALL_DIR = re.compile(
+    r"^/(Applications|Users/[^/]+/Applications"
+    r"|(private/)?var/folders/.+/AppTranslocation/[^/]+/d)$"
+)
+
+
+def _in_browser_bundle(exe: str) -> bool:
+    """True when exe sits in a browser .app that is itself in an install location.
+
+    Only the FIRST .app component counts and its parent must be an install dir, so
+    an agent CLI in a folder like ~/Projects/Arc.app/ cannot hide from detect.
+    """
+    parts = exe.replace("\\", "/").split("/")
+    for i, part in enumerate(parts):
+        if part.lower().endswith(".app"):
+            return (
+                part.lower() in _BROWSER_APPS
+                and _APP_INSTALL_DIR.match("/".join(parts[:i])) is not None
+            )
+    return False
+
+
+def is_browser(name: str, exe: str | None = None) -> bool:
+    n = name.lower().strip().removesuffix(".exe")
+    if n in BROWSER_NAMES:
+        return True
+    if exe and _in_browser_bundle(exe):
+        return True
+    words = [w for w in re.split(r"[-_ ]+", n) if w]
+    while len(words) > 1 and words[-1] in _BROWSER_NAME_NOISE:
+        words.pop()
+    n = " ".join(words)
+    for full in _BROWSER_FULL_NAMES:
+        if n == full:
+            return True
+        if n.startswith(full + " "):
+            rest = n[len(full):]
+            if rest.startswith(_HELPER) or _HELPER.startswith(rest):
+                return True
+    return False
+
+
 _PROC_ERRORS = (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError)
 
 
@@ -287,8 +348,11 @@ def detect(
             name = proc.name()
         except _PROC_ERRORS:
             continue
-        lowered = name.lower()
-        if lowered.removesuffix(".exe") in BROWSER_NAMES:
+        try:
+            exe = proc.exe()
+        except _PROC_ERRORS:
+            exe = None
+        if is_browser(name, exe):
             continue
         runtime = listeners.get(pid)
         if runtime and runtime_of(name, proc) != runtime:

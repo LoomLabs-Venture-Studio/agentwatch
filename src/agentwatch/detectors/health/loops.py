@@ -7,7 +7,7 @@ import json
 from collections import Counter
 from itertools import islice
 
-from agentwatch.parser.models import NON_TOOL_ROLE_LABELS, ActionBuffer
+from agentwatch.parser.models import ActionBuffer, is_tool_call
 
 from ..base import Category, Detector, Severity, Warning
 from ..security.secret_scanner import redact_secrets, redact_truncate
@@ -45,17 +45,18 @@ class LoopDetector(Detector):
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
         # history_len: a failed call is one Action here, two before results were merged.
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
         # The last `window` tool calls. Parsers' role-label sentinels (Cursor's
         # "user_message"/"assistant_message", Claude Code's "text_output",
-        # "tool_result", ... -- see NON_TOOL_ROLE_LABELS) mark conversation
+        # "tool_result", ... -- see NON_TOOL_ROLE_LABELS) and Codex's
+        # token_count usage records (is_tool_call) mark conversation
         # turns and call outcomes, not tool invocations: they are neither
         # counted nor allowed to take window slots, or a real loop with a
         # failed result after every call only ever fills half the window.
         recent = list(islice(
-            (a for a in reversed(buffer.actions) if a.tool_name not in NON_TOOL_ROLE_LABELS),
+            (a for a in reversed(buffer.actions) if is_tool_call(a)),
             self.window,
         ))[::-1]
         if not recent:
@@ -133,10 +134,10 @@ class RereadDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         # Count reads per file
         read_counts: dict[str, int] = {}
@@ -177,10 +178,10 @@ class ThrashDetector(Detector):
         self.window = window
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         # Track edit→bash→fail patterns per file
         file_thrash_counts: dict[str, int] = {}
@@ -238,10 +239,10 @@ class StallDetector(Detector):
         self.min_edits = min_edits
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        if buffer.history_len < self.window:
+        if buffer.activity_history_len < self.window:
             return None
 
-        recent = buffer.last(self.window)
+        recent = buffer.last(self.window, activity=True)
 
         # Count productive actions
         edits = sum(1 for a in recent if a.is_file_edit)

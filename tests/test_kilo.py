@@ -187,8 +187,8 @@ class TestDiscovery:
         info = {"pid": 4242, "ppid": 1, "name": "kilo", "cpu_percent": 0.0,
                 "memory_info": types.SimpleNamespace(rss=1), "create_time": 1_700_000_000.0,
                 "cmdline": ["/ext/kilocode.kilo-code-7.8.9/bin/kilo", "serve", "--port", "0"]}
-        monkeypatch.setattr(discovery.psutil, "process_iter",
-                            lambda attrs=None: iter([types.SimpleNamespace(info=info)]))
+        proc = types.SimpleNamespace(as_dict=lambda attrs=None: info)
+        monkeypatch.setattr(discovery.psutil, "process_iter", lambda attrs=None: iter([proc]))
         monkeypatch.setattr(discovery, "_get_process_cwd", lambda pid: Path(PROJECT))
 
         [found] = discovery.find_running_agents()

@@ -54,6 +54,9 @@ class _Machine:
                 self.pid = pid
                 self.info = dict(machine.procs[pid])
 
+            def as_dict(self, attrs=None):
+                return dict(self.info)
+
             def open_files(self):
                 machine.open_files_calls += 1
                 return [types.SimpleNamespace(path=str(p)) for p in machine.open_files.get(
@@ -66,7 +69,8 @@ class _Machine:
         def _process_iter(attrs=None):
             return iter([_FakeProcess(pid) for pid in sorted(machine.procs)])
 
-        monkeypatch.setattr(discovery, "_claude_home", lambda: machine.claude_home)
+        monkeypatch.setattr(discovery, "_claude_home", lambda *a: machine.claude_home)
+        monkeypatch.setattr(discovery, "_claude_homes", lambda: [machine.claude_home])
         monkeypatch.setattr(discovery.psutil, "process_iter", _process_iter)
         monkeypatch.setattr(discovery.psutil, "Process", _FakeProcess)
         monkeypatch.setattr(discovery, "_get_process_cwd", lambda pid: machine.procs[pid]["_cwd"])

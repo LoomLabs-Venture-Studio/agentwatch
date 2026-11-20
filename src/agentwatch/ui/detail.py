@@ -30,7 +30,8 @@ TABS = ("health", "security", "network", "process")
 
 
 class DetailScreen(Screen):
-    """One session, full screen. Esc/Backspace/q go back to the table."""
+    """One session, full screen. Esc/Backspace/q go back to the table
+    (`watch`: SessionDetailScreen, q quits)."""
 
     CSS = """
     #detail-title {
@@ -122,3 +123,10 @@ class DetailScreen(Screen):
     def action_scroll(self, how: str) -> None:
         pane = self.query_one(f"#{self.query_one(TabbedContent).active} .pane", VerticalScroll)
         getattr(pane, f"scroll_{how}")()
+
+
+class SessionDetailScreen(DetailScreen):
+    """`watch` (one session): q quits, as on the dashboard and in its footer.
+    Esc/Backspace still go back to the one-row table."""
+
+    BINDINGS = [Binding("q", "app.quit", "Quit")]

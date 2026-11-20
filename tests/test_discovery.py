@@ -485,6 +485,9 @@ class TestFindRunningAgentsCursorMerge:
                     "create_time": 1_700_000_000.0,
                 }
 
+            def as_dict(self, attrs=None):
+                return dict(self.info)
+
         monkeypatch.setattr(
             discovery.psutil, "process_iter", lambda attrs=None: iter([_FakeProcess(500)])
         )
@@ -521,6 +524,9 @@ class TestFindRunningAgentsCursorMerge:
                     "cpu_percent": 0.0,
                     "create_time": 1_700_000_000.0,
                 }
+
+            def as_dict(self, attrs=None):
+                return dict(self.info)
 
         monkeypatch.setattr(
             discovery.psutil, "process_iter", lambda attrs=None: iter([_FakeProcess(500)])

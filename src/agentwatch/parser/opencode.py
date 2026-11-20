@@ -174,6 +174,10 @@ def message_actions(
             session_id=session_id,
             raw={"type": "text"},
         )]
+    if actions and message.get("finish") == "stop":
+        # The reply's last step ("tool-calls" steps go on); fixture from a real
+        # 1.18.34 session. Permission prompts are not stored in these rows.
+        actions[-1].turn_end = True
     if actions:
         # The step's usage goes on its first action, like Claude Code's outgoing_data.
         first = actions[0]
@@ -255,6 +259,16 @@ def read_session(
             action.message_id = mid  # the step's usage sits on its first action
         out.append((mid, actions))
     return out
+
+
+def session_directory(db_path: Path, session_id: str) -> str | None:
+    """The session row's ``directory`` (its cwd), or None."""
+    conn = open_readonly(db_path)
+    try:
+        row = conn.execute("SELECT directory FROM session WHERE id = ?", (session_id,)).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row and isinstance(row[0], str) else None
 
 
 def parse_opencode_session(db_path: Path, session_id: str | None = None) -> list[Action]:

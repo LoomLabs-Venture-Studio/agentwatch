@@ -27,6 +27,12 @@ def _no_machine_checks(monkeypatch):
 
     monkeypatch.setattr(MultiAgentWatchApp, "MACHINE_CHECKS", False)
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+    # A developer's own Claude Code config dir must not leak into tests, nor
+    # one test's per-process CLAUDE_CONFIG_DIR reads into the next.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    from agentwatch import discovery
+
+    monkeypatch.setattr(discovery, "_config_dir_by_proc", {})
 
 
 @pytest.fixture(autouse=True)

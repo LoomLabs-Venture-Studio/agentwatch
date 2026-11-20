@@ -142,3 +142,23 @@ async def test_idle_session_is_never_folded(tmp_path):
         app.refresh_ui()
         await pilot.pause()
         assert [k.value for k in app.query_one("#sessions").rows] == [str(log)]
+
+
+
+@pytest.mark.parametrize("size", ((120, 40), (80, 24)))
+async def test_q_quits_from_the_session_detail_view(tmp_path, size):
+    """Sweep: `watch` opens on the detail view, and q there quits (as the
+    footer says), not back to the one-row table. Esc still goes back
+    (test_opens_detail_on_the_session_real_watcher_and_siem)."""
+    log = tmp_path / "s.jsonl"
+    _env_read_log(log)
+    app = MultiAgentWatchApp(session=log)
+    quits = []
+    async with app.run_test(size=size) as pilot:
+        await _wait(pilot, lambda: isinstance(app.screen, DetailScreen) and app.screen.ready)
+        shown = {b.binding.key: b.binding.description
+                 for b in app.screen.active_bindings.values() if b.binding.show}
+        assert shown["q"] == "Quit" and shown["escape"] == "Back"  # Esc: see above
+        app.exit = lambda *a, **kw: quits.append(a)  # the real quit ends run_test early
+        await pilot.press("q")
+        await _wait(pilot, lambda: quits)

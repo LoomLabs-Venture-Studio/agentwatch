@@ -486,9 +486,11 @@ def parse_aider_log(markdown_path: Path, analytics_path: Path | None = None) -> 
             # to resolve properly) -- this only makes today's best-effort
             # zip() pairing visible instead of silent.
             logger.warning(
-                "aider analytics merge: %d turn(s) vs %d message_send event(s) in "
-                "session window for %s -- pairing will degrade to zip()'s "
-                "shortest-wins behavior, so some turns/events may go unmatched",
+                "aider analytics merge: %d turn(s) but %d message_send event(s)\n"
+                "  in the time window of session\n"
+                "  %s.\n"
+                "  Turns and events are paired in order, so some may get no\n"
+                "  tokens/cost.",
                 len(turn_ordinals),
                 len(session_events),
                 session.session_id,

@@ -19,6 +19,8 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Input, Static, TabbedContent
 
+from agentwatch import posture as _posture
+from agentwatch import subagents
 from agentwatch.agents import DISPLAY_NAMES, adapter_for, display_name
 from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
 from agentwatch.coach import state_path
@@ -49,11 +51,12 @@ from agentwatch.net_sampler import (
     endpoint_summary,
 )
 from agentwatch.parser import ActionBuffer, MultiLogWatcher
+from agentwatch.parser.models import turn_ended
 from agentwatch.statusline import _cost, state_dirs
 from agentwatch.themes import ascii_safe, get_current_theme_name, get_theme
 from agentwatch.ui import machine
 from agentwatch.ui.app import WarningsList, _hm, hang, plain_notify, show
-from agentwatch.ui.detail import DetailScreen
+from agentwatch.ui.detail import DetailScreen, SessionDetailScreen
 from agentwatch.ui.help import HelpScreen
 from agentwatch.ui.live_integrations import LiveLlmAssessor, LiveSiemExporter
 
@@ -422,6 +425,8 @@ class MultiAgentWatchApp(App):
         self._holding = False  # at startup, an Alerter pass for a session in its window
         self._header_text = ""
         self._selected_sig: tuple = ()  # what the Selected strip shows (_update_selected)
+        # pid -> sandbox/permission posture, read on the discovery thread
+        self._postures: dict[int, _posture.Posture] = {}
         self._blocks = 0  # loop-breaker blocks seen this run (incl. already at startup)
         self._held_blocks = 0  # ... of those, seen in the startup window
         self._coach_next = 0.0  # monotonic time of the next coach state pass
@@ -564,7 +569,11 @@ class MultiAgentWatchApp(App):
             item.project_name = _project_of(adapter, log_path) if adapter else None
             if state["agent_name"] == "claude-code" and log_path.parent.name == "subagents":
                 item.depth = 1  # <session>/subagents/agent-<id>.jsonl, under <session>.jsonl
-                state["parent_log"] = log_path.parent.parent.with_suffix(".jsonl")
+        if ((item.agent_type or state.get("agent_name")) == "claude-code"
+                and log_path.parent.name == "subagents"):
+            # Under the log that started it; shown by its type (cto, engineer, ...)
+            state["parent_log"] = subagents.parent_log(log_path)
+            state["label"] = subagents.kind(log_path, "")  # no meta: the agent's name
         self.agents[log_path] = state
         self._track_net(state, proc)
         if item.pid is not None and item.team_id is not None:
@@ -572,14 +581,16 @@ class MultiAgentWatchApp(App):
         if self.selected_path is None:
             self.selected_path = log_path
         if log_path == self.session:
-            self.push_screen(DetailScreen(log_path))
+            self.push_screen(self._detail_screen(log_path))
         if self._loaded_until is None:
-            name = who(item.agent_type or state.get("agent_name"), item.project_name)
+            name = who(state.get("label") or item.agent_type or state.get("agent_name"),
+                       item.project_name)
             self._event(f"{ascii_safe('▶', '>')} {name} started")
 
     def _track_net(self, state: dict, proc: AgentProcess | None) -> None:
         """Sample *proc*'s sockets if it is a real per-agent process."""
-        if proc and attributable(proc):
+        # A subagent shares its session's process: its sockets are the session's.
+        if proc and attributable(proc) and "parent_log" not in state:
             self._net_sampler.track(proc.pid)
             state["net_sampled"] = True
 
@@ -682,7 +693,11 @@ class MultiAgentWatchApp(App):
         if not table.row_count or table.coordinate_to_cell_key(
                 (table.cursor_row, 0)).row_key.value != str(self.selected_path):
             return  # a team or fold row, or a filter that matches nothing
-        self.push_screen(DetailScreen(self.selected_path))
+        self.push_screen(self._detail_screen(self.selected_path))
+
+    def _detail_screen(self, path: Path) -> DetailScreen:
+        """watch-all: q goes back to the table; `watch` (one session): q quits."""
+        return SessionDetailScreen(path) if self.session is not None else DetailScreen(path)
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Main-screen keys are off (and out of the footer) in the detail view."""
@@ -976,6 +991,8 @@ class MultiAgentWatchApp(App):
 
     @staticmethod
     def _agent_name(data: dict) -> str:
+        if data.get("label"):
+            return data["label"]
         agent = data["item"].agent_type or data.get("agent_name")
         return display_name(agent) if agent else "?"
 
@@ -1003,10 +1020,14 @@ class MultiAgentWatchApp(App):
             if self._narrow:  # no AGENT column: the tree is in PROJECT
                 project = f"{indent} {project}"
         health = f"{score}%"
+        badge = self._posture_badge(item.pid)
+        if badge:  # "! " before the project: approvals skipped (red: no sandbox too)
+            project = badge[0] + project
         cells = {
             "dot": (ascii_safe("●", "*") if active else ascii_safe("○", "o"), color),
             "agent": (agent, AGENT_COLORS.get(item.agent_type or data.get("agent_name"), "")),
-            "project": (project, ""),
+            "project": (project, "", ((0, len(badge[0]), badge[1]),)) if badge
+            else (project, ""),
             "health": (f"{health} {trend}", color, ((len(health) + 1, len(health) + 2,
                                                    trend_style),)) if trend else (health, color),
             "cost": ("n/a" if cost is None else format_usd(cost).lstrip("~"), "")
@@ -1072,7 +1093,8 @@ class MultiAgentWatchApp(App):
             parent = data.get("parent_log")
             if parent is None and data["item"].parent_agent_pid is not None:
                 if by_pid is None:
-                    by_pid = {d["pid"]: p for p, d in agents.items() if d["pid"] is not None}
+                    by_pid = {d["pid"]: p for p, d in agents.items()  # a subagent shares
+                              if d["pid"] is not None and "parent_log" not in d}  # its pid
                 parent = by_pid.get(data["item"].parent_agent_pid)
             if parent is not None and parent != path and parent in keys:
                 parent_of[path] = parent
@@ -1555,11 +1577,23 @@ class MultiAgentWatchApp(App):
 
     # -- Selected strip ---------------------------------------------------
 
+    def _posture_badge(self, pid: int | None) -> tuple[str, str] | None:
+        """("! ", style) for a session whose approvals are skipped: red with
+        no sandbox, yellow otherwise; None for the rest."""
+        p = self._postures.get(pid) if pid is not None else None
+        if p is None or p.approvals != "skipped":
+            return None
+        theme = get_theme()
+        return "! ", "bold " + _color(theme.color_3 if p.risky else theme.color_1)
+
     def _title(self, data: dict) -> str:
         item: AgentItem = data["item"]
         title = [item.project_name or item.log_path.name, self._agent_name(data)]
         if item.pid:
             title.append(f"pid {item.pid}")
+            p = self._postures.get(item.pid)
+            if p is not None and p != _posture.UNKNOWN:
+                title.append(_posture.label(p, " / "))
         if item.uptime:
             title.append(item.uptime)
         if item.process_status == "stopped":
@@ -1793,10 +1827,15 @@ class MultiAgentWatchApp(App):
         if self.alerter is None:
             return
         item = agent_data["item"]
-        stats = agent_data["buffer"].stats
+        buffer = agent_data["buffer"]
+        stats = buffer.stats
         self.alerter.observe(
-            str(item.log_path), item.agent_type, item.project_name or item.log_path.name,
+            str(item.log_path), agent_data.get("label") or item.agent_type,
+            item.project_name or item.log_path.name,
             warnings, report, actions=stats.action_count, cost=stats.estimated_cost,
+            # A subagent transcript finishing is not the user's wait.
+            done=turn_ended(reversed(buffer.actions))
+            if self.alerter.notify_done and item.log_path.parent.name != "subagents" else None,
         )
 
     def _export_and_assess(self, agent_data: dict, warnings: list["Warning"]) -> None:
@@ -1904,7 +1943,8 @@ class MultiAgentWatchApp(App):
             d = w.details
             key = (
                 f"secret_leak:{d.get('secret_type', '')}:"
-                f"{d.get('channel', '')}:{d.get('file_path', '')}:{agent_label}"
+                f"{d.get('channel', '')}:{d.get('file_path', '')}:"
+                f"{d.get('fingerprint', '')}:{agent_label}"
             )
             if key in self._alerted_signals:
                 continue
@@ -1919,6 +1959,12 @@ class MultiAgentWatchApp(App):
             if w.severity.value == "critical":
                 self.bell()
 
+    def _scan_processes(self) -> tuple[list[AgentProcess], dict[int, _posture.Posture]]:
+        """Discovery plus each process's posture (cached per pid and start
+        time, so only a new process costs a psutil walk). Off the event loop."""
+        processes = subagents.with_subagents(find_running_agents(self._discovery_cache))
+        return processes, {p.pid: _posture.posture(p) for p in processes}
+
     async def _refresh_processes(self) -> None:
         """Periodically re-scan running processes and update agent list."""
         if not self._process_mode:
@@ -1932,12 +1978,13 @@ class MultiAgentWatchApp(App):
             # entirely on repeat scans. Everything below touches Textual
             # widgets/app state and must stay on the event loop, so we don't
             # offload any further.
-            processes = await asyncio.to_thread(find_running_agents, self._discovery_cache)
+            processes, postures = await asyncio.to_thread(self._scan_processes)
         finally:
             self._scanning = False
         if self.session is not None:  # `watch`: only its own agent, never others
             processes = [p for p in processes if p.log_file == self.session]
 
+        self._postures = postures
         new_agents = self.watcher.refresh_processes(processes)
         scanned = {t.team_id: t for t in build_teams(processes) if t.member_count > 1}
 
@@ -1955,7 +2002,7 @@ class MultiAgentWatchApp(App):
                 was = item.process_status
                 item.update_process_info(proc)
                 if was != item.process_status == "stopped":
-                    name = who(item.agent_type, item.project_name)
+                    name = who(agent_data.get("label") or item.agent_type, item.project_name)
                     self._event(f"{ascii_safe('■', '#')} {name} stopped", "dim")
 
         # Remove agents that have been stopped for over 60 seconds

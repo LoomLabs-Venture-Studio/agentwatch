@@ -64,17 +64,36 @@ want a "fitness tracker + security guard" for those agents.
 ## Architecture
 ```
 src/agentwatch/
-  cli.py              Click command group: check, watch, watch-all, ps,
-                       detect, net, list-detectors, security-scan, themes, stats,
-                       audit, scrub, report, history sync|prune|path. `scrub PATH` redacts secrets + PII in one
-                       file (copy by default, `--in-place`/`--dry-run`/
+  cli.py              Click command group: check, watch, watch-all, ps
+                       (POSTURE column: posture.py),
+                       detect, net, list-detectors, security-scan, config-scan, themes, stats,
+                       visual,
+                       audit, scrub, report, tools, ledger, subagents, history sync|prune|path, notify on|off|status
+                       [--webhook URL] [--events needs-input,done] (the
+                       Claude Code hook's attention-alert settings; webhook
+                       masked). `budget set [--session|--block|--day USD]
+                       [--action ask|deny]` (merges; 0 removes a cap),
+                       `budget off`, `budget status` (budget.py).
+                       `report`/`stats`/`tools` take --format text|json|csv.
+                       `scrub PATH` redacts secrets + PII in one
+                       file (copy by default, an existing .scrubbed copy
+                       refused unless `--force`; `--in-place`/`--dry-run`/
                        `--json`); `audit --pii` adds low-severity PII findings
                        (output without `--pii` unchanged)
                        `check --security` exits with the worse of the health
                        and security codes (`_security_exit_code`; security-scan
-                       thresholds: 100 -> 0, 50-99 -> 1, under 50 -> 2)
+                       thresholds: 100 -> 0, 50-99 -> 1, under 50 -> 2);
+                       its text report's headline is the security verdict
+                       (`Security:`), the health status below (`Health:`)
+                       `stats --session ID|prefix` searches every config
+                       dir (cc_stats.find_session_logs; ambiguous prefix ->
+                       usage error). `history prune --older-than` >= 1d
                        Entry points: `agentwatch` and `agentguard`
-                       (security-first alias), both -> agentwatch.cli
+                       (security-first alias), both -> agentwatch.cli.
+                       agentguard's commands (_GUARD_ALIASES) are built from
+                       the agentwatch commands' own params (copied, security
+                       forced on), group -t/--theme too; test_guard_cli.py
+                       checks they match
   __init__.py          Public package API re-exporting detectors/health/parser/etc.
   agents/              One adapter per agent: AgentAdapter protocol +
                        BaseAdapter defaults (base.py) and the ordered
@@ -102,7 +121,23 @@ src/agentwatch/
                        PID-based match (`_find_open_codex_rollout`, mirrors
                        Claude Code's `_find_open_jsonl` via `psutil.Process.
                        open_files()`) before falling back to cwd/mtime
-                       heuristics
+                       heuristics. Claude Code's config dir per process:
+                       its own CLAUDE_CONFIG_DIR (psutil environ(), only
+                       that key, cached per (pid, create_time); readable
+                       but unset -> ~/.claude; relative -> against the
+                       process cwd, ignored if that is unreadable;
+                       resolved), else (unreadable, any exception)
+                       agentwatch's, else ~/.claude (`_claude_home`)
+  claude_config.py     Claude Code config dirs (stdlib only):
+                       default_config_dir() ($CLAUDE_CONFIG_DIR, ~
+                       expanded, empty ignored, else ~/.claude);
+                       config_dirs() for whole-history scans
+                       ($CLAUDE_CONFIG_DIR + ~/.claude, existing, returned
+                       resolved and once each, so history's path hashes
+                       stay stable; no ~/.claude-* guessing). Also used
+                       by config_scan (settings/md/plugins per dir;
+                       .claude.json in home for ~/.claude, inside
+                       $CLAUDE_CONFIG_DIR for it) and statusline
   ai_detect.py         Machine-wide AI-use detection for `agentwatch detect`:
                        resolves AI_PROVIDERS domains to IPs, attributes
                        psutil socket-table connections to PIDs, checks
@@ -168,11 +203,102 @@ src/agentwatch/
                        attributable(): process-kind adapters only, minus
                        Codex app-server threads, `kilo serve`/`opencode
                        serve` and Aider (synthetic timestamps)
-  coach.py             `agentwatch hook` (hidden): Claude Code PostToolUse/
+  posture.py           Sandbox/permission posture (Sprint 48), stdlib +
+                       psutil: posture(AgentProcess) -> Posture(approvals
+                       skipped|auto|on|unknown (auto = a classifier or
+                       reviewer model approves), sandbox sandboxed|
+                       container|none|unknown, confidence high|low,
+                       reasons = fixed strings, never argv). Argv parsed per
+                       CLI library (_Cli/_parse: --x V, --x=V, -sV, -s V,
+                       -s=V, grouped -dy; yargs --x=true, --no-x,
+                       camelCase); positionals and after `--` ignored.
+                       Claude Code: flag > permissions.defaultMode from
+                       managed (/etc/claude-code, macOS /Library/
+                       Application Support/ClaudeCode, C:\Program Files\
+                       ClaudeCode; + managed-settings.d) > --settings (JSON
+                       or path; unreadable -> unknown) > local > project
+                       (bypass/auto not honoured there) > user > built-in
+                       default (auto from 2.1.283, read from the native
+                       exe's versions/<v> path; -p and disableAutoMode ->
+                       Manual); disableBypassPermissionsMode / --restricted
+                       refuse bypass. Codex: CODEX_HOME from the process's
+                       own environ (that key only) > agentwatch's >
+                       ~/.codex; layers /etc/codex/config.toml < config.toml
+                       < profile (-p NAME -> NAME.config.toml, else legacy
+                       [profiles.NAME]; top-level profile = selector;
+                       named but unreadable -> unknown) < project
+                       .codex/config.toml per dir from the repo root (first
+                       .git up from the process cwd (else the realpath of
+                       the discovered dir), then -C; else the cwd
+                       only; <= 64 dirs) down to the cwd, closest wins,
+                       profile/profiles ignored; a value from there is low
+                       (trust not read); unreadable/cut/custom
+                       project_root_markers -> "project config unknown",
+                       low) < -c/--config key=value (TOML) < -s/-a flags;
+                       approvals_reviewer auto_review (or its alias
+                       guardian_subagent) / --approve-for-me -> auto, any
+                       other reviewer -> unknown; -c profiles.NAME.KEY
+                       applied to the active profile, any -c profiles.*
+                       -> low; an unreadable config -> unknown unless set by
+                       flag. `codex exec|e|review` -> skipped ("codex exec
+                       (no approvals)") unless the reviewer is auto_review;
+                       with -a or -c approval_policy -> unknown. default_permissions / a
+                       [permissions] table in any layer or -c: sandbox
+                       unknown (":danger-full-access" -> none); -s still
+                       wins but low. Gemini (yargs-parser rules: a dash
+                       word is never a value; a boolean takes only a
+                       following true/false; `--yolo=1`-style values ->
+                       unknown; `-ms` sandbox -> unknown): --approval-mode
+                       > --yolo > settings general.defaultApprovalMode (not
+                       yolo); -s/--sandbox or tools.sandbox -> own sandbox;
+                       run_shell_command, ShellTool or any `*` entry in
+                       --allowed-tools or tools.allowed (user or <cwd>/
+                       .gemini settings) -> "all commands pre-approved",
+                       low; unreadable settings -> low; --policy/
+                       --admin-policy or any *.toml (or unreadable dir) in
+                       /etc/gemini-cli/policies (macOS /Library/Application
+                       Support/GeminiCli, Windows C:\ProgramData\
+                       gemini-cli), ~/.gemini/policies or <cwd>/.gemini/
+                       policies -> "policy files not read", low.
+                       Claude --permission-prompt-tool -> "prompts answered
+                       by a tool": on -> auto, low.
+                       Claude allow rule or --allowedTools entry `Bash`,
+                       `Bash(*)`, `Bash(**)`, `*` or a shell prefix
+                       (`Bash(sh -c:*)`, `Bash(bash:*)`, ...) -> "all commands pre-approved",
+                       low. Copilot: allow-all
+                       flags; partial allows only add "some tools
+                       pre-approved". Sandbox: nearest ancestor (<= 16;
+                       cut -> "ancestry too deep") srt/codex-linux-sandbox
+                       -> sandboxed (high); bwrap/firejail/nsjail/
+                       sandbox-exec -> sandboxed (low, "launcher options not
+                       read": argv never read); bwrap under flatpak
+                       (flatpak parent, /app/ program, /.flatpak-info) ->
+                       sandboxed (low); exact names containerd-shim*/
+                       conmon/runc/crun/docker-init/dockerd/podman/
+                       containerd -> container (low); else /proc/<pid>/
+                       root markers; else the agent's own sandbox; else
+                       none. Windows: sandbox unknown unless explicitly
+                       off. Editor kinds, zombies, unreadable or
+                       non-matching pids -> UNKNOWN. Cached per (pid,
+                       create_time). tone(): bad = skipped + none, warn =
+                       skipped, good = on + sandboxed + high confidence
+                       only, else neutral. Surfaces: ps POSTURE column
+                       (theme color_3/1/0, ascii sep " / "), ps --json and
+                       /api/ps `posture`, visual card chip (its own row,
+                       same short words, wraps) + summary count, watch-all
+                       `! ` before PROJECT (red risky / yellow skipped) +
+                       label in the Selected title (postures computed on
+                       the discovery thread), check text-mode advisory when
+                       skipped + none and the log changed in the last 10
+                       min (score/exit unchanged)
+  coach.py             `agentwatch hook` (hidden; `--help`/`-h` prints
+                       coach.HELP and exits 0, in _entry.py before any
+                       stdin read): Claude Code PostToolUse/
                        PostToolUseFailure hook. Tail (4 MB) of
                        transcript_path -> parse_claude_code_entry ->
                        health registry; new HIGH/CRITICAL PROGRESS/ERRORS
-                       warning -> hookSpecificOutput.additionalContext
+                       warning (includes `test_tampering`, Try line fixed)
+                       -> hookSpecificOutput.additionalContext
                        (<= 3 lines; evidence quoted with </> stripped, the
                        Try line is fixed text per signal). Subagent
                        payloads (agent_id) read <transcript>/subagents/
@@ -194,20 +320,84 @@ src/agentwatch/
                        (same id as LoopDetector) and denies the first match
                        once (permissionDecision deny, fixed reason).
                        LOOP_ALLOW Bash prefixes are never denied.
-  statusline.py        `agentwatch statusline [--ok]`: Claude Code statusLine
-                       command. Stdin session_id -> newest coach state file
+                       Attention alerts (Sprint 40): Notification
+                       (permission_prompt, idle_prompt, elicitation_dialog,
+                       elicitation_url_dialog, agent_needs_input) and Stop,
+                       only when user_state_dir()/notify (no suffix, so never
+                       pruned; 0600; {on, events, webhook?}) is on; off = one
+                       file read. Title `agentwatch: Claude Code · <cwd
+                       name> — waiting for permission|waiting for your
+                       input|finished`; body = payload message or "N tool
+                       calls this turn, ~$x" (1 MB transcript tail back to
+                       the prompt). Desktop via alerts.notify_command,
+                       spawned detached; webhook 3 s. Dedup: state
+                       "attention" key; repeated idle and idle after done
+                       skipped; PostToolUse _save and Stop reset it;
+                       stop_hook_active skipped. Prints nothing, no decision.
+                       hooks.json runs both async
+                       Command guard (guard.py, stdlib only, runs before
+                       the breaker): catastrophic Bash (rm -rf ~, push -f,
+                       mkfs, curl|sh, ...; shlex-split, sudo/env/bash -c
+                       unwrapped) or a secrets read (.env, SSH keys, cloud
+                       creds) -> permissionDecision ask, fixed reason.
+                       A first pass reads quoting like bash (comments only
+                       at a word start; $( ), backticks, <( ), >( ) in
+                       unquoted and double-quoted text; heredoc/here-
+                       string/echo|sh scripts); the old full-text view is
+                       still checked, so it only asks more (#222). Shared
+                       1 s budget -> ask (the hook's watchdog fails open);
+                       any non-shlex parse error -> ask (`unchecked`, #225);
+                       an unclear `#` (open (( / extglob across lines)
+                       -> ask; any shell name (bash5, ksh93, ...) (#228);
+                       regexes must stay linear (watchdog)
+                       `agentwatch guard off` writes {"on": false} to
+                       user_state_dir()/guard (coach.GUARD); only that
+                       exact value turns it off (`on` deletes the file)
+                       Spend caps (Sprint 48, budget.py): PreToolUse after
+                       guard + breaker; coach._budget reads user_state_dir()/
+                       budget (no file = one failed open, budget.py never
+                       imported). PostToolUse, only while that file exists,
+                       adds new transcript bytes (16 MB per call, by offset,
+                       message id growth only) to state cost_usd/cost_scan
+  budget.py            `agentwatch budget set|off|status`: settings JSON
+                       {session|block|day: USD, action: ask|deny} (0600,
+                       mkstemp). Session spend = coach state cost_usd of the
+                       session + its <sid>.<agent> files; block/day from
+                       the statusline cache of the hook's own
+                       CLAUDE_CONFIG_DIR, only when < 120 s old (never
+                       computed in the hook; skipped otherwise). Over a cap:
+                       ask (fixed "about $X (cap $Y). Continue?") or deny;
+                       an ask is approved when that tool_use_id's
+                       PostToolUse (never PostToolUseFailure) arrives, then
+                       re-asked at each +25% step (per cap scope: value,
+                       block end, day start). 80%: one
+                       additionalContext per scope. State in
+                       <sid>..budget.json (never a coach state name). List
+                       price estimates; unpriced models add nothing
+  statusline.py        `agentwatch statusline [--ok] [--cost]`: Claude Code statusLine
+                       command. Stdin read under a 2 s watchdog
+                       (STDIN_TIMEOUT_S, os._exit(0), silent). Stdin session_id -> newest coach state file
                        across state_dirs(): state_dir, the dir named in
                        user_state_dir()/state-dir (coach.POINTER, written
                        by the hook; the status line gets no
                        CLAUDE_PLUGIN_DATA), else <CLAUDE_CONFIG_DIR or
                        ~/.claude>/plugins/data/agentwatch-*/coach, and
                        user_state_dir; worst HIGH/CRITICAL of the mapped
-                       signals -> `⚠ loop|thrash|errors|stuck ~$x` (cost
+                       signals -> `⚠ loop|thrash|errors|stuck|tests weakened ~$x` (cost
                        only if finite, 0 <= x < 10k; < 0.01 -> `<$0.01`;
                        yellow/red, NO_COLOR). Healthy: nothing, `--ok` dim
                        `✓ agentwatch`. No state / > 10 min old / any error:
                        nothing, exit 0. No transcript parsing; imports only
-                       stdlib + coach (~150 ms on Windows)
+                       stdlib + coach (~150 ms on Windows). `--cost`: the
+                       active 5-hour block (spend -> projection · resets)
+                       from a 60 s cache per config dir (user_state_dir()/
+                       block-<16 hex of sha256 of the resolved config
+                       dir>.json; one shared file mixed dirs, #240); a
+                       miss imports cc_stats and scans transcripts modified
+                       in the last 24 h; the cache also holds today's spend
+                       ({"day": {start: local midnight, cost_usd}}, via
+                       UsageBlock.cost_by_slot / cc_stats.day_cost) for
+                       budget caps; `cap $Y` shown with a block cap
   alerts.py            Alerter for `watch`/`watch-all` `--notify`,
                        `--webhook URL` (env AGENTWATCH_WEBHOOK) and
                        `watch-all --headless`. observe(session, agent,
@@ -241,7 +431,12 @@ src/agentwatch/
                        (URL masked), beep on
                        Windows toast failure; TUIs route warn to a toast
                        (tui_warn). Headless = MultiAgentWatchApp.run(
-                       headless=True), the same engine
+                       headless=True), the same engine.
+                       --notify-done (Sprint 40): observe(done=) = parser.
+                       models.turn_ended(newest first) -> one "finished
+                       [~$x]" alert per turn end (same message_id = same),
+                       baselined like findings, not rate-limited; headless
+                       DONE line
   _entry.py            Console-script entry: `hook` and `statusline` go
                        straight to coach.py / statusline.py without
                        importing cli.py, the rest to cli.main. The package
@@ -250,12 +445,22 @@ src/agentwatch/
   history.py           `agentwatch history`: stdlib sqlite3 at data_dir()/
                        history.db (%LOCALAPPDATA%\agentwatch, else
                        $XDG_DATA_HOME or ~/.local/share + agentwatch; dir via
-                       coach._private_dir, 0700). PRAGMA user_version +
+                       coach._private_dir, 0700; on POSIX the DB is created
+                       0600 and an existing one we own tightened to 0600). PRAGMA user_version +
                        _MIGRATIONS (statement lists, IF NOT EXISTS) run
-                       under BEGIN IMMEDIATE, version re-read inside. sessions keyed by log_hash (sha256
+                       under BEGIN IMMEDIATE, version re-read inside.
+                       sessions keyed by log_hash (sha256
                        of the path, never the path), findings by (log_hash,
-                       sha256 of warning_dedup_key). sync(): every adapter's
-                       history_logs(), skip unchanged (size, mtime_ns),
+                       sha256 of warning_dedup_key); schema 2 adds
+                       session_models (per model id: calls, tokens incl.
+                       cache write/1h/read, USD, USD saved by cache reads;
+                       ActionBuffer's largest-copy-per-call rule, so they sum
+                       to the session cost) and session_errors (kind, tool,
+                       count; never error text). error_kind(): first match
+                       of fixed strings/regexes over error_message + the
+                       failed result's tail -> ERROR_KINDS. Migration 2
+                       sets size = -1 so the next sync re-reads every log.
+                       sync(): every adapter's history_logs(), skip unchanged (size, mtime_ns),
                        active (< 60 s) and --days; changed logs re-scanned
                        whole (registry "all", `check`'s health score and
                        waste_summary), findings replaced, first_seen kept;
@@ -266,10 +471,122 @@ src/agentwatch/
                        last part; secret mask tail dropped; 120); security
                        messages not stored.
                        Deleted logs stay; prune(days)
-  report.py            `agentwatch report`: build() (JSON schema 1) over
-                       sessions whose last action is in the period, plus the
-                       previous one for the trend; unpriced sessions counted
-                       but out of spend and waste %; render() text
+  visual.py            `agentwatch visual`: ThreadingHTTPServer on
+                       127.0.0.1 (--port, 0 = free) + one inline vanilla-JS
+                       page (textContent only, CSP, no CDN). GET /api/<name>
+                       (ps, check, subagents, security-scan, audit, stats,
+                       report, history, agents) calls cli.py's --json builders (_ps_json,
+                       _check_json, _security_json, _audit_scan/_audit_json)
+                       in process; every string through redact_truncate.
+                       Token (?t=, compare_digest) + Host 127.0.0.1|localhost
+                       :<port> or 403; non-GET 405; token masked in logs.
+                       audit and history sync only with ?run=1, never on a
+                       timer. Page (Sprint 46): machine-first Overview (summary,
+                       SVG sparklines via createElementNS, one card per agent);
+                       LIVE views every 5 s, SLOW (stats/report/history reads)
+                       every 30 s, skipped while hidden or fresh; in-place swap;
+                       stale view on failure; a 403 stops polling (expired link)
+  agent_status.py      /api/agents: per running agent last action (tool +
+                       target: file base name or an allow-listed program
+                       name, else "a command"; never args/results), own
+                       health and cost (= `check --log`), log_expected;
+                       scored per (log, size, mtime_ns), cache under a lock
+  proc_snapshot.py     snapshot(attrs): process_iter() + as_dict() per
+                       process. Use it instead of process_iter(attrs=) /
+                       proc.info, which psutil shares across threads (#231)
+  report.py            `agentwatch report`: build() (JSON schema 1, fields
+                       only added) over sessions whose last action is in the
+                       period, plus the previous one for the trend; unpriced
+                       sessions counted but out of spend and waste %;
+                       models (per model+agent, USD null if any call
+                       unpriced), cache (hit % = read / (read + written +
+                       uncached), saved_usd priced models only), errors
+                       (by kind with sessions share and delta, by tool);
+                       render() text; write_csv(): any JSON report as one
+                       long table table,rank,name,metric,value (also
+                       `stats --format csv`), formula-leading text quoted
+  tools_view.py        `agentwatch tools`: build() (JSON schema 1) over one
+                       parsed log's is_tool_call actions: per tool calls,
+                       failed, top history.error_kind, total/median ms
+                       (duration_ms, else completed_at - timestamp, else
+                       null); --calls rows: target = file name or command
+                       via one_line(80); never args/results/error text.
+                       Log picked by cli._default_log like `check`;
+                       csv via report.write_csv
+  ledger.py            `agentwatch ledger [--log] [--project DIR] [--format
+                       text|jsonl|csv] [--kind ...]` (also agentguard):
+                       rows (schema 1: ts, agent, tool, kind command|write|
+                       edit|delete|network, target, success,
+                       outside_project, destructive, reason) from one parsed
+                       log; nothing stored. Destructive = guard.check_command
+                       asks ("guard: <key>") or rm/git rm/git clean/git reset
+                       --hard/git push --force/del/Remove-Item; deleted paths
+                       from guard's own _Scan + shlex split. Targets via
+                       one_line, home as ~; hosts only. outside_project vs
+                       the log's cwd (session_cwd per agent), else
+                       --project, else null. `check` adds one "Blast
+                       radius:" line (text, only when non-zero) and
+                       `ledger_summary` (--json, counts only); actions kept
+                       from check's own parse pass (cli._kept); score/exit
+                       unchanged. CSV cells via report.csv_cell
+  subagents.py         `agentwatch subagents [--log] [--all] [--active]
+                       [--json]`: every <session>/subagents/agent-<id>.jsonl
+                       (any depth; type, description, spawnDepth from
+                       agent-<id>.meta.json via one_line), newest 10 by
+                       default, each scored like `check` (health mode);
+                       active = written in the last 10 min; scores cached
+                       per (size, mtime_ns) for visual's 5 s reload. JSON
+                       schema 1. with_subagents(): watch-all (process
+                       mode) adds each active subagent log of a Claude Code
+                       session as an AgentProcess sharing its pid/team
+                       (depth = session + spawnDepth); multi_app sets
+                       parent_log via parent_log() (the sibling log holding
+                       the meta's toolUseId, else the session; cached),
+                       labels the row by agentType, never net-samples it
+                       and keeps it out of the by-pid parent map
+  config_scan.py       `agentwatch config-scan [--json] [--path DIR]` (also
+                       `agentguard config-scan`): offline, read-only audit
+                       of agent configs. Claude Code settings(.local).json
+                       (user + project; permissions, hooks, statusLine,
+                       env), .mcp.json, ~/.claude.json (mcpServers +
+                       projects.*.mcpServers only, <= 32 MB), skills/
+                       commands/agents md, CLAUDE.md, installed plugins
+                       (installed_plugins.json installPath); Cursor
+                       mcp.json; VS Code mcp.json (servers, JSONC); Codex
+                       config.toml + hooks.json; Gemini settings.json;
+                       Cline cline_mcp_settings.json (legacy store per
+                       editor + ~/.cline/data/settings). Root helpers
+                       reused (CLAUDE_CONFIG_DIR, _codex_sessions_root,
+                       _gemini_dir, default_user_dir, cline paths).
+                       Checks: secrets via _SECRET_PATTERNS (masked; var
+                       refs stripped), unpinned npx/uvx/pipx/... and git
+                       refs (a Windows `cmd /c|/k` wrapper is unwrapped
+                       first, so `cmd /c npx -y pkg` counts), docker
+                       untagged, plain-http remotes, bypassPermissions /
+                       allow-all / credential-path allow rules, Codex
+                       sandbox_mode = "danger-full-access" at top level
+                       and in each [profiles.<name>] (high with
+                       approval_policy = "never", the profile's own else
+                       the top-level one), pipe-to-shell in hooks and in
+                       MCP server command + args (remote_script), hidden
+                       chars / hidden comments / override phrases in md,
+                       POSIX files writable by others. Skill scripts
+                       (non-md text files in skill dirs, every run):
+                       pipe-to-shell, decode-then-run, credential paths,
+                       download-then-run, 2,000-char windows, 1 s CPU per
+                       file. `--baseline` (config_baseline.py) pins each
+                       skill dir, plugin installPath and MCP entry as an
+                       HMAC (fingerprint key) in data_dir()/
+                       config-baseline.json (0600, keys + digests only);
+                       later runs add drift_changed (medium) /
+                       drift_added / drift_removed (low); no baseline file
+                       -> no drift check, nothing written. show(): paths in /
+                       form with home as ~ on every OS (Windows home
+                       match case-insensitive). Symlinks must resolve
+                       inside the root (project, else home); symlinked
+                       dirs not walked; > 2 MB skipped; unparseable ->
+                       files_skipped. JSON schema 1. Exit 0 / 1 medium /
+                       2 high
   cursor_discovery.py  Process-gated Cursor discovery (is Cursor.exe
                        running -> resolve state.vscdb -> qualifying
                        agent-mode composers as synthetic AgentProcess
@@ -286,7 +603,11 @@ src/agentwatch/
                        cliSessionId glob; synthetic pid. Adapter in
                        agents/claude_desktop.py (editor kind, claims
                        nothing, delegates watch/parse to claude-code)
-  cc_stats.py          Parses ~/.claude/projects/*.jsonl for token-usage /
+  cc_stats.py          Parses <config dir>/projects/*.jsonl for every
+                       claude_config.config_dirs() root (projects_dirs();
+                       an assigned CLAUDE_PROJECTS_DIR replaces them;
+                       cwd_to_project_dirs(): a project's dir in each, used
+                       by stats/audit/check; a project counts once) for token-usage /
                        burn-rate stats; opens files with explicit
                        encoding="utf-8", errors="ignore" (matches
                        parser/logs.py's precedent) so a stray non-UTF-8
@@ -294,13 +615,21 @@ src/agentwatch/
                        --all`. project_dir_to_name(dir, log): basename of
                        the transcripts' recorded cwd, else the dir-name
                        decode; project_name(): "~" for the home dir (also
-                       agents.base.folder_name, used by history)
+                       agents.base.folder_name, used by history).
+                       compute_blocks(): `stats --blocks` 5-hour usage
+                       windows (all projects, message.id once, ccusage rule)
   themes.py             Pluggable status-label/emoji/color themes shared by
                        CLI, health scoring, and the TUI
 
   parser/
     models.py           Action / ActionBuffer / SessionStats / ToolType /
-                       MetricResult data models
+                       MetricResult data models.
+                       Action.turn_end marks where an agent finished its turn
+                       (Claude Code end_turn text, Codex task_complete,
+                       Copilot CLI final assistant.turn_end, Copilot VS Code
+                       request Complete, OpenCode finish=stop); Codex and
+                       Copilot CLI emit a TURN_END record counted like a
+                       usage record (is_usage_record)
                        ActionBuffer merges a late tool result into its call
                        (`_sync_results`, `take_changed()`) and bumps
                        `revision` on any change (the dashboard's score cache
@@ -404,7 +733,11 @@ src/agentwatch/
                        action whose result lands after it left their window
     health/*.py          Health detectors: loops, tool_thrash, stall/stuck,
                        errors, context, repetition, behavioral, progress,
-                       constraints
+                       constraints, fake_green (`test_tampering`: tests
+                       skipped/weakened/deleted on test files only; HIGH when
+                       the last test run before it failed; edit text read
+                       from raw for Claude Code, Codex, Copilot CLI, Gemini,
+                       OpenCode/Kilo, Cline; commands for all)
     security/*.py        Security detectors: credentials, injection,
                        network, privilege, supply_chain, secret_scanner
                        (also redact_truncate and one_line, the shared
@@ -499,15 +832,15 @@ agentwatch watch --security     # manual smoke test (live TUI)
 ```
 
 ## Git Rules
-- **Never push to `main`. Merges into `main` go only through a PR that the
-  board reviews and approves** (board rule 2026-09-30, clarified
-  2026-10-25). It is not a ban: propose a release/promote PR into `main`
-  when it is the right next step, but never merge one without the board's
-  explicit go. (Native memory is per-machine, so this rule lives here too.)
-- Promoting `develop` to `main`: open a plain `develop` -> `main` PR and,
-  after the board's go, merge it with a merge commit, not a squash (0.2.1,
-  #183). The one-time `git merge -s ours origin/main` for main's revert
-  commits (ee1f65e, 349c7a1, dc5d03d) was done in the 0.2.0 promotion (#180).
+- **Never push to `main` and never merge into `main`** (board rule
+  2026-09-30; tightened by the user 2026-11-06: "never merge to main").
+  Agents may open a release/promote PR into `main` as a draft, but only a
+  human merges it, and agents never tag or publish from `main`. (Native
+  memory is per-machine, so this rule lives here too.)
+- Promoting `develop` to `main` (done by a human): a plain PR into `main`,
+  merged with a merge commit, not a squash (0.2.1, #183). The one-time
+  `git merge -s ours origin/main` for main's revert commits (ee1f65e,
+  349c7a1, dc5d03d) was done in the 0.2.0 promotion (#180).
 - `develop` is the integration line (v0.2.0+). Branch `feature/`, `fix/`,
   `chore/` or `docs/` **from `develop`**; PRs target `develop`.
 - One commit per logical change
@@ -797,8 +1130,7 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   _find_own_process` so TUI tests never scan real processes.
 - **0.2.1 known limitations** (Sprint 38, PRs #184-#186): Claude Code user
   text blocks are not emitted yet (scoring must first ignore `user_message`
-  sentinels); two different secrets of the same type in the same channel and
-  file count as one finding (needs a secret fingerprint in the dedup key); a
+  sentinels); a
   security-mode toggle recovers actions that arrived while security was off
   only from the 2,000-action live buffer; a toggle's `refresh_ui` rescores
   every session synchronously (about 200 ms with 23 sessions); `--audit-log`
@@ -808,7 +1140,11 @@ Claude Code v2.1.59+ ships native auto-memory at `~/.claude/projects/<project-sl
   Code tool-result text reaches the prompt-injection detector, so reading a
   file that only discusses injection (docs, tests) can score security 0
   (board accepted 2026-10-27; reducing these false positives is a follow-up).
-  The secret scanner labels tool-result text with channel `user_message`.
+  Fixed in Sprint 43: secret findings carry `details.fingerprint` (HMAC-SHA256
+  under a per-user key in data_dir()/secret-fingerprint.key, 0600; first 12
+  hex; in the dedup key), so two different secrets are two findings; tool
+  results are channel `tool_result` (agy/Gemini/OpenCode/Copilot CLI
+  `raw.content` stays `tool_output`).
 ## Environment Variables
 Do NOT create, modify, or expose env vars without documenting in PR and getting board approval.
 

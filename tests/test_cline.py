@@ -462,13 +462,15 @@ class TestDiscovery:
     ])
     def test_editor_process_gate(self, name, label, monkeypatch):
         class P:
-            info = {"name": name}
+            @staticmethod
+            def as_dict(attrs=None):
+                return {"name": name}
 
-        monkeypatch.setattr(cline_agent.psutil, "process_iter", lambda attrs: [P()])
+        monkeypatch.setattr(cline_agent.psutil, "process_iter", lambda attrs=None: [P()])
         assert cline_agent._running_editors() == ({label} if label else set())
 
     def test_running_editors_never_raises(self, monkeypatch):
-        def boom(attrs):
+        def boom(attrs=None):
             raise OSError
 
         monkeypatch.setattr(cline_agent.psutil, "process_iter", boom)

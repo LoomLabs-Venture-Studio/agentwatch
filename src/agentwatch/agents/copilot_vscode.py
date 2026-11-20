@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import psutil
+from agentwatch.proc_snapshot import snapshot
 
 from .base import BaseAdapter, Watcher, folder_name, sniff_jsonl_format, source_path
 
@@ -28,8 +28,7 @@ _CODE_PROCESS_RE = re.compile(r"^code(\.exe)?$", re.IGNORECASE)
 def _vscode_running() -> bool:
     try:
         return any(
-            _CODE_PROCESS_RE.match(p.info.get("name") or "")
-            for p in psutil.process_iter(attrs=["name"])
+            _CODE_PROCESS_RE.match(p.get("name") or "") for p in snapshot(["name"])
         )
     except Exception:
         return False

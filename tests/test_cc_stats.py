@@ -974,3 +974,48 @@ class TestComputeStats:
         monkeypatch.setattr("agentwatch.cc_stats.CLAUDE_PROJECTS_DIR", projects)
         report = compute_stats(project_dir=None)
         assert report.message_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Thread safety: `agentwatch visual` serves /api/stats from several threads
+# ---------------------------------------------------------------------------
+
+
+def test_parse_session_stats_in_parallel_threads(tmp_path):
+    """fileinput.input() is module-global: two threads raised "input() already
+    active". Each call now reads its own files."""
+    import threading
+
+    sessions = []
+    for n in range(4):
+        jsonl = tmp_path / f"s{n}.jsonl"
+        jsonl.write_text("\n".join([_make_user_line()] + [
+            _make_assistant_line(f"m{n}-{i}", [
+                {"type": "tool_use", "id": f"t{i}", "name": "Bash",
+                 "input": {"command": "ls"}}], input_tokens=10, output_tokens=5)
+            for i in range(400)]), encoding="utf-8")
+        sub = tmp_path / f"s{n}" / "subagents"
+        sub.mkdir(parents=True)
+        (sub / "agent-a.jsonl").write_text(_make_assistant_line(
+            f"sub{n}", [], input_tokens=7, output_tokens=3), encoding="utf-8")
+        sessions.append(jsonl)
+    expected = [parse_session_stats(s).totals.input_tokens for s in sessions]
+    assert expected == [4007] * 4  # 400 x 10 + the subagent's 7
+
+    gate, errors, results = threading.Barrier(8), [], []
+
+    def run(path):
+        gate.wait()
+        try:
+            for _ in range(5):
+                results.append(parse_session_stats(path).totals.input_tokens)
+        except Exception as e:  # noqa: BLE001 - the failure under test
+            errors.append(repr(e))
+
+    threads = [threading.Thread(target=run, args=(sessions[i % 4],)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert errors == []
+    assert results == [4007] * 40

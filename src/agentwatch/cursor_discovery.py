@@ -27,10 +27,9 @@ import zlib
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-import psutil
-
 from .discovery import AgentProcess, _format_etime
 from .parser.cursor_source import fetch_composer_headers, open_readonly
+from .proc_snapshot import snapshot
 from .vscode_paths import default_user_dir
 
 _CURSOR_PROCESS_RE = re.compile(r"^cursor(\.exe)?$", re.IGNORECASE)
@@ -50,11 +49,8 @@ def is_cursor_running() -> bool:
     shared DB rather than being owned by any single process.
     """
     try:
-        for proc in psutil.process_iter(attrs=["name"]):
-            try:
-                name = proc.info.get("name") or ""
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
+        for info in snapshot(["name"]):
+            name = info.get("name") or ""
             if _CURSOR_PROCESS_RE.match(name):
                 return True
     except Exception:

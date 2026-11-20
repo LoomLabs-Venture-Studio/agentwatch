@@ -146,8 +146,26 @@ def test_exit_codes(tmp_path):  # AC7
 def test_output_naming_and_overwrite(tmp_path, name, expected):  # AC8
     src = _seed(tmp_path, name, "API_KEY=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8\n")
     (tmp_path / expected).write_text("stale")
-    assert _run(str(src)).exit_code == 0
+    # QA sweep: an existing copy is no longer overwritten silently.
+    res = _run(str(src))
+    assert res.exit_code == 2
+    assert "already exists; use --force to overwrite it" in res.output
+    assert (tmp_path / expected).read_text() == "stale"
+    assert _run(str(src), "--dry-run").exit_code == 1  # writes nothing: no refusal
+    assert _run(str(src), "--force").exit_code == 0
     assert "[REDACTED]" in (tmp_path / expected).read_text()
+
+
+def test_existing_copy_symlink_is_refused_too(tmp_path):
+    src = _seed(tmp_path)
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("keep")
+    try:
+        (tmp_path / "file.scrubbed.txt").symlink_to(target)
+    except OSError:
+        pytest.skip("no symlinks here")
+    assert _run(str(src)).exit_code == 2
+    assert target.read_text() == "keep"
 
 
 def test_secrets_only_leaves_pii(tmp_path):  # AC11

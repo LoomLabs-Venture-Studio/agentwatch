@@ -728,6 +728,11 @@ class TestMismatchLogging:
         message = warnings[0].getMessage()
         assert "2" in message  # 2 turns
         assert "1" in message  # 1 event
+        # QA sweep: wrapped, not one 200-character line (only the session id
+        # line can be long: a path-derived id).
+        lines = message.splitlines()
+        assert len(lines) > 1
+        assert all(len(line) <= 80 for line in lines if "aider:" not in line)
 
     def test_matched_counts_emits_no_warning(self, tmp_path, caplog):
         md_path = tmp_path / ".aider.chat.history.md"

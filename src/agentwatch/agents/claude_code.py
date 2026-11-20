@@ -66,10 +66,11 @@ class ClaudeCodeAdapter(BaseAdapter):
             yield from project_dir.rglob("*.jsonl")  # subagents/ too: their calls are billed
 
     def history_meta(self, path: Path) -> tuple[str, str | None]:
-        from agentwatch.cc_stats import _projects_dir, project_dir_to_name
+        from agentwatch.cc_stats import project_dir_to_name, projects_root_of
 
-        try:
-            project_dir = _projects_dir() / path.relative_to(_projects_dir()).parts[0]
-        except (ValueError, IndexError):
+        projects = projects_root_of(path)
+        parts = path.relative_to(projects).parts if projects else ()
+        if not parts:
             return path.stem, None
+        project_dir = projects / parts[0]
         return path.stem, project_dir_to_name(project_dir, log=path)

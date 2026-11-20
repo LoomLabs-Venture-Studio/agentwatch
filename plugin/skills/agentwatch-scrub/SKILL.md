@@ -59,6 +59,8 @@ agentwatch scrub <file>
 This writes a cleaned copy beside the original (`notes.txt` ->
 `notes.scrubbed.txt`, `.env` -> `.env.scrubbed`) and leaves the original
 untouched. Tell the user the path of the copy; that is the file to share.
+If that copy already exists, scrub refuses (exit 2); ask the user before
+running it again with `--force`, which replaces the old copy.
 
 Only if the user asks to change the file itself:
 

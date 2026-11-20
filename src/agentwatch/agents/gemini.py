@@ -42,6 +42,17 @@ def resolve_gemini_log(cwd: Path, pid: int | None = None) -> tuple[Path | None, 
     return (sessions[-1], None) if sessions else (None, None)
 
 
+def project_cwd(path: Path) -> str | None:
+    """The project dir of a ``tmp/<short id>/chats/session-*.jsonl``:
+    projects.json maps <abs cwd> -> <short id>, the dir above chats/."""
+    try:
+        projects = json.loads((_gemini_dir() / "projects.json").read_text(encoding="utf-8"))
+        short_id = path.parent.parent.name
+        return next(k for k, v in projects["projects"].items() if str(v) == short_id)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration):
+        return None
+
+
 class GeminiAdapter(BaseAdapter):
     name = "gemini"
     kind = "process"
@@ -72,11 +83,4 @@ class GeminiAdapter(BaseAdapter):
         return (_gemini_dir() / "tmp").glob("*/chats/session-*.jsonl")
 
     def history_meta(self, path: Path) -> tuple[str, str | None]:
-        # projects.json maps <abs cwd> -> <short id>, the dir above chats/.
-        try:
-            projects = json.loads((_gemini_dir() / "projects.json").read_text(encoding="utf-8"))
-            short_id = path.parent.parent.name
-            cwd = next(k for k, v in projects["projects"].items() if str(v) == short_id)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration):
-            cwd = None
-        return path.stem, folder_name(cwd)
+        return path.stem, folder_name(project_cwd(path))

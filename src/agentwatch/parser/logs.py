@@ -28,10 +28,13 @@ from .security_patterns import (
 def __getattr__(name: str):
     # DEFAULT_SEARCH_PATHS (common agent log locations) is lazy: Path.home()
     # raises without a home dir, and that must not break importing the parser.
+    # Claude Code: projects/ and logs/ under each config dir ($CLAUDE_CONFIG_DIR,
+    # ~/.claude; claude_config.config_dirs()).
     if name == "DEFAULT_SEARCH_PATHS":
+        from agentwatch.claude_config import config_dirs
+
         return [
-            Path.home() / ".claude" / "projects",
-            Path.home() / ".claude" / "logs",
+            *(d / sub for d in config_dirs() for sub in ("projects", "logs")),
             Path.home() / ".moltbot" / "agents",
             Path.home() / ".clawdbot" / "agents",
             Path.cwd() / ".logs",
@@ -328,6 +331,11 @@ def _parse_claude_code(
                 context_window=context_window,
                 session_id=session_id,
                 raw={"type": "text", "text": joined[:500]},
+                # A text-only reply that ends the turn (each line of the
+                # message repeats its stop_reason). A subagent's reply
+                # (isSidechain, also every line under subagents/) is not.
+                turn_end=(msg.get("stop_reason") == "end_turn"
+                          and not entry.get("isSidechain")),
                 **billing,
                 **call,
             ))

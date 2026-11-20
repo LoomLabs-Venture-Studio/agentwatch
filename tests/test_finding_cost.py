@@ -254,6 +254,7 @@ def test_tui_warning_list_shows_cost(tmp_path):
     assert "~$0.16 · 330k tok" in widget._build_content()
 
 
+@pytest.mark.usefixtures("needs_siem")
 def test_siem_payload_carries_cost(tmp_path):
     from agentwatch.siem import SiemLogger
 

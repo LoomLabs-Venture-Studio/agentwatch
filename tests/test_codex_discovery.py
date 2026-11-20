@@ -489,7 +489,7 @@ class TestChatgptDesktopCodex:
 
         pid = 4242
         proc = types.SimpleNamespace(
-            info={
+            as_dict=lambda attrs=None: {
                 "pid": pid,
                 "ppid": 1,
                 "cmdline": [str(tmp_path / "bin" / "abc123" / "codex.exe"), "app-server"],
@@ -540,7 +540,7 @@ class TestAppServerPerThread:
         monkeypatch.setenv("CODEX_HOME", str(tmp_path / "home"))
 
         bin_dir = tmp_path / "bin" / "abc"
-        proc = types.SimpleNamespace(info={
+        proc = types.SimpleNamespace(as_dict=lambda attrs=None: {
             "pid": 4244, "ppid": 1, "cmdline": [str(bin_dir / "codex.exe"), "app-server"],
             "name": "codex.exe", "memory_info": None, "cpu_percent": 0.0, "create_time": None,
         })
@@ -588,7 +588,7 @@ class TestNoProjectForBinDir:
         import types
 
         pid = 4243
-        proc = types.SimpleNamespace(info={
+        proc = types.SimpleNamespace(as_dict=lambda attrs=None: {
             "pid": pid, "ppid": 1, "cmdline": [str(exe), "app-server"], "name": exe.name,
             "memory_info": None, "cpu_percent": 0.0, "create_time": None,
         })

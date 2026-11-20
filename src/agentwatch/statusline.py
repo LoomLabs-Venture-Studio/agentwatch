@@ -10,6 +10,12 @@ the transcript, and imports nothing heavy (`_entry` skips cli.py).
 Prints the most severe current HIGH/CRITICAL coached warning as `⚠ loop
 ~$1.40`, or nothing when healthy (`--ok`: a dim `✓ agentwatch`). No state,
 state older than STALE_S, or any error: nothing, exit 0.
+
+`--cost` adds the current 5-hour usage block (`stats --blocks`) as `5h $4.12
+→ ~$9.80 · resets 2h13m`: spend so far, projected spend at reset, time left
+(plus `cap $20.00` with `agentwatch budget set --block 20`).
+Computing it reads transcripts, so the summary is cached in the per-user
+state dir for BLOCK_TTL_S and cc_stats is imported only on a miss.
 """
 
 from __future__ import annotations
@@ -21,15 +27,40 @@ import sys
 import time
 from pathlib import Path
 
-from agentwatch.coach import POINTER, state_dir, state_path, user_state_dir
+from agentwatch import claude_config
+from agentwatch.coach import (
+    POINTER,
+    _atomic_write,
+    _private_dir,
+    state_dir,
+    state_path,
+    user_state_dir,
+)
 
 STALE_S = 600
+# The usage cache is block-<hash>.json, one per Claude Code config dir
+# (block_cache_path()); the old shared block.json is no longer read.
+# Seconds to wait for stdin (Claude Code writes it at once). A stdin that
+# never closes (a terminal, a stuck pipe) exits 0 silently, like coach's
+# watchdog, instead of hanging until the next update cancels us.
+STDIN_TIMEOUT_S = 2.0
+BLOCK_TTL_S = 60
+# A straight-line projection from a block's first minutes is mostly noise.
+PROJECT_AFTER_S = 15 * 60
+# Only transcripts written in the last day are read on a cache miss.
+# ponytail: a block's start is chained from older messages; with more than
+# ~24 h of back-to-back blocks the chain is cut and the active block can start
+# at a different hour than `stats --blocks` shows. Anchor from the previous
+# block's end if that matters.
+LOOKBACK_S = 24 * 3600
+_now = time.time
 _LABELS = {
     "loop": "loop", "reread": "loop",
     "thrash": "thrash", "file_churn": "thrash", "syntax_loop": "thrash",
     "error_spiral": "errors", "error_blindness": "errors", "high_error_rate": "errors",
     "error_class_persistence": "errors",
     "stall": "stuck", "same_outcome": "stuck", "exploration_stall": "stuck",
+    "test_tampering": "tests weakened",
 }
 _RANK = {"high": 1, "critical": 2}
 _COLOR = {"high": "\x1b[33m", "critical": "\x1b[31m"}
@@ -47,8 +78,8 @@ def state_dirs() -> list[Path]:
     except OSError:
         plugin = []
     if not plugin or not plugin[0].is_absolute():
-        config = os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude"
-        plugin = sorted((Path(config) / "plugins" / "data").glob("agentwatch-*/coach"))
+        config = claude_config.env_config_dir() or Path.home() / ".claude"
+        plugin = sorted((config / "plugins" / "data").glob("agentwatch-*/coach"))
     return list(dict.fromkeys([state_dir(), *plugin, user]))
 
 
@@ -68,17 +99,121 @@ def _load(session_id: str) -> dict | None:
     return json.loads(newest.read_text(encoding="utf-8"))
 
 
-def _cost(value: object) -> str:
-    # Bounded: a corrupt or hostile state file must not print "~$1e+300" or "nan".
+def _usd(value: object, limit: float = 10_000) -> str | None:
+    # Bounded: a corrupt or hostile state file must not print "$1e+300" or "nan".
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return ""
-    if not (math.isfinite(value) and 0 <= value < 10_000):
-        return ""
-    return " <$0.01" if value < 0.01 else f" ~${value:,.2f}"
+        return None
+    if not (math.isfinite(value) and 0 <= value < limit):
+        return None
+    return "<$0.01" if value < 0.01 else f"${value:,.2f}"
 
 
-def render(stdin_text: str, ok: bool = False) -> str:
+def _cost(value: object) -> str:
+    text = _usd(value)
+    return "" if text is None else f" {text}" if text.startswith("<") else f" ~{text}"
+
+
+def block_cache_path() -> Path:
+    """The usage cache for agentwatch's own config dir (claude_config.
+    default_config_dir(): $CLAUDE_CONFIG_DIR, else ~/.claude, resolved). The
+    scan's dirs depend on it, so two config dirs never share a cache. Claude
+    Code passes its CLAUDE_CONFIG_DIR down to the status line and hooks."""
+    import hashlib
+
+    key = str(claude_config.default_config_dir()).encode("utf-8", "surrogatepass")
+    return user_state_dir() / f"block-{hashlib.sha256(key).hexdigest()[:16]}.json"
+
+
+def day_start(now: float) -> int:
+    """Epoch seconds of the local midnight that starts *now*'s day."""
+    from datetime import datetime
+
+    midnight = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(midnight.timestamp())
+
+
+def usage_summary(now: float) -> dict:
+    """{"block": the active block's {end, cost_usd, projected_cost_usd} or None,
+    "day": {start, cost_usd} for today (local time)}. Cached in the per-user
+    state dir; recomputed when older than BLOCK_TTL_S. `agentwatch hook` reads
+    the same cache for budget caps (budget.py) and never recomputes it."""
+    path = block_cache_path()
+    try:
+        if 0 <= now - path.stat().st_mtime < BLOCK_TTL_S:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and "block" in cached:
+                return cached
+    except (OSError, ValueError):
+        pass  # missing or corrupt: recompute
+    from datetime import UTC, datetime
+
+    from agentwatch import cc_stats
+
+    at = datetime.fromtimestamp(now, UTC)
+    blocks = cc_stats.compute_blocks(since=now - LOOKBACK_S)
+    burn = blocks[-1].burn(at) if blocks else None
+    block = None if burn is None else {
+        "end": blocks[-1].end.timestamp(),
+        "cost_usd": blocks[-1].usage.cost_usd,
+        "projected_cost_usd": burn["projected_cost_usd"],
+    }
+    # Every transcript with a message today was written today, so the
+    # LOOKBACK_S scan holds all of today's messages.
+    start = day_start(now)
+    summary = {"block": block,
+               "day": {"start": start, "cost_usd": cc_stats.day_cost(blocks, start)}}
+    try:
+        if _private_dir(path.parent):
+            _atomic_write(path, json.dumps(summary))
+    except OSError:
+        pass  # uncached: the next refresh scans again
+    return summary
+
+
+def _active_block(now: float) -> dict | None:
+    """The active block's summary {end, cost_usd, projected_cost_usd}, or None."""
+    return usage_summary(now)["block"]
+
+
+def _block_text() -> str:
+    """`5h $4.12 → ~$9.80 · resets 2h13m`; "" with no active block or on any error."""
+    try:
+        now = _now()
+        block = _active_block(now)
+        if not isinstance(block, dict):
+            return ""
+        left = block["end"] - now
+        if not (isinstance(left, (int, float)) and 0 < left <= 5 * 3600):
+            return ""  # the cached block has ended (or the cache is nonsense)
+        minutes = int(left // 60)
+        text = f"resets {minutes // 60}h{minutes % 60:02d}m"
+        spent = _usd(block.get("cost_usd"), 1_000_000)
+        if spent:  # unpriced model: no dollars, never a guess
+            projected = _usd(block.get("projected_cost_usd"), 1_000_000)
+            # A non-None _usd() means both raw values are finite numbers.
+            if (projected is None or projected.startswith("<")
+                    or 5 * 3600 - left < PROJECT_AFTER_S
+                    or block["projected_cost_usd"] < block["cost_usd"]):
+                projected = None
+            text = f"{spent}{f' → ~{projected}' if projected else ''} · {text}"
+        from agentwatch.budget import load_budget
+
+        cap = (load_budget() or {}).get("block")  # `agentwatch budget set --block`
+        if cap is not None:
+            text = text.replace("resets", f"cap ${cap:,.2f} · resets", 1)
+        text = f"5h {text}"
+        return f"{_DIM}{text}{_RESET}" if not os.environ.get("NO_COLOR") else text
+    except Exception:
+        return ""
+
+
+def render(stdin_text: str, ok: bool = False, cost: bool = False) -> str:
     """The status line text, or "" to print nothing."""
+    parts = [_health(stdin_text, ok), _block_text() if cost else ""]
+    return " · ".join(p for p in parts if p)
+
+
+def _health(stdin_text: str, ok: bool) -> str:
     try:
         session_id = json.loads(stdin_text)["session_id"]
         if not isinstance(session_id, str):
@@ -102,13 +237,21 @@ def render(stdin_text: str, ok: bool = False) -> str:
         return ""
 
 
-def main(ok: bool = False) -> None:
-    """Entry for `agentwatch statusline [--ok]`: always exits 0."""
+def main(ok: bool = False, cost: bool = False) -> None:
+    """Entry for `agentwatch statusline [--ok] [--cost]`: always exits 0."""
+    import threading  # stdlib, ~2 ms; only the stdin read is timed
+
+    watchdog = threading.Timer(STDIN_TIMEOUT_S, os._exit, args=(0,))
+    watchdog.daemon = True
     try:
-        stdin = getattr(sys.stdin, "buffer", None)
-        # utf-8-sig: a PowerShell pipe (`$json | agentwatch statusline`) adds a BOM.
-        text = stdin.read().decode("utf-8-sig", "replace") if stdin else sys.stdin.read()
-        out = render(text, ok)
+        watchdog.start()
+        try:
+            stdin = getattr(sys.stdin, "buffer", None)
+            # utf-8-sig: a PowerShell pipe (`$json | agentwatch statusline`) adds a BOM.
+            text = stdin.read().decode("utf-8-sig", "replace") if stdin else sys.stdin.read()
+        finally:
+            watchdog.cancel()
+        out = render(text, ok, cost)
         if out:
             # UTF-8 bytes: a piped stdout on Windows is cp1252, which has no ⚠/✓.
             sys.stdout.buffer.write((out + "\n").encode("utf-8"))

@@ -227,6 +227,7 @@ def request_actions(
                 unpriced=True,
                 session_id=sid,
                 raw={"requestId": request["requestId"], "modelId": request.get("modelId")},
+                turn_end=model_state.get("value") == 1,  # Complete; not Cancelled/Failed
             ), sealed))
     return out
 

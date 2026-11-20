@@ -748,3 +748,123 @@ def test_key_value_secret_false_positives(text):
     from agentwatch.detectors.security.secret_scanner import redact_secrets
 
     assert redact_secrets(text) == text
+
+
+# --- Private key bodies (QA on #203): the whole key is masked, not its header ---
+
+_KEY_LINES = [f"MIIEow{i:02d}AAKCAQEA7x9Qz3vKp8LmN2rT5wYb6Hd1Fg4Js0Ae8Ui" for i in range(30)]
+
+
+def _pem(kind: str, sep: str = "\n", end: bool = True) -> str:
+    text = f"-----BEGIN {kind}-----{sep}" + sep.join(_KEY_LINES)
+    return text + (f"{sep}-----END {kind}-----" if end else "")
+
+
+def _key_leaks(text: str) -> bool:
+    return any(line[6:] in text or line[:20] in text for line in _KEY_LINES)
+
+
+_KEY_KINDS = [
+    "RSA PRIVATE KEY", "OPENSSH PRIVATE KEY", "EC PRIVATE KEY",
+    "PGP PRIVATE KEY BLOCK", "PRIVATE KEY", "ENCRYPTED PRIVATE KEY",
+]
+
+
+@pytest.mark.parametrize("kind", _KEY_KINDS)
+@pytest.mark.parametrize(
+    "sep,end", [("\n", True), ("\\n", True), ("\n", False), ("\\n", False)],
+    ids=["block", "json-escaped", "no-end", "json-escaped-no-end"],
+)
+def test_private_key_body_masked_by_every_redactor(kind, sep, end):
+    from agentwatch.detectors.security.secret_scanner import (
+        one_line,
+        redact_secrets,
+        redact_truncate,
+    )
+
+    text = "Error: bad key " + _pem(kind, sep, end) + "\ntrailing context"
+    for out in (redact_secrets(text), redact_truncate(text, 500),
+                redact_truncate(text, 100), one_line(text, 300)):
+        assert not _key_leaks(out), out
+
+
+def test_private_key_body_masked_when_cut_before_end():
+    """Parsers keep the first 500 chars: the END line is gone by then."""
+    from agentwatch.detectors.security.secret_scanner import redact_truncate
+
+    text = _pem("RSA PRIVATE KEY")[:700]
+    assert not _key_leaks(redact_truncate(text, 500))
+
+
+def test_private_key_redaction_linear():
+    _assert_linear(
+        ["-----BEGIN RSA PRIVATE KEY-----\n", "-----BEGIN PRIVATE KEY-----\"", "A\n"],
+        "redact_secrets",
+    )
+
+
+def test_private_key_body_not_in_check_json(tmp_path):
+    from click.testing import CliRunner
+
+    from agentwatch.cli import cli
+
+    pem = _pem("RSA PRIVATE KEY")
+    lines = []
+    for i in range(8):
+        tid = f"t{i}"
+        lines.append({
+            "type": "assistant", "sessionId": "s1", "timestamp": f"2026-11-02T10:{i:02d}:00Z",
+            "message": {"role": "assistant", "content": [{
+                "type": "tool_use", "id": tid, "name": "Bash",
+                "input": {"command": "cat id_rsa && false"}}]},
+        })
+        lines.append({
+            "type": "user", "sessionId": "s1", "timestamp": f"2026-11-02T10:{i:02d}:30Z",
+            "message": {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": tid, "is_error": True,
+                "content": f"Error: {pem}"}]},
+        })
+    log = tmp_path / "s1.jsonl"
+    log.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    for args in (["check"], ["check", "--security"]):
+        out = CliRunner().invoke(cli, [*args, "--log", str(log), "--json"]).output
+        assert "warnings" in out or "score" in out, out
+        assert not _key_leaks(out), out
+
+
+def test_scrub_cut_key_keeps_following_lines(tmp_path):
+    """A key with no END masks its body lines only; later secrets and text stay."""
+    from agentwatch.detectors.security.secret_scanner import scrub_file
+
+    aws = "AKIA" + "Q7R2T5W8Y1B4D6F9"
+    path = tmp_path / "notes.txt"
+    path.write_text(
+        _pem("RSA PRIVATE KEY", end=False)[:900]
+        + f"\nAWS={aws}\nplain line one\nplain line two\n"
+    )
+    r = scrub_file(path)
+    out = r.output.read_text()
+    assert not _key_leaks(out)
+    assert aws not in out
+    assert "plain line one\nplain line two\n" in out
+    assert any(f["type"] == "aws_access_key" for f in r.findings), r.findings
+
+
+@pytest.mark.parametrize("text,kept", [
+    ("grep for '-----BEGIN PRIVATE KEY-----' in the repo and explain why",
+     "' in the repo and explain why"),
+    ("-----BEGIN PRIVATE KEY----- in the repo and explain why",
+     " in the repo and explain why"),
+    ("-----BEGIN PRIVATE KEY-----\nplease explain why\n", "please explain why\n"),
+])
+def test_key_header_in_prose_keeps_the_words(text, kept):
+    from agentwatch.detectors.security.secret_scanner import redact_secrets
+
+    assert redact_secrets(text).endswith(kept)
+
+
+def test_private_key_body_rule_linear():
+    _assert_linear(
+        ["-----BEGIN PRIVATE KEY-----\nMIIE\n", "Proc-Type: 4\n", "ab ", "\\n", "a" * 39 + " "],
+        "redact_secrets",
+    )

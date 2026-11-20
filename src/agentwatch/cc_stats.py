@@ -6,16 +6,17 @@ token usage breakdowns by tool type and bash command category.
 
 from __future__ import annotations
 
-import fileinput
 import json
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from functools import lru_cache
 from itertools import islice
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
+from agentwatch import claude_config
 from agentwatch.path_encoding import encode_path_for_claude
 
 
@@ -543,38 +544,64 @@ def classify_bash_command(cmd: str) -> BashCategory:
 def __getattr__(name: str):
     # CLAUDE_PROJECTS_DIR is lazy: Path.home() raises without a home dir, and
     # that must not break `import agentwatch.cc_stats` (the coach hook needs it).
+    # The primary one: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects.
     if name == "CLAUDE_PROJECTS_DIR":
-        return Path.home() / ".claude" / "projects"
+        return claude_config.default_config_dir() / "projects"
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _projects_dir() -> Path:
-    """CLAUDE_PROJECTS_DIR, honouring a monkeypatched/assigned value."""
-    return globals().get("CLAUDE_PROJECTS_DIR") or __getattr__("CLAUDE_PROJECTS_DIR")
+def projects_dirs() -> list[Path]:
+    """Every Claude Code projects dir: ``projects/`` under $CLAUDE_CONFIG_DIR
+    and ~/.claude (claude_config.config_dirs()). An assigned or monkeypatched
+    CLAUDE_PROJECTS_DIR replaces them all."""
+    assigned = globals().get("CLAUDE_PROJECTS_DIR")
+    if assigned:
+        return [assigned]
+    return [d / "projects" for d in claude_config.config_dirs()]
 
 
 def cwd_to_project_dir(cwd: Path | None = None) -> Path | None:
     """Map a working directory to its Claude Code project directory.
 
-    Claude Code stores projects under ~/.claude/projects/ keyed by the
+    Claude Code stores projects under <config dir>/projects/ keyed by the
     absolute path run through `encode_path_for_claude` (see path_encoding.py).
+    With several config dirs (projects_dirs()), the first that has it; see
+    cwd_to_project_dirs() for all of them.
     """
+    dirs = cwd_to_project_dirs(cwd)
+    return dirs[0] if dirs else None
+
+
+def cwd_to_project_dirs(cwd: Path | None = None) -> list[Path]:
+    """Every config dir's project dir for *cwd* (one per projects_dirs() root
+    that has it): a project used under both $CLAUDE_CONFIG_DIR and ~/.claude
+    has sessions in each."""
     if cwd is None:
         cwd = Path.cwd()
-    cwd = cwd.resolve()
-    dir_name = encode_path_for_claude(cwd)
-    project_dir = _projects_dir() / dir_name
-    if project_dir.is_dir():
-        return project_dir
-    return None
+    dir_name = encode_path_for_claude(cwd.resolve())
+    return [p / dir_name for p in projects_dirs() if (p / dir_name).is_dir()]
 
 
 def find_all_project_dirs() -> list[Path]:
-    """Find all Claude Code project directories."""
-    projects = _projects_dir()
-    if not projects.is_dir():
-        return []
-    return [p for p in projects.iterdir() if p.is_dir()]
+    """Find all Claude Code project directories, in every config dir."""
+    return [
+        p
+        for projects in projects_dirs()
+        if projects.is_dir()
+        for p in projects.iterdir()
+        if p.is_dir()
+    ]
+
+
+def projects_root_of(path: Path) -> Path | None:
+    """The projects dir (of projects_dirs()) that *path* is under, or None."""
+    for projects in projects_dirs():
+        try:
+            path.relative_to(projects)
+        except ValueError:
+            continue
+        return projects
+    return None
 
 
 _WORKTREE = re.compile(r"[\\/]\.claude[\\/]worktrees(?:[\\/]|$)")
@@ -667,6 +694,14 @@ def _resolve_user_prompt(
     return ""
 
 
+def _lines(files: list[Path]):
+    """Every line of *files* in order, utf-8 with undecodable bytes dropped.
+    Opened here, one file at a time: thread-safe, unlike fileinput.input()."""
+    for path in files:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            yield from f
+
+
 def parse_session_stats(jsonl_path: Path) -> StatsReport:
     """Parse a single JSONL session file and compute token stats.
 
@@ -686,102 +721,103 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
     # A session's subagents log to <session>/subagents/*.jsonl; their calls are
     # billed too. One pass over all files, so a message.id seen twice counts once.
     files = [jsonl_path, *sorted(jsonl_path.with_suffix("").glob("subagents/*.jsonl"))]
-    with fileinput.input(files, encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
+    # Each file opened here, not through fileinput.input(): that one is
+    # module-global state, so two threads (visual's server) collide on it.
+    for line in _lines(files):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
 
-            line_type = obj.get("type")
+        line_type = obj.get("type")
 
-            # Index user messages for prompt lookups
-            if line_type == "user":
-                uuid = obj.get("uuid", "")
-                msg = obj.get("message", {})
-                content = msg.get("content", "") if isinstance(msg, dict) else ""
-                if isinstance(content, str) and uuid:
-                    user_messages[uuid] = content[:200]
-                elif isinstance(content, list) and uuid:
-                    # Content can be a list of blocks
-                    texts = [
-                        b.get("text", "")
-                        for b in content
-                        if isinstance(b, dict) and b.get("type") == "text"
-                    ]
-                    user_messages[uuid] = " ".join(texts)[:200]
-                continue
+        # Index user messages for prompt lookups
+        if line_type == "user":
+            uuid = obj.get("uuid", "")
+            msg = obj.get("message", {})
+            content = msg.get("content", "") if isinstance(msg, dict) else ""
+            if isinstance(content, str) and uuid:
+                user_messages[uuid] = content[:200]
+            elif isinstance(content, list) and uuid:
+                # Content can be a list of blocks
+                texts = [
+                    b.get("text", "")
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                user_messages[uuid] = " ".join(texts)[:200]
+            continue
 
-            if line_type != "assistant":
-                continue
+        if line_type != "assistant":
+            continue
 
-            msg = obj.get("message")
-            if not isinstance(msg, dict):
-                continue
-            msg_id = msg.get("id")
-            if not msg_id:
-                continue
+        msg = obj.get("message")
+        if not isinstance(msg, dict):
+            continue
+        msg_id = msg.get("id")
+        if not msg_id:
+            continue
 
-            usage = msg.get("usage")
-            if not isinstance(usage, dict):
-                continue
+        usage = msg.get("usage")
+        if not isinstance(usage, dict):
+            continue
 
-            if msg_id not in messages:
-                messages[msg_id] = {
-                    "model": msg.get("model", ""),
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "cache_write": 0,
-                    "cache_write_1h": 0,
-                    "cache_read": 0,
-                    "tool_blocks": {},  # block_id -> (tool_name, tool_input)
-                    "has_thinking": False,
-                }
-                # Track parentUuid from the first chunk of this message
-                p_uuid = obj.get("parentUuid", "")
-                if p_uuid:
-                    parent_map[msg_id] = p_uuid
+        if msg_id not in messages:
+            messages[msg_id] = {
+                "model": msg.get("model", ""),
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_write": 0,
+                "cache_write_1h": 0,
+                "cache_read": 0,
+                "tool_blocks": {},  # block_id -> (tool_name, tool_input)
+                "has_thinking": False,
+            }
+            # Track parentUuid from the first chunk of this message
+            p_uuid = obj.get("parentUuid", "")
+            if p_uuid:
+                parent_map[msg_id] = p_uuid
 
-            md = messages[msg_id]
+        md = messages[msg_id]
 
-            # Take max across streaming chunks
-            md["input_tokens"] = max(
-                md["input_tokens"], usage.get("input_tokens", 0)
+        # Take max across streaming chunks
+        md["input_tokens"] = max(
+            md["input_tokens"], usage.get("input_tokens", 0)
+        )
+        md["output_tokens"] = max(
+            md["output_tokens"], usage.get("output_tokens", 0)
+        )
+        md["cache_write"] = max(
+            md["cache_write"], usage.get("cache_creation_input_tokens", 0)
+        )
+        md["cache_read"] = max(
+            md["cache_read"], usage.get("cache_read_input_tokens", 0)
+        )
+        split = usage.get("cache_creation")
+        if isinstance(split, dict):
+            md["cache_write_1h"] = max(
+                md["cache_write_1h"], split.get("ephemeral_1h_input_tokens") or 0
             )
-            md["output_tokens"] = max(
-                md["output_tokens"], usage.get("output_tokens", 0)
-            )
-            md["cache_write"] = max(
-                md["cache_write"], usage.get("cache_creation_input_tokens", 0)
-            )
-            md["cache_read"] = max(
-                md["cache_read"], usage.get("cache_read_input_tokens", 0)
-            )
-            split = usage.get("cache_creation")
-            if isinstance(split, dict):
-                md["cache_write_1h"] = max(
-                    md["cache_write_1h"], split.get("ephemeral_1h_input_tokens") or 0
-                )
-            if msg.get("model"):
-                md["model"] = msg["model"]
+        if msg.get("model"):
+            md["model"] = msg["model"]
 
-            # Collect content blocks
-            for block in msg.get("content", []):
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "tool_use":
-                    bid = block.get("id", "")
-                    if bid and bid not in md["tool_blocks"]:
-                        md["tool_blocks"][bid] = (
-                            block.get("name", ""),
-                            block.get("input", {}),
-                        )
-                elif btype == "thinking":
-                    md["has_thinking"] = True
+        # Collect content blocks
+        for block in msg.get("content", []):
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "tool_use":
+                bid = block.get("id", "")
+                if bid and bid not in md["tool_blocks"]:
+                    md["tool_blocks"][bid] = (
+                        block.get("name", ""),
+                        block.get("input", {}),
+                    )
+            elif btype == "thinking":
+                md["has_thinking"] = True
 
     # Pass 2: Attribute tokens
     from collections import Counter
@@ -926,6 +962,32 @@ def parse_session_stats(jsonl_path: Path) -> StatsReport:
 # ---------------------------------------------------------------------------
 
 
+def find_session_logs(session_id: str) -> list[Path]:
+    """Every top-level session log whose id is *session_id* or starts with it
+    (a short prefix), in every project of every config dir (projects_dirs()).
+    An exact id wins over prefix matches. One log per session id: a session
+    copied into two config dirs (or projects) counts once, from its largest
+    log, then the newest."""
+    session_id = session_id.strip()
+    if not session_id or any(c in session_id for c in "/\\*?[]"):
+        return []
+    exact: dict[str, tuple[tuple[int, int], Path]] = {}
+    prefix: dict[str, tuple[tuple[int, int], Path]] = {}
+    for pdir in find_all_project_dirs():
+        for jsonl in pdir.glob(f"{session_id}*.jsonl"):
+            try:
+                st = jsonl.stat()
+            except OSError:
+                continue
+            if not jsonl.is_file():
+                continue
+            found = exact if jsonl.stem == session_id else prefix
+            key = (st.st_size, st.st_mtime_ns)
+            if jsonl.stem not in found or key > found[jsonl.stem][0]:
+                found[jsonl.stem] = (key, jsonl)
+    return sorted(path for _, path in (exact or prefix).values())
+
+
 def compute_stats(
     *,
     project_dir: Path | None = None,
@@ -935,34 +997,42 @@ def compute_stats(
     """Compute token usage stats.
 
     Args:
-        project_dir: Specific project directory. If None, uses CWD mapping.
-        all_projects: If True, scan all projects under ~/.claude/projects/.
-        session_id: If set, parse only this specific session.
+        project_dir: Specific project directory. If None, uses CWD mapping
+            (the project's dir in every config dir).
+        all_projects: If True, scan all projects under ~/.claude/projects/
+            (and $CLAUDE_CONFIG_DIR/projects/).
+        session_id: If set, parse only this session (its id or a prefix of it,
+            searched in every project of every config dir, whatever
+            *project_dir* / *all_projects* say). See find_session_logs().
 
     Returns:
         Merged StatsReport across all matching sessions.
     """
     merged = StatsReport()
 
+    if session_id:
+        for jsonl_path in find_session_logs(session_id):
+            try:
+                merged.merge(parse_session_stats(jsonl_path))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not merged.project_name:
+                merged.project_name = project_dir_to_name(jsonl_path.parent)
+        return merged
+
     if all_projects:
         dirs = find_all_project_dirs()
     else:
-        if project_dir is None:
-            project_dir = cwd_to_project_dir()
-        if project_dir is None:
+        dirs = [project_dir] if project_dir is not None else cwd_to_project_dirs()
+        if not dirs:
             return merged
-        dirs = [project_dir]
 
+    names: set[str] = set()  # a project in two config dirs counts once
     for pdir in dirs:
         proj_name = project_dir_to_name(pdir)
+        names.add(proj_name)
 
-        if session_id:
-            jsonl = pdir / f"{session_id}.jsonl"
-            files = [jsonl] if jsonl.is_file() else []
-        else:
-            files = sorted(pdir.glob("*.jsonl"))
-
-        for jsonl_path in files:
+        for jsonl_path in sorted(pdir.glob("*.jsonl")):
             try:
                 session_report = parse_session_stats(jsonl_path)
                 merged.merge(session_report)
@@ -973,6 +1043,194 @@ def compute_stats(
             merged.project_name = proj_name
 
     if all_projects:
-        merged.project_name = f"all ({len(dirs)} projects)"
+        merged.project_name = f"all ({len(names)} projects)"
 
     return merged
+
+
+# ---------------------------------------------------------------------------
+# 5-hour usage blocks (`stats --blocks`)
+# ---------------------------------------------------------------------------
+
+# Claude subscription limits reset per 5-hour window. Same rule as ccusage: a
+# block starts at its first message floored to the hour and lasts 5 hours; a
+# message at or after the end starts a new block.
+BLOCK_LENGTH = timedelta(hours=5)
+SLOT_S = 15 * 60  # every UTC offset in use is a multiple of 15 minutes
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _parse_ts(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+    except (ValueError, OverflowError):  # e.g. year 1 with a positive offset
+        return None
+
+
+def _count(value: object) -> int:
+    """A token count from a log line; anything not a plain int is 0."""
+    return value if type(value) is int else 0
+
+
+@dataclass
+class UsageBlock:
+    """One 5-hour window of Claude Code usage (all projects)."""
+
+    start: datetime
+    usage: TokenBucket = field(default_factory=TokenBucket)  # call_count = messages
+    models: set[str] = field(default_factory=set)
+    # USD per 15-minute slot (epoch seconds of its start; None: an unpriced
+    # call), so day_cost() can cut at any real time zone's midnight.
+    cost_by_slot: dict[int, float | None] = field(default_factory=dict)
+
+    @property
+    def end(self) -> datetime:
+        return self.start + BLOCK_LENGTH
+
+    def is_active(self, now: datetime) -> bool:
+        return self.start <= now < self.end
+
+    def burn(self, now: datetime) -> dict | None:
+        """Rate over the elapsed part of an active block, projected to its end."""
+        if not self.is_active(now):
+            return None
+        elapsed = max((now - self.start).total_seconds(), 60.0)
+        remaining = (self.end - now).total_seconds()
+        tokens = self.usage.total_tokens
+        cost = self.usage.cost_usd
+        return {
+            "elapsed_minutes": round(elapsed / 60, 1),
+            "remaining_minutes": round(remaining / 60, 1),
+            "tokens_per_minute": round(tokens / elapsed * 60),
+            "cost_per_hour_usd": None if cost is None else round(cost / elapsed * 3600, 2),
+            "projected_tokens": round(tokens + tokens / elapsed * remaining),
+            "projected_cost_usd": (
+                None if cost is None else round(cost + cost / elapsed * remaining, 2)
+            ),
+        }
+
+    def to_dict(self, now: datetime) -> dict:
+        u = self.usage
+        return {
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat(),
+            "active": self.is_active(now),
+            "messages": u.call_count,
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "cache_write_tokens": u.cache_write_tokens,
+            "cache_read_tokens": u.cache_read_tokens,
+            "total_tokens": u.total_tokens,
+            "cost_usd": _usd(u.cost_usd),
+            "models": sorted(self.models),
+            "burn": self.burn(now),
+        }
+
+
+def _usage_by_message(files: list[Path]) -> dict[str, dict]:
+    """Every assistant message with usage, keyed by message.id: its earliest
+    timestamp and, per field, the largest usage any of its lines report."""
+    msgs: dict[str, dict] = {}
+    for path in files:
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(obj, dict) or obj.get("type") != "assistant":
+                        continue
+                    msg = obj.get("message")
+                    if not isinstance(msg, dict):
+                        continue
+                    usage, msg_id = msg.get("usage"), msg.get("id")
+                    ts = _parse_ts(obj.get("timestamp"))
+                    if not isinstance(usage, dict) or not isinstance(msg_id, str) \
+                            or not msg_id or ts is None:
+                        continue
+                    md = msgs.setdefault(msg_id, {"ts": ts, "model": "", "in": 0, "out": 0,
+                                                  "cw": 0, "cw1h": 0, "cr": 0})
+                    md["ts"] = min(md["ts"], ts)
+                    model = msg.get("model")
+                    if isinstance(model, str) and model:
+                        md["model"] = model
+                    for key, src in (("in", "input_tokens"), ("out", "output_tokens"),
+                                     ("cw", "cache_creation_input_tokens"),
+                                     ("cr", "cache_read_input_tokens")):
+                        md[key] = max(md[key], _count(usage.get(src)))
+                    split = usage.get("cache_creation")
+                    if isinstance(split, dict):
+                        md["cw1h"] = max(md["cw1h"], _count(split.get("ephemeral_1h_input_tokens")))
+        except OSError:
+            continue
+    return msgs
+
+
+def _modified_since(path: Path, since: float) -> bool:
+    try:
+        return path.stat().st_mtime >= since
+    except OSError:
+        return False
+
+
+def compute_blocks(since: float | None = None) -> list[UsageBlock]:
+    """5-hour usage blocks across every project, oldest first.
+
+    Limits are account-wide, so this always scans all projects (and their
+    subagent transcripts); a message.id is counted once wherever it appears.
+    *since* (epoch seconds) reads only transcripts modified at or after it.
+    """
+    files: list[Path] = []
+    for pdir in find_all_project_dirs():
+        files += sorted(pdir.glob("*.jsonl")) + sorted(pdir.glob("*/subagents/*.jsonl"))
+    if since is not None:
+        files = [f for f in files if _modified_since(f, since)]
+    blocks: list[UsageBlock] = []
+    for md in sorted(_usage_by_message(files).values(), key=lambda m: m["ts"]):
+        if not (md["in"] or md["out"] or md["cw"] or md["cr"]):
+            continue  # e.g. Claude Code's local "<synthetic>" messages
+        if not blocks or md["ts"] >= blocks[-1].end:
+            blocks.append(UsageBlock(md["ts"].replace(minute=0, second=0, microsecond=0)))
+        b = blocks[-1]
+        b.usage.input_tokens += md["in"]
+        b.usage.output_tokens += md["out"]
+        b.usage.cache_write_tokens += md["cw"]
+        b.usage.cache_read_tokens += md["cr"]
+        b.usage.call_count += 1
+        cost = usage_cost_usd(md["model"], md["in"], md["out"], md["cw"], md["cr"], md["cw1h"])
+        b.usage.add_cost(cost)
+        slot = int(md["ts"].timestamp()) // SLOT_S * SLOT_S
+        old = b.cost_by_slot.get(slot, 0.0)
+        b.cost_by_slot[slot] = None if old is None or cost is None else old + cost
+        if md["model"]:
+            b.models.add(md["model"])
+    return blocks
+
+
+def day_cost(blocks: list[UsageBlock], start: float) -> float | None:
+    """USD of the blocks' messages at or after *start* (epoch seconds of a
+    local midnight, a multiple of SLOT_S in every real time zone); None if
+    any of them was unpriced."""
+    total: float | None = 0.0
+    for b in blocks:
+        for slot, cost in b.cost_by_slot.items():
+            if slot >= start:
+                total = None if total is None or cost is None else total + cost
+    return total
+
+
+def blocks_to_dict(blocks: list[UsageBlock], now: datetime) -> dict:
+    """`stats --blocks --json` (schema 1)."""
+    return {
+        "schema": 1,
+        "now": now.isoformat(),
+        "block_hours": 5,
+        "blocks": [b.to_dict(now) for b in blocks],
+    }
