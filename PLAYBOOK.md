@@ -5747,3 +5747,26 @@ Criteria
 
 **Next waves (planned):** research 5 (ledger), 4 (drift pinning), 2 (other agents' hooks, needs live hook checks per agent), then 9 (context % and branch in watch-all), 11 (scheduled digest).
 
+
+### Sprint 49 -- regex safety: linear-time scanning of untrusted text (planned 2026-11-20)
+
+Board (2026-11-20), after the Rust assessment: no Rust rewrite and no speed-only work ("whats the point of doing all of that for 100 ms"); do the regex work because it is a safety issue: "if its about safety then go ahead". Problem: patterns that can backtrack for seconds on one long line let a hostile log line, config value or command hang a scan or stall the guard (#247, #222, #228 and about 8 earlier fixes, each patched one at a time). Measured (Linux): 61 of 258 compiled patterns use lookaround/backrefs/possessive, which no linear engine supports, so they need rewrites either way; re2 was 7.4x faster on the 97 compatible scanner patterns. In flight at plan time: #247 (`_PIPE_TO_SHELL`, config_scan.py), #242 (exit 3), research 9 (context % and branch).
+
+Dependency (board-approved with the plan): `google-re2`, a core dependency with environment markers limited to platforms that have wheels (1.1.20251105: cp311-cp313 on Windows x86/x64/arm64, macOS 13+ x86_64/arm64, manylinux x86_64/aarch64). Elsewhere, and if the import fails, fall back to `re` on bounded input. Install must never need a C++ build.
+
+**Wave A: linear regex foundation + security scanners (`fix/regex-linear-scanners`)**
+- [ ] Inventory (in the PR body): every compiled pattern that runs on untrusted text (log lines, tool input/output, commands, config values), its file, whether re2 can take it, and how long it takes on adversarial input with `re` today.
+- [ ] One helper (`agentwatch/_regex.py` or similar): `compile_linear(pattern, flags)` returns a compiled object with the `re` API the callers use (`search`, `finditer`, `match`, `.start()`, `.group()`); re2 when available and the pattern is supported, otherwise `re` with an input bound per call (no silent truncation of findings: a scan cut by the bound is recorded or windowed with overlap, like the skill-script windows).
+- [ ] Migrate the security scanners (secret_scanner, security_patterns, injection, privilege, network, supply_chain, credentials, pii) to it. Rewrite patterns that use lookaround/backrefs where possible; any left on `re` are listed with their bound and a timing test.
+- [ ] Equivalence: a test that runs old `re` and new patterns over every existing fixture plus adversarial/fuzzed lines and asserts identical findings (same matches, same spans). Known re2 differences (Unicode `\b`/`\w`/`\s`) handled or proven not to matter.
+- [ ] Timing tests: each migrated pattern on 1 MB of adversarial input < 0.1 s (generous CI bound).
+- [ ] config_scan.py is #247's; guard.py is Wave B. Don't touch either.
+- [ ] ruff + full pytest green on Linux; install check without re2 (fallback path) green; QA pass.
+
+**Wave B: guard.py and the remaining command parsers (`fix/regex-linear-guard`)**
+- [ ] Same helper in guard.py, ledger and config_scan (after #247), with guard's own 1 s budget kept. Guard decisions identical on the whole guard test corpus (no new allow); timing tests on 1 MB commands.
+
+**Wave C: hook import cost (small)**
+- [ ] `parser/__init__` really lazy, as CLAUDE.md claims (today the PostToolUse hook imports 258 modules: asyncio, watchfiles, psutil, sqlite3, aider/cursor parsers). Test: importing `agentwatch.coach` does not import watchfiles, psutil, sqlite3 or textual.
+
+**Parked:** Rust (full or partial), orjson/msgspec, the benchmark suite, and other speed-only work. Revisit Rust only if Windows PreToolUse p50 > 150 ms or users report slow hooks.
