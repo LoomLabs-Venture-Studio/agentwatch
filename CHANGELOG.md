@@ -148,6 +148,13 @@ numbers refer to the GitHub repository.
   each file itself.
 - `ps --json`, `/api/ps` and `/api/agents` showed the user name as the project of an agent
   running in the home folder; it is now "~", the same rule as history.
+- `config-scan` could take minutes on one long config value (#247): the
+  download-and-run check on MCP commands and hooks (`iex ` repeated 5,000 times
+  took 4.7 s, 100 KB far longer), the `${VAR}` reference strip on secrets, the
+  permission allow-rule parser (`Bash` + 100 KB of spaces + `x`: 130 s) and
+  the JSONC comment strip for an unparseable JSON file (`"\` repeated: 246 s
+  on 100 KB). Each now runs in linear time, under 0.15 s on 100 KB, with the
+  same findings; tests check them against the old regexes.
 
 
 ## [0.2.2] - 2026-11-12
