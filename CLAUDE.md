@@ -83,6 +83,9 @@ src/agentwatch/
                        `check --security` exits with the worse of the health
                        and security codes (`_security_exit_code`; security-scan
                        thresholds: 100 -> 0, 50-99 -> 1, under 50 -> 2);
+                       exit 3 (EXIT_NO_DATA) = no log / no actions to scan
+                       (check, security-scan, audit, tools, ledger;
+                       subagents: no log only; #242)
                        its text report's headline is the security verdict
                        (`Security:`), the health status below (`Health:`)
                        `stats --session ID|prefix` searches every config

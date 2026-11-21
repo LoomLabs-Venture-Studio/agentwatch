@@ -455,7 +455,7 @@ def test_kind_filter_text_header_counts_every_row(mixed_log):
 def test_empty_log(tmp_path):
     p = tmp_path / "e.jsonl"
     p.write_text("", encoding="utf-8")
-    assert _run("--log", str(p)).exit_code == 1
+    assert _run("--log", str(p)).exit_code == 3  # nothing to scan (#242)
 
 
 def test_agentguard_alias(mixed_log):

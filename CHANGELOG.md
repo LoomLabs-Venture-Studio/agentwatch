@@ -58,6 +58,14 @@ numbers refer to the GitHub repository.
 
 ### Changed
 
+- Exit code 3 when there is nothing to scan (#242): `check`, `security-scan`, `audit`,
+  `tools` and `ledger` (and the `agentguard` aliases) now exit 3 instead of 1 when no log
+  is found or the log has no actions (`audit`: no session logs); `subagents` exits 3 when
+  no log is found. Exit codes 0/1/2 keep their meanings. A non-empty file with no JSON
+  line in it (a text file, or every line garbage) is now an unsupported log format and
+  exits 1, not "No actions found"; empty and blank-only logs exit 3.
+  For CI users: scripts that test for exit 1 to mean a warning no longer see missing
+  logs as warnings; any-non-zero gates are unaffected.
 - `visual`: redesigned as a dark-first ops dashboard (design system from ui-ux-pro-max:
   data-dense dashboard, "dark tech" palette, system fonts, light theme kept). KPI tiles
   (agents, health, security, cost) on top, a responsive grid of agent cards, health and

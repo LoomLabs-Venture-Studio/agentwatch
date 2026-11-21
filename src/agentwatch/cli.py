@@ -254,6 +254,11 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+# Exit code when there is nothing to scan: no log found, or a log with no
+# actions (#242). 1 and 2 stay the warning/critical results for CI gates.
+EXIT_NO_DATA = 3
+
+
 def _security_exit_code(security_score: int) -> int:
     """Exit code for a security score: 0 secure, 1 at risk, 2 compromised.
 
@@ -503,6 +508,7 @@ def check(
     Exit codes: 0 = healthy or degraded, 1 = warning, 2 = critical.
     With --security, the exit code is the worse of that and the security
     result: 1 = at risk (score 50-99), 2 = compromised (score below 50).
+    3 = no log found, or nothing in it to check.
     """
     # Find log file
     note = None
@@ -510,7 +516,7 @@ def check(
         log, note = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
-            sys.exit(1)
+            sys.exit(EXIT_NO_DATA)
         click.echo(f"Using log: {log}", err=True)
 
     # Parse logs and run checks over the whole session
@@ -527,7 +533,7 @@ def check(
 
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
-        sys.exit(1)
+        sys.exit(EXIT_NO_DATA)
     ledger_summary = _ledger_summary(log, actions)  # informational: never scored
 
     # Calculate scores (Tier-1 only -- LLM assessment below is advisory
@@ -1615,14 +1621,15 @@ def security_scan(
     """Run a security-focused scan on agent logs.
 
     Exit codes: 0 = secure (score 100), 1 = at risk (score 50-99),
-    2 = compromised (score below 50).
+    2 = compromised (score below 50), 3 = no log found, or nothing in it
+    to scan.
     """
     note = None
     if log is None:
         log, note = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
-            sys.exit(1)
+            sys.exit(EXIT_NO_DATA)
         click.echo(f"Using log: {log}", err=True)
 
     # Parse logs and run only security detectors, over the whole session
@@ -1636,7 +1643,7 @@ def security_scan(
 
     if len(buffer) == 0:
         click.echo("No actions found in log file", err=True)
-        sys.exit(1)
+        sys.exit(EXIT_NO_DATA)
 
     security_score = calculate_security_score(warnings)
 
@@ -2305,7 +2312,8 @@ def audit(
 
     \b
     Exit codes: 0 = no high or critical findings, 1 = at least one high,
-    2 = at least one critical. Medium, low and --pii findings never fail.
+    2 = at least one critical, 3 = no session logs to scan. Medium, low
+    and --pii findings never fail.
     """
     from agentwatch.cc_stats import (
         cwd_to_project_dirs,
@@ -2332,7 +2340,7 @@ def audit(
                 "Run from a project directory or use --all for all projects.",
                 err=True,
             )
-            sys.exit(1)
+            sys.exit(EXIT_NO_DATA)
 
     all_findings, sessions_scanned, project_names = _audit_scan(dirs, session_id, pat)
 
@@ -2345,7 +2353,7 @@ def audit(
                 "Run from a project directory or use --all for all projects.",
                 err=True,
             )
-        sys.exit(1)
+        sys.exit(EXIT_NO_DATA)
 
     # Always run impact assessment
     assess_impact(all_findings)
@@ -2683,6 +2691,9 @@ def tools(log: Path | None, with_calls: bool, json_output: bool, fmt: str):
 
     Shows only tool names, file names and commands (one line, secrets
     redacted), never tool arguments, results or error text.
+
+    Exit codes: 0 = done, 1 = error (an unreadable or unrecognized log),
+    3 = no log found, or nothing in it to scan.
     """
     from agentwatch.report import write_csv
     from agentwatch.tools_view import build, render
@@ -2694,7 +2705,7 @@ def tools(log: Path | None, with_calls: bool, json_output: bool, fmt: str):
         log, note = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
-            sys.exit(1)
+            sys.exit(EXIT_NO_DATA)
         click.echo(f"Using log: {log}", err=True)
         if note:
             click.echo(note, err=True)
@@ -2705,7 +2716,7 @@ def tools(log: Path | None, with_calls: bool, json_output: bool, fmt: str):
         sys.exit(1)
     if not actions:
         click.echo("No actions found in log file", err=True)
-        sys.exit(1)
+        sys.exit(EXIT_NO_DATA)
     data = build(actions, log.name, with_calls)
     if fmt == "json":
         click.echo(json.dumps(data, indent=2))
@@ -2746,6 +2757,9 @@ def ledger(log: Path | None, project: Path | None, fmt: str, kinds: tuple[str, .
     Remove-Item, or anything the command guard would ask about) and outside
     the project. Commands are one line with secrets redacted; tool results,
     file contents and error text are never shown. Nothing is stored.
+
+    Exit codes: 0 = done, 1 = error (an unreadable or unrecognized log),
+    3 = no log found, or nothing in it to scan.
     """
     import csv
 
@@ -2755,7 +2769,7 @@ def ledger(log: Path | None, project: Path | None, fmt: str, kinds: tuple[str, .
         log, note = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
-            sys.exit(1)
+            sys.exit(EXIT_NO_DATA)
         click.echo(f"Using log: {log}", err=True)
         if note:
             click.echo(note, err=True)
@@ -2766,7 +2780,7 @@ def ledger(log: Path | None, project: Path | None, fmt: str, kinds: tuple[str, .
         sys.exit(1)
     if not actions:
         click.echo("No actions found in log file", err=True)
-        sys.exit(1)
+        sys.exit(EXIT_NO_DATA)
     agent = _agent_name(log)
     where = ledger_mod.session_cwd(log, actions, agent)
     source = "the log" if where else None
@@ -2801,6 +2815,9 @@ def subagents(log: Path | None, show_all: bool, active_only: bool, json_output: 
 
     Each subagent's log is scored like `check`. Newest first; HIGH and
     CRITICAL health warnings are listed under their subagent.
+
+    Exit codes: 0 = done (also when the session has no subagents),
+    3 = no log found.
     """
     from agentwatch.subagents import build, render, session_of
 
@@ -2808,7 +2825,7 @@ def subagents(log: Path | None, show_all: bool, active_only: bool, json_output: 
         log, note = _default_log()
         if log is None:
             click.echo("No log files found. Specify a path with --log", err=True)
-            sys.exit(1)
+            sys.exit(EXIT_NO_DATA)
         if note:
             click.echo(note, err=True)
     data = build(session_of(log), show_all, active_only)

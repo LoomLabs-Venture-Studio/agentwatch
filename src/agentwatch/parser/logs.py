@@ -841,16 +841,22 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
             result = [result] if result else []
         return [a for a in result if session_id is None or a.session_id == session_id]
 
+    # Text but not JSONL (a .txt, or every line garbage): an unsupported
+    # format, not an empty log (#242). One-shot read only; LogWatcher's live
+    # tail never raises on a line that may still be half written.
+    has_text = has_json = False
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
+            has_text = True
 
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            has_json = True
             if not isinstance(entry, dict):
                 continue
 
@@ -877,6 +883,8 @@ def _parse_jsonl(path: Path, session_id: str | None = None) -> Iterator[Action]:
 
             yield from parse(entry)
 
+        if has_text and not has_json:
+            raise UnsupportedLogFormatError(path, "no JSON lines, not a JSONL agent log")
         if log_format is None:
             # File ended inside the sniff window with only unrecognised entries.
             if sniffer.finish() == "unknown":
