@@ -35,6 +35,7 @@ import socket
 import stat
 import time
 import tomllib
+from bisect import bisect_left
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path, PurePath
@@ -123,6 +124,16 @@ def show(path: PurePath | str) -> str:
 # ${VAR}, ${VAR:-x}, $VAR, ${env:VAR}, {env:VAR}, ${input:id}, %VAR%: resolved
 # at launch, not a hard-coded value.
 _VAR_REF = re.compile(r"\$\{[^}]*\}|\$[A-Za-z_]\w*|\{env:[^}]*\}|%[A-Za-z_]\w*%")
+# After the last "}" only the unbraced forms can match (#247).
+_VAR_REF_OPEN = re.compile(r"\$[A-Za-z_]\w*|%[A-Za-z_]\w*%")
+
+
+def _strip_var_refs(value: str) -> str:
+    """_VAR_REF.sub("", value) in linear time. With no "}" after it, the
+    regex rescans to the end from every "${" and "{env:" (quadratic); no
+    match crosses the last "}", so the text after it gets the unbraced forms."""
+    cut = value.rfind("}") + 1
+    return _VAR_REF.sub("", value[:cut]) + _VAR_REF_OPEN.sub("", value[cut:])
 
 
 def _secret(key: str, value: str) -> tuple[str, str] | None:
@@ -131,7 +142,7 @@ def _secret(key: str, value: str) -> tuple[str, str] | None:
     Judged as ``key=value`` so a key name (API_KEY, Authorization) lets the
     assignment patterns fire; placeholders are skipped by the scanner itself.
     """
-    value = _VAR_REF.sub("", value).strip()
+    value = _strip_var_refs(value).strip()
     if not value:
         return None
     text = f"{key}={value}" if key else value
@@ -272,7 +283,8 @@ _CREDENTIAL_DIR = re.compile(
 
 def _plain_http(url: str) -> str | None:
     """Host of a plain-http URL to a non-loopback host, else None."""
-    if not url.lower().startswith("http://") or _VAR_REF.search(url.split("/")[2]):
+    if (not url.lower().startswith("http://")
+            or _strip_var_refs(part := url.split("/")[2]) != part):  # a var ref
         return None
     try:
         host = urlsplit(url).hostname or ""
@@ -297,20 +309,139 @@ def _is_loopback(host: str) -> bool:
 
 
 _SHELLS = r"(?:(?:ba|z|da|k|fi)?sh|python3?|perl|ruby|node)"
-_PIPE_TO_SHELL = re.compile(
-    # curl ... | [tee f |] sh  (a single "|", not "||")
-    r"\b(?:curl|wget)\b[^;&\n]*?(?<!\|)\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*)?(?:/\S*/)?"
-    + _SHELLS + r"\b"
-    # bash <(curl ...), bash -c "$(curl ...)", python3 -c "$(curl ...)"
-    r"|\b" + _SHELLS + r"\s+(?:-\w+\s+)*[\"']?(?:<\(|\$\()\s*(?:curl|wget)\b"
-    # eval "$(curl ...)", source <(curl ...), . <(curl ...)
-    r"|\beval\s+[\"']?\$\(\s*(?:curl|wget)\b"
-    r"|(?:^|[\s;&|(])(?:source|\.)\s+<\(\s*(?:curl|wget)\b"
-    r"|\b(?:iex|invoke-expression)\b.*\b(?:iwr|irm|invoke-webrequest|invoke-restmethod"
-    r"|downloadstring)\b"
-    r"|\b(?:iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]*\|\s*(?:iex|invoke-expression)\b",
-    re.I,
-)
+# Download-and-run forms (the first five need curl or wget):
+# 1. curl ... | [tee f |] [sudo [-flags]] [/path/]sh  (a single "|", not "||";
+#    no ; & or newline between curl and that "|")
+# 2. bash [-flags] <(curl ...), bash -c "$(curl ...)", python3 -c "$(curl ...)"
+# 3. eval "$(curl ...)"
+# 4. source <(curl ...), . <(curl ...)
+# 5. iex ... iwr|irm|invoke-webrequest|invoke-restmethod|downloadstring (one line)
+# 6. iwr|irm|invoke-webrequest|invoke-restmethod ... | iex (the "|" on that line)
+# One regex for all six rescans the rest of the line from every curl, iex or
+# shell word: minutes on a 100 KB value (#247). _PipeToShell finds each form's
+# first start in one left-to-right pass with the same matches.
+_EVAL_SUB = re.compile(r"\beval\s+[\"']?\$\(\s*(?:curl|wget)\b", re.I)  # 3
+_SOURCE_SUB = re.compile(r"(?:^|[\s;&|(])(?:source|\.)\s+<\(\s*(?:curl|wget)\b", re.I)  # 4
+_DOWNLOADER = re.compile(r"\b(?:curl|wget)\b", re.I)
+_CURL_ANYWHERE = re.compile("curl|wget", re.I)
+_IEX_ANYWHERE = re.compile("iex|invoke-expression", re.I)
+_SEGMENT_END = re.compile(r"[;&\n]")
+# Form 1's "|" (not "||"), its spaces, then a shell; or sudo and its flags;
+# or a path whose word has a "/" before a shell after it.
+_PIPE = r"\|(?<!\|\|)(?!\|)"  # a literal first: found by a fast scan
+_PIPE_SHELL = re.compile(_PIPE + r"\s*+(?=" + _SHELLS + r"\b)", re.I)
+_PIPE_SUDO = re.compile(_PIPE + r"\s*+sudo\s++", re.I)
+_SUDO_FLAGS = re.compile(r"(?:-\S++\s++)*+")
+_PIPE_SLASH = re.compile(r"\|(?<!\|\|)/")  # inside a word
+_PIPE_SPACE_SLASH = re.compile(_PIPE + r"\s++/")  # "/" starts a word
+_WORD_SLASH_SHELL = re.compile(r"(?<!\S)\S*/(?=" + _SHELLS + r"\b)", re.I)  # to the last
+_SHELL_WORD = re.compile(_SHELLS + r"\b", re.I)
+_SHELL_START = re.compile(r"\b" + _SHELLS + r"\s+", re.I)
+_WORD_FLAGS = re.compile(r"(?:-\w++\s++)*+")
+_SUB_DOWNLOAD = re.compile(r"[\"']?(?:<\(|\$\()\s*(?:curl|wget)\b", re.I)
+_IEX = re.compile(r"\b(?:iex|invoke-expression)\b", re.I)
+_PS_FETCH = r"\b(?:iwr|irm|invoke-webrequest|invoke-restmethod"
+_PS_FETCH_ANY = re.compile(_PS_FETCH + r"|downloadstring)\b", re.I)
+_PS_FETCH_CMD = re.compile(_PS_FETCH + r")\b", re.I)
+_PIPE_IEX = re.compile(r"\|\s*+(?:iex|invoke-expression)\b", re.I)
+_AT = re.compile("")
+
+
+class _PipeToShell:
+    """Download-and-run in a command: ``search(text)`` returns a match whose
+    start() is where the first form above starts (empty, so end() == start()),
+    else None. Linear time; the old single regex is kept in
+    tests/test_config_scan_linear.py, which checks both agree."""
+
+    def search(self, text: str) -> re.Match[str] | None:
+        # Cheap tests first: each form needs these characters.
+        starts: list[int | None] = []
+        pipe = "|" in text
+        if _CURL_ANYWHERE.search(text):
+            if pipe:
+                starts.append(self._pipe(text))
+            if "<(" in text or "$(" in text:
+                starts.append(self._shell_sub(text))
+                starts += [m.start() for m in (_EVAL_SUB.search(text),
+                                               _SOURCE_SUB.search(text)) if m]
+        if _IEX_ANYWHERE.search(text):
+            starts.append(self._then_on_line(text, _IEX, _PS_FETCH_ANY))
+            if pipe:
+                starts.append(self._then_on_line(text, _PS_FETCH_CMD, _PIPE_IEX))
+        starts = [s for s in starts if s is not None]
+        return _AT.match(text, min(starts)) if starts else None
+
+    @staticmethod
+    def _pipe(text: str) -> int | None:
+        """Form 1. Only the first curl of a ;&\\n segment can match: a later
+        one sees a subset of its pipes."""
+        good: list[int] | None = None
+        pos = 0
+        while w := _DOWNLOADER.search(text, pos):
+            if good is None:
+                good = _PipeToShell._good_pipes(text)
+            i = bisect_left(good, w.end())
+            if i == len(good):
+                return None
+            sep = _SEGMENT_END.search(text, w.end())
+            if sep is None or good[i] < sep.start():
+                return w.start()
+            pos = sep.start() + 1
+        return None
+
+    @staticmethod
+    def _good_pipes(text: str) -> list[int]:
+        """Sorted positions of each "|" that form 1's shell follows."""
+        # A word with a "/" before a shell: its start -> the last such "/".
+        # A path at p runs a shell if a later "/" in its word does: p < last.
+        last = ({m.start(): m.end() - 1 for m in _WORD_SLASH_SHELL.finditer(text)}
+                if "/" in text else {})
+        good = [m.start() for m in _PIPE_SHELL.finditer(text)]
+        for start, end in last.items():
+            good += [m.start() for m in _PIPE_SLASH.finditer(text, start, end)]
+        good += [m.start() for m in _PIPE_SPACE_SLASH.finditer(text)
+                 if m.end() - 1 < last.get(m.end() - 1, -1)]
+        flags_end, ok = -1, False
+        for m in _PIPE_SUDO.finditer(text):
+            # A sudo inside the last flag run ("-x|sudo -y") ends where it does.
+            if m.end() > flags_end:
+                flags_end = _SUDO_FLAGS.match(text, m.end()).end()  # a word start
+                ok = bool(_SHELL_WORD.match(text, flags_end)
+                          or (text.startswith("/", flags_end)
+                              and flags_end < last.get(flags_end, -1)))
+            if ok:
+                good.append(m.start())
+        return sorted(good)
+
+    @staticmethod
+    def _shell_sub(text: str) -> int | None:
+        """Form 2. A shell word inside an earlier one's flags ("-bash ")
+        ends at the same place, so it is skipped."""
+        pos = 0
+        while m := _SHELL_START.search(text, pos):
+            e = _WORD_FLAGS.match(text, m.end()).end()
+            if _SUB_DOWNLOAD.match(text, e):
+                return m.start()
+            pos = max(e, m.start() + 1)
+        return None
+
+    @staticmethod
+    def _then_on_line(text: str, first: re.Pattern[str], then: re.Pattern[str]) -> int | None:
+        """Forms 5 and 6: the start of the first *first* match with a *then*
+        match after it on its line (*then* may run on past the line). Lines
+        before the next *then* match are skipped: none can hold one."""
+        pos = 0
+        while m := first.search(text, pos):
+            t = then.search(text, m.end())
+            if t is None:
+                return None
+            if text.find("\n", m.end(), t.start()) < 0:
+                return m.start()
+            pos = text.rfind("\n", 0, t.start()) + 1
+        return None
+
+
+_PIPE_TO_SHELL = _PipeToShell()
 
 # Invisible or text-reordering chars: zero-width space and word joiners, bidi
 # embeddings/overrides/isolates (Trojan Source) and Unicode tag chars (ASCII
@@ -813,11 +944,15 @@ class Scanner:
             for k, v in env.items():
                 self._secret_value(str(k), v, agent, path, f"env.{k}", "Settings env")
 
+    # Tool(arg). Possessive spaces (#247): "a" + 100 KB of spaces + "x" took
+    # minutes, trying every split of the spaces between the two \s*.
+    _ALLOW_RULE = re.compile(r"\s*+([\w*]+)\s*+(?:\((.*)\))?\s*", re.S)
+
     _BROAD_TOOLS = {"Bash", "PowerShell", "Edit", "Write", "MultiEdit", "NotebookEdit",
                     "WebFetch"}
 
     def _allow_rule(self, rule: str, path: Path, loc: str) -> None:
-        m = re.fullmatch(r"\s*([\w*]+)\s*(?:\((.*)\))?\s*", rule, re.S)
+        m = self._ALLOW_RULE.fullmatch(rule)
         if not m:
             return
         tool, arg = m.group(1), m.group(2)
@@ -1078,8 +1213,9 @@ class Scanner:
         deadline = time.process_time() + _SCRIPT_BUDGET_S
         suffix = path.suffix.lower()
         creds = suffix not in _DATA_EXT and not path.name.lower().endswith("ignore")
-        # _PIPE_TO_SHELL backtracks badly on long lines: the patterns run on
-        # line windows of at most _WINDOW chars; comment lines are skipped.
+        # _DECODE_EXEC and _SAVED look up to 300 chars past every trigger word
+        # (0.5 s on a 20 KB line of "base64 -d "): the patterns run on line
+        # windows of at most _WINDOW chars; comment lines are skipped.
         for pos, chunk in _trigger_windows(text, _COMMENTS.get(suffix, ("#",))):
             if time.process_time() > deadline:
                 self.report.skipped.append({"file": show(path),
@@ -1208,16 +1344,62 @@ class Scanner:
         return self.report
 
 
-_STR = r'("(?:\\.|[^"\\])*")'
-_JSONC_COMMENT = re.compile(_STR + r"|//[^\n]*|/\*[\s\S]*?\*/")
-_JSONC_COMMA = re.compile(_STR + r"|,(?=\s*[}\]])")
+_STR_BODY = re.compile(r'(?:\\.|[^"\\])*+')  # a string's text, up to its closing quote
+_COMMA_END = re.compile(r"\s*+[}\]]")
 
 
 def _strip_jsonc(text: str) -> str:
     """JSON with comments and trailing commas (VS Code's mcp.json) -> JSON."""
-    for rx in (_JSONC_COMMENT, _JSONC_COMMA):
-        text = rx.sub(lambda m: m.group(1) or "", text)
-    return text
+    return _jsonc_pass(_jsonc_pass(text, '"/'), '",')
+
+
+def _jsonc_pass(text: str, marks: str) -> str:
+    """One left-to-right pass over *text* keeping strings ("...", backslash
+    escapes, none before a newline): '"/' drops // and /* */ comments, '",'
+    drops a comma before } or ]. The same output as the regex subs it replaced
+    (kept in tests/test_config_scan_linear.py), in linear time: those rescanned
+    an unclosed string or comment to the end from every later quote or /*
+    (#247)."""
+    find = re.compile("[" + re.escape(marks) + "]").search
+    out: list[str] = []
+    keep = i = 0
+    unclosed = -1  # a quote before here opens a string that never closes
+    no_close = False  # no */ after a /* already seen
+    while m := find(text, i):
+        j = i = m.start()
+        c = text[j]
+        if c == '"':
+            # A quote inside an unclosed string's text is an escaped \", so
+            # the string from it reads the same text and does not close either.
+            if j >= unclosed:
+                end = _STR_BODY.match(text, j + 1).end()
+                if text[end:end + 1] == '"':
+                    i = end + 1
+                    continue
+                unclosed = end
+            i = j + 1
+            continue
+        if c == ",":
+            i = j + 1
+            if _COMMA_END.match(text, i):
+                out.append(text[keep:j])
+                keep = i
+            continue
+        if text.startswith("//", j):
+            end = text.find("\n", j)
+            end = len(text) if end < 0 else end
+        elif text.startswith("/*", j) and not no_close:
+            end = text.find("*/", j + 2) + 2
+            no_close = end < 2
+        else:
+            end = -1
+        if end < 2:
+            i = j + 1
+            continue
+        out.append(text[keep:j])
+        keep = i = end
+    out.append(text[keep:])
+    return "".join(out)
 
 
 @lru_cache(maxsize=64)
