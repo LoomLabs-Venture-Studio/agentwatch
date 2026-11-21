@@ -170,4 +170,4 @@ def test_format_json_same_as_json(secret_log):
 def test_empty_log(tmp_path):
     p = tmp_path / "e.jsonl"
     p.write_text("", encoding="utf-8")
-    assert _run("--log", str(p)).exit_code == 1
+    assert _run("--log", str(p)).exit_code == 3  # nothing to scan (#242)

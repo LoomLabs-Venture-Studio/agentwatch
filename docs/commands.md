@@ -287,19 +287,23 @@ In automated pipelines, such as a GitHub Actions job that runs an assistant,
 AgentWatch can fail the job when a session went wrong. Each command ends with an
 exit code: 0 lets the job continue, anything else fails it.
 
-| Command | 0 | 1 | 2 |
-| --- | --- | --- | --- |
-| `check` | Health 60 or more | Health 40 to 59 | Health below 40 |
-| `check --security` | Health 60+ and secure | Health 40 to 59, or at risk | Health below 40, or compromised |
-| `security-scan` | Secure (100) | At risk (50 to 99) | Compromised (below 50) |
-| `audit` | No high or critical finding | A high finding | A critical finding |
-| `scrub --dry-run` | Nothing found | Something found | Error |
-| `scrub` | Done | | Error |
+| Command | 0 | 1 | 2 | 3 |
+| --- | --- | --- | --- | --- |
+| `check` | Health 60 or more | Health 40 to 59 | Health below 40 | No log found or nothing to scan |
+| `check --security` | Health 60+ and secure | Health 40 to 59, or at risk | Health below 40, or compromised | No log found or nothing to scan |
+| `security-scan` | Secure (100) | At risk (50 to 99) | Compromised (below 50) | No log found or nothing to scan |
+| `audit` | No high or critical finding | A high finding | A critical finding | No session logs to scan |
+| `scrub --dry-run` | Nothing found | Something found | Error | |
+| `scrub` | Done | | Error | |
 
 `check --security` takes the worse of its health result and its security
 result, so one critical security finding exits 2 even when the health score is
-high. `check`, `security-scan` and `audit` also exit 1 when something goes
-wrong, for example when there's no log to read.
+high. When there's nothing to scan (no log found, or a log with no actions in
+it), `check`, `security-scan`, `audit`, `tools` and `ledger` exit 3, so a gate
+can tell a missing log from a warning; `subagents` exits 3 only when no log is
+found. Exit 1 also means a file they can open but can't parse or don't
+recognize as an agent log, such as a text file. A `--log` file that doesn't
+exist or can't be read is a usage error and exits 2.
 
 ```yaml
 - name: Check the agent's session
