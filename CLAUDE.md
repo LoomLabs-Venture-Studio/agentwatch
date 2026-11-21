@@ -65,7 +65,9 @@ want a "fitness tracker + security guard" for those agents.
 ```
 src/agentwatch/
   cli.py              Click command group: check, watch, watch-all, ps
-                       (POSTURE column: posture.py),
+                       (POSTURE column: posture.py; BRANCH and CTX:
+                       session_info.py; no CPU/STATUS columns, to fit
+                       100 cols; CPU still `cpu_percent` in --json),
                        detect, net, list-detectors, security-scan, config-scan, themes, stats,
                        visual,
                        audit, scrub, report, tools, ledger, subagents, history sync|prune|path, notify on|off|status
@@ -206,6 +208,21 @@ src/agentwatch/
                        attributable(): process-kind adapters only, minus
                        Codex app-server threads, `kilo serve`/`opencode
                        serve` and Aider (synthetic timestamps)
+  session_info.py      Context fill + git branch per session (ps, ps
+                       --json / /api/ps `context` {used_tokens, window,
+                       percent} | null and `branch` | null, visual chip,
+                       watch-all). context_usage(stats): last_context_tokens
+                       / known_context_window (models.context_tokens, the
+                       buffer's own formula); unknown window -> None.
+                       log_context(): <= 1 MB tail, only lines that can
+                       carry usage, parsed by ClaudeCodeParser (claude-code,
+                       claude-desktop) or CodexParser; other agents None.
+                       branch_of(): Claude Code's latest gitBranch (64 KB
+                       tail; "HEAD" ignored), else git_branch(cwd): first
+                       .git within 32 dirs up (dir, or `gitdir:` file),
+                       HEAD ref -> name, sha -> "(detached abc1234)";
+                       never runs git; one_line(100). Both cached per
+                       (log, size, mtime_ns) under a lock
   posture.py           Sandbox/permission posture (Sprint 48), stdlib +
                        psutil: posture(AgentProcess) -> Posture(approvals
                        skipped|auto|on|unknown (auto = a classifier or
@@ -779,7 +796,12 @@ src/agentwatch/
                        goal-alignment wiring as app.py, applied per-agent;
                        `alerter` (alerts.py) fed from both scoring paths.
                        `watch-all --headless` runs it on Textual's headless
-                       driver (no screen I/O; SIGINT exits cleanly)
+                       driver (no screen I/O; SIGINT exits cleanly).
+                       CTX = session_info.context_usage(buffer.stats)
+                       (warn >= 80, bad >= 95); `git:<branch>` in the
+                       Selected title, branches (session_info.branch_of)
+                       read in _scan_processes on the discovery thread
+                       (every 5 s; none in --all-logs mode)
     live_integrations.py  Shared live-TUI SIEM export + Tier-2 LLM triage
                        wiring for app.py/multi_app.py's 1s refresh loop:
                        `warning_dedup_key()` (content-based identity so a

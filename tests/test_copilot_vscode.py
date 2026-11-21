@@ -392,7 +392,7 @@ def test_ps_columns_fit_editor_agents(capsys, tmp_path):
     _print_teams_view([proc])
     rows = [line for line in capsys.readouterr().out.splitlines() if "1809276400" in line]
     assert len(rows) == 2
-    assert all("1809276400  copilot-vscode  aw-vscode-test" in r for r in rows)
+    assert all("1809276400 copilot-vscode aw-vscode..." in r for r in rows)
 
 
 def test_replace_string_and_find_text_seen_live():

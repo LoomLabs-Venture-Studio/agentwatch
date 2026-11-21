@@ -616,7 +616,7 @@ class TestNoProjectForBinDir:
         _print_agents_view([agent])
         _print_teams_view([agent])
         rows = [ln for ln in capsys.readouterr().out.splitlines() if str(agent.pid) in ln]
-        assert len(rows) == 2 and all("codex           ---" in r for r in rows)
+        assert len(rows) == 2 and all("codex          ---" in r for r in rows)
         assert "abc" not in "".join(rows)
 
     def test_app_server_rollout_found_on_a_later_scan(self, tmp_path, monkeypatch):

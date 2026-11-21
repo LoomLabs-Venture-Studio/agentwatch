@@ -461,8 +461,8 @@ text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
 .doing .v .age{font-weight:400;color:var(--mute)}
 .doing .why{font-size:.875rem;color:var(--mute)}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
-.card>.posture{align-self:flex-start;white-space:normal}
-.card>.posture>span{overflow:visible;overflow-wrap:anywhere}
+.card>.posture,.card>.ctx{align-self:flex-start;white-space:normal}
+.card>.posture>span,.card>.ctx>span{overflow:visible;overflow-wrap:anywhere}
 .status{display:flex;flex-direction:column;gap:12px}
 .card details{border-top:1px solid var(--line);margin-top:auto}
 .card summary{min-height:44px;font-size:.8125rem}
@@ -1059,6 +1059,23 @@ function postureChip(p) {
     (sb || "sandbox unknown") + (p.confidence === "low" ? " (low confidence)" : "");
   return c;
 }
+// Context window fill and git branch (agentwatch.session_info), as `ps`
+// shows them: warn from 80%, bad from 95%.
+function ctxChip(a) {
+  const ctx = a.context && typeof a.context === "object" ? a.context : null;
+  const pct = ctx && typeof ctx.percent === "number" ? ctx.percent : null;
+  const branch = typeof a.branch === "string" && a.branch ? a.branch : null;
+  if (pct === null && !branch) return null;
+  const parts = [];
+  if (pct !== null) parts.push("context " + (ctx.used_tokens > ctx.window ? ">100" : pct) + "%");
+  if (branch) parts.push("git: " + branch);
+  const c = pill(parts.join(" · "), pct >= 95 ? "bad" : pct >= 80 ? "warn" : "neutral");
+  c.classList.add("ctx");
+  c.title = (pct === null ? "Context window: unknown" : "Context window: " +
+    num(ctx.used_tokens) + " of " + num(ctx.window) + " tokens") +
+    (branch ? ", branch " + branch : "");
+  return c;
+}
 function cards(list) {
   const g = el("div", null, "cards");
   for (const a of list) {
@@ -1085,8 +1102,8 @@ function cards(list) {
       dl.append(el("dt", k), v instanceof Node ? v : el("dd", v));
     }
     det.append(el("summary", "Process details"), dl);
-    const pc = postureChip(a.posture);
-    c.append(...(pc ? [top, pc, box, det] : [top, box, det]));
+    const chips = [postureChip(a.posture), ctxChip(a)].filter(x => x);
+    c.append(top, ...chips, box, det);
     g.append(c);
   }
   return g;

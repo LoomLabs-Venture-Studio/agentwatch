@@ -34,7 +34,9 @@ each score range (see [`themes`](#themes)).
 ### watch-all
 
 The live dashboard: every assistant running on your computer, one row per
-session, with its health, cost, memory use and top problem.
+session, with its health, cost, memory use and top problem. CTX is how full
+the context window is (yellow from 80%, red from 95%); the Selected strip's
+title names the session's git branch (`git:main`).
 
 | Option | What it does |
 | --- | --- |
@@ -119,6 +121,16 @@ optional extras; see the
 
 Lists the assistants AgentWatch can see running right now, with their process
 IDs and sessions. `--json` for scripts.
+
+| Column | What it shows |
+| --- | --- |
+| BRANCH | The git branch the session is on: Claude Code's own record, else the folder's `.git/HEAD` (`(detached abc1234)` for a detached HEAD) |
+| CTX | How full the model's context window is after the latest call; yellow from 80%, red from 95%. `-` when the log doesn't say which window the model has, or the assistant keeps no per-session log (Cursor, OpenCode, Kilo Code) |
+| POSTURE | Whether approvals are skipped and whether it runs in a sandbox |
+
+`--json` has them as `branch`, `context` (`used_tokens`, `window`, `percent`)
+and `posture`, along with CPU, which the table leaves out (one scan can't
+measure it).
 
 ```bash
 agentwatch ps
