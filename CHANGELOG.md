@@ -8,6 +8,17 @@ numbers refer to the GitHub repository.
 
 ### Added
 
+- Context window fill and git branch per session (`session_info.py`). `ps` has CTX
+  (latest call's context / the model's window; theme warn from 80%, critical from 95%; `>100%`
+  when a call outgrew the window (`100+` in `watch-all`; `percent` stays clamped at 100); `-`
+  when the window is unknown or the agent has no per-session log) and BRANCH columns; to fit
+  100 columns it no longer shows STATUS (always `active`) or CPU (always `0.0%` in one scan;
+  still `cpu_percent` in `--json`). `ps --json` and `/api/ps` add `context` (`used_tokens`, `window`,
+  `percent`, or null) and `branch` (or null). `visual` cards show a context/branch chip;
+  `watch-all` colours CTX the same way and shows `git:<branch>` in the Selected title. Context
+  reads at most a 1 MB log tail (Claude Code, Claude Desktop, Codex), cached per log size and
+  mtime; the branch is Claude Code's recorded `gitBranch`, else `.git/HEAD` read directly from
+  the working directory up (worktrees, detached HEAD), never by running `git`.
 - Sandbox and permission posture for each running agent (`posture.py`): approvals
   (`skipped` / `auto` (a classifier reviews, shown as `auto-review`) / `on` / `unknown`) from the process's own flags (Claude Code
   `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`, user settings

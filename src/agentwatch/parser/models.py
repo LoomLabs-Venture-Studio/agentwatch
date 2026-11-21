@@ -244,6 +244,12 @@ class SessionStats:
         return None if self.unpriced else 0.0
 
 
+def context_tokens(action: Action) -> int:
+    """The context window fill of the API call *action* reports: its whole
+    prompt (fresh input + cache written + cache read). 0 = no usage."""
+    return action.tokens_in + action.cache_creation_tokens + action.cache_read_tokens
+
+
 def call_tokens(action: Action) -> int:
     """All tokens of the API call *action* carries usage for (0 = none)."""
     return (
@@ -399,7 +405,7 @@ class ActionBuffer:
             if action.message_id:
                 self._billed[action.message_id] = (tokens, cost or 0.0)
         # Track high-water mark of per-action context size (survives compaction)
-        action_context = action.tokens_in + action.cache_creation_tokens + action.cache_read_tokens
+        action_context = context_tokens(action)
         if action_context > self._stats.peak_context_tokens:
             self._stats.peak_context_tokens = action_context
         # Latest window fill; usage-less actions (e.g. tool errors) don't reset it.

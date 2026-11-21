@@ -42,7 +42,9 @@ runs with approvals skipped and outside any sandbox; `approvals · sandboxed`
 (green) is the safe end; `auto-review` means a model, not you, approves
 actions. It reads the agent's own flags and config (Claude Code, Codex, Gemini
 CLI, Copilot CLI) and its parent processes (srt, bwrap, firejail, sandbox-exec,
-containers). `ps --json` has it as a `posture` object.
+containers). `ps --json` has it as a `posture` object. `ps` also shows each
+session's git BRANCH and CTX, how full its context window is (yellow from 80%,
+red from 95%); `watch-all` and `visual` show both too.
 
 `agentwatch config-scan --baseline` records the skills, plugins and MCP
 servers installed now (as keyed hashes only, never contents or secrets).

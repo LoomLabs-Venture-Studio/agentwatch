@@ -20,7 +20,7 @@ from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Input, Static, TabbedContent
 
 from agentwatch import posture as _posture
-from agentwatch import subagents
+from agentwatch import session_info, subagents
 from agentwatch.agents import DISPLAY_NAMES, adapter_for, display_name
 from agentwatch.alerts import BASELINE_S, _label, _usd, tui_warn, who
 from agentwatch.coach import state_path
@@ -105,6 +105,7 @@ NARROW_BELOW = 100  # columns: no AGENT/CTX columns, no Selected strip
 SHORT_BELOW = 30  # rows: the Events panel shows 3 lines ...
 TINY_BELOW = 20  # ... or is hidden (`e` shows it in the table's place)
 PROJECT_NARROW = 12
+BRANCH_TITLE = 24  # Selected title: git branch cut to this many chars
 STOPPED_STYLE = "grey50"
 FEED_MAX = 200  # event feed lines kept
 BUDGET_WARN = 0.8  # feed line when a session reaches this share of --budget
@@ -170,12 +171,19 @@ def _age(buffer: ActionBuffer) -> float | None:
 
 
 def _context_pct(buffer: ActionBuffer) -> int | None:
-    """Window fill of the latest call; None when the window is unknown."""
-    stats = buffer.stats
-    window = stats.known_context_window
-    if not (stats.last_context_tokens and window):
-        return None
-    return min(100, int(stats.last_context_tokens / window * 100))
+    """Window fill of the latest call; None when the window is unknown
+    (session_info.context_usage, the same figure as `ps`)."""
+    usage = session_info.context_usage(buffer.stats)
+    return usage["percent"] if usage else None
+
+
+def _context_style(pct: int | None) -> str:
+    """CTX colour: the theme's warn colour from 80%, critical from 95%."""
+    tone = session_info.context_tone(pct)
+    if tone is None:
+        return ""
+    theme = get_theme()
+    return "bold " + _color(theme.color_3) if tone == "bad" else _color(theme.color_1)
 
 
 def _top_warnings(warnings: list["Warning"], n: int) -> list["Warning"]:
@@ -427,6 +435,8 @@ class MultiAgentWatchApp(App):
         self._selected_sig: tuple = ()  # what the Selected strip shows (_update_selected)
         # pid -> sandbox/permission posture, read on the discovery thread
         self._postures: dict[int, _posture.Posture] = {}
+        # log path -> git branch (session_info.branch_of), on the discovery thread
+        self._branches: dict[Path, str] = {}
         self._blocks = 0  # loop-breaker blocks seen this run (incl. already at startup)
         self._held_blocks = 0  # ... of those, seen in the startup window
         self._coach_next = 0.0  # monotonic time of the next coach state pass
@@ -1035,7 +1045,8 @@ class MultiAgentWatchApp(App):
             else _budget_cell(cost, self._budget, self._narrow),
             "trend": self._spark_cell(data, "cost" if self.sort_mode == "cost" else "health",
                                       _WIDTHS["trend"]),
-            "ctx": ("-" if ctx is None else f"{ctx}%", ""),
+            "ctx": (session_info.context_text(session_info.context_usage(buffer.stats), "100+"),
+                    _context_style(ctx)),
             "last": (_ago(age), ""),
             "signal": self._blocked_signal(data, report.warnings) or _signal(report.warnings),
         }
@@ -1594,6 +1605,11 @@ class MultiAgentWatchApp(App):
             p = self._postures.get(item.pid)
             if p is not None and p != _posture.UNKNOWN:
                 title.append(_posture.label(p, " / "))
+        branch = self._branches.get(item.log_path)
+        if branch:
+            if len(branch) > BRANCH_TITLE:
+                branch = branch[: BRANCH_TITLE - 3] + "..."
+            title.append(f"git:{branch}")
         if item.uptime:
             title.append(item.uptime)
         if item.process_status == "stopped":
@@ -1959,11 +1975,19 @@ class MultiAgentWatchApp(App):
             if w.severity.value == "critical":
                 self.bell()
 
-    def _scan_processes(self) -> tuple[list[AgentProcess], dict[int, _posture.Posture]]:
+    def _scan_processes(
+        self,
+    ) -> tuple[list[AgentProcess], dict[int, _posture.Posture], dict[Path, str]]:
         """Discovery plus each process's posture (cached per pid and start
-        time, so only a new process costs a psutil walk). Off the event loop."""
+        time, so only a new process costs a psutil walk) and git branch (a
+        log tail cached per size/mtime, or .git/HEAD). Off the event loop."""
         processes = subagents.with_subagents(find_running_agents(self._discovery_cache))
-        return processes, {p.pid: _posture.posture(p) for p in processes}
+        branches = {}
+        for p in processes:
+            branch = session_info.branch_of(p) if p.log_file else None
+            if branch:
+                branches[p.log_file] = branch
+        return processes, {p.pid: _posture.posture(p) for p in processes}, branches
 
     async def _refresh_processes(self) -> None:
         """Periodically re-scan running processes and update agent list."""
@@ -1978,13 +2002,14 @@ class MultiAgentWatchApp(App):
             # entirely on repeat scans. Everything below touches Textual
             # widgets/app state and must stay on the event loop, so we don't
             # offload any further.
-            processes, postures = await asyncio.to_thread(self._scan_processes)
+            processes, postures, branches = await asyncio.to_thread(self._scan_processes)
         finally:
             self._scanning = False
         if self.session is not None:  # `watch`: only its own agent, never others
             processes = [p for p in processes if p.log_file == self.session]
 
         self._postures = postures
+        self._branches = branches
         new_agents = self.watcher.refresh_processes(processes)
         scanned = {t.team_id: t for t in build_teams(processes) if t.member_count > 1}
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import click
 
-from agentwatch import __version__
+from agentwatch import __version__, session_info
 from agentwatch.detectors import create_registry
 from agentwatch.detectors.base import Warning, format_tokens, format_usd
 from agentwatch.detectors.base import waste_summary as _waste
@@ -903,6 +903,8 @@ def _ps_json(agents: list[AgentProcess]) -> list[dict]:
             "memory_mb": round(a.memory_mb, 1),
             "uptime": a.uptime,
             "posture": posture_of(a).to_dict(),
+            "context": session_info.context_of(a),
+            "branch": session_info.branch_of(a),
         }
         for a in agents
     ]
@@ -913,6 +915,29 @@ def posture_of(agent: AgentProcess):
     from agentwatch.posture import posture
 
     return posture(agent)
+
+
+def _context_cell(agent: AgentProcess, width: int) -> str:
+    """CTX: the context window fill right-aligned in *width* ('-' unknown),
+    the theme's warn colour from 80%, its critical colour from 95%."""
+    ctx = session_info.context_of(agent)
+    pct = ctx["percent"] if ctx else None
+    text = session_info.context_text(ctx)
+    tone = session_info.context_tone(pct)
+    cell = f"{text:>{width}}"
+    if tone is None:
+        return cell
+    theme = get_theme()
+    return click.style(cell, fg=theme.color_3 if tone == "bad" else theme.color_1,
+                       bold=True if tone == "bad" else None)
+
+
+def _branch_cell(agent: AgentProcess, width: int) -> str:
+    """BRANCH: one safe line cut to *width* - 1 chars ('---' unknown)."""
+    branch = session_info.branch_of(agent) or "---"
+    if len(branch) > width - 1:
+        branch = branch[: width - 4] + "..."
+    return f"{branch:<{width}}"
 
 
 def _posture_cell(agent: AgentProcess) -> str:
@@ -1314,24 +1339,25 @@ def net(interval: float, once: bool, json_output: bool, pids: tuple[int, ...],
 def _print_agents_view(agents: list[AgentProcess]) -> None:
     """Print agents as a simple list (no sub-agents present)."""
     # Table header
+    # 100 columns with the longest posture label: no CPU (always 0.0% in a
+    # one-shot scan: psutil needs two samples; still `cpu_percent` in --json)
+    # and no STATUS (always "active").
     click.echo(
-        f"  {'PID':<12}{'TYPE':<16}{'PROJECT':<18}{'SESSION':<10}{'CPU':>6}{'MEM':>8}{'STATUS':>10}"
-        f"  POSTURE"
+        f"  {'PID':<11}{'TYPE':<15}{'PROJECT':<13}{'BRANCH':<13}{'SESSION':<9}"
+        f"{'MEM':>7}{'CTX':>5} POSTURE"
     )
 
     for a in agents:
         project = a.project_name or "---"
-        if len(project) > 16:
-            project = project[:13] + "..."
+        if len(project) > 12:
+            project = project[:9] + "..."
 
         session = a.session_id[:8] if a.session_id else "---"
-        cpu_str = f"{a.cpu_percent:.1f}%"
         mem_str = f"{a.memory_mb:.0f}MB"
-        status = click.style("active", fg="green")
 
         click.echo(
-            f"  {a.pid:<12}{a.agent_type:<16}{project:<18}{session:<10}"
-            f"{cpu_str:>6}{mem_str:>8}   {status}   {_posture_cell(a)}"
+            f"  {a.pid:<11}{a.agent_type:<15}{project:<13}{_branch_cell(a, 13)}{session:<9}"
+            f"{mem_str:>7}{_context_cell(a, 5)} {_posture_cell(a)}"
         )
 
     click.echo()
@@ -1352,8 +1378,8 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
 
         # Table header
         click.echo(
-            f"    {'PID':<12}{'TYPE':<16}{'PROJECT':<16}{'SESSION':<10}"
-            f"{'CPU':>6}{'MEM':>8}{'ROLE':>8}  POSTURE"
+            f"    {'PID':<11}{'TYPE':<15}{'PROJECT':<13}{'BRANCH':<13}{'SESSION':<9}"
+            f"{'MEM':>7}{'CTX':>5} {'ROLE':<5}POSTURE"
         )
 
         for a in team.members:
@@ -1365,19 +1391,22 @@ def _print_teams_view(agents: list[AgentProcess]) -> None:
                 role = click.style(f"L{a.depth}", fg="cyan")
 
             project = a.project_name or "---"
-            max_proj_len = max(14 - len(prefix), 6)
+            # The cell (tree prefix + project) stays <= 12 chars: a space
+            # before BRANCH at any depth; a deep prefix is cut from the left.
+            if len(prefix) > 6:
+                prefix = prefix[-6:]
+            max_proj_len = 12 - len(prefix)
             if len(project) > max_proj_len:
                 project = project[: max_proj_len - 3] + "..."
 
             session = a.session_id[:8] if a.session_id else "---"
-            cpu_str = f"{a.cpu_percent:.1f}%"
             mem_str = f"{a.memory_mb:.0f}MB"
             proj_col = f"{prefix}{project}"
 
             click.echo(
-                f"    {a.pid:<12}{a.agent_type:<16}{proj_col:<16}{session:<10}"
-                f"{cpu_str:>6}{mem_str:>8}   {role}{' ' * (7 - len(click.unstyle(role)))}"
-                f"{_posture_cell(a)}"
+                f"    {a.pid:<11}{a.agent_type:<15}{proj_col:<13}{_branch_cell(a, 13)}"
+                f"{session:<9}{mem_str:>7}{_context_cell(a, 5)} "
+                f"{role}{' ' * (5 - len(click.unstyle(role)))}{_posture_cell(a)}"
             )
 
         click.echo()
