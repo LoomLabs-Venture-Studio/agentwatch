@@ -892,6 +892,8 @@ def _dummy_cap(m: re.Match, label: str) -> Severity | None:
     if label == "private_key_block":
         return None
     start, end = _value_span(m, label)
+    if not _shapes.bounded(m.string, start, end):
+        return None  # the example glued to more key characters
     return Severity.LOW if _shapes.dummy_secret(m.string[start:end]) else None
 
 
@@ -962,11 +964,19 @@ class SecretLeakScanner(SecurityDetector):
             severity = _CHANNEL_SEVERITY.get(channel, Severity.MEDIUM)
             by_type: dict[str, dict[str, re.Match]] = {}
             caps: dict[tuple[str, str], Severity | None] = {}
-            for secret_type, fingerprint, m in _claimed_matches(text, file_path):
+            # Lowering is judged only on texts it can afford (as the command
+            # detectors do), and for at most MAX_MATCHES matches per text.
+            judge = _shapes.analysable(text)
+            for count, (secret_type, fingerprint, m) in enumerate(
+                _claimed_matches(text, file_path)
+            ):
                 # one finding per pattern, text and distinct secret
                 by_type.setdefault(secret_type, {}).setdefault(fingerprint, m)
                 key = (secret_type, fingerprint)
-                cap = _dummy_cap(m, secret_type)
+                cap = (
+                    _dummy_cap(m, secret_type)
+                    if judge and count < _shapes.MAX_MATCHES else None
+                )
                 # Every match of this secret must be lowerable (two key
                 # headers share a fingerprint, only one may have a body).
                 caps[key] = cap if key not in caps else (

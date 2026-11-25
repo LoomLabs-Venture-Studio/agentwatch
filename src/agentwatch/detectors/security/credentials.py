@@ -14,11 +14,13 @@ from agentwatch.parser.security_patterns import (
 from ..base import Category, SecurityDetector, Severity, Warning
 from . import safe_shapes as shapes
 
-# Sprint 50: a source or docs file whose NAME holds "secret" or "token"
-# (secret_scanner.py, token_refresh.py, secrets-management.md) is not a
-# credential store. Low only when those two words are the only credential
-# patterns that match the whole path, both only in the file name, and no
-# real sensitive-path pattern (.env, ~/.ssh, ~/.aws, *.pem ...) matches.
+# Sprint 50: a source or docs file whose NAME uses "secret" or "token" as
+# the first part of a compound (secret_scanner.py, token_refresh.py,
+# secrets-management.md) is not a credential store. Low only when those two
+# words are the only credential patterns that match the whole path, both
+# only in the file name, each followed by another name part (secrets.py,
+# local_secrets.py, api_token.py, secret.rb, tokens.go keep their severity),
+# and no real sensitive-path pattern (.env, ~/.ssh, ~/.aws, *.pem) matches.
 _WORD_ONLY_PATTERNS = ("secret", "token")
 _EXTRA_EACH = [(p, re.compile(p, re.IGNORECASE)) for p in CREDENTIAL_EXTRA_PATTERNS]
 _SOURCE_DOC_EXTS = frozenset({
@@ -38,7 +40,15 @@ def _word_only_source_path(path: str) -> bool:
     hits = {p for p, rx in _EXTRA_EACH if rx.search(path)}
     if not hits or not hits <= set(_WORD_ONLY_PATTERNS):
         return False
-    return not any(rx.search(folder) for _, rx in _EXTRA_EACH)
+    if any(rx.search(folder) for _, rx in _EXTRA_EACH):
+        return False
+    parts = re.split(r"[-_.]", name[:dot].lower())
+    for k, part in enumerate(parts):
+        if ("secret" in part or "token" in part) and (
+            k == len(parts) - 1 or part.rstrip("s") not in _WORD_ONLY_PATTERNS
+        ):
+            return False  # the store's own name, or the word inside another word
+    return True
 
 
 class CredentialAccessDetector(SecurityDetector):
@@ -146,12 +156,17 @@ class SecretInOutputDetector(SecurityDetector):
         if rule == self._NAME_ONLY:
             named = self._NAME_VALUE.match(text, m.end())
             value = named.group(1) if named else None  # a bare name keeps
+            end = named.end(1) if named else m.end()
         else:
             value = m.group(0)
+            end = m.end()
             sep = self._ASSIGNED.search(value)
             if sep:
                 value = value[sep.end():].strip().strip("'\"").strip()
-        return Severity.LOW if value and shapes.dummy_secret(value) else None
+        # The value must end where the text's key characters end.
+        if not value or not shapes.bounded(text, end - len(value), end):
+            return None
+        return Severity.LOW if shapes.dummy_secret(value) else None
 
     def _cap(self, text: str) -> Severity | None:
         """The cap for *text*: the worst over every match of every pattern,
