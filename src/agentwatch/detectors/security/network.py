@@ -13,7 +13,21 @@ from agentwatch.ai_detect import AI_PROVIDERS
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
+from . import safe_shapes as shapes
 from .secret_scanner import redact_truncate
+
+
+def _worst_command(recent, pattern, severity_of):
+    """(severity, action) of the worst matching command in *recent*, the
+    earliest one on a tie, so a lowered match never hides one that keeps
+    its severity (the findings share one dedup key)."""
+    best = None
+    for action in recent:
+        if action.command and pattern.search(action.command):
+            severity = severity_of(action.command)
+            if best is None or shapes.rank(severity) > shapes.rank(best[0]):
+                best = (severity, action)
+    return best
 
 
 class NetworkAnomalyDetector(SecurityDetector):
@@ -174,9 +188,31 @@ class C2CommunicationDetector(SecurityDetector):
         r"\bcron.*\b(?:curl|wget)\b",  # Scheduled network (cron, crontab)
     ]
 
+    # Sprint 50: severity lowered only for these shapes, never the match.
+    # Any rule: text in a file-writing heredoc or one argument of a
+    # data-only command (a commit message): low. `sleep N; curl|wget` to
+    # loopback URLs only, as two whole simple commands, no loop: medium.
+    _SLEEP_RULE = BEACON_INDICATORS[0]
+
     def __init__(self, window: int = 50):
         self.window = window
         self._pattern = re.compile("|".join(self.BEACON_INDICATORS), re.IGNORECASE)
+        data = shapes.data_judge()
+        self._rules = [
+            shapes.Rule(
+                re.compile(p, re.IGNORECASE),
+                shapes.first_of(shapes.sleep_fetch_judge, data) if p == self._SLEEP_RULE
+                else data,
+            )
+            for p in self.BEACON_INDICATORS
+        ]
+        self._memo = shapes.Memo()
+
+    def severity_of(self, command: str) -> Severity:
+        return self._memo.get(command, self._judge)
+
+    def _judge(self, command: str) -> Severity:
+        return shapes.evaluate(command, self._rules, Severity.CRITICAL)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
         if len(buffer) < 10:
@@ -185,15 +221,16 @@ class C2CommunicationDetector(SecurityDetector):
         recent = buffer.last(self.window)
 
         # Check for beacon-like command patterns
-        for action in recent:
-            if action.command and self._pattern.search(action.command):
-                return Warning(
-                    category=self.category,
-                    severity=Severity.CRITICAL,
-                    signal="c2_beacon",
-                    message="Command pattern consistent with C2 beacon",
-                    details={"command": redact_truncate(action.command, 80)},
-                )
+        best = _worst_command(recent, self._pattern, self.severity_of)
+        if best is not None:
+            severity, action = best
+            return Warning(
+                category=self.category,
+                severity=severity,
+                signal="c2_beacon",
+                message="Command pattern consistent with C2 beacon",
+                details={"command": redact_truncate(action.command, 80)},
+            )
 
         # Check for regular network polling
         network_actions = [a for a in recent if a.is_network]
@@ -234,23 +271,43 @@ class DNSExfiltrationDetector(SecurityDetector):
         r"curl.*\.dnslog\.",
     ]
 
+    # Sprint 50: severity lowered only for these shapes, never the match.
+    # Any rule: text in a file-writing heredoc or one argument of a
+    # data-only command (prose such as curl -w 'Host 127.0.0.1 ...'): low.
+    # `dig [+short] host.name`: one plain hostname, low. The program `host`
+    # keeps its severity.
+    _DIG_RULE = DNS_EXFIL_PATTERNS[0]
+
     def __init__(self):
         self._pattern = re.compile("|".join(self.DNS_EXFIL_PATTERNS), re.IGNORECASE)
+        data = shapes.data_judge()
+        self._rules = [
+            shapes.Rule(
+                re.compile(p, re.IGNORECASE),
+                shapes.first_of(shapes.dig_judge, data) if p == self._DIG_RULE else data,
+            )
+            for p in self.DNS_EXFIL_PATTERNS
+        ]
+        self._memo = shapes.Memo()
+
+    def severity_of(self, command: str) -> Severity:
+        return self._memo.get(command, self._judge)
+
+    def _judge(self, command: str) -> Severity:
+        return shapes.evaluate(command, self._rules, Severity.HIGH)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        recent = buffer.last(15)
-
-        for action in recent:
-            if action.command and self._pattern.search(action.command):
-                return Warning(
-                    category=self.category,
-                    severity=Severity.HIGH,
-                    signal="dns_exfil",
-                    message="Potential DNS exfiltration pattern",
-                    details={"command": redact_truncate(action.command, 80)},
-                )
-
-        return None
+        best = _worst_command(buffer.last(15), self._pattern, self.severity_of)
+        if best is None:
+            return None
+        severity, action = best
+        return Warning(
+            category=self.category,
+            severity=severity,
+            signal="dns_exfil",
+            message="Potential DNS exfiltration pattern",
+            details={"command": redact_truncate(action.command, 80)},
+        )
 
 
 # Claude Code telemetry and auto-update, observed live from claude.exe 2026-10-15; add, don't guess
