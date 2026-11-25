@@ -21,6 +21,10 @@ Rules (Sprints 43-44 found 20-60 bypasses per round of anything looser):
   parentheses, ``<<``, ...) ends what can be trusted. Inside that grammar
   the shell's own word splitting is known exactly, so a shape never has to
   "prove a command inert"; it only has to fit.
+- A command shape lowers only when EVERY segment of the whole command
+  (all ``;``, ``&&``, ``||``, ``|``, ``&`` and newline parts) is itself a
+  trusted shape (``Command.all_trusted``): a safe-looking first segment
+  never vouches for a decoy after it.
 - Every regex here is linear (no nested quantifiers, no lookaround on
   unbounded input), and commands longer than ``MAX_LEN`` are never lowered.
 """
@@ -112,7 +116,6 @@ _WORD_CH = frozenset(
 # on, a quote in particular, is outside the grammar).
 _BOUNDARY = frozenset(" \t\n;&|<>")
 _DQ_FORBIDDEN = frozenset('$`\\!"')
-_TMPDIR = "$TMPDIR/"
 # Redirections: N>, N>>, N>&M, N<. `<<`, `<(`, `>(`, `>|`, `<&` are outside.
 _REDIR_RE = re.compile(r"[0-9]?(?:>&[0-9]|>>|>|<)")
 _OPS = ("&&", "||", ";", "|", "&")
@@ -187,8 +190,8 @@ def tokenize(cmd: str) -> tuple[list[Tok], int | None]:
             need_target = False
             i = j
             continue
-        if c in _WORD_CH or cmd.startswith(_TMPDIR, i):
-            j = i + len(_TMPDIR) if cmd.startswith(_TMPDIR, i) else i
+        if c in _WORD_CH:
+            j = i
             while j < n and cmd[j] in _WORD_CH:
                 j += 1
             if j < n and cmd[j] not in _BOUNDARY:
@@ -273,13 +276,14 @@ _COMP_RE = re.compile(r"[A-Za-z0-9._+@%,=-]+")
 _NAMED_COMP_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._+-]*")
 
 # Recreatable cache directories (relative dot-dirs). An allowlist: a dot-dir
-# in the home directory (.ssh, .aws, .gnupg, .config, .git ...) is not one.
+# in the home directory (.ssh, .aws, .gnupg, .config, .git ...) is not one,
+# nor one that can hold credentials (.gradle: gradle.properties; .expo:
+# state.json; .m2, .npm, .cargo, .docker, .kube were never listed).
 CACHE_DIRS = frozenset({
     ".pytest_cache", ".mypy_cache", ".ruff_cache", ".pytype", ".pyre",
     ".hypothesis", ".tox", ".nox", ".coverage", ".nyc_output",
     ".ipynb_checkpoints", ".next", ".nuxt", ".turbo", ".parcel-cache",
-    ".svelte-kit", ".angular", ".vite", ".eslintcache", ".dart_tool",
-    ".expo", ".gradle", ".venv",
+    ".svelte-kit", ".angular", ".vite", ".eslintcache", ".dart_tool", ".venv",
 })
 # Relative build-output directories (first path component).
 BUILD_DIRS = frozenset({
@@ -295,19 +299,11 @@ def _components(path: str) -> list[str] | None:
     return comps
 
 
-def tmp_path(word: str, cmd: str) -> bool:
-    """A fixed literal path under /tmp/ or $TMPDIR/, at least one component
-    below it, no `.`/`..`, no glob, no trailing slash. $TMPDIR only when the
-    command never names TMPDIR otherwise (no assignment to it)."""
-    if word.startswith("/tmp/"):
-        rest = word[5:]
-    elif word.startswith(_TMPDIR):
-        if cmd.count("TMPDIR") != cmd.count(_TMPDIR):
-            return False
-        rest = word[len(_TMPDIR):]
-    else:
-        return False
-    return _components(rest) is not None
+def tmp_path(word: str) -> bool:
+    """A fixed literal path under /tmp/, at least one component below it, no
+    `.`/`..`, no glob, no trailing slash. Never $TMPDIR: it is unset on most
+    Linux systems, so `$TMPDIR/home/u` is `/home/u`."""
+    return word.startswith("/tmp/") and _components(word[5:]) is not None
 
 
 def _relative_named(path: str) -> list[str] | None:
@@ -334,40 +330,41 @@ def build_path(word: str) -> bool:
     return all(_NAMED_COMP_RE.fullmatch(c) for c in comps[1:])
 
 
-# Files a heredoc or `echo >` may write as plain data. An allowlist of data,
-# docs and source extensions; no shell scripts, no extension-less files
-# (hooks, Makefile), no hidden file or directory anywhere in the path
-# (.bashrc, .git/hooks, .github/workflows, .claude/settings.json).
+# Files a heredoc or `echo >` may write as plain data: data and docs
+# extensions only. Never code (.py: conftest.py, setup.py, sitecustomize.py;
+# .js, .sh ...), never config that runs code (package.json, composer.json,
+# tox.ini, Makefile, *.pth), never under node_modules, and no hidden file or
+# directory anywhere in the path (.bashrc, .git/hooks, .github/workflows).
 DATA_EXTS = frozenset({
-    "md", "markdown", "txt", "rst", "adoc", "log", "csv", "tsv", "json", "jsonl",
-    "ndjson", "yaml", "yml", "toml", "ini", "cfg", "xml", "html", "htm", "css",
-    "scss", "py", "pyi", "js", "mjs", "cjs", "ts", "tsx", "jsx", "vue", "svelte",
-    "go", "rs", "java", "kt", "rb", "c", "h", "cc", "cpp", "hpp", "cs", "swift",
-    "sql", "diff", "patch",
+    "md", "markdown", "txt", "rst", "log", "csv", "tsv", "json", "jsonl", "yaml", "yml",
 })
+_CODE_JSON = frozenset({"package.json", "composer.json"})
 
 
-def data_path(path: str, cmd: str) -> bool:
+def _user_path_rest(path: str) -> str | None:
+    """The part of a user path after its root (relative, ~/, /tmp/, /home/,
+    /Users/), or None for any other path."""
     if path.startswith("~/"):
-        rest = path[2:]
-    elif path.startswith("/tmp/"):
-        rest = path[5:]
-    elif path.startswith(_TMPDIR):
-        if cmd.count("TMPDIR") != cmd.count(_TMPDIR):
-            return False
-        rest = path[len(_TMPDIR):]
-    elif path.startswith(("/home/", "/Users/")):
-        rest = path[1:]
-    elif path[:1] in ("/", "~", "-") or not path:
-        return False
-    else:
-        rest = path
-    comps = _components(rest)
-    if comps is None or any(c.startswith(".") for c in comps):
+        return path[2:]
+    if path.startswith("/tmp/"):
+        return path[5:]
+    if path.startswith(("/home/", "/Users/")):
+        return path[1:]
+    if not path or path[:1] in ("/", "~", "-"):
+        return None
+    return path
+
+
+def data_path(path: str) -> bool:
+    rest = _user_path_rest(path)
+    comps = None if rest is None else _components(rest)
+    if comps is None or any(c.startswith(".") or c == "node_modules" for c in comps):
         return False
     name = comps[-1]
     dot = name.rfind(".")
-    return dot > 0 and name[dot + 1 :].lower() in DATA_EXTS
+    return (
+        dot > 0 and name[dot + 1 :].lower() in DATA_EXTS and name.lower() not in _CODE_JSON
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -382,15 +379,24 @@ RESERVED = frozenset({
 })
 
 # Programs whose arguments are only ever data: they never run code taken
-# from an argument. git and gh only with the listed subcommands; curl
-# only with the flags _curl_flags_ok allows (no file written, no config).
+# from an argument and never write a file an argument names (beyond what
+# _data_segment checks). git, gh, echo and printf: subcommands and flags
+# allowlisted exactly. No `cd` (it moves every relative path after it) and
+# no network program: the only trusted curl/wget is a loopback fetch.
 DATA_PROGRAMS = frozenset({
-    "echo", "printf", "cat", "ls", "head", "tail", "wc", "grep", "cd", "pwd",
-    "mkdir", "touch", "true", "git", "gh", "curl", "tee",
+    "echo", "printf", "cat", "ls", "head", "tail", "wc", "grep", "pwd",
+    "mkdir", "touch", "true", "git", "gh", "tee",
 })
-_GIT_DATA = frozenset({"add", "commit", "status", "diff", "log", "show"})
+_ECHO_FLAGS = frozenset({"-n", "-e", "-E"})
+_GIT_STATUS_FLAGS = frozenset({"-s", "--short", "-b", "--branch", "-sb"})
+_GIT_ADD_FLAGS = frozenset({"-A", "--all", "-u", "--update"})
+_GIT_COMMIT_FLAGS = frozenset({"-a", "--all", "--allow-empty", "-q", "--quiet"})
+_GIT_COMMIT_MESSAGE = frozenset({"-m", "--message"})
 _GH_DATA = frozenset({"pr", "issue"})
-_GH_DATA_ACTIONS = frozenset({"create", "edit", "comment", "view", "list"})
+_GH_DATA_ACTIONS = frozenset({"create", "edit", "comment"})
+_GH_VALUE_FLAGS = frozenset({"--title", "-t", "--body", "-b", "--base", "-B"})
+_GH_BOOL_FLAGS = frozenset({"--draft", "-d"})
+_DIGITS = re.compile(r"[0-9]{1,9}")
 
 # A heredoc that writes a file, quoted delimiter (no expansion in the body),
 # as the command's first line. `<<-` and an unquoted delimiter are outside.
@@ -468,7 +474,7 @@ class Command:
             g = m.groups()  # P Q Q | Q Q P | P Q Q
             path = g[0] or g[5] or g[6]
             delim = g[1] or g[2] or g[3] or g[4] or g[7] or g[8]
-            if not path or not delim or not data_path(path, cmd):
+            if not path or not delim or not data_path(path):
                 return []
             body_start = eol + 1
             # The terminator: a line that is exactly the delimiter.
@@ -495,38 +501,27 @@ class Command:
 
     @cached_property
     def literal_spans(self) -> list[tuple[int, int]]:
-        """Argument tokens of a command made only of data programs
-        (``DATA_PROGRAMS``): nothing in it runs code from an argument, so a
-        match inside one argument is text, not a command. Redirect targets
-        and tee files must be data files (``data_path``) or /dev/null."""
-        if not self.whole:
+        """Argument tokens of a command made only of data-program segments
+        (``_data_segment``): nothing in it runs code from an argument, so a
+        match inside one argument is text, not a command."""
+        if not self.whole or not self.segments:
             return []
         spans: list[tuple[int, int]] = []
         for seg in self.segments:
-            argv = seg.argv
-            if not argv or argv[0].kind != "word" or argv[0].text not in DATA_PROGRAMS:
+            if not _data_segment(seg):
                 return []
-            prog = argv[0].text
-            words = [t.text for t in argv]
-            if prog == "git" and (len(words) < 2 or words[1] not in _GIT_DATA):
-                return []
-            if prog == "gh" and (
-                len(words) < 3 or words[1] not in _GH_DATA or words[2] not in _GH_DATA_ACTIONS
-            ):
-                return []
-            if prog == "curl" and not _curl_flags_ok(argv):
-                return []
-            if prog == "tee" and not all(
-                w == "-a" or data_path(w, self.cmd) for w in words[1:]
-            ):
-                return []
-            for redir, target in seg.redirects:
-                if redir.text.endswith("<") or target is None:
-                    continue
-                if target.text != "/dev/null" and not data_path(target.text, self.cmd):
-                    return []
-            spans.extend((t.start, t.end) for t in seg.tokens if t is not argv[0])
+            argv0 = seg.argv[0]
+            spans.extend((t.start, t.end) for t in seg.tokens if t is not argv0)
         return spans
+
+    @cached_property
+    def all_trusted(self) -> bool:
+        """The whole command fits the grammar and every segment is one of
+        the trusted shapes (``trusted_segment``). Every command shape needs
+        this: a safe-looking segment never vouches for the next one."""
+        return self.whole and bool(self.segments) and all(
+            trusted_segment(seg) for seg in self.segments
+        )
 
     def is_data(self, start: int, end: int, heredoc_only: bool = False) -> bool:
         """[start, end) lies inside one heredoc body or (unless
@@ -536,6 +531,102 @@ class Command:
         if heredoc_only:
             return False
         return any(s <= start and end <= e for s, e in self.literal_spans)
+
+
+# ---------------------------------------------------------------------------
+# Trusted segments
+# ---------------------------------------------------------------------------
+
+
+def _git_data(words: list[str], argv: list[Tok]) -> bool:
+    """git status / add / commit with exactly allowlisted flags (no
+    --output, -c, -C, --exec-path, alias, -F file ...)."""
+    if len(words) < 2:
+        return False
+    sub, rest = words[1], argv[2:]
+    if sub == "status":
+        return all(t.kind == "word" and t.text in _GIT_STATUS_FLAGS for t in rest)
+    if sub == "add":
+        return all(
+            t.kind == "word" and (t.text in _GIT_ADD_FLAGS or (
+                not t.text.startswith("-") and _user_path_rest(t.text) is not None))
+            for t in rest
+        )
+    if sub == "commit":
+        k, messages = 0, 0
+        while k < len(rest):
+            t = rest[k]
+            if t.kind == "word" and t.text in _GIT_COMMIT_MESSAGE and k + 1 < len(rest):
+                messages += 1
+                k += 2
+                continue
+            if t.kind != "word" or t.text not in _GIT_COMMIT_FLAGS:
+                return False
+            k += 1
+        return messages > 0
+    return False
+
+
+def _gh_data(words: list[str], argv: list[Tok]) -> bool:
+    """gh pr|issue create|edit|comment with --title/--body/--base values,
+    --draft, and issue/PR numbers (no --body-file, no --web, no repo)."""
+    if len(words) < 3 or words[1] not in _GH_DATA or words[2] not in _GH_DATA_ACTIONS:
+        return False
+    rest = argv[3:]
+    k = 0
+    while k < len(rest):
+        t = rest[k]
+        if t.kind == "word" and t.text in _GH_VALUE_FLAGS and k + 1 < len(rest):
+            k += 2
+            continue
+        if t.kind != "word" or not (t.text in _GH_BOOL_FLAGS or _DIGITS.fullmatch(t.text)):
+            return False
+        k += 1
+    return True
+
+
+def _data_segment(seg: Segment) -> bool:
+    """One simple command of a data program, with its exact constraints.
+    Redirections only into data files or /dev/null (or from any file)."""
+    argv = seg.argv
+    if not argv or argv[0].kind != "word" or argv[0].text not in DATA_PROGRAMS:
+        return False
+    prog = argv[0].text
+    words = [t.text for t in argv]
+    if prog == "git" and not _git_data(words, argv):
+        return False
+    if prog == "gh" and not _gh_data(words, argv):
+        return False
+    if prog == "echo" and any(
+        t.kind == "word" and t.text.startswith("-") and t.text not in _ECHO_FLAGS
+        for t in argv[1:]
+    ):
+        return False
+    if prog == "printf" and len(argv) > 1 and argv[1].text.startswith("-"):
+        return False  # printf -v NAME assigns a shell variable
+    if prog == "tee" and not all(w == "-a" or data_path(w) for w in words[1:]):
+        return False
+    for redir, target in seg.redirects:
+        if redir.text.endswith("<") or target is None:
+            continue
+        if target.text != "/dev/null" and not data_path(target.text):
+            return False
+    return True
+
+
+def trusted_segment(seg: Segment) -> bool:
+    """A simple command of one of the trusted shapes: a data-program
+    command, a shaped rm or chmod, `sleep N`, a loopback fetch, a plain
+    dig, a pytest run of test paths."""
+    return (
+        _data_segment(seg)
+        or rm_segment_safe(seg, allow_build=True)
+        or chmod_segment_safe(seg)
+        or _sleep_segment(seg)
+        or loopback_fetch(seg)
+        or dig_segment_safe(seg)
+        or pytest_segment(seg)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -592,9 +683,9 @@ def first_of(*judges: Judge) -> Judge:
 _RM_FLAG_RE = re.compile(r"-[rRfv]+")
 
 
-def rm_segment_safe(command: Command, seg: Segment, allow_build: bool) -> bool:
+def rm_segment_safe(seg: Segment, allow_build: bool) -> bool:
     """`rm` with only -r/-R/-f/-v flags (and `--`) whose every operand is a
-    /tmp or $TMPDIR path or a cache dot-dir (or, with *allow_build*, a
+    literal /tmp path or a cache dot-dir (or, with *allow_build*, a
     relative build-output path); redirections only to /dev/null."""
     argv = seg.argv
     if not argv or argv[0].kind != "word" or argv[0].text != "rm":
@@ -615,20 +706,21 @@ def rm_segment_safe(command: Command, seg: Segment, allow_build: bool) -> bool:
             if not _RM_FLAG_RE.fullmatch(w):
                 return False
             continue
-        if not (
-            tmp_path(w, command.cmd) or cache_path(w) or (allow_build and build_path(w))
-        ):
+        if not (tmp_path(w) or cache_path(w) or (allow_build and build_path(w))):
             return False
         operands += 1
     return operands > 0
 
 
 def rm_judge(command: Command, m: re.Match) -> Severity | None:
-    """`rm -rf` of temp paths or cache dot-dirs: medium."""
+    """`rm -rf` of /tmp paths or cache dot-dirs, in a command whose every
+    segment is trusted: medium."""
+    if not command.all_trusted:
+        return None
     seg = command.segment_at(m.start())
     if seg is None or not seg.argv or seg.argv[0].start != m.start() or m.end() > seg.end:
         return None
-    return Severity.MEDIUM if rm_segment_safe(command, seg, allow_build=False) else None
+    return Severity.MEDIUM if rm_segment_safe(seg, allow_build=False) else None
 
 
 # -- chmod -------------------------------------------------------------------
@@ -637,79 +729,118 @@ _CHMOD_FLAG_RE = re.compile(r"-[Rvcf]+")
 _MODE3_RE = re.compile(r"[0-7]{3}")
 
 
-def _chmod_target(word: str, cmd: str) -> bool:
+def _chmod_target(word: str) -> bool:
+    """A user path (relative, ~, ~/..., /tmp, /home, /Users) with no hidden
+    component anywhere (~/.ssh, ~/.bashrc, .git/hooks keep their severity)."""
     if word == "~":
         return True
-    if word.startswith("~/"):
-        return _components(word[2:]) is not None
-    if word.startswith(("/tmp/", _TMPDIR)):
-        return tmp_path(word, cmd)
-    if word.startswith(("/home/", "/Users/")):
-        return _components(word[1:]) is not None
-    if word[:1] in ("/", "~", "-"):
+    rest = _user_path_rest(word)
+    comps = None if rest is None else _components(rest)
+    return comps is not None and not any(c.startswith(".") for c in comps)
+
+
+def chmod_segment_safe(seg: Segment) -> bool:
+    """`chmod NNN target...`: exactly three octal digits (no setuid, setgid
+    or sticky bit), -R/-v/-c/-f flags, user paths only, no redirection."""
+    argv = seg.argv
+    if len(argv) < 3 or argv[0].kind != "word" or argv[0].text != "chmod" or seg.redirects:
         return False
-    return _components(word) is not None
+    if argv[1].kind != "word" or not _MODE3_RE.fullmatch(argv[1].text):
+        return False
+    targets = 0
+    for t in argv[2:]:
+        if t.kind != "word":
+            return False
+        if t.text.startswith("-"):
+            if not _CHMOD_FLAG_RE.fullmatch(t.text):
+                return False
+            continue
+        if not _chmod_target(t.text):
+            return False
+        targets += 1
+    return targets > 0
 
 
 def chmod_judge(command: Command, m: re.Match) -> Severity | None:
-    """`chmod NNN target...`: exactly three octal digits (no setuid, setgid
-    or sticky bit) on user paths (relative, ~, /tmp, /home, /Users): low."""
+    """A shaped chmod (``chmod_segment_safe``) in a command whose every
+    segment is trusted: low."""
+    if not command.all_trusted:
+        return None
     seg = command.segment_at(m.start())
     if seg is None:
         return None
     argv = seg.argv
-    if len(argv) < 3 or argv[0].start != m.start() or argv[0].text != "chmod":
+    if len(argv) < 2 or argv[0].start != m.start() or m.end() != argv[1].end:
         return None
-    mode = argv[1]
-    if mode.kind != "word" or not _MODE3_RE.fullmatch(mode.text) or m.end() != mode.end:
-        return None
-    if seg.redirects:
-        return None
-    targets = 0
-    for t in argv[2:]:
-        if t.kind != "word":
-            return None
-        if t.text.startswith("-"):
-            if not _CHMOD_FLAG_RE.fullmatch(t.text):
-                return None
-            continue
-        if not _chmod_target(t.text, command.cmd):
-            return None
-        targets += 1
-    return Severity.LOW if targets else None
+    return Severity.LOW if chmod_segment_safe(seg) else None
 
 
 # -- python socket ----------------------------------------------------------
 
-_SOCKET_WORD = re.compile(r"\bsocket\b", re.IGNORECASE)
-_CONNECT_WORD = re.compile(r"\b(?:connect|connect_ex|create_connection)\b", re.IGNORECASE)
+_PYTEST_FLAG = re.compile(r"-[qxvsl]+|--tb=(?:short|long|line|no)|--maxfail=[0-9]{1,4}")
+_PYTEST_ARG = re.compile(r"[A-Za-z0-9_./:\[\]-]+")
+_PYTHONS = frozenset({"python", "python3"})
+
+
+def pytest_segment(seg: Segment) -> bool:
+    """`python[3] -m pytest` with test paths/node ids, -k/-m word
+    expressions and a few output flags only (no -p plugin, no -c config,
+    no quoted argument)."""
+    argv = seg.argv
+    if seg.redirects or len(argv) < 3 or any(t.kind != "word" for t in argv):
+        return False
+    if argv[0].text not in _PYTHONS or argv[1].text != "-m" or argv[2].text != "pytest":
+        return False
+    k = 3
+    while k < len(argv):
+        w = argv[k].text
+        if w in ("-k", "-m"):
+            if k + 1 >= len(argv) or not _PYTEST_ARG.fullmatch(argv[k + 1].text):
+                return False
+            k += 2
+            continue
+        if w.startswith("-"):
+            if not _PYTEST_FLAG.fullmatch(w):
+                return False
+        elif not _PYTEST_ARG.fullmatch(w):
+            return False
+        k += 1
+    return True
 
 
 def socket_judge(command: Command, m: re.Match) -> Severity | None:
-    """`python.*socket.*connect` where no shell segment holds both the
-    whole word `socket` and a connect call: medium. Needs the whole command
-    to fit the grammar, so a quoted program stays one segment."""
-    if not command.whole:
+    """`python.*socket.*connect` only from test selection: every segment is
+    trusted and the words come from a `python -m pytest` run of test paths
+    (tests/test_websocket.py -k reconnect). Anything else, inline code in
+    particular (`-c`, heredocs), keeps its severity: medium."""
+    if not command.all_trusted:
         return None
     for seg in command.segments:
-        text = command.cmd[seg.start : seg.end]
-        if _SOCKET_WORD.search(text) and _CONNECT_WORD.search(text):
+        text = command.cmd[seg.start : seg.end].lower()
+        if ("socket" in text or "connect" in text) and not pytest_segment(seg):
             return None
     return Severity.MEDIUM
 
 
 # -- sleep N; curl loopback -------------------------------------------------
 
+# Loopback host, optional port, and a plain path: no {} or [] (curl URL
+# globbing), no @ (userinfo), no backslash.
 _LOOPBACK_URL = re.compile(
-    r"(?:https?://)?(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?(?:/\S*)?"
+    r"(?:https?://)?(?:localhost|127\.0\.0\.1|\[::1\])(?::([0-9]{1,5}))?"
+    r"(?:/[A-Za-z0-9._~%/?=&:+,-]*)?"
 )
-_CURL_BOOL = re.compile(r"-[sSfLiIvk]+")
+# curl flags that neither read nor write a file. Not -w/--write-out
+# (%output{file} writes any file), -H (@file reads one), -d/-F/-T (upload),
+# -K, -D, -c, -b, --trace*, --stderr, --libcurl, --etag-*, --hsts,
+# --alt-svc, --output-dir, -x, --resolve, --connect-to, -L ...
+_CURL_BOOL = re.compile(r"-[sSfiIvk]+")
 _CURL_LONG_BOOL = frozenset({
-    "--silent", "--show-error", "--fail", "--location", "--head", "--include", "--verbose",
+    "--silent", "--show-error", "--fail", "--head", "--include", "--verbose",
 })
 _CURL_WITH_VALUE = frozenset({
-    "-w", "--write-out", "-H", "--header", "-X", "--request", "-m", "--max-time",
-    "--connect-timeout", "--retry", "-o", "--output",
+    "-X", "--request", "-m", "--max-time", "--connect-timeout", "--retry",
+    "-o", "--output",  # only /dev/null, checked below
 })
 _METHOD_RE = re.compile(r"[A-Z]{1,10}")
 _WGET_BOOL = frozenset({"-q", "--quiet", "--spider", "-qO-", "-O-"})
@@ -744,7 +875,7 @@ def _curl_flags_ok(argv: list[Tok]) -> bool:
     return True
 
 
-def _loopback_fetch(seg: Segment) -> bool:
+def loopback_fetch(seg: Segment) -> bool:
     argv = seg.argv
     if not argv or argv[0].kind != "word" or argv[0].text not in ("curl", "wget"):
         return False
@@ -752,10 +883,6 @@ def _loopback_fetch(seg: Segment) -> bool:
         return False
     curl = argv[0].text == "curl"
     if curl and not _curl_flags_ok(argv):
-        return False
-    # No redirect following: a loopback URL could send curl anywhere.
-    if any(t.text == "--location" or (_CURL_BOOL.fullmatch(t.text) and "L" in t.text)
-           for t in argv[1:] if t.kind == "word"):
         return False
     urls = 0
     k = 1
@@ -785,78 +912,103 @@ def _loopback_fetch(seg: Segment) -> bool:
                 return False
             k += 2
             continue
-        if not _LOOPBACK_URL.fullmatch(w):
+        url = _LOOPBACK_URL.fullmatch(w)
+        if url is None or (url.group(1) and int(url.group(1)) > 65535):
             return False
         urls += 1
         k += 1
     return urls > 0
 
 
+def _sleep_segment(seg: Segment) -> bool:
+    argv = seg.argv
+    return (
+        len(argv) == 2 and argv[0].text == "sleep" and argv[1].kind == "word"
+        and argv[1].text.isdigit() and not seg.redirects
+    )
+
+
 def sleep_fetch_judge(command: Command, m: re.Match) -> Severity | None:
-    """`sleep N; curl|wget <loopback URLs>` as two whole simple commands,
-    in a command that fits the grammar and holds no compound command (no
-    loop): medium. The fetch must not feed a pipe or the background."""
-    if not command.whole:
+    """`sleep N; curl|wget <loopback URLs>` as two whole simple commands, in
+    a command whose every segment is trusted (so no loop, no decoy, no
+    pipe into anything but trusted segments): medium."""
+    if not command.all_trusted:
         return None
     segs = command.segments
-    if any(s.argv and s.argv[0].kind == "word" and s.argv[0].text in RESERVED for s in segs):
-        return None
     for k, seg in enumerate(segs[:-1]):
         argv = seg.argv
         if not argv or argv[0].start != m.start():
             continue
-        if (
-            len(argv) != 2 or argv[0].text != "sleep" or not argv[1].text.isdigit()
-            or argv[1].kind != "word" or seg.redirects or seg.end_op != ";"
-        ):
+        if not _sleep_segment(seg) or seg.end_op != ";":
             return None
         fetch = segs[k + 1]
         if m.end() > fetch.end or fetch.end_op in ("|", "&"):
             return None
-        return Severity.MEDIUM if _loopback_fetch(fetch) else None
+        return Severity.MEDIUM if loopback_fetch(fetch) else None
     return None
 
 
 # -- dig ---------------------------------------------------------------------
 
-_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,18}[a-z0-9])?")
+_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,13}[a-z0-9])?")
+_HEX_LABEL = re.compile(r"[0-9a-f]+")
 
 
 def _plain_hostname(word: str) -> bool:
+    """At most 3 labels of at most 15 lower-case letters, digits and
+    hyphens; a label of 8+ chars must not look like data (all hex, or more
+    than 2 digits). github.com and registry.npmjs.org pass; hex, base32 and
+    token-like labels do not."""
     labels = word[:-1].split(".") if word.endswith(".") else word.split(".")
-    return 2 <= len(labels) <= 5 and all(_LABEL_RE.fullmatch(x) for x in labels)
+    if not 2 <= len(labels) <= 3:
+        return False
+    for label in labels:
+        if not _LABEL_RE.fullmatch(label):
+            return False
+        if len(label) >= 8 and (
+            _HEX_LABEL.fullmatch(label) or sum(ch.isdigit() for ch in label) > 2
+        ):
+            return False
+    return True
 
 
-def dig_judge(command: Command, m: re.Match) -> Severity | None:
-    """`dig [+short] host.name [+short]`: one plain lower-case hostname
-    (2-5 labels of at most 20 chars, so no room for encoded data): low."""
-    seg = command.segment_at(m.start())
-    # Its answer must not feed a pipe (`| sh`) or anything else.
-    if seg is None or seg.redirects or seg.end_op in ("|", "&"):
-        return None
+def dig_segment_safe(seg: Segment) -> bool:
     argv = seg.argv
-    if not argv or argv[0].start != m.start() or argv[0].text != "dig" or m.end() > seg.end:
-        return None
+    if seg.redirects or not argv or argv[0].text != "dig":
+        return False
     hosts = 0
     for t in argv[1:]:
         if t.kind != "word":
-            return None
+            return False
         if t.text == "+short":
             continue
         if not _plain_hostname(t.text):
-            return None
+            return False
         hosts += 1
-    return Severity.LOW if hosts == 1 else None
+    return hosts == 1
+
+
+def dig_judge(command: Command, m: re.Match) -> Severity | None:
+    """`dig [+short] host.name` (``_plain_hostname``) in a command whose
+    every segment is trusted: low."""
+    if not command.all_trusted:
+        return None
+    seg = command.segment_at(m.start())
+    if seg is None or seg.end_op in ("|", "&"):
+        return None
+    if not seg.argv or seg.argv[0].start != m.start() or m.end() > seg.end:
+        return None
+    return Severity.LOW if dig_segment_safe(seg) else None
 
 
 # -- skill install split over segments ---------------------------------------
 
 
 def split_segments_judge(command: Command, m: re.Match) -> Severity | None:
-    """The rule's words are in different simple commands (``ls skills &&
-    pip install``): the whole command fits the grammar and the rule matches
-    inside none of its segments. Low."""
-    if not command.whole:
+    """The rule's words are in different simple commands, and EVERY segment
+    is a trusted shape (no clone, no install script, no package manager):
+    the rule matches inside none of them. Low."""
+    if not command.all_trusted:
         return None
     for seg in command.segments:
         if m.re.search(command.cmd, seg.start, seg.end):
@@ -873,6 +1025,8 @@ def safe_delete(cmd: str) -> bool:
     command = Command(cmd)
     if not command.analysable or "unlink" in cmd or "shred" in cmd:
         return False
+    if not command.heredoc_spans and not command.all_trusted:
+        return False
     found = 0
     pos = cmd.find("rm ")
     while pos >= 0:
@@ -883,7 +1037,7 @@ def safe_delete(cmd: str) -> bool:
             seg = command.segment_at(pos)
             if seg is None or not seg.argv or seg.argv[0].start != pos:
                 return False
-            if not rm_segment_safe(command, seg, allow_build=True):
+            if not rm_segment_safe(seg, allow_build=True):
                 return False
         pos = cmd.find("rm ", pos + 1)
     return found > 0
@@ -962,13 +1116,30 @@ def dummy_secret(value: str) -> bool:
     return len(core) >= _MIN_SEQUENCE and _runs(core)
 
 
-# A key body: one base64 run of 16+ chars soon after the BEGIN line (a key
-# line is 64; an encrypted PEM's DEK-Info IV is 32 hex chars).
+# A key body: a base64 run of 16+ chars ANYWHERE after the BEGIN line once
+# whitespace (and JSON \\n/\\r/\\t escapes) is removed, so padding, short
+# wrapped lines and space-separated groups still count as a body.
 _KEY_BODY_RUN = re.compile(r"[A-Za-z0-9+/=]{16}")
-_KEY_BODY_WINDOW = 4096
+_KEY_SPACE = re.compile(r"\s+|\\[nrt]")
 
 
 def key_header_without_body(text: str, header_end: int) -> bool:
-    """A PEM/PGP BEGIN line with no key body after it: prose, a regex, a
-    test that builds the key from variables."""
-    return _KEY_BODY_RUN.search(text, header_end, header_end + _KEY_BODY_WINDOW) is None
+    """A PEM/PGP BEGIN line with nothing key-like after it in the whole
+    text: prose, a regex, a test that builds the key from variables."""
+    return _KEY_BODY_RUN.search(_KEY_SPACE.sub("", text[header_end:])) is None
+
+
+# Characters a key value can continue with: an example glued to more key
+# characters (AKIAIOSFODNN7EXAMPLE + a real key) is not the example. `=`
+# only ends a value (base64 padding); before one it is the assignment.
+_KEY_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-"
+)
+
+
+def bounded(text: str, start: int, end: int) -> bool:
+    """[start, end) is a whole value: no key character right before it, and
+    no key character or padding right after it."""
+    return (start == 0 or text[start - 1] not in _KEY_CHARS) and (
+        end >= len(text) or (text[end] not in _KEY_CHARS and text[end] != "=")
+    )
