@@ -18,14 +18,9 @@ from . import safe_shapes as shapes
 # Sprint 50 helpers. A local file read by the agent's own read tool (never a
 # web fetch or an MCP tool, whose output keeps its severity).
 _FILE_READ_TOOLS = frozenset({"Read", "read_file"})
-_TEST_FILE_RE = re.compile(
-    r"(?:test_[\w.-]*\.py|[\w.-]*_test\.(?:py|go)|conftest\.py"
-    r"|[\w.-]*\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs))"
-)
-_FRONTEND_EXTS = (".css", ".scss", ".html", ".tsx", ".jsx", ".vue")
-# A quoted string literal is judged on its own line, up to this length.
-_LITERAL_LINE_MAX = 2000
-_MAX_JUDGED = 50
+# Pure stylesheets only: an inline style attribute in HTML/Vue/JSX
+# (style="display:none") is the classic hidden-text attack and keeps high.
+_STYLESHEET_EXTS = (".css", ".scss", ".less")
 
 
 def _file_read(action: Action) -> str | None:
@@ -33,25 +28,6 @@ def _file_read(action: Action) -> str | None:
     if action.tool_name not in _FILE_READ_TOOLS or not action.file_path:
         return None
     return action.file_path
-
-
-def _base_name(path: str) -> str:
-    return path[max(path.rfind("/"), path.rfind("\\")) + 1 :]
-
-
-def _in_string_literal(text: str, start: int, end: int) -> bool:
-    """[start, end) sits inside one '...' or "..." literal on its line: an
-    odd number of that quote before it on the line, one after it, none in
-    it. Escaped quotes count as quotes (an odd count then fails: kept)."""
-    ls = text.rfind("\n", 0, start) + 1
-    le = text.find("\n", end)
-    le = len(text) if le < 0 else le
-    if le - ls > _LITERAL_LINE_MAX:
-        return False
-    before, inside, after = text[ls:start], text[start:end], text[end:le]
-    return any(
-        before.count(q) % 2 == 1 and q in after and q not in inside for q in ('"', "'")
-    )
 
 
 class _ActionMemo:
@@ -138,17 +114,6 @@ class PromptInjectionDetector(SecurityDetector):
             return Severity.HIGH
         return Severity.MEDIUM
 
-    def _test_literal(self, action: Action, message: str) -> bool:
-        """Every high-confidence phrase is inside a string literal of a test
-        file the agent read (an attack string under test)."""
-        path = _file_read(action)
-        if path is None or not _TEST_FILE_RE.fullmatch(_base_name(path)):
-            return False
-        for count, m in enumerate(self._high_confidence.finditer(message)):
-            if count >= _MAX_JUDGED or not _in_string_literal(message, m.start(), m.end()):
-                return False
-        return True
-
     def check(self, buffer: ActionBuffer) -> Warning | None:
         return _worst(self._memo.get(action, self._scan) for action in buffer.last(10))
 
@@ -158,17 +123,13 @@ class PromptInjectionDetector(SecurityDetector):
 
         message = action.incoming_message
 
-        # Check for high-confidence patterns first
+        # Check for high-confidence patterns first. Always critical: a
+        # "test file" literal is attacker-controlled in a hostile repo
+        # (Sprint 50 QA), so reading our own docs stays a known false alarm.
         if self._high_confidence.search(message):
-            severity = Severity.CRITICAL
-            if self._test_literal(action, message):
-                matches = self._pattern.findall(message)
-                severity = shapes.worst(
-                    (Severity.MEDIUM, self._weak_severity(message, len(matches)))
-                )
             return Warning(
                 category=self.category,
-                severity=severity,
+                severity=Severity.CRITICAL,
                 signal="prompt_injection",
                 message="High-confidence prompt injection attempt detected",
                 details={
@@ -283,11 +244,11 @@ class HiddenInstructionDetector(SecurityDetector):
         return _worst(self._memo.get(action, self._scan) for action in buffer.last(10))
 
     def _css_only(self, action: Action, content: str) -> bool:
-        """Sprint 50: a front-end file the agent read whose every match is a
+        """Sprint 50: a stylesheet the agent read whose every match is a
         plain CSS declaration (`display: none;`), with no instruction in an
         HTML comment. Web and MCP content never qualify."""
         path = _file_read(action)
-        if path is None or not path.lower().endswith(_FRONTEND_EXTS):
+        if path is None or not path.lower().endswith(_STYLESHEET_EXTS):
             return False
         if len(content) > _CSS_MAX or self._has_instruction_comment(content):
             return False
