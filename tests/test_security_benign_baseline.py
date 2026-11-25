@@ -1,5 +1,4 @@
-"""Snapshot of today's security severities on a benign synthetic session
-(Sprint 50, Wave 1).
+"""Security severities on a benign synthetic session (Sprint 50).
 
 tests/fixtures/security_benign.jsonl is a synthetic Claude Code session made
 only of ordinary dev work: every false-alarm class seen in a local
@@ -9,11 +8,11 @@ the parser) naming the class it reproduces; ``baseline`` lines are the
 warm-up every class is scanned after (the >= 10/20-action windows some
 detectors need).
 
-These dicts RECORD what the detectors do today; they are not the goal.
-Wave 2 lowers severities under strict safe shapes and updates them here
-on purpose: the target there is no critical and no high anywhere below,
-with every finding still present (a lower severity, never a dropped
-detection). A key that disappears from a dict is a lost detection.
+Wave 1 recorded what the detectors did (every class critical or high).
+Wave 2 lowered severities under strict safe shapes
+(detectors/security/safe_shapes.py): no critical and no high anywhere below,
+and every finding key is still present. A key that disappears from a dict
+is a lost detection, never an improvement.
 """
 
 from __future__ import annotations
@@ -33,59 +32,62 @@ FIXTURE = Path(__file__).parent / "fixtures" / "security_benign.jsonl"
 
 # Whole session: finding key -> severity, as `agentwatch security-scan` reports it.
 SESSION_BASELINE: dict[str, str] = {
-    "privilege_escalation": "critical",
-    "dangerous_command": "critical",
-    "c2_beacon": "critical",
-    "secret_leak:aws_access_key@file_write": "critical",
-    "secret_leak:aws_access_key@model_output": "critical",
-    "secret_in_output": "critical",
-    "prompt_injection": "critical",
-    "credential_access:token_refresh.py": "critical",
-    "dns_exfil": "high",
-    "skill_install": "high",
-    "secret_in_command": "high",
-    "secret_leak:aws_access_key@bash_command": "high",
-    "secret_leak:aws_secret_key@bash_command": "high",
-    "secret_leak:github_pat@bash_command": "high",
-    "credential_access:secrets-management.md": "high",
-    "hidden_instruction": "high",
-    "mass_delete": "high",
+    "dangerous_command": "medium",  # rm -rf /tmp/..., .pytest_cache, socket words
+    "c2_beacon": "medium",  # sleep 2; curl http://127.0.0.1:...
+    "prompt_injection": "medium",  # attack string in a test literal; base64 + system:
+    "mass_delete": "medium",  # rm -f build/obj/*.o one by one
+    "privilege_escalation": "low",  # chmod 700 ~, 644, 755
+    "dns_exfil": "low",  # dig +short github.com; 'Host 1.2.3.4' in curl -w
+    "skill_install": "low",  # ls skills && pip install
+    "secret_in_command": "low",  # AWS example key, ghp_ sequence
+    "secret_leak:aws_access_key@bash_command": "low",
+    "secret_leak:aws_secret_key@bash_command": "low",
+    "secret_leak:github_pat@bash_command": "low",
+    "secret_leak:aws_access_key@file_write": "low",
+    "secret_leak:aws_access_key@model_output": "low",
+    "credential_access:secrets-management.md": "low",
+    "secret_in_output": "low",
+    "hidden_instruction": "low",  # display: none; in a .css Read
+    "credential_access:token_refresh.py": "low",
 }
+# Still 2: the fixture packs every false-alarm class into one session, and
+# 4 medium + 13 low findings take 125 points off the security score. The
+# scoring is unchanged (out of Sprint 50's scope); no finding is critical.
 SESSION_EXIT_CODE = 2  # security-scan: score below 50 -> compromised
 
 # Each class scanned on its own (after the baseline warm-up): what it raises.
 CLASS_BASELINE: dict[str, dict[str, str]] = {
     "baseline": {},
-    "chmod_mode": {"privilege_escalation": "critical"},
-    "rm_rf_tmp": {"dangerous_command": "critical"},
-    "rm_rf_dotdir": {"dangerous_command": "critical"},
-    "python_socket_words": {"dangerous_command": "critical"},
-    "attack_strings_as_data": {"dangerous_command": "critical"},
-    "sleep_then_local_curl": {"c2_beacon": "critical"},
-    "cron_curl_in_text": {"c2_beacon": "critical"},
-    "dig_lookup": {"dns_exfil": "high"},
-    "host_word_in_text": {"dns_exfil": "high"},
-    "skill_install_words": {"skill_install": "high"},
+    "chmod_mode": {"privilege_escalation": "low"},
+    "rm_rf_tmp": {"dangerous_command": "medium"},
+    "rm_rf_dotdir": {"dangerous_command": "medium"},
+    "python_socket_words": {"dangerous_command": "medium"},
+    "attack_strings_as_data": {"dangerous_command": "low"},
+    "sleep_then_local_curl": {"c2_beacon": "medium"},
+    "cron_curl_in_text": {"c2_beacon": "low"},
+    "dig_lookup": {"dns_exfil": "low"},
+    "host_word_in_text": {"dns_exfil": "low"},
+    "skill_install_words": {"skill_install": "low"},
     "aws_example_key_cmd": {
-        "secret_in_command": "high",
-        "secret_leak:aws_access_key@bash_command": "high",
-        "secret_leak:aws_secret_key@bash_command": "high",
+        "secret_in_command": "low",
+        "secret_leak:aws_access_key@bash_command": "low",
+        "secret_leak:aws_secret_key@bash_command": "low",
     },
     "fixture_key_cmd": {
-        "secret_in_command": "high",
-        "secret_leak:github_pat@bash_command": "high",
+        "secret_in_command": "low",
+        "secret_leak:github_pat@bash_command": "low",
     },
-    "aws_example_key_write": {"secret_leak:aws_access_key@file_write": "critical"},
+    "aws_example_key_write": {"secret_leak:aws_access_key@file_write": "low"},
     "aws_example_key_reply": {
-        "secret_in_output": "critical",
-        "secret_leak:aws_access_key@model_output": "critical",
+        "secret_in_output": "low",
+        "secret_leak:aws_access_key@model_output": "low",
     },
-    "credential_word_in_path_read": {"credential_access:secrets-management.md": "high"},
-    "credential_word_in_path_edit": {"credential_access:token_refresh.py": "critical"},
-    "injection_text_in_test_file": {"prompt_injection": "critical"},
-    "injection_words_in_source": {"prompt_injection": "high"},
-    "css_display_none": {"hidden_instruction": "high"},
-    "cleanup_rm": {"mass_delete": "high"},
+    "credential_word_in_path_read": {"credential_access:secrets-management.md": "low"},
+    "credential_word_in_path_edit": {"credential_access:token_refresh.py": "low"},
+    "injection_text_in_test_file": {"prompt_injection": "medium"},
+    "injection_words_in_source": {"prompt_injection": "medium"},
+    "css_display_none": {"hidden_instruction": "low"},
+    "cleanup_rm": {"mass_delete": "medium"},
 }
 
 
@@ -133,3 +135,11 @@ def test_class_severities(fp_class, tmp_path):
     log = tmp_path / f"{fp_class}.jsonl"
     log.write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
     assert _scan(log) == CLASS_BASELINE[fp_class]
+
+
+def test_no_critical_or_high_on_benign_work():
+    """The Sprint 50 gate: the benign corpus raises nothing critical or high."""
+    found = _scan(FIXTURE)
+    assert not {k: v for k, v in found.items() if v in ("critical", "high")}
+    for fp_class, expected in CLASS_BASELINE.items():
+        assert not {k for k, v in expected.items() if v in ("critical", "high")}, fp_class

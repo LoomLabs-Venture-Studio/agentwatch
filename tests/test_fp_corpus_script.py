@@ -37,10 +37,10 @@ def test_summarize_counts_sessions_and_exit_codes():
     clean = {"exit": "0", "findings": [], "subagent": True}
     out = fc.summarize([res, clean], examples=0)
     assert out["exit_distribution"]["all"] == {"0": 1, "1": 0, "2": 1, "3": 0, "error": 0}
-    assert out["worst_severity"]["main"]["critical"] == 1
+    assert out["worst_severity"]["main"]["medium"] == 1  # Sprint 50: nothing critical/high
     assert out["worst_severity"]["subagent"]["none"] == 1
     row = next(r for r in out["signals"] if r["signal"] == "mass_delete")
-    assert row["severity"]["high"] == 1 and row["sessions"] == 1
+    assert row["severity"]["medium"] == 1 and row["sessions"] == 1
     assert "examples" not in row
 
 
