@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Measure security false alarms over local Claude Code sessions (Sprint 50).
 
-Runs the same scan as ``agentwatch security-scan`` (security registry,
-``registry.scan``, ``calculate_security_score``, ``cli._security_exit_code``)
+Runs the scan ``agentwatch security-scan --log PATH`` runs (security
+registry, ``registry.scan``, ``calculate_security_score``,
+``cli._security_exit_code``; no ``--analytics-log``)
 over every Claude Code session log under ``claude_config.config_dirs()``
 (``$CLAUDE_CONFIG_DIR`` and ``~/.claude``, via the claude-code adapter's
 ``history_logs()``; subagent logs included unless ``--no-subagents``) and
@@ -12,7 +13,7 @@ prints:
   3 = nothing to scan, ``error`` = unreadable), as ``security-scan`` would exit
 - per signal and rule: counts by severity and the number of sessions affected
 - with ``--examples N``: up to N one-line evidence samples per signal/rule,
-  through ``secret_scanner.one_line`` (redacted, bounded)
+  (the whole text redacted before it is cut, then ``secret_scanner.one_line``)
 
 "Rule" is the detector sub-pattern that fired, found by re-matching the
 detector's own pattern list (imported, not copied) against the action the
@@ -117,12 +118,34 @@ def _texts(signal: str, action) -> list[str]:
 _SEGMENT_SPLIT = re.compile(r"\n|;|&&|\|\||\|")
 
 
-def _segment(text: str, m: re.Match) -> str:
-    """The shell segment(s) the match spans (split on ; && || | newline)."""
+def _segment(text: str, start: int, end: int) -> str:
+    """The shell segment(s) text[start:end] spans (split on ; && || | newline)."""
     cuts = [x.end() for x in _SEGMENT_SPLIT.finditer(text)]
-    lo = max((c for c in cuts if c <= m.start()), default=0)
-    hi = min((c for c in cuts if c > m.end()), default=len(text) + 1)
+    lo = max((c for c in cuts if c <= start), default=0)
+    hi = min((c for c in cuts if c > end), default=len(text) + 1)
     return text[lo:hi]
+
+
+def _evidence(signal: str, text: str, rx: re.Pattern, raw_start: int) -> str:
+    """One display line around *rx*'s match in *text*.
+
+    The WHOLE text is redacted before any cut: a window cut first can split a
+    secret, drop its prefix (``sk-ant-api03-``) and leave a body the redactor
+    no longer recognises. The match is then found again in the redacted text
+    (offsets shift); if redaction swallowed it (the match was itself a
+    secret), the window sits at the raw offset, clamped. Every cut is of
+    redacted text only.
+    """
+    from agentwatch.detectors.security.secret_scanner import one_line, redact_secrets
+
+    safe = redact_secrets(text)
+    m = rx.search(safe)
+    start, end = (m.start(), m.end()) if m else (min(raw_start, len(safe)),) * 2
+    if signal in _COMMAND_SIGNALS or signal == "sensitive_directory":
+        ev = _segment(safe, start, end)
+    else:
+        ev = safe[max(0, start - 40): end + 40]
+    return one_line(ev, EVIDENCE_CHARS)
 
 
 def _attribute(signal: str, details: dict, actions: list) -> tuple[str, str]:
@@ -132,7 +155,9 @@ def _attribute(signal: str, details: dict, actions: list) -> tuple[str, str]:
     the first one whose command starts with it and re-matches (several
     commands can share that prefix, so this is a best guess); for paths, the
     action with that path; otherwise the first action in the session that
-    matches. ("?", "") when nothing re-matches.
+    matches. ("?", "") when nothing re-matches. A hidden_instruction found
+    only by the HTML-comment keyword check (no pattern re-matches) is
+    reported as rule "html_comment_keyword" with NO evidence.
     """
     from agentwatch.detectors.security.secret_scanner import one_line, redact_truncate
 
@@ -161,18 +186,15 @@ def _attribute(signal: str, details: dict, actions: list) -> tuple[str, str]:
             for raw, rx in pats:
                 m = rx.search(text)
                 if m:
-                    if signal in _COMMAND_SIGNALS or signal == "sensitive_directory":
-                        ev = _segment(text, m)
-                    else:
-                        ev = text[max(0, m.start() - 40): m.end() + 40]
-                    return raw, one_line(ev, EVIDENCE_CHARS)
+                    return raw, _evidence(signal, text, rx, m.start())
     if signal == "hidden_instruction":
         return "html_comment_keyword", ""
     return "?", ""
 
 
 def scan_log(path: str, examples: int) -> dict:
-    """One session, scanned exactly like `agentwatch security-scan --log`."""
+    """One session, scanned like `agentwatch security-scan --log PATH` (same
+    registry, scan, score and exit code; no --analytics-log is passed)."""
     from agentwatch.cli import EXIT_NO_DATA, _security_exit_code
     from agentwatch.detectors.registry import create_registry
     from agentwatch.health.score import calculate_security_score
