@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 48, market gaps (2026-11-13), and Sprint 47, guard #228 + CLAUDE_CONFIG_DIR + visual redesign (2026-11-12), at the end of this file; before them Sprints 43-46 (security precision, guard, visual) and Sprint 42, follow-ups and 0.2.2 release prep (2026-11-06); before it Sprint 41 (visual, tools, README) and Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
+> **Latest: Sprint 50, security false alarms (2026-11-25, top priority, before Sprint 49), then Sprint 48, market gaps (2026-11-13), and Sprint 47, guard #228 + CLAUDE_CONFIG_DIR + visual redesign (2026-11-12), at the end of this file; before them Sprints 43-46 (security precision, guard, visual) and Sprint 42, follow-ups and 0.2.2 release prep (2026-11-06); before it Sprint 41 (visual, tools, README) and Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -5747,3 +5747,48 @@ Criteria
 
 **Next waves (planned):** research 5 (ledger), 4 (drift pinning), 2 (other agents' hooks, needs live hook checks per agent), then 9 (context % and branch in watch-all), 11 (scheduled digest).
 
+
+### Sprint 49 -- regex safety: linear-time scanning of untrusted text (planned 2026-11-20)
+
+Board (2026-11-20), after the Rust assessment: no Rust rewrite and no speed-only work ("whats the point of doing all of that for 100 ms"); do the regex work because it is a safety issue: "if its about safety then go ahead". Problem: patterns that can backtrack for seconds on one long line let a hostile log line, config value or command hang a scan or stall the guard (#247, #222, #228 and about 8 earlier fixes, each patched one at a time). Measured (Linux): 61 of 258 compiled patterns use lookaround/backrefs/possessive, which no linear engine supports, so they need rewrites either way; re2 was 7.4x faster on the 97 compatible scanner patterns. In flight at plan time: #247 (`_PIPE_TO_SHELL`, config_scan.py), #242 (exit 3), research 9 (context % and branch).
+
+Dependency (board-approved with the plan): `google-re2`, a core dependency with environment markers limited to platforms that have wheels (1.1.20251105: cp311-cp313 on Windows x86/x64/arm64, macOS 13+ x86_64/arm64, manylinux x86_64/aarch64). Elsewhere, and if the import fails, fall back to `re` on bounded input. Install must never need a C++ build.
+
+**Wave A: linear regex foundation + security scanners (`fix/regex-linear-scanners`)**
+- [ ] Inventory (in the PR body): every compiled pattern that runs on untrusted text (log lines, tool input/output, commands, config values), its file, whether re2 can take it, and how long it takes on adversarial input with `re` today.
+- [ ] One helper (`agentwatch/_regex.py` or similar): `compile_linear(pattern, flags)` returns a compiled object with the `re` API the callers use (`search`, `finditer`, `match`, `.start()`, `.group()`); re2 when available and the pattern is supported, otherwise `re` with an input bound per call (no silent truncation of findings: a scan cut by the bound is recorded or windowed with overlap, like the skill-script windows).
+- [ ] Migrate the security scanners (secret_scanner, security_patterns, injection, privilege, network, supply_chain, credentials, pii) to it. Rewrite patterns that use lookaround/backrefs where possible; any left on `re` are listed with their bound and a timing test.
+- [ ] Equivalence: a test that runs old `re` and new patterns over every existing fixture plus adversarial/fuzzed lines and asserts identical findings (same matches, same spans). Known re2 differences (Unicode `\b`/`\w`/`\s`) handled or proven not to matter.
+- [ ] Timing tests: each migrated pattern on 1 MB of adversarial input < 0.1 s (generous CI bound).
+- [ ] config_scan.py is #247's; guard.py is Wave B. Don't touch either.
+- [ ] ruff + full pytest green on Linux; install check without re2 (fallback path) green; QA pass.
+
+**Wave B: guard.py and the remaining command parsers (`fix/regex-linear-guard`)**
+- [ ] Same helper in guard.py, ledger and config_scan (after #247), with guard's own 1 s budget kept. Guard decisions identical on the whole guard test corpus (no new allow); timing tests on 1 MB commands.
+
+**Wave C: hook import cost (small)**
+- [ ] `parser/__init__` really lazy, as CLAUDE.md claims (today the PostToolUse hook imports 258 modules: asyncio, watchfiles, psutil, sqlite3, aider/cursor parsers). Test: importing `agentwatch.coach` does not import watchfiles, psutil, sqlite3 or textual.
+
+**Parked:** Rust (full or partial), orjson/msgspec, the benchmark suite, and other speed-only work. Revisit Rust only if Windows PreToolUse p50 > 150 ms or users report slow hooks.
+
+### Sprint 50 -- security false alarms (planned 2026-11-25, runs BEFORE Sprint 49)
+
+Board (2026-11-25): false alarms are the top priority. Product review (0.2.2 on 37 real Claude Code sessions): 16 exited critical and 6 warning; every critical sampled was a false alarm. Examples: privilege on `chmod 700 ~` and `cat > file`; C2 beacon on `git add -A` and `npm test | grep`; dangerous command on `echo >> notes`; secrets on AWS's documented example key and test-fixture keys. Board also decided: no command cuts ("an app for professionals"), no rename, nothing to `main`, 1.0 readiness review only when the board says so. Sprint 49 (regex re2 migration) touches the same scanner files, so it waits until Sprint 50 lands.
+
+Rules (from Sprints 43-44, see memory): the detection set stays identical to develop (never fewer matches); fixes only LOWER SEVERITY, and only when the whole command/segment fits a strict safe shape (allowlist, never a denylist of bad markers); every regex linear (1 MB adversarial < 0.5 s); adversarial QA on every narrowing.
+
+**Wave 1: measure (`chore/fp-measure`)**
+- [ ] `scripts/fp_corpus.py`: runs security mode over every local Claude Code session (config_dirs), prints per detector/signal counts by severity and the session exit distribution; `--examples` prints redacted one-line evidence locally. Nothing from real transcripts is committed.
+- [ ] Triage table in the PR body: each critical/high signal seen locally -> rule, count, TP/FP, proposed severity shape.
+- [ ] Synthetic benign corpus fixture (`tests/fixtures/security_benign.jsonl`) reproducing every FP class found, plus a test that records today's severities (baseline for Wave 2).
+
+**Wave 2: severity fixes (`fix/security-false-alarms`)**
+- [ ] Per FP class: lower severity under a strict safe shape; detection still fires (same finding, lower severity).
+- [ ] Known documentation example credentials (e.g. AWS `AKIAIOSFODNN7EXAMPLE`) and obvious placeholders -> low, not critical.
+- [ ] Benign corpus: no critical, no high. Existing malicious fixtures: severities unchanged or higher.
+- [ ] Gate test: benign corpus critical rate 0; local measurement target <= 2% sessions critical, <= 10% high (reported in PR, not CI).
+- [ ] Adversarial QA round (bypass attempts for each safe shape).
+
+**Wave 3: suppression (`feature/security-suppress`)**
+- [ ] A suppression file (project `.agentwatch/ignore` or similar, plus user-level) keyed by finding fingerprint/dedup key with a required reason; suppressed findings still listed as suppressed in --json, never silently dropped; `check --security`/`security-scan` exit codes ignore them.
+- [ ] `list-detectors` shows all detectors by default (review: 16 shown, 37 exist).
