@@ -43,7 +43,7 @@ type: fix | feat | refactor | test | docs | chore
 
 ## Current Sprint (CTO Updates This Section)
 
-> **Latest: Sprint 48, market gaps (2026-11-13), and Sprint 47, guard #228 + CLAUDE_CONFIG_DIR + visual redesign (2026-11-12), at the end of this file; before them Sprints 43-46 (security precision, guard, visual) and Sprint 42, follow-ups and 0.2.2 release prep (2026-11-06); before it Sprint 41 (visual, tools, README) and Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
+> **Latest: Sprint 50, security false alarms (2026-11-25, top priority, before Sprint 49), then Sprint 48, market gaps (2026-11-13), and Sprint 47, guard #228 + CLAUDE_CONFIG_DIR + visual redesign (2026-11-12), at the end of this file; before them Sprints 43-46 (security precision, guard, visual) and Sprint 42, follow-ups and 0.2.2 release prep (2026-11-06); before it Sprint 41 (visual, tools, README) and Sprint 40, market-gap features (2026-10-30), at the end of this file; before it Sprint 39, info site redesign + agentwatch.info (2026-10-27), at the end of this file; before it Sprint 38, Codex review fixes (2026-10-26), and Sprint 37, 0.2.0 release hardening (2026-10-24), and the Sprint 36 watch UI overhaul.** Start there.
 > Sprints below are kept in chronological order.
 
 ### Sprint: Sprint 0 — Repository Bootstrap & Baseline Health
@@ -5770,3 +5770,25 @@ Dependency (board-approved with the plan): `google-re2`, a core dependency with 
 - [ ] `parser/__init__` really lazy, as CLAUDE.md claims (today the PostToolUse hook imports 258 modules: asyncio, watchfiles, psutil, sqlite3, aider/cursor parsers). Test: importing `agentwatch.coach` does not import watchfiles, psutil, sqlite3 or textual.
 
 **Parked:** Rust (full or partial), orjson/msgspec, the benchmark suite, and other speed-only work. Revisit Rust only if Windows PreToolUse p50 > 150 ms or users report slow hooks.
+
+### Sprint 50 -- security false alarms (planned 2026-11-25, runs BEFORE Sprint 49)
+
+Board (2026-11-25): false alarms are the top priority. Product review (0.2.2 on 37 real Claude Code sessions): 16 exited critical and 6 warning; every critical sampled was a false alarm. Examples: privilege on `chmod 700 ~` and `cat > file`; C2 beacon on `git add -A` and `npm test | grep`; dangerous command on `echo >> notes`; secrets on AWS's documented example key and test-fixture keys. Board also decided: no command cuts ("an app for professionals"), no rename, nothing to `main`, 1.0 readiness review only when the board says so. Sprint 49 (regex re2 migration) touches the same scanner files, so it waits until Sprint 50 lands.
+
+Rules (from Sprints 43-44, see memory): the detection set stays identical to develop (never fewer matches); fixes only LOWER SEVERITY, and only when the whole command/segment fits a strict safe shape (allowlist, never a denylist of bad markers); every regex linear (1 MB adversarial < 0.5 s); adversarial QA on every narrowing.
+
+**Wave 1: measure (`chore/fp-measure`)**
+- [ ] `scripts/fp_corpus.py`: runs security mode over every local Claude Code session (config_dirs), prints per detector/signal counts by severity and the session exit distribution; `--examples` prints redacted one-line evidence locally. Nothing from real transcripts is committed.
+- [ ] Triage table in the PR body: each critical/high signal seen locally -> rule, count, TP/FP, proposed severity shape.
+- [ ] Synthetic benign corpus fixture (`tests/fixtures/security_benign.jsonl`) reproducing every FP class found, plus a test that records today's severities (baseline for Wave 2).
+
+**Wave 2: severity fixes (`fix/security-false-alarms`)**
+- [ ] Per FP class: lower severity under a strict safe shape; detection still fires (same finding, lower severity).
+- [ ] Known documentation example credentials (e.g. AWS `AKIAIOSFODNN7EXAMPLE`) and obvious placeholders -> low, not critical.
+- [ ] Benign corpus: no critical, no high. Existing malicious fixtures: severities unchanged or higher.
+- [ ] Gate test: benign corpus critical rate 0; local measurement target <= 2% sessions critical, <= 10% high (reported in PR, not CI).
+- [ ] Adversarial QA round (bypass attempts for each safe shape).
+
+**Wave 3: suppression (`feature/security-suppress`)**
+- [ ] A suppression file (project `.agentwatch/ignore` or similar, plus user-level) keyed by finding fingerprint/dedup key with a required reason; suppressed findings still listed as suppressed in --json, never silently dropped; `check --security`/`security-scan` exit codes ignore them.
+- [ ] `list-detectors` shows all detectors by default (review: 16 shown, 37 exist).
