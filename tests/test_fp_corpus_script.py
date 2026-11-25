@@ -40,7 +40,7 @@ def test_summarize_counts_sessions_and_exit_codes():
     assert out["worst_severity"]["main"]["critical"] == 1
     assert out["worst_severity"]["subagent"]["none"] == 1
     row = next(r for r in out["signals"] if r["signal"] == "mass_delete")
-    assert row["severity"]["high"] == 1 and row["sessions"] == 1
+    assert row["severity"]["medium"] == 1 and row["sessions"] == 1
     assert "examples" not in row
 
 

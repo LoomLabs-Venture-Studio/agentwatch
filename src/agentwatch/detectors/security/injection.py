@@ -13,6 +13,21 @@ from agentwatch.parser.security_patterns import (
 from agentwatch.parser.security_patterns import INJECTION_REGEX
 
 from ..base import Category, SecurityDetector, Severity, Warning
+from . import safe_shapes as shapes
+
+# Sprint 50 helpers. A local file read by the agent's own read tool (never a
+# web fetch or an MCP tool, whose output keeps its severity).
+_FILE_READ_TOOLS = frozenset({"Read", "read_file"})
+# Pure stylesheets only: an inline style attribute in HTML/Vue/JSX
+# (style="display:none") is the classic hidden-text attack and keeps high.
+_STYLESHEET_EXTS = (".css", ".scss", ".less")
+
+
+def _file_read(action: Action) -> str | None:
+    """The file path of a plain file read, else None."""
+    if action.tool_name not in _FILE_READ_TOOLS or not action.file_path:
+        return None
+    return action.file_path
 
 
 class _ActionMemo:
@@ -40,6 +55,16 @@ class _ActionMemo:
         return found
 
 
+def _worst(warnings) -> Warning | None:
+    """The worst warning, the earliest on a tie: a lowered first finding
+    must not hide a later one that keeps its severity (one dedup key)."""
+    best = None
+    for w in warnings:
+        if w is not None and (best is None or shapes.rank(w.severity) > shapes.rank(best.severity)):
+            best = w
+    return best
+
+
 class PromptInjectionDetector(SecurityDetector):
     """Heuristic detection of injection attempts in incoming messages."""
 
@@ -64,20 +89,33 @@ class PromptInjectionDetector(SecurityDetector):
         r"DAN mode",
     ]
 
+    # Sprint 50: these weak patterns are noise on their own (`import
+    # base64`, a `system: %(message)s` log format): two matches need two
+    # distinct patterns, at least one of them not in this set, to be high.
+    _NOISE_PATTERNS = frozenset({r"base64[:\s]", r"system:\s*"})
+
     def __init__(self):
         self._pattern = INJECTION_REGEX
         self._high_confidence = re.compile(
             "|".join(self.HIGH_CONFIDENCE_PATTERNS),
             re.IGNORECASE
         )
+        self._each = [
+            (p, re.compile(p, re.IGNORECASE | re.MULTILINE)) for p in self.INJECTION_PATTERNS
+        ]
         self._memo = _ActionMemo()
 
+    def _weak_severity(self, message: str, count: int) -> Severity:
+        """High only for two or more DISTINCT weak patterns, not all noise."""
+        if count < 2:
+            return Severity.MEDIUM
+        distinct = {p for p, rx in self._each if rx.search(message)}
+        if len(distinct) >= 2 and distinct - self._NOISE_PATTERNS:
+            return Severity.HIGH
+        return Severity.MEDIUM
+
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        for action in buffer.last(10):
-            warning = self._memo.get(action, self._scan)
-            if warning is not None:
-                return warning
-        return None
+        return _worst(self._memo.get(action, self._scan) for action in buffer.last(10))
 
     def _scan(self, action: Action) -> Warning | None:
         if not action.incoming_message:
@@ -85,7 +123,9 @@ class PromptInjectionDetector(SecurityDetector):
 
         message = action.incoming_message
 
-        # Check for high-confidence patterns first
+        # Check for high-confidence patterns first. Always critical: a
+        # "test file" literal is attacker-controlled in a hostile repo
+        # (Sprint 50 QA), so reading our own docs stays a known false alarm.
         if self._high_confidence.search(message):
             return Warning(
                 category=self.category,
@@ -101,8 +141,8 @@ class PromptInjectionDetector(SecurityDetector):
         # Check for general patterns
         matches = self._pattern.findall(message)
         if matches:
-            # Multiple pattern matches = higher confidence
-            severity = Severity.HIGH if len(matches) > 1 else Severity.MEDIUM
+            # Multiple distinct pattern matches = higher confidence
+            severity = self._weak_severity(message, len(matches))
 
             return Warning(
                 category=self.category,
@@ -124,6 +164,21 @@ class PromptInjectionDetector(SecurityDetector):
 _COMMENT_KEYWORD_RE = re.compile(
     r"(?<![\w-])(?:ignore|execute|run|instructions?)(?![\w-])", re.IGNORECASE
 )
+
+
+# The CSS-hiding rules of HiddenInstructionDetector.HIDDEN_PATTERNS and the
+# end of a declaration right after the match (`;`, `}`, line end, or the
+# closing quote of a style attribute, optionally after !important).
+_CSS_RULES = (
+    r"display:\s*none",
+    r"visibility:\s*hidden",
+    r"font-size:\s*0",
+    r"color:\s*(?:white|#fff|transparent)",
+)
+_CSS_RULE = re.compile("|".join(_CSS_RULES), re.IGNORECASE)
+_CSS_DECL_END = re.compile(r"[ \t]*(?:!important[ \t]*)?(?:;|\}|\"|$)", re.MULTILINE)
+_CSS_MAX = 1_000_000
+_CSS_MAX_MATCHES = 500
 
 
 class HiddenInstructionDetector(SecurityDetector):
@@ -186,11 +241,23 @@ class HiddenInstructionDetector(SecurityDetector):
             pos = close + 3
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        for action in buffer.last(10):
-            warning = self._memo.get(action, self._scan)
-            if warning is not None:
-                return warning
-        return None
+        return _worst(self._memo.get(action, self._scan) for action in buffer.last(10))
+
+    def _css_only(self, action: Action, content: str) -> bool:
+        """Sprint 50: a stylesheet the agent read whose every match is a
+        plain CSS declaration (`display: none;`), with no instruction in an
+        HTML comment. Web and MCP content never qualify."""
+        path = _file_read(action)
+        if path is None or not path.lower().endswith(_STYLESHEET_EXTS):
+            return False
+        if len(content) > _CSS_MAX or self._has_instruction_comment(content):
+            return False
+        for count, m in enumerate(self._pattern.finditer(content)):
+            if count >= _CSS_MAX_MATCHES or not _CSS_RULE.fullmatch(m.group(0)):
+                return False
+            if not _CSS_DECL_END.match(content, m.end()):
+                return False
+        return True
 
     def _scan(self, action: Action) -> Warning | None:
         content = action.incoming_message or ""
@@ -202,7 +269,7 @@ class HiddenInstructionDetector(SecurityDetector):
         if self._pattern.search(content) or self._has_instruction_comment(content):
             return Warning(
                 category=self.category,
-                severity=Severity.HIGH,
+                severity=Severity.LOW if self._css_only(action, content) else Severity.HIGH,
                 signal="hidden_instruction",
                 message="Hidden or encoded content detected",
                 details={"source": action.tool_name},

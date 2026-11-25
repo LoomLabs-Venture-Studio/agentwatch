@@ -7,6 +7,7 @@ import re
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
+from . import safe_shapes as shapes
 from .secret_scanner import redact_truncate
 
 
@@ -215,18 +216,35 @@ class SkillInstallDetector(SecurityDetector):
             "|".join(self.INSTALL_PATTERNS),
             re.IGNORECASE
         )
+        # Sprint 50: low when the words are only text (a commit message or
+        # PR body, an echo to a file, a heredoc) or in different simple
+        # commands (`ls skills && pip install`). The match is never dropped.
+        judge = shapes.first_of(shapes.data_judge(), shapes.split_segments_judge)
+        self._rules = [
+            shapes.Rule(re.compile(p, re.IGNORECASE), judge) for p in self.INSTALL_PATTERNS
+        ]
+        self._memo = shapes.Memo()
+
+    def severity_of(self, command: str) -> Severity:
+        return self._memo.get(command, self._judge)
+
+    def _judge(self, command: str) -> Severity:
+        return shapes.evaluate(command, self._rules, Severity.HIGH)
 
     def check(self, buffer: ActionBuffer) -> Warning | None:
-        recent = buffer.last(10)
-
-        for action in recent:
+        best = None
+        for action in buffer.last(10):
             if action.command and self._pattern.search(action.command):
-                return Warning(
-                    category=self.category,
-                    severity=Severity.HIGH,
-                    signal="skill_install",
-                    message="New skill being installed",
-                    details={"command": redact_truncate(action.command, 80)},
-                )
-
-        return None
+                severity = self.severity_of(action.command)
+                if best is None or shapes.rank(severity) > shapes.rank(best[0]):
+                    best = (severity, action)
+        if best is None:
+            return None
+        severity, action = best
+        return Warning(
+            category=self.category,
+            severity=severity,
+            signal="skill_install",
+            message="New skill being installed",
+            details={"command": redact_truncate(action.command, 80)},
+        )
