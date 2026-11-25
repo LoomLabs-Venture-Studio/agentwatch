@@ -22,6 +22,7 @@ from typing import Any
 from agentwatch.parser.models import ActionBuffer
 
 from ..base import Category, SecurityDetector, Severity, Warning
+from . import safe_shapes as _shapes
 from .pii import _PII_VALIDATORS, PII_LABELS
 
 # ---------------------------------------------------------------------------
@@ -874,6 +875,26 @@ def _redact_window(window: str) -> str:
 # SecretLeakScanner
 # ---------------------------------------------------------------------------
 
+# Sprint 50: header-only key labels (the block label always has a body).
+_KEY_HEADER_LABELS = frozenset({"private_key", "pgp_private_key"})
+
+
+def _dummy_cap(m: re.Match, label: str) -> Severity | None:
+    """Severity cap for one live match (None: keep its channel severity).
+
+    Low for a documented example credential (exact string) or an obvious
+    dummy value (one repeated character, a sequence); medium for a key BEGIN
+    line with no key body after it. The finding, its type, fingerprint and
+    dedup key are unchanged.
+    """
+    if label in _KEY_HEADER_LABELS:
+        return Severity.MEDIUM if _shapes.key_header_without_body(m.string, m.end()) else None
+    if label == "private_key_block":
+        return None
+    start, end = _value_span(m, label)
+    return Severity.LOW if _shapes.dummy_secret(m.string[start:end]) else None
+
+
 class SecretLeakScanner(SecurityDetector):
     """Scans all action channels for leaked secrets/credentials in real time."""
 
@@ -940,16 +961,24 @@ class SecretLeakScanner(SecurityDetector):
         for text, channel, file_path in extract_scannable_content(action):
             severity = _CHANNEL_SEVERITY.get(channel, Severity.MEDIUM)
             by_type: dict[str, dict[str, re.Match]] = {}
+            caps: dict[tuple[str, str], Severity | None] = {}
             for secret_type, fingerprint, m in _claimed_matches(text, file_path):
                 # one finding per pattern, text and distinct secret
                 by_type.setdefault(secret_type, {}).setdefault(fingerprint, m)
+                key = (secret_type, fingerprint)
+                cap = _dummy_cap(m, secret_type)
+                # Every match of this secret must be lowerable (two key
+                # headers share a fingerprint, only one may have a body).
+                caps[key] = cap if key not in caps else (
+                    None if caps[key] is None or cap is None else _shapes.worst((caps[key], cap))
+                )
             for secret_type, firsts in by_type.items():
                 remediation = _REMEDIATION.get(
                     secret_type, "Remove from file, use env var, rotate if committed to git"
                 )
                 warnings.extend(Warning(
                     category=self.category,
-                    severity=severity,
+                    severity=_shapes.capped(severity, caps[(secret_type, fingerprint)]),
                     signal="secret_leak",
                     message=f"Secret detected ({secret_type}) in {channel}",
                     suggestion=remediation,
